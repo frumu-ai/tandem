@@ -4,6 +4,21 @@ use serde_json::json;
 use tandem_memory::db::MemoryDatabase;
 
 #[test]
+fn stateful_storage_paths_use_the_engine_state_directory() {
+    let state_dir = std::path::Path::new("/var/lib/tandem/data");
+    let paths = stateful_orchestration_store_paths(state_dir);
+
+    assert_eq!(
+        paths.database_path,
+        state_dir.join("stateful_runtime.sqlite3")
+    );
+    assert_eq!(
+        paths.engine_lock_path,
+        state_dir.join("stateful_runtime.engine.lock")
+    );
+}
+
+#[test]
 fn build_cli_overrides_targets_selected_provider() {
     let overrides = build_cli_overrides(
         Some("sk-test".to_string()),

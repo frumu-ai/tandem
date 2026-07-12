@@ -262,6 +262,12 @@ impl Row {
         Self { values }
     }
 
+    /// Returns the raw row values for storage-internal bulk operations.
+    /// Callers outside the stateful storage layer should prefer typed `get`.
+    pub(crate) fn values(&self) -> &[Value] {
+        &self.values
+    }
+
     pub fn get<I: RowIndex, T: FromValue>(&self, index: I) -> Result<T> {
         let index = index.index();
         let value = self.values.get(index).ok_or_else(|| {

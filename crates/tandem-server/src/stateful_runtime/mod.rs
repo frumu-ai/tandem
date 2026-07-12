@@ -26,11 +26,13 @@ pub use definition::{
     stable_definition_snapshot_hash, stamp_automation_run_definition_metadata,
 };
 pub use orchestration_store::{
-    AtomicHandoffCommit, GoalCancellationResult, GoalControlOutcome, GoalEventRow,
-    GoalPauseOutcome, GoalResumeOutcome, GovernedTransitionRequest, GovernedTransitionResult,
-    LegacyImportContext, LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport,
-    OrchestrationStateStore, OrchestrationStorePaths, OrchestrationTransitionAuthority,
-    StartGoalOutcome, StatefulEngineLock, WorkflowCompletionResult, DRAFT_CONCURRENCY_CONFLICT,
+    migrate_stateful_storage_backend, AtomicHandoffCommit, GoalCancellationResult,
+    GoalControlOutcome, GoalEventRow, GoalPauseOutcome, GoalResumeOutcome,
+    GovernedTransitionRequest, GovernedTransitionResult, LegacyImportContext,
+    LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport, OrchestrationStateStore,
+    OrchestrationStorePaths, OrchestrationTransitionAuthority, StartGoalOutcome,
+    StatefulBackendKind, StatefulBackendMigrationReport, StatefulBackendMigrationRequest,
+    StatefulEngineLock, WorkflowCompletionResult, DRAFT_CONCURRENCY_CONFLICT,
     ORCHESTRATION_DRAFT_VERSION,
 };
 pub use phases::*;

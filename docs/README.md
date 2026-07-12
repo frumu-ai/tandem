@@ -20,6 +20,7 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [Stateful Runtime Enterprise Threat Model](./STATEFUL_RUNTIME_ENTERPRISE_THREAT_MODEL.md) - Threat model for scoped runs, webhooks, delegation grants, MCP run-as, receipts, and replay.
 - [Runtime Events](./RUNTIME_EVENTS.md) - Canonical event schema, durable replay log, and tenant-scoped query contract.
 - [Stateful Runtime Durable Kernel](./STATEFUL_RUNTIME_DURABLE_KERNEL.md) - File-backed runtime constraints, tactical guardrails, and embedded-store migration direction.
+- [PostgreSQL Stateful Storage](./POSTGRES_STATEFUL_STORAGE.md) - Backend selection, verified transfer runbook, retention, and backups for stateful orchestration data.
 - [Context Assertion Security](./CONTEXT_ASSERTION_SECURITY.md) - Signed tenant assertion keysets, replay behavior, clock skew, and rotation runbook.
 - [Cross-Tenant Grants Design](./CROSS_TENANT_GRANTS_DESIGN.md) - Signed grant envelope, inbound lookup, trust root, and enforcement design for governed tenant-to-tenant sharing.
 - [Default DataBoundary Enforcement Design](./DATA_BOUNDARY_ENFORCEMENT_DESIGN.md) - Default data-class boundary policy and trigger for governed reads.

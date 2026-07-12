@@ -38,6 +38,8 @@ This page is generated from the engine config registry used by `tandem-engine co
 | `TANDEM_SCHEDULER_SHUTDOWN_TIMEOUT_SECS`      | `30`                  | Positive scheduler shutdown timeout.                                                                                |
 | `TANDEM_STATE_DIR`                            | `shared path`         | Engine state directory.                                                                                             |
 | `TANDEM_STORAGE_DIR`                          | `state dir`           | Storage directory override.                                                                                         |
+| `TANDEM_STORAGE_BACKEND`                      | `sqlite`              | Stateful store backend: sqlite or postgres. Fail-closed on invalid values.                                         |
+| `TANDEM_STORAGE_POSTGRES_URL`                 | `unset`               | PostgreSQL connection URL; required when TANDEM_STORAGE_BACKEND=postgres.                                          |
 | `TANDEM_ENGINE_HOST`                          | `127.0.0.1`           | Default engine bind host for CLI commands.                                                                          |
 | `TANDEM_ENGINE_PORT`                          | `39731`               | Default engine bind port for CLI commands.                                                                          |
 | `TANDEM_DISABLE_EMBEDDINGS`                   | `false`               | Disable semantic memory embeddings.                                                                                 |

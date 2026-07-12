@@ -18,3 +18,14 @@ Run `tandem-engine config check` before self-hosted or enterprise deployments to
 ## Reference
 
 The Markdown table in `docs/ENGINE_CONFIGURATION.md` is generated from the same registry used by `tandem-engine config reference`.
+
+## Stateful Storage Backend
+
+- `TANDEM_STORAGE_BACKEND` selects the stateful orchestration backend: `sqlite` (the default) or `postgres`.
+- `TANDEM_STORAGE_POSTGRES_URL` is required when the backend is `postgres`; provide it through the deployment secret manager rather than a checked-in config file.
+- `TANDEM_STORAGE_DIR` overrides the default state-directory location used by storage maintenance helpers.
+
+The PostgreSQL backend is scoped to the stateful orchestration store. Session,
+question, and runtime-event stores remain SQLite-backed. Follow the
+[storage maintenance guide](/storage-maintenance/) for backend migration,
+retention, backup, and single-engine locking procedures.

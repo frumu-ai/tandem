@@ -6,7 +6,7 @@ use std::{fs, io::Read};
 
 use anyhow::Context;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 mod runtime_bootstrap;
 mod smoke;
@@ -36,7 +36,10 @@ use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_server::serve;
 #[cfg(feature = "enterprise-server")]
 use tandem_server::serve_with_route_extensions;
-use tandem_server::{detect_host_runtime_context, AppState, RuntimeState};
+use tandem_server::{
+    detect_host_runtime_context, migrate_stateful_storage_backend, AppState,
+    OrchestrationStorePaths, RuntimeState, StatefulBackendKind, StatefulBackendMigrationRequest,
+};
 #[cfg(feature = "browser")]
 use tandem_server::{install_browser_sidecar, BrowserSidecarInstallResult, BrowserSubsystem};
 use tandem_tools::{GovernedToolDispatcher, ToolRegistry};
@@ -135,6 +138,7 @@ const STORAGE_EXAMPLES: &str = r#"Examples:
   tandem-engine storage worktrees --repo-root /abs/path/to/repo --apply --json
   tandem-engine storage cleanup --dry-run --context-runs --default-knowledge --json
   tandem-engine storage cleanup --quarantine --json
+  tandem-engine storage migrate --from sqlite --to postgres --state-dir /srv/tandem --target-postgres-url "$TANDEM_STORAGE_POSTGRES_URL"
 "#;
 
 const MEMORY_EXAMPLES: &str = r#"Examples:
@@ -497,6 +501,58 @@ enum StorageCommand {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    #[command(
+        about = "Verify and transfer the stateful orchestration store between SQLite and PostgreSQL."
+    )]
+    Migrate {
+        #[arg(long, value_enum, help = "Source stateful backend.")]
+        from: StorageMigrationBackend,
+        #[arg(long, value_enum, help = "Target stateful backend.")]
+        to: StorageMigrationBackend,
+        #[arg(
+            long,
+            help = "Source engine state directory. The engine must be stopped. If omitted, uses TANDEM_STATE_DIR or the shared Tandem path."
+        )]
+        state_dir: Option<String>,
+        #[arg(
+            long,
+            help = "Target engine state directory. Defaults to --state-dir; use a distinct root for PostgreSQL-to-SQLite rollback."
+        )]
+        target_state_dir: Option<String>,
+        #[arg(
+            long,
+            env = "TANDEM_STORAGE_SOURCE_POSTGRES_URL",
+            help = "PostgreSQL source connection URL; required when --from postgres."
+        )]
+        source_postgres_url: Option<String>,
+        #[arg(
+            long,
+            env = "TANDEM_STORAGE_TARGET_POSTGRES_URL",
+            help = "PostgreSQL target connection URL; required when --to postgres."
+        )]
+        target_postgres_url: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Emit a machine-readable verification report."
+        )]
+        json: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum StorageMigrationBackend {
+    Sqlite,
+    Postgres,
+}
+
+impl From<StorageMigrationBackend> for StatefulBackendKind {
+    fn from(value: StorageMigrationBackend) -> Self {
+        match value {
+            StorageMigrationBackend::Sqlite => Self::Sqlite,
+            StorageMigrationBackend::Postgres => Self::Postgres,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -1064,6 +1120,47 @@ async fn main() -> anyhow::Result<()> {
                     print_storage_cleanup_report(&report);
                 }
             }
+            StorageCommand::Migrate {
+                from,
+                to,
+                state_dir,
+                target_state_dir,
+                source_postgres_url,
+                target_postgres_url,
+                json,
+            } => {
+                let source_state_dir = resolve_state_dir(state_dir);
+                let target_state_dir = target_state_dir
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| source_state_dir.clone());
+                let report = migrate_stateful_storage_backend(&StatefulBackendMigrationRequest {
+                    source_paths: stateful_orchestration_store_paths(&source_state_dir),
+                    target_paths: stateful_orchestration_store_paths(&target_state_dir),
+                    source_backend: from.into(),
+                    target_backend: to.into(),
+                    source_postgres_url,
+                    target_postgres_url,
+                })?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else if report.already_complete {
+                    println!(
+                        "Stateful storage target already verified: {} -> {} ({} records, fingerprint {}).",
+                        report.source_backend.as_str(),
+                        report.target_backend.as_str(),
+                        report.record_count,
+                        report.target_fingerprint
+                    );
+                } else {
+                    println!(
+                        "Stateful storage migrated and verified: {} -> {} ({} records, fingerprint {}).",
+                        report.source_backend.as_str(),
+                        report.target_backend.as_str(),
+                        report.record_count,
+                        report.target_fingerprint
+                    );
+                }
+            }
         },
         Command::Memory { action } => match action {
             MemoryCommand::Import {
@@ -1222,6 +1319,12 @@ fn resolve_state_dir(flag: Option<String>) -> PathBuf {
                 .map(|home| home.join(".tandem").join("data"))
                 .unwrap_or_else(|| PathBuf::from(".tandem"))
         })
+}
+
+fn stateful_orchestration_store_paths(state_dir: &Path) -> OrchestrationStorePaths {
+    OrchestrationStorePaths::from_runtime_events_path(
+        &state_dir.join("runtime").join("events.jsonl"),
+    )
 }
 
 fn resolve_engine_api_token(

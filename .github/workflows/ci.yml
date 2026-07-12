@@ -371,14 +371,39 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run storage backend conformance tests (SQLite + PostgreSQL)
-        run: cargo test -p tandem-server --features storage-postgres backend_conformance_tests -- --test-threads=1
+      - name: Run SQLite-only storage conformance and scale gates
+        run: cargo test -p tandem-server --no-default-features --features storage-sqlite backend_conformance_tests -- --test-threads=1
+
+      - name: Require PostgreSQL conformance and scale test discovery
+        run: |
+          test -n "$TANDEM_TEST_POSTGRES_URL"
+          cargo test -p tandem-server --no-default-features --features storage-postgres \
+            high_volume_event_replay_stays_bounded_per_goal -- --list \
+            | rg 'high_volume_event_replay_stays_bounded_per_goal'
+
+      - name: Run PostgreSQL-only storage conformance and scale gates
+        run: cargo test -p tandem-server --no-default-features --features storage-postgres backend_conformance_tests -- --test-threads=1
+
+      - name: Run verified SQLite to PostgreSQL round-trip migration
+        run: cargo test -p tandem-server --features storage-postgres stateful_runtime::orchestration_store::transfer -- --test-threads=1
 
       - name: Run storage backend unit tests
         run: cargo test -p tandem-server --features storage-postgres stateful_runtime::backend -- --test-threads=1
 
+      - name: Check the sqlite-only stateful backend build
+        run: cargo check -p tandem-server --no-default-features --features storage-sqlite
+
       - name: Check the postgres-only stateful backend build
         run: cargo check -p tandem-server --no-default-features --features storage-postgres
+
+      - name: Check the combined stateful backend build
+        run: cargo check -p tandem-server --no-default-features --features storage-sqlite,storage-postgres
+
+      - name: Lint the PostgreSQL-only stateful backend
+        run: cargo clippy -p tandem-server --no-default-features --features storage-postgres --lib -- -D warnings
+
+      - name: Check the migration CLI with PostgreSQL support
+        run: cargo check -p tandem-ai --features storage-postgres
 
   build:
     name: Build (${{ matrix.platform }})

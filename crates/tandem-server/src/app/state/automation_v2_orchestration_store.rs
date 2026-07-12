@@ -20,9 +20,8 @@ impl AppState {
             let paths = crate::stateful_runtime::OrchestrationStorePaths::from_automation_runs_path(
                 &self.automation_v2_runs_path,
             );
-            let engine_lock =
-                crate::stateful_runtime::StatefulEngineLock::acquire(&paths.engine_lock_path)?;
-            let _store = crate::stateful_runtime::OrchestrationStateStore::open(paths)?;
+            let store = crate::stateful_runtime::OrchestrationStateStore::open(paths)?;
+            let engine_lock = store.acquire_engine_lock()?;
             *guard = Some(engine_lock);
         }
         Ok(())

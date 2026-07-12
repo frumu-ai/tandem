@@ -10,6 +10,7 @@ edition = "2021"
 default = []
 browser = ["dep:tandem-browser", "tandem-server/browser"]
 enterprise-server = ["dep:tandem-enterprise-server"]
+storage-postgres = ["tandem-server/storage-postgres"]
 # The standard release composition: enterprise routes, premium governance, and
 # Google Drive connectors — everything except the heavyweight local-embedding
 # stack (fastembed/ort), which only the hosted Linux asset carries via
@@ -18,7 +19,7 @@ enterprise = [
     "enterprise-server",
     "tandem-memory/postgres",
     "tandem-server/postgres",
-    "tandem-server/storage-postgres",
+    "storage-postgres",
     "tandem-enterprise-server/governance",
     "tandem-enterprise-server/google-drive",
 ]

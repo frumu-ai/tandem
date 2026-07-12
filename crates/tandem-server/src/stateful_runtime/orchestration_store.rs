@@ -18,6 +18,7 @@ mod goal_lifecycle;
 mod migration;
 pub(crate) mod protected_records;
 mod runtime_records;
+mod transfer;
 mod transition;
 
 pub use definitions::{DRAFT_CONCURRENCY_CONFLICT, ORCHESTRATION_DRAFT_VERSION};
@@ -26,6 +27,10 @@ pub use goal_control::{GoalCancellationResult, GoalControlOutcome};
 pub use goal_lifecycle::{GoalEventRow, GoalPauseOutcome, GoalResumeOutcome, StartGoalOutcome};
 pub use migration::{
     LegacyImportContext, LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport,
+};
+pub use transfer::{
+    migrate_stateful_storage_backend, StatefulBackendKind, StatefulBackendMigrationReport,
+    StatefulBackendMigrationRequest,
 };
 pub use transition::{
     GovernedTransitionRequest, GovernedTransitionResult, OrchestrationTransitionAuthority,
@@ -116,6 +121,33 @@ impl OrchestrationStateStore {
         paths: OrchestrationStorePaths,
         config: backend::StorageBackendConfig,
     ) -> anyhow::Result<Self> {
+        let store = Self::open_with_config_inner(paths, config)?;
+        store.initialize()?;
+        transfer::ensure_target_is_not_mid_transfer(&store)?;
+        Ok(store)
+    }
+
+    pub(super) fn open_for_backend_transfer_source(
+        paths: OrchestrationStorePaths,
+        config: backend::StorageBackendConfig,
+    ) -> anyhow::Result<Self> {
+        Self::open_with_config_inner(paths, config)
+    }
+
+    pub(super) fn open_for_backend_transfer_target(
+        paths: OrchestrationStorePaths,
+        config: backend::StorageBackendConfig,
+    ) -> anyhow::Result<Self> {
+        let store = Self::open_with_config_inner(paths, config)?;
+        store.initialize()?;
+        transfer::ensure_backend_transfer_schema(&store)?;
+        Ok(store)
+    }
+
+    fn open_with_config_inner(
+        paths: OrchestrationStorePaths,
+        config: backend::StorageBackendConfig,
+    ) -> anyhow::Result<Self> {
         if let Some(parent) = paths.database_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -152,9 +184,7 @@ impl OrchestrationStateStore {
                 }
             }
         };
-        let store = Self { paths, backend };
-        store.initialize()?;
-        Ok(store)
+        Ok(Self { paths, backend })
     }
 
     fn initialize(&self) -> anyhow::Result<()> {
@@ -190,6 +220,23 @@ impl OrchestrationStateStore {
                 Ok(lock.with_postgres_guard(target.acquire_advisory_lock()?))
             }
         }
+    }
+
+    #[cfg(feature = "storage-postgres")]
+    pub(super) fn acquire_backend_transfer_target_guard(
+        &self,
+    ) -> anyhow::Result<Option<backend::postgres::PostgresAdvisoryLock>> {
+        match &self.backend {
+            #[cfg(feature = "storage-sqlite")]
+            StoreBackendSelection::Sqlite => Ok(None),
+            #[cfg(feature = "storage-postgres")]
+            StoreBackendSelection::Postgres(target) => Ok(Some(target.acquire_advisory_lock()?)),
+        }
+    }
+
+    #[cfg(not(feature = "storage-postgres"))]
+    pub(super) fn acquire_backend_transfer_target_guard(&self) -> anyhow::Result<()> {
+        Ok(())
     }
 
     pub fn put_orchestration(&self, spec: &OrchestrationSpec) -> anyhow::Result<()> {
@@ -1034,6 +1081,8 @@ fn initialize_schema(connection: &mut rusqlite::Connection) -> anyhow::Result<()
             event_id TEXT PRIMARY KEY, goal_id TEXT, run_id TEXT, seq INTEGER NOT NULL,
             event_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL
          );
+         CREATE INDEX IF NOT EXISTS idx_stateful_events_goal
+            ON stateful_events (goal_id);
          CREATE TABLE IF NOT EXISTS goal_projection_blobs (
             digest TEXT PRIMARY KEY,
             payload_json TEXT NOT NULL,
@@ -1124,6 +1173,12 @@ fn initialize_schema(connection: &mut rusqlite::Connection) -> anyhow::Result<()
             "unsupported orchestration store schema version {version}; expected {SCHEMA_VERSION}"
         );
     }
+    // SQLite secondary indexes carry the hidden rowid as their tie-breaker,
+    // so indexing goal_id preserves the cursor-ordered replay access path.
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_stateful_events_goal
+           ON stateful_events (goal_id);",
+    )?;
     Ok(())
 }
 

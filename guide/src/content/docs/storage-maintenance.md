@@ -28,6 +28,30 @@ Important directories:
 
 Hot indexes should stay small. Large node outputs, blackboards, runtime context, and terminal run details belong in per-run files, JSONL shards, or artifact files referenced by path.
 
+## PostgreSQL stateful backend
+
+The stateful orchestration store can run on PostgreSQL while the normal local
+session/questions and runtime-event databases remain SQLite files in the
+runtime root. Backend changes are an offline operator task: stop the engine,
+run the verified transfer, retain the JSON report, then start the engine with
+the chosen backend. A migration to a different `--target-state-dir` also takes
+verified SQLite snapshots of the session/messages and runtime-event stores.
+
+```bash
+sudo systemctl stop tandem-engine
+tandem-engine storage migrate \
+  --from sqlite --to postgres \
+  --state-dir /srv/tandem \
+  --target-postgres-url "$TANDEM_STORAGE_TARGET_POSTGRES_URL" \
+  --json
+sudo systemctl start tandem-engine
+```
+
+The target refuses to start while a transfer is incomplete. A rerun with the
+same source resumes safely; never point the command at a populated target or
+copy database files by hand. See the [PostgreSQL Stateful Storage runbook](https://github.com/frumu-ai/tandem/blob/main/docs/POSTGRES_STATEFUL_STORAGE.md)
+for rollback, backup, and maintenance guidance.
+
 ## Cleanup commands
 
 Most agents and operators should use the normal command:

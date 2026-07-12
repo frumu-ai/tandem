@@ -30,7 +30,7 @@ flowchart TD
   TOOL --> DIRECT[Direct tool execution]
   TOKEN --> AUTH[API token utilities]
   BROWSER --> DIAG[Browser diagnostics]
-  STORAGE --> CLEAN[Storage doctor + cleanup]
+  STORAGE --> CLEAN[Storage doctor + cleanup + migrate]
   MEMORY --> IMPORT[Memory import utilities]
   SMOKE --> E2E[End-to-end runtime smoke test]
 ```
@@ -227,6 +227,29 @@ For a full setup and test flow, see [Browser Setup and Testing](../browser-setup
 ## `storage`
 
 Inspect and clean local Tandem storage.
+
+### `storage migrate`
+
+Transfer the stateful orchestration store between SQLite and PostgreSQL with a
+locked source and a fingerprint-verified target. When a different target state
+directory is supplied, the authoritative session/message and runtime-event
+SQLite stores are snapshot-copied and verified with it. Stop the engine first.
+
+```bash
+tandem-engine storage migrate --from sqlite --to postgres \
+  --state-dir /srv/tandem \
+  --target-postgres-url "$TANDEM_STORAGE_TARGET_POSTGRES_URL" --json
+```
+
+- `--from <sqlite|postgres>` and `--to <sqlite|postgres>` select different endpoints.
+- `--state-dir <DIR>` identifies the source runtime root.
+- `--target-state-dir <DIR>` selects a different target root; it is useful for a PostgreSQL-to-SQLite rollback and otherwise defaults to `--state-dir`.
+- `--source-postgres-url` and `--target-postgres-url` provide the applicable PostgreSQL endpoint.
+- `--json` emits source/target fingerprints, record count, and idempotent completion evidence.
+
+The target fails closed while a migration is in progress. Re-running the same
+command resumes a verified transfer; a populated target or changed source is
+refused. See the [stateful PostgreSQL backend runbook](https://github.com/frumu-ai/tandem/blob/main/docs/POSTGRES_STATEFUL_STORAGE.md) for backup and retention guidance.
 
 ```bash
 tandem-engine storage <doctor|worktrees|cleanup> [OPTIONS]

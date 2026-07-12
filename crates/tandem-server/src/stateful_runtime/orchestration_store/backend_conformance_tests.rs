@@ -8,6 +8,8 @@
 //! `IS` tenant scoping, `rowid` insertion-order cursors, `INSERT ..
 //! RETURNING`, correlated-subquery retention, and the engine lock.
 
+use std::time::{Duration, Instant};
+
 use super::*;
 use tandem_automation::{
     GoalLimitAction, GoalPolicy, LongRunningGoalStatus, OrchestrationArtifactRef,
@@ -605,4 +607,78 @@ fn engine_lock_is_exclusive_per_backend() {
         drop(first);
         assert!(store.acquire_engine_lock().is_ok(), "{name}: reacquire");
     });
+}
+
+#[test]
+fn high_volume_event_replay_stays_bounded_per_goal() {
+    const SMALL_STORE_EVENTS: usize = 128;
+    const LARGE_STORE_EVENTS: usize = 2_048;
+    const PAGE_SIZE: usize = 64;
+    const REPEATS: usize = 32;
+
+    for_each_backend(|name, store| {
+        let tenant = TenantContext::explicit("scale-org", "scale-workspace", None);
+        let mut small_query_cost = None;
+        for sequence in 1..=LARGE_STORE_EVENTS {
+            let mut record = event();
+            record.event_id = format!("scale-event-{sequence}");
+            record.run_id = "goal:scale-goal".to_string();
+            record.seq = sequence as u64;
+            record.occurred_at_ms = sequence as u64;
+            record.scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+            // The scale fixture does not need a projection snapshot. Keeping
+            // the explicit marker avoids constructing one for each append.
+            record.payload = serde_json::json!({
+                "goal_id": "scale-goal",
+                "projection_snapshot_ref": null,
+            });
+            assert!(
+                store.append_stateful_runtime_event(&record).unwrap(),
+                "{name}"
+            );
+            if sequence == SMALL_STORE_EVENTS {
+                small_query_cost = Some(measure_trailing_goal_page(
+                    store,
+                    &tenant,
+                    "scale-goal",
+                    PAGE_SIZE,
+                    REPEATS,
+                ));
+            }
+        }
+
+        let small_query_cost = small_query_cost.expect("recorded small-store query cost");
+        let large_query_cost =
+            measure_trailing_goal_page(store, &tenant, "scale-goal", PAGE_SIZE, REPEATS);
+        let threshold = small_query_cost
+            .saturating_mul(8)
+            .max(Duration::from_millis(250));
+        assert!(
+            large_query_cost <= threshold,
+            "{name}: replay query grew with total history: small={small_query_cost:?}, large={large_query_cost:?}, threshold={threshold:?}"
+        );
+    });
+}
+
+fn measure_trailing_goal_page(
+    store: &OrchestrationStateStore,
+    tenant: &TenantContext,
+    goal_id: &str,
+    page_size: usize,
+    repeats: usize,
+) -> Duration {
+    let (_, last_cursor) = store
+        .goal_event_cursor_bounds_for_tenant(tenant, goal_id)
+        .unwrap()
+        .expect("scale events have cursor bounds");
+    let after_cursor = last_cursor - page_size as i64;
+    let started = Instant::now();
+    for _ in 0..repeats {
+        let page = store
+            .query_goal_events_for_tenant(tenant, goal_id, Some(after_cursor), page_size)
+            .unwrap();
+        assert_eq!(page.len(), page_size);
+        assert!(page.windows(2).all(|pair| pair[0].cursor < pair[1].cursor));
+    }
+    started.elapsed()
 }

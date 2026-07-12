@@ -14,11 +14,14 @@ function unique(values) {
 const toolsSource = read("crates/tandem-tools/src/lib.rs");
 const tuiSource = read("crates/tandem-tui/src/command_catalog.rs");
 const engineSource = read("engine/src/main.rs");
+const engineConfigSource = read("crates/tandem-server/src/config/engine.rs");
 const guideConfig = read("guide/astro.config.mjs");
 
 const toolsDoc = read("guide/src/content/docs/reference/tools.md");
 const tuiDoc = read("guide/src/content/docs/reference/tui-commands.md");
 const engineDoc = read("guide/src/content/docs/reference/engine-commands.md");
+const engineConfigDoc = read("docs/ENGINE_CONFIGURATION.md");
+const guideEngineConfigDoc = read("guide/src/content/docs/reference/engine-configuration.md");
 const llmsDoc = read("guide/public/llms.txt");
 const llmsFullDoc = read("guide/public/llms-full.txt");
 
@@ -60,6 +63,11 @@ const requiredAgentIndexRoutes = [
   "/long-running-multi-workflow-goals/",
   "/stateful-workflows/",
 ];
+const storageConfigVars = unique(
+  [...engineConfigSource.matchAll(/ConfigVar \{ name: "(TANDEM_STORAGE_[A-Z_]+)"/g)].map(
+    (match) => match[1],
+  ),
+).sort();
 
 const missing = [];
 
@@ -86,6 +94,15 @@ if (!tuiDoc.includes("Alt+1..9")) {
 for (const command of engineCommands) {
   if (!engineDoc.includes(`## \`${command}\``)) {
     missing.push(`engine doc missing command heading: ${command}`);
+  }
+}
+
+for (const variable of storageConfigVars) {
+  if (!engineConfigDoc.includes(`\`${variable}\``)) {
+    missing.push(`engine configuration doc missing storage variable: ${variable}`);
+  }
+  if (!guideEngineConfigDoc.includes(`\`${variable}\``)) {
+    missing.push(`guide configuration doc missing storage variable: ${variable}`);
   }
 }
 
@@ -120,5 +137,5 @@ if (missing.length > 0) {
 }
 
 console.log(
-  `Docs parity passed (${toolNames.length} tools, ${slashCommands.length} slash commands, ${engineCommands.length} engine commands).`,
+  `Docs parity passed (${toolNames.length} tools, ${slashCommands.length} slash commands, ${engineCommands.length} engine commands, ${storageConfigVars.length} storage variables).`,
 );
