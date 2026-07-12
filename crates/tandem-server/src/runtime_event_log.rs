@@ -190,6 +190,7 @@ pub async fn prune_runtime_event_log(
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+    use std::time::Instant;
 
     use serde_json::json;
     use tandem_types::{EngineEvent, RuntimeEventEnvelope, TenantContext};
@@ -545,5 +546,60 @@ mod tests {
             (9..=16).collect::<Vec<_>>()
         );
         remove_runtime_event_store(&path).await;
+    }
+
+    #[test]
+    #[ignore = "run explicitly to benchmark the 1M-row transactional event ledger"]
+    fn million_row_query_and_retention_benchmark() {
+        const EVENT_COUNT: u64 = 1_000_000;
+        let path =
+            std::env::temp_dir().join(format!("runtime-events-benchmark-{}.jsonl", Uuid::new_v4()));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let store = RuntimeEventStore::from_events_path(&path);
+        let seed_started = Instant::now();
+        store
+            .append_rows_for_benchmark(
+                &path,
+                (1..=EVENT_COUNT).map(|seq| {
+                    RuntimeEventLogRow::from_engine_event(&event(
+                        seq,
+                        if seq % 1_000 == 0 {
+                            "run-target"
+                        } else {
+                            "run-other"
+                        },
+                        Some(tenant_a.clone()),
+                        seq,
+                    ))
+                    .expect("benchmark row")
+                }),
+            )
+            .expect("seed benchmark event ledger");
+        let query_started = Instant::now();
+        let rows = query_runtime_event_log(
+            &path,
+            &tenant_a,
+            RuntimeEventLogQuery {
+                run_id: "run-target",
+                after_seq: None,
+                limit: Some(100),
+            },
+        );
+        let query_elapsed = query_started.elapsed();
+        assert_eq!(rows.len(), 100);
+
+        let retention_started = Instant::now();
+        let pruned = store
+            .prune(&path, EVENT_COUNT / 2)
+            .expect("prune benchmark ledger");
+        let retention_elapsed = retention_started.elapsed();
+        assert_eq!(pruned, EVENT_COUNT as usize / 2 - 1);
+        eprintln!(
+            "runtime-event benchmark rows={EVENT_COUNT} seed_ms={} query_ms={} retention_ms={}",
+            seed_started.elapsed().as_millis(),
+            query_elapsed.as_millis(),
+            retention_elapsed.as_millis(),
+        );
+        std::fs::remove_file(path.with_extension("sqlite3")).ok();
     }
 }

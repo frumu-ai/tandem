@@ -84,6 +84,24 @@ impl RuntimeEventStore {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn append_rows_for_benchmark(
+        &self,
+        legacy_path: &Path,
+        rows: impl IntoIterator<Item = RuntimeEventLogRow>,
+    ) -> Result<()> {
+        self.with_connection(|connection| {
+            self.import_legacy_if_needed(connection, legacy_path)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            for row in rows {
+                insert_row(&transaction, &row)?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
     fn import_legacy_if_needed(
         &self,
         connection: &mut Connection,
