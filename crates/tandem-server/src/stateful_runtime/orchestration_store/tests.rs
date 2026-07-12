@@ -344,6 +344,14 @@ fn tenant_scoped_reads_fail_closed_at_the_store_layer() {
     assert!(store
         .resolve_goal_projection_snapshot(&local, &forged_reference)
         .is_err());
+    let mut legacy_reference = reference.clone();
+    legacy_reference
+        .as_object_mut()
+        .unwrap()
+        .remove("tenant_context");
+    assert!(store
+        .resolve_goal_projection_snapshot(&local, &legacy_reference)
+        .is_ok());
 }
 
 /// TAN-705/TAN-675: the MCP tool-replay ledger seals its stored responses

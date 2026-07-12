@@ -212,7 +212,7 @@ pub(super) fn verified_has_admin_authority(verified: Option<&VerifiedTenantConte
 /// role. Local single-tenant mode (no assertion) keeps its operator UX. Deny
 /// wins: nothing in the request body or tenant headers can satisfy this
 /// check.
-fn require_goal_authority(
+pub(super) fn require_goal_authority(
     _tenant: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
     required_capability: Option<&str>,
@@ -250,7 +250,7 @@ fn require_goal_authority(
 /// Goal mutations belong to the goal's initiating actor unless the caller
 /// carries administrative authority. Enforced for verified (hosted) callers;
 /// the local single-operator is always the owner.
-fn require_goal_owner(
+pub(super) fn require_goal_owner(
     _tenant: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
     goal: &LongRunningGoal,

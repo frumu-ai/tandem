@@ -99,6 +99,28 @@ pub(super) async fn dispatch_goal_action(
     };
     let verified = verified_tenant.as_deref();
     let actor = super::goals_api::effective_actor(&principal, verified);
+    let approval_action = (action_id.starts_with("handoff:") || action_id.starts_with("approval:"))
+        && action_id.ends_with(":decision");
+    let wait_resolution_action = action_id.starts_with("wait:") && action_id.ends_with(":resolve");
+    let required_capability = if approval_action {
+        Some("orchestration.approve")
+    } else if wait_resolution_action {
+        Some("orchestration.resolve_wait")
+    } else {
+        None
+    };
+    if let Err(response) =
+        super::goals_api::require_goal_authority(&tenant, verified, required_capability)
+    {
+        return response;
+    }
+    if !approval_action && !wait_resolution_action {
+        if let Err(response) =
+            super::goals_api::require_goal_owner(&tenant, verified, &goal, &actor)
+        {
+            return response;
+        }
+    }
     let operation = format!("goal_action:{goal_id}:{action_id}");
     let request_digest = stable_definition_snapshot_hash(&json!({
         "goal_id": goal_id,

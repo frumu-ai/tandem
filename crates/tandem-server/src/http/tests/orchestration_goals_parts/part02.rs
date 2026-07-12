@@ -415,6 +415,46 @@ async fn hosted_goal_start_stamps_verified_owner_and_owner_can_pause() {
     assert_eq!(started["goal"]["metadata"]["source"], "test");
 
     let goal_id = started["goal"]["goal_id"].as_str().unwrap().to_string();
+    let expected_updated_at_ms = started["goal"]["updated_at_ms"].as_u64().unwrap();
+    let intruder = tandem_types::RequestPrincipal::authenticated_user("intruder", "test");
+    let response = crate::http::goals_projection::dispatch_goal_action(
+        State(state.clone()),
+        Extension(tenant.clone()),
+        Extension(intruder.clone()),
+        Some(Extension(verified_context("intruder"))),
+        HeaderMap::new(),
+        Path((goal_id.clone(), "pause".to_string())),
+        Json(
+            serde_json::from_value(json!({
+                "expected_updated_at_ms": expected_updated_at_ms,
+                "idempotency_key": "intruder-projection-pause",
+                "reason": "unauthorized"
+            }))
+            .unwrap(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = crate::http::goals_projection::dispatch_goal_action(
+        State(state.clone()),
+        Extension(tenant.clone()),
+        Extension(intruder),
+        Some(Extension(verified_context("intruder"))),
+        HeaderMap::new(),
+        Path((goal_id.clone(), "handoff:missing:decision".to_string())),
+        Json(
+            serde_json::from_value(json!({
+                "expected_updated_at_ms": expected_updated_at_ms,
+                "idempotency_key": "intruder-projection-handoff",
+                "decision": "approve"
+            }))
+            .unwrap(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
     let response = crate::http::goals_api::pause_goal(
         State(state.clone()),
         Extension(tenant),

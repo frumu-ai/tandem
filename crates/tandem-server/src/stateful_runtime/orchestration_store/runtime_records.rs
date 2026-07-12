@@ -19,18 +19,22 @@ impl OrchestrationStateStore {
         expected_tenant: &TenantContext,
         reference: &serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
-        let tenant: TenantContext = serde_json::from_value(
-            reference
-                .get("tenant_context")
-                .cloned()
-                .context("projection snapshot is missing tenant_context")?,
-        )?;
-        anyhow::ensure!(
-            tenant.org_id == expected_tenant.org_id
-                && tenant.workspace_id == expected_tenant.workspace_id
-                && tenant.deployment_id == expected_tenant.deployment_id,
-            "projection snapshot tenant does not match the authorized tenant"
-        );
+        let tenant = match reference.get("tenant_context") {
+            Some(value) => {
+                let tenant: TenantContext = serde_json::from_value(value.clone())?;
+                anyhow::ensure!(
+                    tenant.org_id == expected_tenant.org_id
+                        && tenant.workspace_id == expected_tenant.workspace_id
+                        && tenant.deployment_id == expected_tenant.deployment_id,
+                    "projection snapshot tenant does not match the authorized tenant"
+                );
+                tenant
+            }
+            // Legacy references contained only digests. They are safe to bind
+            // to the trusted tenant from the scoped event query; no scope is
+            // inferred from the reference itself.
+            None => expected_tenant.clone(),
+        };
         self.with_connection(|connection| {
             let component = |key: &str| -> anyhow::Result<serde_json::Value> {
                 let digest = reference
