@@ -5,6 +5,153 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.9] - 2026-07-12
+
+### Added
+
+- Added long-running multi-workflow orchestration: versioned
+  `OrchestrationSpec` contracts (draft, published, archived) that connect
+  Automation V2 workflows through workflow, wait, and terminal nodes with
+  named transition edges, per-edge artifact contracts, optional approval
+  boundaries, and goal policies. Durable `LongRunningGoal`s execute a
+  published graph across many workflow runs with full run lineage.
+- Added an embedded transactional SQLite/WAL stateful store for orchestration
+  definitions and versions, Automation V2 runs, goals, run links, handoffs,
+  waits, events, snapshots, and reliability records, with a once-only atomic
+  legacy import that makes SQLite authoritative and demotes the JSON/JSONL
+  files to compatibility mirrors.
+- Added atomic governed transitions: a single transaction validates the source
+  run, published edge, transition key, artifact contract, scope, authority,
+  idempotency key, hop policy, and pinned target definition version, then
+  persists the handoff with artifact provenance, creates the downstream run
+  with its actual run ID, records goal/run lineage and the transition event,
+  and marks the handoff consumed — exactly-once under concurrent scheduler
+  races and crash-injected failures at every write boundary.
+- Added goal policy enforcement: finite hop limits, deadlines, token/cost
+  budgets, pause-for-review or fail on limit, explicit complete/pause/fail
+  terminal outcomes, awaiting-transition settlement for completed workflows
+  with no matching transition, and cancellation that also cancels the active
+  run, pending waits, and claimed handoffs.
+- Added public durable Automation V2 wait nodes — timer, approval, correlated
+  webhook, and external-condition waits with timeout/escalation/reminder
+  policies — executed through the checkpoint, scheduler, webhook, and restart
+  paths with leased claims and idempotent wakes.
+- Added public orchestration authoring APIs: draft create/list/get/update/
+  archive with optimistic concurrency, graph and referenced-workflow
+  validation, immutable publishing and version history, stale-reference
+  reporting and refresh, and dry-run transition previews.
+- Added public goal runtime APIs: idempotent goal start (atomic with its root
+  run), list/get/pause/resume/cancel, the goal graph and run lineage, durable
+  events with replayable cursors, an SSE change stream with `Last-Event-ID`
+  reconnect, governed handoff emission and approve/reject decisions, workflow
+  completion settlement, wait inspection and resolution, artifacts, and
+  budgets.
+- Added typed TypeScript (`client.orchestrations`, `client.statefulRuntime`)
+  and Python (`client.orchestrations`, `client.stateful_runtime`) clients,
+  plus ten governed Tandem MCP tools (`orchestration_create_draft`,
+  `orchestration_validate`, `orchestration_publish`, `goal_start`, `goal_get`,
+  `goal_cancel`, `handoff_emit`, `handoff_approve`, `wait_inspect`,
+  `wait_resolve`) with fail-closed authority and idempotent replay.
+- Added the Visual Orchestration Studio: an Orchestrations Library with
+  lifecycle filters and a drag-and-drop canvas for wiring Automation V2
+  workflows through named transitions, wait/terminal nodes, artifact
+  contracts, and budget policies — including typed inspectors, visual
+  validation with publish blocking, dry-run previews, draft-vs-published
+  comparison, immutable version history, and a complete keyboard, list-form,
+  responsive, and screen-reader authoring path.
+- Added live goal operations: a read-only live goal graph with workflow-stage
+  drilldown, SSE updates with reconnect recovery and sequence-gap detection,
+  durable replay with timeline scrubbing, and governed operator actions
+  (approve/reject handoffs, resolve external conditions, pause/resume/cancel,
+  retry, and recovery plans).
+- Added a long-horizon production proof driving Goal → Plan → Execute →
+  Verify → Replan across ~180 virtual days with waits, approvals, and budget
+  checks, the canonical Long-Running Multi-Workflow Goals guide, a stateful
+  workflow guide, and mandatory CI gates covering the orchestration runtime,
+  SDK contracts, MCP tools, Control Panel journeys, accessibility, and docs
+  parity.
+- Added enterprise scope enforcement for the orchestration runtime: tenant
+  scoping as a store-level SQL invariant, capability-gated approvals
+  (`orchestration.approve`) and wait resolution (`orchestration.resolve_wait`),
+  owner-or-admin authoring and goal mutations with a recorded, non-writable
+  `created_by`, delegation-denied workflow references that block validation
+  and publish, and effective-actor plus run-as context in audit events.
+- Added an artifact admission policy at every emit surface: bounded inline
+  values and goal metadata, workspace-relative content paths with traversal
+  and symlink escapes rejected on canonicalized paths, and content digests
+  verified against the actual workspace file.
+- Added hosted scoped-KMS sealing for the MCP tool-replay ledger:
+  tenant-scoped envelopes, ciphertext at rest, fail-closed reads without the
+  key, and unchanged plaintext behavior for local-first deployments.
+- Added a production PostgreSQL memory backend with protected search
+  surfaces, scoped consolidation, owner-subject-bound decrypts, and hardened
+  failure handling, completing portable memory storage and private scopes on
+  the `MemoryStore` abstraction; channel memory consolidation is now scoped
+  and atomic.
+- Added the production-path five-profile ACME Slack governance proof: signed
+  Slack ingress drives real governed sessions end to end, with persisted
+  governance receipts surfaced in the Control Panel receipt view.
+- Added Control Panel release gates: required Playwright CI journeys and
+  standardized UI contracts for routes, icons, loading, typography, and
+  accessibility.
+- Added governed runtime boundary hardening: signed Slack ingress and
+  recovery, canonical provider egress enforcement, protected KMS/audit
+  persistence, tenant-safe OAuth refresh, tenant-qualified routines, and
+  Linux enterprise release validation.
+
+### Changed
+
+- The stateful runtime now reads and writes through the transactional SQLite
+  store after a once-only migration; the legacy JSON/JSONL stores are
+  read-only imports and compatibility mirrors, and later edits to those files
+  no longer affect authoritative state.
+- Stateful event retention is now snapshot-aware (compaction never prunes a
+  run's replay tail past its newest snapshot), snapshots are pruned with a
+  keep-last-N floor, retention sweeps run periodically
+  (`TANDEM_RUNTIME_RETENTION_SWEEP_HOURS`, default six hours) with WAL
+  checkpointing instead of only at boot, and every store connection applies
+  `synchronous=FULL` rather than only the schema-initialization connection.
+- The stateful engine lock now records its owner (pid and acquisition time),
+  and acquisition failures report whether the recorded owner is still alive
+  with actionable recovery guidance; stale-lock recovery stays manual so
+  filesystems with unreliable advisory locks cannot enable unsafe
+  multi-engine sharing.
+- Legacy workspace file handoffs now import exactly once with quarantine for
+  corrupt, foreign (no locally known source or target automation),
+  conflicting-duplicate, and workspace-escaping envelopes, backed by a
+  durable migration-attempt journal; the workspace shared-handoffs directory
+  is indexed automatically after startup.
+- Engine release builds now build the enterprise engine with embeddings, and
+  the Control Panel package depends on published npm versions in releases.
+
+### Fixed
+
+- Drained the nextest quarantine and repaired the deterministic async stream
+  regressions behind it, restoring the full tandem-server suite as a required
+  gate with a quarantine policy guard.
+- Preserved checkpoint recovery across the SQLite cutover and fixed stateful
+  event compaction races.
+- Fixed legacy migration write failures to roll back every imported record
+  type atomically, so an interrupted import leaves no partial state behind.
+- Repaired Control Panel fullscreen and spinner semantics uncovered by the
+  new UI release gates.
+
+### Security
+
+- Cross-tenant orchestration reads, transitions, replay reads, approvals, and
+  wait resolutions fail closed at the store layer itself: scoped SQL
+  predicates make cross-tenant IDs indistinguishable from absence even if an
+  entrypoint-level check is skipped.
+- Handoff targets are edge-resolved only — agents can never select a target
+  workflow — and stale pinned workflow definitions refuse transitions until
+  the orchestration is revalidated and republished.
+- Artifact ingestion rejects path traversal, symlink escapes, forged content
+  digests, and oversized payloads before anything reaches the durable store
+  or downstream prompts.
+- MCP tool-replay responses, which embed full orchestration and goal
+  payloads, are sealed at rest with tenant-scoped KMS envelopes and cannot be
+  read back without the owning scope's key.
+
 ## [0.6.8] - 2026-07-09
 
 ### Added
