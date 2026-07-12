@@ -204,8 +204,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p tandem-server \
-            --features tandem-ai/browser,tandem-server/premium-governance \
+          cargo test -p tandem-server --features premium-governance \
             --lib --tests --no-run --message-format=json > tandem-server-test-messages.json
           python - <<'PY'
           import json
