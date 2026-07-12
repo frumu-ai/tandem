@@ -267,8 +267,8 @@ impl OrchestrationStateStore {
     }
 
     #[cfg(not(feature = "storage-postgres"))]
-    pub(super) fn acquire_backend_transfer_target_guard(&self) -> anyhow::Result<()> {
-        Ok(())
+    pub(super) fn acquire_backend_transfer_target_guard(&self) -> anyhow::Result<Option<()>> {
+        Ok(None)
     }
 
     pub fn put_orchestration(&self, spec: &OrchestrationSpec) -> anyhow::Result<()> {
