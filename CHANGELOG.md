@@ -18,8 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an embedded transactional SQLite/WAL stateful store for orchestration
   definitions and versions, Automation V2 runs, goals, run links, handoffs,
   waits, events, snapshots, and reliability records, with a once-only atomic
-  legacy import that makes SQLite authoritative and demotes the JSON/JSONL
-  files to compatibility mirrors.
+  legacy import that makes SQLite authoritative and retires the JSON/JSONL
+  sidecar files.
 - Added atomic governed transitions: a single transaction validates the source
   run, published edge, transition key, artifact contract, scope, authority,
   idempotency key, hop policy, and pinned target definition version, then
@@ -98,13 +98,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recovery, canonical provider egress enforcement, protected KMS/audit
   persistence, tenant-safe OAuth refresh, tenant-qualified routines, and
   Linux enterprise release validation.
+- Added a pluggable stateful storage backend behind a neutral execution
+  facade: `TANDEM_STORAGE_BACKEND=sqlite|postgres` (with
+  `TANDEM_STORAGE_POSTGRES_URL`) selects the orchestration store's backend
+  with fail-closed startup validation, gated by `storage-sqlite`
+  (default-on) and `storage-postgres` cargo features; enterprise release
+  builds include the PostgreSQL backend.
+- Added a PostgreSQL stateful storage backend with the same guarantees the
+  SQLite store proves: store SQL is translated at execution time, `BIGSERIAL`
+  `rowid` columns keep durable SSE `Last-Event-ID` cursors monotonic, each
+  runtime root maps to its own PostgreSQL schema via a sticky marker file,
+  a session advisory lock extends the engine lock across hosts sharing a
+  database, and immediate write transactions serialize through a
+  schema-scoped advisory lock to preserve SQLite's single-writer semantics.
+  A backend conformance suite runs the same store scenarios (exactly-once
+  transitions, idempotent replay, tenant scoping, retention, cursors,
+  concurrent commit races, lock exclusivity) against every compiled backend
+  in CI, including a real PostgreSQL service container.
+- Added a transactional SQLite session store in the engine core: sessions,
+  session metadata, snapshots, and interactive questions now persist through
+  crash-safe transactions with a once-only atomic import of the legacy JSON
+  files (source digests are recorded so restarts can never import twice).
+- Added an indexed transactional store for the durable runtime event log
+  with a one-time import of the legacy JSONL log, tenant-scoped windowed
+  queries, busy-retry write handling, and retention pruning, validated by a
+  runtime event storage scale benchmark.
 
 ### Changed
 
 - The stateful runtime now reads and writes through the transactional SQLite
-  store after a once-only migration; the legacy JSON/JSONL stores are
-  read-only imports and compatibility mirrors, and later edits to those files
-  no longer affect authoritative state.
+  store after a once-only migration, and the legacy JSON/JSONL sidecars are
+  retired: once migration completes, retention sweeps archive them into a
+  backup directory and later edits to those files no longer affect
+  authoritative state. Dual-written compatibility mirrors are now opt-in
+  diagnostics (`TANDEM_STATEFUL_RUNTIME_COMPATIBILITY_MIRRORS_ENABLED`,
+  default off), so production runtime state has one writer of record.
 - Stateful event retention is now snapshot-aware (compaction never prunes a
   run's replay tail past its newest snapshot), snapshots are pruned with a
   keep-last-N floor, retention sweeps run periodically

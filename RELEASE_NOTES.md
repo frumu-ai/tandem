@@ -11,11 +11,14 @@ run for months, public durable wait nodes, a transactional SQLite stateful
 store, public authoring and runtime APIs with typed TypeScript/Python clients
 and governed MCP tools, a visual drag-and-drop Orchestration Studio, live goal
 monitoring with replay and operator actions, and enterprise scope, artifact,
-and authority enforcement with hosted-KMS sealing. It also lands the
-production PostgreSQL memory backend on the portable `MemoryStore`
-abstraction, proves the five-profile ACME Slack governance flow on the
-production path, and locks the Control Panel and orchestration runtime behind
-mandatory CI gates.
+and authority enforcement with hosted-KMS sealing. It also makes the core
+transactional and portable end to end: sessions, runtime events, and the
+stateful runtime now live in crash-safe transactional stores with the legacy
+JSON/JSONL sidecars retired, and the stateful store gains a pluggable backend
+with an opt-in PostgreSQL implementation alongside the production PostgreSQL
+memory backend on the portable `MemoryStore` abstraction. Finally, it proves
+the five-profile ACME Slack governance flow on the production path and locks
+the Control Panel and orchestration runtime behind mandatory CI gates.
 
 ### Long-Running Workflow Orchestration Kernel
 
@@ -29,7 +32,10 @@ many Automation V2 runs with hop-indexed lineage.
 The stateful runtime now lives in an embedded transactional SQLite/WAL store —
 definitions, runs, goals, run links, handoffs, waits, events, snapshots, and
 reliability records — populated by a once-only atomic legacy import, after
-which the old JSON/JSONL files are compatibility mirrors only. Governed
+which the old JSON/JSONL sidecars are retired: retention sweeps archive them
+to a backup directory, and dual-write mirrors are opt-in diagnostics
+(`TANDEM_STATEFUL_RUNTIME_COMPATIBILITY_MIRRORS_ENABLED`, default off).
+Governed
 transitions are atomic: one transaction validates the source run, edge,
 artifact contract, scope, authority, idempotency key, hop policy, and pinned
 target version, then persists the handoff and provenance, creates the
@@ -122,6 +128,46 @@ the orchestration runtime and store suites, TypeScript/Python SDK contracts,
 MCP tool tests, Control Panel typecheck/build/unit contracts, Playwright
 journeys (including drag/drop, keyboard, mobile, live graph, reconnect, and
 replay), accessibility and theme checks, and docs parity.
+
+### Transactional Core Storage And Pluggable Stateful Backends
+
+The move off ad-hoc JSON files is complete across the core. Sessions, session
+metadata, snapshots, and interactive questions now persist in a transactional
+SQLite store in the engine core, populated by a once-only atomic import of
+the legacy JSON files — source digests are recorded inside the import
+transaction, so a restart can never import twice. The durable runtime event
+log moved onto an indexed transactional store of its own, with a one-time
+JSONL import, tenant-scoped windowed queries, retention pruning, and a scale
+benchmark guarding write/query performance. And once the stateful runtime's
+one-time migration completes, the legacy JSON/JSONL sidecars are retired
+outright — retention sweeps archive them to a backup directory, and
+dual-write compatibility mirrors are opt-in diagnostics
+(`TANDEM_STATEFUL_RUNTIME_COMPATIBILITY_MIRRORS_ENABLED`, default off), so
+production runtime state has exactly one writer of record.
+
+The stateful orchestration store's persistence is now pluggable. A neutral
+execution facade separates the store's domain logic (idempotency, tenant
+scoping, sealing, transactional invariants) from statement execution, with
+backend selection at startup: `TANDEM_STORAGE_BACKEND=sqlite` (default) or
+`postgres` with `TANDEM_STORAGE_POSTGRES_URL`, validated fail-closed — an
+unknown backend or missing URL is a startup error, never a silent fallback.
+Builds gate the backends with `storage-sqlite` (default-on) and
+`storage-postgres` cargo features.
+
+The PostgreSQL backend preserves the invariants the SQLite store proves:
+store SQL is translated at execution time, `BIGSERIAL` `rowid` columns keep
+durable SSE `Last-Event-ID` cursors monotonic and gapless, each runtime root
+maps to its own PostgreSQL schema through a sticky marker file so multiple
+roots share one database safely, a session-level advisory lock extends the
+engine lock across hosts, and immediate write transactions serialize through
+a schema-scoped advisory lock, reproducing SQLite's single-writer semantics
+under concurrent schedulers. KMS-sealed records round-trip unchanged. A
+backend conformance suite runs the same scenarios — exactly-once governed
+transitions, idempotent replay under commit races, tenant scoping, snapshot
+retention, cursor ordering, and engine-lock exclusivity — against every
+compiled backend, and CI exercises it against a real PostgreSQL service
+container. See `docs/POSTGRES_STATEFUL_STORAGE.md` for configuration and
+scope notes.
 
 ### Memory Storage Portability And PostgreSQL
 
