@@ -744,8 +744,10 @@ fn semantic_graph(
                     "status": run.map(|run| &run.status)})
                 })
                 .collect::<Vec<_>>();
-            let latest_run = node_links
-                .last()
+            let latest_run = links
+                .iter()
+                .rev()
+                .find(|link| link.orchestration_node_id == node.node_id)
                 .and_then(|link| runs_by_id.get(&link.run_id));
             let state = semantic_node_state(
                 goal,
