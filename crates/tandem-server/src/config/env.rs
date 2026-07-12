@@ -40,6 +40,20 @@ pub(crate) fn resolve_automation_quality_legacy_rollback_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Keeps the legacy stateful JSON/JSONL files updated after their one-time
+/// import into the authoritative orchestration store. This is disabled by
+/// default so production runtime state has one writer of record after import.
+pub(crate) fn resolve_stateful_runtime_compatibility_mirrors_enabled() -> bool {
+    std::env::var("TANDEM_STATEFUL_RUNTIME_COMPATIBILITY_MIRRORS_ENABLED")
+        .ok()
+        .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn resolve_allow_unsigned_dev_webhooks() -> bool {
     // TAN-575: unsigned dev-mode webhooks are a local-development affordance and
     // must never be selectable in a production posture. Refuse the opt-in for

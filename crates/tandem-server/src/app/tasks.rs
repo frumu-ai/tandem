@@ -509,6 +509,27 @@ async fn run_stateful_retention_sweep(state: &AppState, retention_ms: u64, reten
         );
     }
 
+    match crate::stateful_runtime::compatibility::retire_stateful_runtime_sidecars(
+        &stateful_paths,
+        &reliability_path,
+    )
+    .await
+    {
+        Ok(retired) if retired > 0 => {
+            tracing::info!(
+                retired,
+                "retention sweep retired stateful compatibility sidecars"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "retention sweep could not retire stateful compatibility sidecars"
+            );
+        }
+    }
+
     let automation_runs_path = state.automation_v2_runs_path.clone();
     let checkpoint = tokio::task::spawn_blocking(move || {
         crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(

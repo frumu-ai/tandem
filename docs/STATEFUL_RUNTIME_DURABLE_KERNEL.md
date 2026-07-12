@@ -39,6 +39,19 @@ the server process owns writes:
 These constraints are intended as compatibility rails while the runtime remains
 file-backed.
 
+## Compatibility Sidecars
+
+The first startup with the transactional orchestration store imports
+`stateful_events.jsonl`, `stateful_snapshots/`, `stateful_waits.json`, and
+`stateful_reliability.json` as read-only legacy sources. Once that import is
+complete, SQLite is authoritative for all stateful reads, including when a
+sidecar is stale or malformed.
+
+New JSON/JSONL sidecar writes are off by default after import. Set
+`TANDEM_STATEFUL_RUNTIME_COMPATIBILITY_MIRRORS_ENABLED=true` only when a legacy
+diagnostic or integration needs dual writes temporarily. The setting does not
+change reader authority, and it does not disable the pre-import legacy path.
+
 ## Embedded Store Evaluation
 
 For multi-process or hosted deployments, Tandem should move the stateful runtime

@@ -27,12 +27,15 @@
 //! under one subject/department is not returned to another. Until then, every
 //! read goes through the tenant gate below.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use tandem_types::{EngineEvent, RuntimeEvent, TenantContext};
-use tokio::io::AsyncWriteExt;
+
+#[path = "runtime_event_store.rs"]
+mod runtime_event_store;
+use runtime_event_store::RuntimeEventStore;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeEventLogRow {
@@ -120,55 +123,21 @@ pub async fn append_runtime_event_log_row(
     path: &Path,
     row: &RuntimeEventLogRow,
 ) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.with_context(|| {
-            format!(
-                "failed to create runtime event log directory {}",
-                parent.display()
-            )
-        })?;
-    }
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
+    let store = RuntimeEventStore::from_events_path(path);
+    let legacy_path = path.to_path_buf();
+    let row = row.clone();
+    tokio::task::spawn_blocking(move || store.append(&legacy_path, &row))
         .await
-        .with_context(|| format!("failed to open runtime event log {}", path.display()))?;
-    let mut line = serde_json::to_vec(row)?;
-    line.push(b'\n');
-    file.write_all(&line)
-        .await
-        .with_context(|| format!("failed to append runtime event log {}", path.display()))?;
-    file.flush()
-        .await
-        .with_context(|| format!("failed to flush runtime event log {}", path.display()))?;
-    Ok(())
+        .context("runtime event store append task failed")?
 }
 
 pub fn load_runtime_event_log_rows(path: &Path) -> Vec<RuntimeEventLogRow> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let mut rows = content
-        .lines()
-        .enumerate()
-        .filter_map(
-            |(index, line)| match serde_json::from_str::<RuntimeEvent>(line) {
-                Ok(event) => Some(RuntimeEventLogRow { event }),
-                Err(error) => {
-                    tracing::warn!(
-                        line = index + 1,
-                        error = %error,
-                        "skipping invalid runtime event log row"
-                    );
-                    None
-                }
-            },
-        )
-        .collect::<Vec<_>>();
-    rows.sort_by_key(RuntimeEventLogRow::seq);
-    rows
+    RuntimeEventStore::from_events_path(path)
+        .load_all(path)
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "failed to load transactional runtime event log");
+            Vec::new()
+        })
 }
 
 pub fn query_runtime_event_log(
@@ -194,35 +163,12 @@ pub fn query_runtime_event_log_window(
     tenant: &TenantContext,
     query: RuntimeEventLogWindowQuery<'_>,
 ) -> Vec<RuntimeEventLogRow> {
-    let mut rows = load_runtime_event_log_rows(path)
-        .into_iter()
-        .filter(|row| row.run_id() == Some(query.run_id))
-        .filter(|row| {
-            query
-                .after_seq
-                .map(|after_seq| row.seq() > after_seq)
-                .unwrap_or(true)
+    RuntimeEventStore::from_events_path(path)
+        .query(path, tenant, query)
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "failed to query transactional runtime event log");
+            Vec::new()
         })
-        .filter(|row| {
-            query
-                .before_seq
-                .map(|before_seq| row.seq() < before_seq)
-                .unwrap_or(true)
-        })
-        .filter(|row| row.visible_to_tenant(tenant))
-        .collect::<Vec<_>>();
-    if let Some(tail) = query.tail.filter(|tail| *tail > 0) {
-        if rows.len() > tail {
-            rows = rows.split_off(rows.len() - tail);
-        }
-        return rows;
-    }
-    if let Some(limit) = query.limit.filter(|limit| *limit > 0) {
-        if rows.len() > limit {
-            rows.truncate(limit);
-        }
-    }
-    rows
 }
 
 pub async fn prune_runtime_event_log(
@@ -230,58 +176,24 @@ pub async fn prune_runtime_event_log(
     retention_ms: u64,
     now_ms: u64,
 ) -> anyhow::Result<usize> {
-    if retention_ms == 0 || !path.exists() {
+    if retention_ms == 0 {
         return Ok(0);
     }
     let cutoff_ms = now_ms.saturating_sub(retention_ms);
-    let rows = load_runtime_event_log_rows(path);
-    let original_len = rows.len();
-    let retained = rows
-        .into_iter()
-        .filter(|row| row.occurred_at_ms() >= cutoff_ms)
-        .collect::<Vec<_>>();
-    if retained.len() == original_len {
-        return Ok(0);
-    }
-    write_runtime_event_log_rows(path, &retained).await?;
-    Ok(original_len.saturating_sub(retained.len()))
-}
-
-async fn write_runtime_event_log_rows(
-    path: &Path,
-    rows: &[RuntimeEventLogRow],
-) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let tmp_path = runtime_event_log_tmp_path(path);
-    let mut file = tokio::fs::File::create(&tmp_path).await?;
-    for row in rows {
-        let mut line = serde_json::to_vec(row)?;
-        line.push(b'\n');
-        file.write_all(&line).await?;
-    }
-    file.flush().await?;
-    drop(file);
-    tokio::fs::rename(&tmp_path, path).await?;
-    Ok(())
-}
-
-fn runtime_event_log_tmp_path(path: &Path) -> PathBuf {
-    let mut tmp = path.to_path_buf();
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!("{value}.tmp"))
-        .unwrap_or_else(|| "tmp".to_string());
-    tmp.set_extension(extension);
-    tmp
+    let store = RuntimeEventStore::from_events_path(path);
+    let legacy_path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || store.prune(&legacy_path, cutoff_ms))
+        .await
+        .context("runtime event store retention task failed")?
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use serde_json::json;
     use tandem_types::{EngineEvent, RuntimeEventEnvelope, TenantContext};
+    use tokio::io::AsyncWriteExt;
     use uuid::Uuid;
 
     use super::*;
@@ -314,6 +226,19 @@ mod tests {
 
     fn tenant(org: &str, workspace: &str) -> TenantContext {
         TenantContext::explicit_user_workspace(org, workspace, None, "user-a")
+    }
+
+    async fn remove_runtime_event_store(path: &Path) {
+        let database_path = path.with_extension("sqlite3");
+        let sidecars = [
+            path.to_path_buf(),
+            database_path.clone(),
+            PathBuf::from(format!("{}-wal", database_path.display())),
+            PathBuf::from(format!("{}-shm", database_path.display())),
+        ];
+        for path in sidecars {
+            let _ = tokio::fs::remove_file(path).await;
+        }
     }
 
     #[test]
@@ -370,7 +295,7 @@ mod tests {
             rows.iter().map(RuntimeEventLogRow::seq).collect::<Vec<_>>(),
             vec![4]
         );
-        let _ = tokio::fs::remove_file(path).await;
+        remove_runtime_event_store(&path).await;
     }
 
     #[tokio::test]
@@ -426,7 +351,7 @@ mod tests {
             vec![3, 4]
         );
 
-        let _ = tokio::fs::remove_file(path).await;
+        remove_runtime_event_store(&path).await;
     }
 
     #[tokio::test]
@@ -453,6 +378,172 @@ mod tests {
             rows.iter().map(RuntimeEventLogRow::seq).collect::<Vec<_>>(),
             vec![2]
         );
-        let _ = tokio::fs::remove_file(path).await;
+        remove_runtime_event_store(&path).await;
+    }
+
+    #[tokio::test]
+    async fn legacy_import_is_once_only_and_preserves_the_source_file() {
+        let path =
+            std::env::temp_dir().join(format!("runtime-events-import-{}.jsonl", Uuid::new_v4()));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let source_rows = [
+            RuntimeEventLogRow::from_engine_event(&event(1, "run-a", Some(tenant_a.clone()), 100))
+                .expect("first source row"),
+            RuntimeEventLogRow::from_engine_event(&event(2, "run-a", Some(tenant_a.clone()), 200))
+                .expect("second source row"),
+        ];
+        let source = format!(
+            "{}\nnot-valid-json\n{}\n",
+            serde_json::to_string(&source_rows[0]).expect("serialize first source row"),
+            serde_json::to_string(&source_rows[1]).expect("serialize second source row"),
+        );
+        tokio::fs::write(&path, &source)
+            .await
+            .expect("write legacy event log");
+
+        let imported = query_runtime_event_log(
+            &path,
+            &tenant_a,
+            RuntimeEventLogQuery {
+                run_id: "run-a",
+                after_seq: None,
+                limit: None,
+            },
+        );
+        assert_eq!(
+            imported
+                .iter()
+                .map(RuntimeEventLogRow::seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&path)
+                .await
+                .expect("read legacy source"),
+            source
+        );
+
+        let later_legacy_row =
+            RuntimeEventLogRow::from_engine_event(&event(3, "run-a", Some(tenant_a.clone()), 300))
+                .expect("later legacy row");
+        tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .await
+            .expect("open legacy source for external edit")
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::to_string(&later_legacy_row).expect("serialize later legacy row")
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("append externally edited legacy row");
+
+        let after_external_edit = query_runtime_event_log(
+            &path,
+            &tenant_a,
+            RuntimeEventLogQuery {
+                run_id: "run-a",
+                after_seq: None,
+                limit: None,
+            },
+        );
+        assert_eq!(
+            after_external_edit
+                .iter()
+                .map(RuntimeEventLogRow::seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        append_runtime_event_log_row(&path, &later_legacy_row)
+            .await
+            .expect("append authoritative event");
+        let authoritative_rows = query_runtime_event_log(
+            &path,
+            &tenant_a,
+            RuntimeEventLogQuery {
+                run_id: "run-a",
+                after_seq: Some(1),
+                limit: None,
+            },
+        );
+        assert_eq!(
+            authoritative_rows
+                .iter()
+                .map(RuntimeEventLogRow::seq)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        remove_runtime_event_store(&path).await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_replay_is_idempotent_and_preserves_cursor_pages() {
+        let path =
+            std::env::temp_dir().join(format!("runtime-events-cursor-{}.jsonl", Uuid::new_v4()));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let rows = (1..=16)
+            .map(|seq| {
+                RuntimeEventLogRow::from_engine_event(&event(
+                    seq,
+                    "run-a",
+                    Some(tenant_a.clone()),
+                    100 + seq,
+                ))
+                .expect("canonical row")
+            })
+            .collect::<Vec<_>>();
+
+        let mut appends = Vec::new();
+        for row in rows.iter().cloned().chain(rows.iter().cloned()) {
+            let path = path.clone();
+            appends.push(tokio::spawn(async move {
+                append_runtime_event_log_row(&path, &row).await
+            }));
+        }
+        for append in appends {
+            append
+                .await
+                .expect("append task joined")
+                .expect("idempotent append succeeded");
+        }
+
+        let first_page = query_runtime_event_log(
+            &path,
+            &tenant_a,
+            RuntimeEventLogQuery {
+                run_id: "run-a",
+                after_seq: None,
+                limit: Some(8),
+            },
+        );
+        assert_eq!(
+            first_page
+                .iter()
+                .map(RuntimeEventLogRow::seq)
+                .collect::<Vec<_>>(),
+            (1..=8).collect::<Vec<_>>()
+        );
+        let second_page = query_runtime_event_log(
+            &path,
+            &tenant_a,
+            RuntimeEventLogQuery {
+                run_id: "run-a",
+                after_seq: first_page.last().map(RuntimeEventLogRow::seq),
+                limit: Some(8),
+            },
+        );
+        assert_eq!(
+            second_page
+                .iter()
+                .map(RuntimeEventLogRow::seq)
+                .collect::<Vec<_>>(),
+            (9..=16).collect::<Vec<_>>()
+        );
+        remove_runtime_event_store(&path).await;
     }
 }

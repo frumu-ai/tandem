@@ -720,15 +720,23 @@ pub(crate) async fn write_stateful_reliability_unlocked(
     let mut store = store.clone();
     store.schema_version = STATEFUL_RUNTIME_SCHEMA_VERSION;
     sort_reliability_store(&mut store);
-    if let Some(database) =
-        super::sqlite_compat::authoritative_stateful_store_for_reliability_path(path)?
-    {
-        let records = store.clone();
-        tokio::task::spawn_blocking(move || database.upsert_stateful_runtime_reliability(&records))
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("stateful reliability store task failed: {error}")
-            })??;
+    let authoritative_store_active =
+        match super::sqlite_compat::authoritative_stateful_store_for_reliability_path(path)? {
+            Some(database) => {
+                let records = store.clone();
+                tokio::task::spawn_blocking(move || {
+                    database.upsert_stateful_runtime_reliability(&records)
+                })
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("stateful reliability store task failed: {error}")
+                })??;
+                true
+            }
+            None => false,
+        };
+    if !super::compatibility::should_write_stateful_runtime_sidecar(authoritative_store_active) {
+        return Ok(());
     }
     let content = serde_json::to_vec_pretty(&store)?;
     write_file_atomically(path, &content, "stateful reliability store").await

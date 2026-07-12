@@ -1,4 +1,5 @@
 pub mod adapters;
+pub(crate) mod compatibility;
 pub mod definition;
 mod durable_io;
 pub mod orchestration_store;
