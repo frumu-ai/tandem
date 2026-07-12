@@ -228,9 +228,10 @@ impl SessionRepository {
                     next_ordinal,
                     message.id,
                     message_role_name(&message.role),
-                    serde_json::to_string(message)?,
+                    serde_json::to_string(&message_header(message))?,
                 ],
             )?;
+            insert_message_parts(&transaction, session_id, next_ordinal, &message.parts)?;
             touch_session(&transaction, session_id)?;
             transaction.commit()?;
             Ok(())
@@ -244,7 +245,8 @@ impl SessionRepository {
         part: &MessagePart,
     ) -> Result<()> {
         self.with_connection(|connection| {
-            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let exists = transaction
                 .query_row(
                     "SELECT 1 FROM session_records WHERE session_id = ?1",
@@ -258,32 +260,30 @@ impl SessionRepository {
             }
             let exact = transaction
                 .query_row(
-                    "SELECT ordinal, message_json FROM session_messages
+                    "SELECT ordinal FROM session_messages
                      WHERE session_id = ?1 AND message_id = ?2 ORDER BY ordinal ASC LIMIT 1",
                     params![session_id, message_id],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                    |row| row.get::<_, i64>(0),
                 )
                 .optional()?;
             let row = match exact {
                 Some(row) => Some(row),
                 None => transaction
                     .query_row(
-                        "SELECT ordinal, message_json FROM session_messages
+                        "SELECT ordinal FROM session_messages
                          WHERE session_id = ?1 AND role = 'user' ORDER BY ordinal DESC LIMIT 1",
                         [session_id],
-                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                        |row| row.get::<_, i64>(0),
                     )
                     .optional()?,
             }
-                .context("message not found for append_message_part")?;
-            let (ordinal, raw_message) = row;
-            let mut message: Message = serde_json::from_str(&raw_message)
-                .context("failed to decode stored session message")?;
-            reduce_message_parts(&mut message.parts, part.clone());
-            transaction.execute(
-                "UPDATE session_messages SET message_json = ?3 WHERE session_id = ?1 AND ordinal = ?2",
-                params![session_id, ordinal, serde_json::to_string(&message)?],
-            )?;
+            .context("message not found for append_message_part")?;
+            let before = load_message_parts(&transaction, session_id, row)?;
+            let mut after = before.clone();
+            reduce_message_parts(&mut after, part.clone());
+            record_revert_part_deltas(&transaction, session_id, row, &before, &after)?;
+            record_snapshot_part_deltas(&transaction, session_id, row, &before, &after)?;
+            update_message_parts(&transaction, session_id, row, &before, &after)?;
             touch_session(&transaction, session_id)?;
             transaction.commit()?;
             Ok(())
@@ -335,13 +335,9 @@ impl SessionRepository {
             else {
                 return Ok(false);
             };
-            let messages = load_messages(&transaction, session_id)?;
-            upsert_revert_stash(&transaction, session_id, &messages)?;
-            transaction.execute(
-                "DELETE FROM session_snapshot_points WHERE snapshot_id = ?1",
-                [snapshot_id],
-            )?;
             if let Some(snapshot_json) = snapshot_json {
+                let messages = load_messages(&transaction, session_id)?;
+                upsert_revert_stash(&transaction, session_id, &messages)?;
                 let snapshot: Vec<Message> = serde_json::from_str(&snapshot_json)
                     .context("failed to decode stored legacy revert snapshot")?;
                 transaction.execute(
@@ -350,11 +346,18 @@ impl SessionRepository {
                 )?;
                 insert_messages(&transaction, session_id, &snapshot)?;
             } else {
+                begin_revert_delta_stash(&transaction, session_id, message_count)?;
+                stash_snapshot_part_delta_current_values(&transaction, snapshot_id, session_id)?;
+                restore_snapshot_part_deltas(&transaction, snapshot_id, session_id)?;
                 transaction.execute(
                     "DELETE FROM session_messages WHERE session_id = ?1 AND ordinal >= ?2",
                     params![session_id, message_count],
                 )?;
             }
+            transaction.execute(
+                "DELETE FROM session_snapshot_points WHERE snapshot_id = ?1",
+                [snapshot_id],
+            )?;
             touch_session(&transaction, session_id)?;
             transaction.commit()?;
             Ok(true)
@@ -365,33 +368,43 @@ impl SessionRepository {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let Some(raw_messages) = transaction
+            let legacy_stash = transaction
                 .query_row(
                     "SELECT messages_json FROM session_revert_stashes WHERE session_id = ?1",
                     [session_id],
                     |row| row.get::<_, String>(0),
                 )
-                .optional()?
-            else {
-                return Ok(false);
-            };
-            let previous: Vec<Message> = serde_json::from_str(&raw_messages)
-                .context("failed to decode stored revert state")?;
-            let current_count: i64 = transaction.query_row(
-                "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1",
-                [session_id],
-                |row| row.get(0),
-            )?;
-            insert_snapshot(&transaction, session_id, current_count as usize, None)?;
-            transaction.execute(
-                "DELETE FROM session_messages WHERE session_id = ?1",
-                [session_id],
-            )?;
-            insert_messages(&transaction, session_id, &previous)?;
-            transaction.execute(
-                "DELETE FROM session_revert_stashes WHERE session_id = ?1",
-                [session_id],
-            )?;
+                .optional()?;
+            if let Some(raw_messages) = legacy_stash {
+                let current = load_messages(&transaction, session_id)?;
+                let previous: Vec<Message> = serde_json::from_str(&raw_messages)
+                    .context("failed to decode stored legacy revert state")?;
+                let snapshot_override = if snapshot_messages_match_prefix(&current, &previous) {
+                    None
+                } else {
+                    Some(current.as_slice())
+                };
+                insert_snapshot(&transaction, session_id, current.len(), snapshot_override)?;
+                transaction.execute(
+                    "DELETE FROM session_messages WHERE session_id = ?1",
+                    [session_id],
+                )?;
+                insert_messages(&transaction, session_id, &previous)?;
+                transaction.execute(
+                    "DELETE FROM session_revert_stashes WHERE session_id = ?1",
+                    [session_id],
+                )?;
+            } else {
+                let current_count: i64 = transaction.query_row(
+                    "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1",
+                    [session_id],
+                    |row| row.get(0),
+                )?;
+                if restore_revert_delta_stash(&transaction, session_id)? == 0 {
+                    return Ok(false);
+                }
+                insert_snapshot(&transaction, session_id, current_count as usize, None)?;
+            }
             touch_session(&transaction, session_id)?;
             transaction.commit()?;
             Ok(true)
@@ -636,7 +649,7 @@ impl SessionRepository {
                 self.database_path.display()
             )
         })?;
-        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.busy_timeout(Duration::from_secs(30))?;
         connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;")?;
         operation(&mut connection)
     }
@@ -679,6 +692,17 @@ fn initialize_schema(connection: &mut Connection) -> Result<()> {
          );
          CREATE INDEX IF NOT EXISTS session_messages_lookup_idx
              ON session_messages(session_id, message_id, ordinal);
+         CREATE TABLE IF NOT EXISTS session_message_parts (
+             session_id TEXT NOT NULL,
+             message_ordinal INTEGER NOT NULL,
+             ordinal INTEGER NOT NULL,
+             part_json TEXT NOT NULL,
+             PRIMARY KEY (session_id, message_ordinal, ordinal),
+             FOREIGN KEY (session_id, message_ordinal)
+                REFERENCES session_messages(session_id, ordinal) ON DELETE CASCADE
+         );
+         CREATE INDEX IF NOT EXISTS session_message_parts_lookup_idx
+             ON session_message_parts(session_id, message_ordinal, ordinal);
          CREATE TABLE IF NOT EXISTS session_metadata (
              session_id TEXT PRIMARY KEY,
              parent_id TEXT,
@@ -695,9 +719,39 @@ fn initialize_schema(connection: &mut Connection) -> Result<()> {
          );
          CREATE INDEX IF NOT EXISTS session_snapshot_points_lookup_idx
              ON session_snapshot_points(session_id, snapshot_id DESC);
+         CREATE TABLE IF NOT EXISTS session_snapshot_part_deltas (
+             snapshot_id INTEGER NOT NULL,
+             message_ordinal INTEGER NOT NULL,
+             part_ordinal INTEGER NOT NULL,
+             part_json TEXT,
+             PRIMARY KEY (snapshot_id, message_ordinal, part_ordinal),
+             FOREIGN KEY (snapshot_id) REFERENCES session_snapshot_points(snapshot_id) ON DELETE CASCADE
+         );
          CREATE TABLE IF NOT EXISTS session_revert_stashes (
              session_id TEXT PRIMARY KEY,
              messages_json TEXT NOT NULL,
+             FOREIGN KEY (session_id) REFERENCES session_records(session_id) ON DELETE CASCADE
+         );
+         CREATE TABLE IF NOT EXISTS session_revert_states (
+             session_id TEXT PRIMARY KEY,
+             base_message_count INTEGER NOT NULL,
+             FOREIGN KEY (session_id) REFERENCES session_records(session_id) ON DELETE CASCADE
+         );
+         CREATE TABLE IF NOT EXISTS session_revert_messages (
+             session_id TEXT NOT NULL,
+             ordinal INTEGER NOT NULL,
+             message_id TEXT NOT NULL,
+             role TEXT NOT NULL,
+             message_json TEXT NOT NULL,
+             PRIMARY KEY (session_id, ordinal),
+             FOREIGN KEY (session_id) REFERENCES session_records(session_id) ON DELETE CASCADE
+         );
+         CREATE TABLE IF NOT EXISTS session_revert_parts (
+             session_id TEXT NOT NULL,
+             message_ordinal INTEGER NOT NULL,
+             ordinal INTEGER NOT NULL,
+             part_json TEXT,
+             PRIMARY KEY (session_id, message_ordinal, ordinal),
              FOREIGN KEY (session_id) REFERENCES session_records(session_id) ON DELETE CASCADE
          );
          CREATE TABLE IF NOT EXISTS session_question_requests (
@@ -760,23 +814,39 @@ fn load_session_header(connection: &Connection, session_id: &str) -> Result<Opti
 
 fn load_messages(connection: &Connection, session_id: &str) -> Result<Vec<Message>> {
     let mut statement = connection.prepare(
-        "SELECT message_json FROM session_messages WHERE session_id = ?1 ORDER BY ordinal ASC",
+        "SELECT ordinal, message_json FROM session_messages WHERE session_id = ?1 ORDER BY ordinal ASC",
     )?;
-    let rows = statement.query_map([session_id], |row| row.get::<_, String>(0))?;
-    rows.map(|row| {
-        let raw = row?;
-        serde_json::from_str(&raw).context("failed to decode stored session message")
-    })
-    .collect()
+    let rows = statement.query_map([session_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut messages = Vec::new();
+    for row in rows {
+        let (ordinal, raw) = row?;
+        let mut message: Message =
+            serde_json::from_str(&raw).context("failed to decode stored session message")?;
+        message.parts = load_message_parts(connection, session_id, ordinal)?;
+        messages.push(message);
+    }
+    Ok(messages)
 }
 
 fn replace_session(transaction: &Transaction<'_>, session: &Session) -> Result<()> {
+    let messages_changed = load_session(transaction, &session.id)?
+        .map(|existing| !messages_equal(&existing.messages, &session.messages))
+        .unwrap_or(true);
     update_session_header(transaction, session)?;
+    if !messages_changed {
+        return Ok(());
+    }
     transaction.execute(
         "DELETE FROM session_messages WHERE session_id = ?1",
         [&session.id],
     )?;
     insert_messages(transaction, &session.id, &session.messages)
+}
+
+fn messages_equal(left: &[Message], right: &[Message]) -> bool {
+    serde_json::to_vec(left).ok() == serde_json::to_vec(right).ok()
 }
 
 fn update_session_header(transaction: &Transaction<'_>, session: &Session) -> Result<()> {
@@ -815,11 +885,374 @@ fn insert_messages(
                 ordinal as i64,
                 message.id,
                 message_role_name(&message.role),
-                serde_json::to_string(message)?,
+                serde_json::to_string(&message_header(message))?,
+            ],
+        )?;
+        insert_message_parts(transaction, session_id, ordinal as i64, &message.parts)?;
+    }
+    Ok(())
+}
+
+fn message_header(message: &Message) -> Message {
+    let mut header = message.clone();
+    header.parts.clear();
+    header
+}
+
+fn load_message_parts(
+    connection: &Connection,
+    session_id: &str,
+    message_ordinal: i64,
+) -> Result<Vec<MessagePart>> {
+    let mut statement = connection.prepare(
+        "SELECT part_json FROM session_message_parts
+         WHERE session_id = ?1 AND message_ordinal = ?2 ORDER BY ordinal ASC",
+    )?;
+    let rows = statement.query_map(params![session_id, message_ordinal], |row| {
+        row.get::<_, String>(0)
+    })?;
+    rows.map(|row| {
+        let raw = row?;
+        serde_json::from_str(&raw).context("failed to decode stored message part")
+    })
+    .collect()
+}
+
+fn insert_message_parts(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    message_ordinal: i64,
+    parts: &[MessagePart],
+) -> Result<()> {
+    for (ordinal, part) in parts.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO session_message_parts (session_id, message_ordinal, ordinal, part_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                session_id,
+                message_ordinal,
+                ordinal as i64,
+                serde_json::to_string(part)?,
             ],
         )?;
     }
     Ok(())
+}
+
+fn update_message_parts(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    message_ordinal: i64,
+    before: &[MessagePart],
+    after: &[MessagePart],
+) -> Result<()> {
+    for (ordinal, part) in after.iter().enumerate() {
+        if before.get(ordinal).is_some_and(|current| {
+            serde_json::to_vec(current).ok() == serde_json::to_vec(part).ok()
+        }) {
+            continue;
+        }
+        if ordinal < before.len() {
+            transaction.execute(
+                "UPDATE session_message_parts SET part_json = ?4
+                 WHERE session_id = ?1 AND message_ordinal = ?2 AND ordinal = ?3",
+                params![
+                    session_id,
+                    message_ordinal,
+                    ordinal as i64,
+                    serde_json::to_string(part)?,
+                ],
+            )?;
+        } else {
+            transaction.execute(
+                "INSERT INTO session_message_parts (session_id, message_ordinal, ordinal, part_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    session_id,
+                    message_ordinal,
+                    ordinal as i64,
+                    serde_json::to_string(part)?,
+                ],
+            )?;
+        }
+    }
+    if after.len() < before.len() {
+        transaction.execute(
+            "DELETE FROM session_message_parts
+             WHERE session_id = ?1 AND message_ordinal = ?2 AND ordinal >= ?3",
+            params![session_id, message_ordinal, after.len() as i64],
+        )?;
+    }
+    Ok(())
+}
+
+fn record_snapshot_part_deltas(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    message_ordinal: i64,
+    before: &[MessagePart],
+    after: &[MessagePart],
+) -> Result<()> {
+    let snapshot_ids = transaction
+        .prepare(
+            "SELECT snapshot_id FROM session_snapshot_points
+             WHERE session_id = ?1 AND message_count > ?2 AND snapshot_json IS NULL",
+        )?
+        .query_map(params![session_id, message_ordinal], |row| {
+            row.get::<_, i64>(0)
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if snapshot_ids.is_empty() {
+        return Ok(());
+    }
+    for ordinal in 0..after.len().max(before.len()) {
+        let before_part = before.get(ordinal);
+        let after_part = after.get(ordinal);
+        let unchanged = before_part.zip(after_part).is_some_and(|(left, right)| {
+            serde_json::to_vec(left).ok() == serde_json::to_vec(right).ok()
+        });
+        if unchanged {
+            continue;
+        }
+        for snapshot_id in &snapshot_ids {
+            transaction.execute(
+                "INSERT OR IGNORE INTO session_snapshot_part_deltas
+                 (snapshot_id, message_ordinal, part_ordinal, part_json) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    snapshot_id,
+                    message_ordinal,
+                    ordinal as i64,
+                    before_part.map(serde_json::to_string).transpose()?,
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_snapshot_part_deltas(
+    transaction: &Transaction<'_>,
+    snapshot_id: i64,
+    session_id: &str,
+) -> Result<()> {
+    let rows = transaction
+        .prepare(
+            "SELECT message_ordinal, part_ordinal, part_json FROM session_snapshot_part_deltas
+             WHERE snapshot_id = ?1 ORDER BY message_ordinal, part_ordinal",
+        )?
+        .query_map([snapshot_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (message_ordinal, part_ordinal, part_json) in rows {
+        if let Some(part_json) = part_json {
+            transaction.execute(
+                "INSERT INTO session_message_parts (session_id, message_ordinal, ordinal, part_json)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(session_id, message_ordinal, ordinal)
+                 DO UPDATE SET part_json = excluded.part_json",
+                params![session_id, message_ordinal, part_ordinal, part_json],
+            )?;
+        } else {
+            transaction.execute(
+                "DELETE FROM session_message_parts
+                 WHERE session_id = ?1 AND message_ordinal = ?2 AND ordinal = ?3",
+                params![session_id, message_ordinal, part_ordinal],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn record_revert_part_deltas(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    message_ordinal: i64,
+    before: &[MessagePart],
+    after: &[MessagePart],
+) -> Result<()> {
+    let reverted = transaction
+        .query_row(
+            "SELECT 1 FROM session_revert_states WHERE session_id = ?1",
+            [session_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !reverted {
+        return Ok(());
+    }
+    for ordinal in 0..after.len().max(before.len()) {
+        let before_part = before.get(ordinal);
+        let after_part = after.get(ordinal);
+        let unchanged = before_part.zip(after_part).is_some_and(|(left, right)| {
+            serde_json::to_vec(left).ok() == serde_json::to_vec(right).ok()
+        });
+        if unchanged {
+            continue;
+        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO session_revert_parts
+             (session_id, message_ordinal, ordinal, part_json) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                session_id,
+                message_ordinal,
+                ordinal as i64,
+                before_part.map(serde_json::to_string).transpose()?,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn begin_revert_delta_stash(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    base_message_count: i64,
+) -> Result<()> {
+    transaction.execute(
+        "INSERT INTO session_revert_states (session_id, base_message_count) VALUES (?1, ?2)
+         ON CONFLICT(session_id) DO UPDATE SET base_message_count = excluded.base_message_count",
+        params![session_id, base_message_count],
+    )?;
+    transaction.execute(
+        "DELETE FROM session_revert_messages WHERE session_id = ?1",
+        [session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM session_revert_parts WHERE session_id = ?1",
+        [session_id],
+    )?;
+    transaction.execute(
+        "INSERT INTO session_revert_messages (session_id, ordinal, message_id, role, message_json)
+         SELECT ?1, ordinal, message_id, role, message_json FROM session_messages
+         WHERE session_id = ?1 AND ordinal >= ?2",
+        params![session_id, base_message_count],
+    )?;
+    transaction.execute(
+        "INSERT INTO session_revert_parts (session_id, message_ordinal, ordinal, part_json)
+         SELECT ?1, message_ordinal, ordinal, part_json FROM session_message_parts
+         WHERE session_id = ?1 AND message_ordinal >= ?2",
+        params![session_id, base_message_count],
+    )?;
+    Ok(())
+}
+
+fn stash_snapshot_part_delta_current_values(
+    transaction: &Transaction<'_>,
+    snapshot_id: i64,
+    session_id: &str,
+) -> Result<()> {
+    let deltas = transaction
+        .prepare(
+            "SELECT message_ordinal, part_ordinal FROM session_snapshot_part_deltas
+             WHERE snapshot_id = ?1",
+        )?
+        .query_map([snapshot_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (message_ordinal, part_ordinal) in deltas {
+        let current = transaction
+            .query_row(
+                "SELECT part_json FROM session_message_parts
+                 WHERE session_id = ?1 AND message_ordinal = ?2 AND ordinal = ?3",
+                params![session_id, message_ordinal, part_ordinal],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO session_revert_parts
+             (session_id, message_ordinal, ordinal, part_json) VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, message_ordinal, part_ordinal, current],
+        )?;
+    }
+    Ok(())
+}
+
+fn restore_revert_delta_stash(transaction: &Transaction<'_>, session_id: &str) -> Result<usize> {
+    let base_message_count = transaction
+        .query_row(
+            "SELECT base_message_count FROM session_revert_states WHERE session_id = ?1",
+            [session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let Some(base_message_count) = base_message_count else {
+        return Ok(0);
+    };
+    transaction.execute(
+        "DELETE FROM session_messages WHERE session_id = ?1 AND ordinal >= ?2",
+        params![session_id, base_message_count],
+    )?;
+    let messages = transaction
+        .prepare(
+            "SELECT ordinal, message_id, role, message_json FROM session_revert_messages
+             WHERE session_id = ?1 ORDER BY ordinal",
+        )?
+        .query_map([session_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (ordinal, message_id, role, message_json) in messages {
+        transaction.execute(
+            "INSERT INTO session_messages (session_id, ordinal, message_id, role, message_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![session_id, ordinal, message_id, role, message_json],
+        )?;
+    }
+    let parts = transaction
+        .prepare(
+            "SELECT message_ordinal, ordinal, part_json FROM session_revert_parts
+             WHERE session_id = ?1 ORDER BY message_ordinal, ordinal",
+        )?
+        .query_map([session_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (message_ordinal, ordinal, part_json) in parts {
+        if let Some(part_json) = part_json {
+            transaction.execute(
+                "INSERT INTO session_message_parts (session_id, message_ordinal, ordinal, part_json)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(session_id, message_ordinal, ordinal)
+                 DO UPDATE SET part_json = excluded.part_json",
+                params![session_id, message_ordinal, ordinal, part_json],
+            )?;
+        } else {
+            transaction.execute(
+                "DELETE FROM session_message_parts
+                 WHERE session_id = ?1 AND message_ordinal = ?2 AND ordinal = ?3",
+                params![session_id, message_ordinal, ordinal],
+            )?;
+        }
+    }
+    transaction.execute(
+        "DELETE FROM session_revert_states WHERE session_id = ?1",
+        [session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM session_revert_messages WHERE session_id = ?1",
+        [session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM session_revert_parts WHERE session_id = ?1",
+        [session_id],
+    )?;
+    Ok(1)
 }
 
 fn touch_session(transaction: &Transaction<'_>, session_id: &str) -> Result<()> {
@@ -905,10 +1338,14 @@ fn insert_snapshot(
 }
 
 fn snapshot_matches_session_prefix(snapshot: &[Message], session: &Session) -> bool {
-    if snapshot.len() > session.messages.len() {
+    snapshot_messages_match_prefix(snapshot, &session.messages)
+}
+
+fn snapshot_messages_match_prefix(snapshot: &[Message], messages: &[Message]) -> bool {
+    if snapshot.len() > messages.len() {
         return false;
     }
-    let current_prefix = &session.messages[..snapshot.len()];
+    let current_prefix = &messages[..snapshot.len()];
     serde_json::to_vec(snapshot).ok() == serde_json::to_vec(current_prefix).ok()
 }
 

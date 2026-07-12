@@ -592,45 +592,85 @@ fn collect_legacy_import_state(
     base: &Path,
 ) -> anyhow::Result<session_repository::LegacyImportState> {
     let sessions_file = base.join("sessions.json");
-    let mut sessions = if sessions_file.exists() {
-        let raw = std::fs::read_to_string(&sessions_file)
-            .with_context(|| format!("failed to read {}", sessions_file.display()))?;
-        load_sessions_file(&raw)?.0
+    let metadata_file = base.join("session_meta.json");
+    let questions_file = base.join("questions.json");
+    // Import and source recording must use the same byte snapshot. A later
+    // edit to one of these legacy files cannot create a mismatched digest.
+    let source_bytes = [sessions_file.clone(), metadata_file.clone(), questions_file.clone()]
+        .into_iter()
+        .map(|path| {
+            let bytes = if path.exists() {
+                Some(
+                    std::fs::read(&path)
+                        .with_context(|| format!("failed to read {}", path.display()))?,
+                )
+            } else {
+                None
+            };
+            Ok::<_, anyhow::Error>((path, bytes))
+        })
+        .collect::<anyhow::Result<HashMap<_, _>>>()?;
+
+    let mut sessions = if let Some(raw) = source_bytes
+        .get(&sessions_file)
+        .and_then(|bytes| bytes.as_deref())
+    {
+        load_sessions_file(std::str::from_utf8(raw).context("sessions.json must be UTF-8")?)?.0
     } else {
         scan_legacy_sessions(base)?.sessions
     };
     hydrate_workspace_roots(&mut sessions);
     repair_session_titles(&mut sessions);
 
-    let metadata_file = base.join("session_meta.json");
-    let mut metadata = if metadata_file.exists() {
-        let raw = std::fs::read_to_string(&metadata_file)
-            .with_context(|| format!("failed to read {}", metadata_file.display()))?;
-        serde_json::from_str(&raw)
-            .with_context(|| format!("failed to parse {}", metadata_file.display()))?
+    let mut metadata = if let Some(raw) = source_bytes
+        .get(&metadata_file)
+        .and_then(|bytes| bytes.as_deref())
+    {
+        match serde_json::from_slice(raw) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::warn!(
+                    path = %metadata_file.display(),
+                    %error,
+                    "ignoring malformed optional legacy session metadata sidecar"
+                );
+                HashMap::new()
+            }
+        }
     } else {
         HashMap::new()
     };
     compact_session_metadata(&sessions, &mut metadata);
 
-    let questions_file = base.join("questions.json");
-    let questions = if questions_file.exists() {
-        let raw = std::fs::read_to_string(&questions_file)
-            .with_context(|| format!("failed to read {}", questions_file.display()))?;
-        serde_json::from_str(&raw)
-            .with_context(|| format!("failed to parse {}", questions_file.display()))?
+    let questions = if let Some(raw) = source_bytes
+        .get(&questions_file)
+        .and_then(|bytes| bytes.as_deref())
+    {
+        match serde_json::from_slice(raw) {
+            Ok(questions) => questions,
+            Err(error) => {
+                tracing::warn!(
+                    path = %questions_file.display(),
+                    %error,
+                    "ignoring malformed optional legacy question sidecar"
+                );
+                HashMap::new()
+            }
+        }
     } else {
         HashMap::new()
     };
 
     let sources = [sessions_file, metadata_file, questions_file]
         .into_iter()
-        .filter(|path| path.exists())
-        .map(|path| session_repository::LegacySource {
-            digest: std::fs::read(&path)
-                .ok()
-                .map(|contents| format!("{:x}", Sha256::digest(contents))),
-            path,
+        .filter_map(|path| {
+            source_bytes
+                .get(&path)
+                .and_then(|bytes| bytes.as_ref())
+                .map(|bytes| session_repository::LegacySource {
+                    digest: Some(format!("{:x}", Sha256::digest(bytes))),
+                    path,
+                })
         })
         .collect();
     Ok(session_repository::LegacyImportState {

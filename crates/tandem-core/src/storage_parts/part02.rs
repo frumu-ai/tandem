@@ -1144,6 +1144,13 @@ mod tests {
             reverted.messages[0].parts.first(),
             Some(MessagePart::Text { text }) if text == "f"
         ));
+        assert!(storage.unrevert_session(&session_id).await.expect("legacy unrevert"));
+        assert!(storage.revert_session(&session_id).await.expect("legacy rerevert"));
+        let rereverted = storage.get_session(&session_id).await.expect("rereverted session");
+        assert!(matches!(
+            rereverted.messages[0].parts.first(),
+            Some(MessagePart::Text { text }) if text == "f"
+        ));
     }
 
     #[tokio::test]
@@ -1250,6 +1257,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_optional_legacy_sidecars_do_not_block_session_import() {
+        let base = std::env::temp_dir().join(format!("tandem-core-malformed-sidecars-{}", Uuid::new_v4()));
+        stdfs::create_dir_all(&base).expect("base");
+        let session = Session::new(Some("recoverable".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        stdfs::write(
+            base.join("sessions.json"),
+            serde_json::to_string(&HashMap::from([(session_id.clone(), session)]))
+                .expect("serialize session"),
+        )
+        .expect("write sessions");
+        stdfs::write(base.join("session_meta.json"), "{not-json").expect("write metadata");
+        stdfs::write(base.join("questions.json"), "{not-json").expect("write questions");
+
+        let storage = Storage::new(&base).await.expect("import sessions");
+        assert_eq!(
+            storage.get_session(&session_id).await.expect("session").title,
+            "recoverable"
+        );
+    }
+
+    #[tokio::test]
     async fn fork_revert_and_unrevert_use_snapshot_watermarks() {
         let base = std::env::temp_dir().join(format!("tandem-core-revert-watermark-{}", Uuid::new_v4()));
         let storage = Storage::new(&base).await.expect("storage");
@@ -1290,5 +1319,108 @@ mod tests {
             storage.get_session(&child.id).await.expect("restored").messages.len(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn revert_restores_part_state_at_the_snapshot_watermark() {
+        let base = std::env::temp_dir().join(format!("tandem-core-part-watermark-{}", Uuid::new_v4()));
+        let storage = Storage::new(&base).await.expect("storage");
+        let mut parent = Session::new(Some("parent".to_string()), Some(".".to_string()));
+        let message = Message::new(
+            MessageRole::User,
+            vec![MessagePart::ToolInvocation {
+                tool: "write".to_string(),
+                args: json!({"path":"before.txt"}),
+                result: None,
+                error: None,
+            }],
+        );
+        let message_id = message.id.clone();
+        parent.messages.push(message);
+        let parent_id = parent.id.clone();
+        storage.save_session(parent).await.expect("save parent");
+
+        let child = storage
+            .fork_session(&parent_id)
+            .await
+            .expect("fork")
+            .expect("child");
+        storage
+            .append_message_part(
+                &child.id,
+                &message_id,
+                MessagePart::ToolInvocation {
+                    tool: "write".to_string(),
+                    args: json!({"path":"after.txt"}),
+                    result: Some(json!({"ok": true})),
+                    error: None,
+                },
+            )
+            .await
+            .expect("update part");
+        assert!(storage.revert_session(&child.id).await.expect("revert"));
+        let reverted = storage.get_session(&child.id).await.expect("reverted");
+        assert!(matches!(
+            reverted.messages[0].parts.first(),
+            Some(MessagePart::ToolInvocation { args, result: None, .. }) if args == &json!({"path":"before.txt"})
+        ));
+        assert!(storage.unrevert_session(&child.id).await.expect("unrevert"));
+        let restored = storage.get_session(&child.id).await.expect("restored");
+        assert!(matches!(
+            restored.messages[0].parts.first(),
+            Some(MessagePart::ToolInvocation { result: Some(_), .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn part_append_updates_part_rows_without_rewriting_message_header() {
+        let base = std::env::temp_dir().join(format!("tandem-core-part-row-{}", Uuid::new_v4()));
+        let storage = Storage::new(&base).await.expect("storage");
+        let mut session = Session::new(Some("parts".to_string()), Some(".".to_string()));
+        let message = Message::new(
+            MessageRole::User,
+            vec![MessagePart::Text {
+                text: "before".to_string(),
+            }],
+        );
+        let message_id = message.id.clone();
+        let session_id = session.id.clone();
+        session.messages.push(message);
+        storage.save_session(session).await.expect("save");
+
+        let connection = rusqlite::Connection::open(base.join("sessions.sqlite3")).expect("open db");
+        let before: String = connection
+            .query_row(
+                "SELECT message_json FROM session_messages WHERE session_id = ?1",
+                [&session_id],
+                |row| row.get(0),
+            )
+            .expect("header before");
+        storage
+            .append_message_part(
+                &session_id,
+                &message_id,
+                MessagePart::Reasoning {
+                    text: "part-only write".to_string(),
+                },
+            )
+            .await
+            .expect("append part");
+        let after: String = connection
+            .query_row(
+                "SELECT message_json FROM session_messages WHERE session_id = ?1",
+                [&session_id],
+                |row| row.get(0),
+            )
+            .expect("header after");
+        let parts: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM session_message_parts WHERE session_id = ?1",
+                [&session_id],
+                |row| row.get(0),
+            )
+            .expect("part count");
+        assert_eq!(before, after);
+        assert_eq!(parts, 2);
     }
 }
