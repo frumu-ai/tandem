@@ -7,11 +7,18 @@ repository = "https://github.com/frumu-ai/tandem"
 edition = "2021"
 
 [features]
-default = []
+default = ["storage-sqlite"]
 enterprise = ["tandem-memory/postgres"]
 browser = ["tandem-browser"]
 local-embeddings = ["tandem-memory/local-embeddings"]
 postgres = ["tandem-memory/postgres"]
+# Stateful orchestration store backends (TAN-714/TAN-715). SQLite remains the
+# default; PostgreSQL is opt-in and selected at runtime with
+# TANDEM_STORAGE_BACKEND=postgres + TANDEM_STORAGE_POSTGRES_URL. The rusqlite
+# dependency itself stays unconditional because the runtime event store and
+# session repository are not yet behind the storage backend contract.
+storage-sqlite = []
+storage-postgres = ["dep:postgres", "dep:r2d2", "dep:r2d2_postgres"]
 premium-governance = ["dep:tandem-governance-engine"]
 # Exposes the `test_support` module (test_state / next_event_of_type) so crates
 # that mount routes onto the server (e.g. tandem-enterprise-server) can build a
@@ -40,6 +47,9 @@ image = "0.25"
 regex = "1"
 reqwest = { version = "0.12", default-features = true, features = ["json"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+postgres = { version = "0.19", optional = true }
+r2d2 = { version = "0.8", optional = true }
+r2d2_postgres = { version = "0.18", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

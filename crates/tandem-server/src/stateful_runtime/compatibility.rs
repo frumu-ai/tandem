@@ -45,7 +45,7 @@ pub(crate) async fn retire_stateful_runtime_sidecars(
 
 fn migration_is_complete(events_path: &Path) -> anyhow::Result<bool> {
     let paths = OrchestrationStorePaths::from_runtime_events_path(events_path);
-    if !paths.database_path.exists() {
+    if !crate::stateful_runtime::backend::store_initialized_hint(&paths.database_path)? {
         return Ok(false);
     }
     OrchestrationStateStore::open(paths)?.legacy_runtime_migration_complete()

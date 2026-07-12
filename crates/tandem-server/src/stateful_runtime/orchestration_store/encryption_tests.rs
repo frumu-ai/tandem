@@ -12,6 +12,7 @@ use tandem_memory::MemoryCryptoProvider;
 use tandem_types::TenantContext;
 
 use super::{protected_records, OrchestrationStateStore, OrchestrationStorePaths};
+use crate::stateful_runtime::backend::Executor as _;
 
 const PROVIDER_ID: &str = "google_cloud_kms";
 const RUNTIME_PRINCIPAL: &str = "runtime-tandem";

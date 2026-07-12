@@ -120,6 +120,7 @@ impl EngineConfigReport {
         };
 
         validate_data_boundary_config(&mut errors);
+        validate_storage_backend_config(&mut errors);
         validate_security_invariants(&config, &mut errors);
         warnings.sort();
         warnings.dedup();
@@ -267,6 +268,33 @@ fn parse_scheduler_mode(errors: &mut Vec<String>) -> &'static str {
             }
         },
         _ => "multi",
+    }
+}
+
+/// TAN-714: the stateful store backend selection is fail-closed. A typo'd
+/// backend name or a postgres selection without a URL (or without the
+/// compiled backend) must stop startup instead of silently running SQLite.
+fn validate_storage_backend_config(errors: &mut Vec<String>) {
+    match crate::stateful_runtime::backend::StorageBackendConfig::from_env() {
+        Err(error) => errors.push(error.to_string()),
+        Ok(crate::stateful_runtime::backend::StorageBackendConfig::Sqlite) => {
+            if !cfg!(feature = "storage-sqlite") {
+                errors.push(
+                    "storage backend `sqlite` requested but this build omits the storage-sqlite \
+                     feature; set TANDEM_STORAGE_BACKEND=postgres or rebuild with SQLite support"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(crate::stateful_runtime::backend::StorageBackendConfig::Postgres { .. }) => {
+            if !cfg!(feature = "storage-postgres") {
+                errors.push(
+                    "storage backend `postgres` requested but this build omits the \
+                     storage-postgres feature"
+                        .to_string(),
+                );
+            }
+        }
     }
 }
 
@@ -738,6 +766,8 @@ const CONFIG_VARS: &[ConfigVar] = &[
     ConfigVar { name: "TANDEM_SCHEDULER_SHUTDOWN_TIMEOUT_SECS", default: "30", notes: "Positive scheduler shutdown timeout." },
     ConfigVar { name: "TANDEM_STATE_DIR", default: "shared path", notes: "Engine state directory." },
     ConfigVar { name: "TANDEM_STORAGE_DIR", default: "state dir", notes: "Storage directory override." },
+    ConfigVar { name: "TANDEM_STORAGE_BACKEND", default: "sqlite", notes: "Stateful store backend: sqlite or postgres. Fail-closed on invalid values." },
+    ConfigVar { name: "TANDEM_STORAGE_POSTGRES_URL", default: "unset", notes: "PostgreSQL connection URL; required when TANDEM_STORAGE_BACKEND=postgres." },
     ConfigVar { name: "TANDEM_ENGINE_HOST", default: "127.0.0.1", notes: "Default engine bind host for CLI commands." },
     ConfigVar { name: "TANDEM_ENGINE_PORT", default: "39731", notes: "Default engine bind port for CLI commands." },
     ConfigVar { name: "TANDEM_DISABLE_EMBEDDINGS", default: "false", notes: "Disable semantic memory embeddings." },

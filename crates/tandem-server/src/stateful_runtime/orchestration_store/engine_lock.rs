@@ -142,6 +142,11 @@ pub fn read_engine_lock_owner(path: &Path) -> Option<EngineLockOwner> {
 pub struct StatefulEngineLock {
     file: File,
     path: PathBuf,
+    /// Held when the store runs on PostgreSQL: a session-level advisory lock
+    /// that extends the single-engine guarantee across hosts sharing the
+    /// database schema. Released when the lock drops.
+    #[cfg(feature = "storage-postgres")]
+    postgres_guard: Option<crate::stateful_runtime::backend::postgres::PostgresAdvisoryLock>,
 }
 
 impl StatefulEngineLock {
@@ -194,7 +199,18 @@ impl StatefulEngineLock {
         Ok(Self {
             file,
             path: path.to_path_buf(),
+            #[cfg(feature = "storage-postgres")]
+            postgres_guard: None,
         })
+    }
+
+    #[cfg(feature = "storage-postgres")]
+    pub(crate) fn with_postgres_guard(
+        mut self,
+        guard: crate::stateful_runtime::backend::postgres::PostgresAdvisoryLock,
+    ) -> Self {
+        self.postgres_guard = Some(guard);
+        self
     }
 
     fn held_lock_diagnostics(path: &Path) -> String {

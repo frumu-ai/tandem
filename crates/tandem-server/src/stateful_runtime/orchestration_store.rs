@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+
+use crate::stateful_runtime::backend::{
+    self, params, Connection, Executor, ExecutorRaw as _, OptionalExtension, TransactionBehavior,
+};
 use tandem_automation::{
     validate_orchestration_spec, AutomationV2RunRecord, GoalRunLink, LongRunningGoal,
     LongRunningGoalStatus, OrchestrationSpec, OrchestrationStatus, WorkflowHandoff,
@@ -29,7 +32,7 @@ pub use transition::{
     WorkflowCompletionResult,
 };
 
-const SCHEMA_VERSION: i64 = 5;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationStorePaths {
@@ -69,6 +72,18 @@ fn canonical_stateful_runtime_root(path: &Path) -> &Path {
 #[derive(Debug, Clone)]
 pub struct OrchestrationStateStore {
     paths: OrchestrationStorePaths,
+    backend: StoreBackendSelection,
+}
+
+/// Which execution backend this store instance talks to. Selected once at
+/// open time (from `TANDEM_STORAGE_BACKEND` or an explicit target) and fixed
+/// for the store's lifetime; the two backends never mix within one store.
+#[derive(Debug, Clone)]
+enum StoreBackendSelection {
+    #[cfg(feature = "storage-sqlite")]
+    Sqlite,
+    #[cfg(feature = "storage-postgres")]
+    Postgres(backend::postgres::PostgresTarget),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,12 +106,72 @@ impl OrchestrationStateStore {
     }
 
     pub fn open(paths: OrchestrationStorePaths) -> anyhow::Result<Self> {
+        Self::open_with_config(paths, backend::StorageBackendConfig::from_env()?)
+    }
+
+    /// Opens the store against an explicit backend target. Production code
+    /// goes through [`Self::open`] (environment-selected); tests use this to
+    /// exercise a specific backend without mutating process environment.
+    pub(crate) fn open_with_config(
+        paths: OrchestrationStorePaths,
+        config: backend::StorageBackendConfig,
+    ) -> anyhow::Result<Self> {
         if let Some(parent) = paths.database_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let store = Self { paths };
-        store.with_connection(initialize_schema)?;
+        let backend = match config {
+            backend::StorageBackendConfig::Sqlite => {
+                #[cfg(feature = "storage-sqlite")]
+                {
+                    StoreBackendSelection::Sqlite
+                }
+                #[cfg(not(feature = "storage-sqlite"))]
+                {
+                    bail!(
+                        "storage backend `sqlite` requested but this build omits the \
+                         `storage-sqlite` feature; set TANDEM_STORAGE_BACKEND=postgres \
+                         or rebuild with SQLite support"
+                    );
+                }
+            }
+            backend::StorageBackendConfig::Postgres { url } => {
+                #[cfg(feature = "storage-postgres")]
+                {
+                    StoreBackendSelection::Postgres(backend::postgres::PostgresTarget::for_root(
+                        &url,
+                        &paths.database_path,
+                    )?)
+                }
+                #[cfg(not(feature = "storage-postgres"))]
+                {
+                    let _ = url;
+                    bail!(
+                        "storage backend `postgres` requested but this build omits the \
+                         `storage-postgres` feature"
+                    );
+                }
+            }
+        };
+        let store = Self { paths, backend };
+        store.initialize()?;
         Ok(store)
+    }
+
+    fn initialize(&self) -> anyhow::Result<()> {
+        match &self.backend {
+            #[cfg(feature = "storage-sqlite")]
+            StoreBackendSelection::Sqlite => self.with_connection(|connection| {
+                initialize_schema(
+                    connection
+                        .sqlite()
+                        .expect("sqlite store opened a sqlite connection"),
+                )
+            }),
+            #[cfg(feature = "storage-postgres")]
+            StoreBackendSelection::Postgres(_) => {
+                self.with_connection(backend::postgres::initialize_schema)
+            }
+        }
     }
 
     pub fn paths(&self) -> &OrchestrationStorePaths {
@@ -104,7 +179,17 @@ impl OrchestrationStateStore {
     }
 
     pub fn acquire_engine_lock(&self) -> anyhow::Result<StatefulEngineLock> {
-        StatefulEngineLock::acquire(&self.paths.engine_lock_path)
+        let lock = StatefulEngineLock::acquire(&self.paths.engine_lock_path)?;
+        match &self.backend {
+            #[cfg(feature = "storage-sqlite")]
+            StoreBackendSelection::Sqlite => Ok(lock),
+            #[cfg(feature = "storage-postgres")]
+            StoreBackendSelection::Postgres(target) => {
+                // The file lock fences engines on this host; the advisory
+                // lock fences engines on other hosts sharing the schema.
+                Ok(lock.with_postgres_guard(target.acquire_advisory_lock()?))
+            }
+        }
     }
 
     pub fn put_orchestration(&self, spec: &OrchestrationSpec) -> anyhow::Result<()> {
@@ -561,10 +646,15 @@ impl OrchestrationStateStore {
     }
 
     /// Truncates the WAL back into the main database file so long-running
-    /// engines reclaim log space between retention sweeps.
+    /// engines reclaim log space between retention sweeps. PostgreSQL manages
+    /// its own WAL through server-side checkpoints, so this is a no-op there.
     pub fn checkpoint_wal(&self) -> anyhow::Result<()> {
         self.with_connection(|connection| {
-            connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+            #[cfg(feature = "storage-sqlite")]
+            if let Some(sqlite) = connection.sqlite() {
+                sqlite.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+            }
+            let _ = &connection;
             Ok(())
         })
     }
@@ -774,23 +864,43 @@ impl OrchestrationStateStore {
         &self,
         operation: impl FnOnce(&mut Connection) -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {
-        let mut connection = Connection::open(&self.paths.database_path).with_context(|| {
-            format!(
-                "failed to open orchestration store {}",
-                self.paths.database_path.display()
-            )
-        })?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        // `synchronous` is a per-connection pragma: without this, every
-        // connection after `initialize_schema` would silently fall back to the
-        // SQLite default and weaken the store's crash durability contract.
-        connection.pragma_update(None, "synchronous", "FULL")?;
+        let mut connection = self.open_connection()?;
         operation(&mut connection)
+    }
+
+    fn open_connection(&self) -> anyhow::Result<Connection> {
+        match &self.backend {
+            #[cfg(feature = "storage-sqlite")]
+            StoreBackendSelection::Sqlite => {
+                let connection = rusqlite::Connection::open(&self.paths.database_path)
+                    .with_context(|| {
+                        format!(
+                            "failed to open orchestration store {}",
+                            self.paths.database_path.display()
+                        )
+                    })?;
+                connection.busy_timeout(std::time::Duration::from_secs(5))?;
+                connection.pragma_update(None, "foreign_keys", "ON")?;
+                // `synchronous` is a per-connection pragma: without this, every
+                // connection after `initialize_schema` would silently fall back to the
+                // SQLite default and weaken the store's crash durability contract.
+                connection.pragma_update(None, "synchronous", "FULL")?;
+                Ok(Connection::from_sqlite(connection))
+            }
+            #[cfg(feature = "storage-postgres")]
+            StoreBackendSelection::Postgres(target) => {
+                Ok(Connection::from_postgres(target.connect()?))
+            }
+        }
     }
 }
 
-fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
+/// SQLite schema creation and version migrations. This deliberately stays on
+/// the raw rusqlite connection: DDL is the one dialect-specific layer, and
+/// the historical v1→v5 migration chain only ever existed on SQLite. The
+/// PostgreSQL backend owns its own initialization in `backend::postgres`.
+#[cfg(feature = "storage-sqlite")]
+fn initialize_schema(connection: &mut rusqlite::Connection) -> anyhow::Result<()> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
     connection.execute_batch(
@@ -1017,7 +1127,8 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn migrate_schema_v1_to_v2(connection: &mut Connection) -> anyhow::Result<()> {
+#[cfg(feature = "storage-sqlite")]
+fn migrate_schema_v1_to_v2(connection: &mut rusqlite::Connection) -> anyhow::Result<()> {
     connection.execute_batch(
         "BEGIN IMMEDIATE;
          CREATE TABLE IF NOT EXISTS stateful_migrations (
@@ -1057,7 +1168,8 @@ fn migrate_schema_v1_to_v2(connection: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn migrate_schema_v2_to_v3(connection: &mut Connection) -> anyhow::Result<()> {
+#[cfg(feature = "storage-sqlite")]
+fn migrate_schema_v2_to_v3(connection: &mut rusqlite::Connection) -> anyhow::Result<()> {
     connection.execute_batch(
         "BEGIN IMMEDIATE;
          CREATE TABLE IF NOT EXISTS legacy_handoff_quarantine (
@@ -1072,7 +1184,8 @@ fn migrate_schema_v2_to_v3(connection: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn migrate_schema_v3_to_v4(connection: &mut Connection) -> anyhow::Result<()> {
+#[cfg(feature = "storage-sqlite")]
+fn migrate_schema_v3_to_v4(connection: &mut rusqlite::Connection) -> anyhow::Result<()> {
     // Some early development v2 stores reached v3 without the scope-column
     // backfill. Normalize them before rebuilding the scoped wait identity.
     add_scope_columns(connection, "automation_waits")?;
@@ -1106,7 +1219,8 @@ fn migrate_schema_v3_to_v4(connection: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn migrate_schema_v4_to_v5(connection: &mut Connection) -> anyhow::Result<()> {
+#[cfg(feature = "storage-sqlite")]
+fn migrate_schema_v4_to_v5(connection: &mut rusqlite::Connection) -> anyhow::Result<()> {
     // Durable migration-attempt journal: rows are committed before the import
     // transaction starts, so an interrupted import leaves evidence that the
     // atomic once-only marker cannot (a rolled-back marker looks identical to
@@ -1127,7 +1241,8 @@ fn migrate_schema_v4_to_v5(connection: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn add_scope_columns(connection: &Connection, table: &str) -> anyhow::Result<()> {
+#[cfg(feature = "storage-sqlite")]
+fn add_scope_columns(connection: &rusqlite::Connection, table: &str) -> anyhow::Result<()> {
     for (column, definition) in [
         ("org_id", "TEXT NOT NULL DEFAULT ''"),
         ("workspace_id", "TEXT NOT NULL DEFAULT ''"),
@@ -1148,7 +1263,7 @@ fn add_scope_columns(connection: &Connection, table: &str) -> anyhow::Result<()>
 }
 
 fn upsert_automation_run(
-    connection: &Connection,
+    connection: &impl Executor,
     run: &AutomationV2RunRecord,
 ) -> anyhow::Result<()> {
     let status = serde_json::to_value(&run.status)?;
@@ -1178,8 +1293,9 @@ fn upsert_automation_run(
     Ok(())
 }
 
+#[cfg(feature = "storage-sqlite")]
 fn table_has_column(
-    connection: &Connection,
+    connection: &rusqlite::Connection,
     table_name: &str,
     column_name: &str,
 ) -> anyhow::Result<bool> {
@@ -1193,7 +1309,7 @@ fn table_has_column(
     Ok(false)
 }
 
-fn upsert_goal(connection: &Connection, goal: &LongRunningGoal) -> anyhow::Result<()> {
+fn upsert_goal(connection: &impl Executor, goal: &LongRunningGoal) -> anyhow::Result<()> {
     let status = serde_json::to_value(&goal.status)?;
     connection.execute(
         "INSERT INTO long_running_goals
@@ -1223,7 +1339,7 @@ fn upsert_goal(connection: &Connection, goal: &LongRunningGoal) -> anyhow::Resul
     Ok(())
 }
 
-fn next_event_seq(connection: &Connection, run_id: &str) -> anyhow::Result<u64> {
+fn next_event_seq(connection: &impl Executor, run_id: &str) -> anyhow::Result<u64> {
     let last: Option<u64> = connection.query_row(
         "SELECT MAX(seq) FROM stateful_events WHERE run_id = ?1",
         [run_id],
@@ -1268,7 +1384,7 @@ fn validate_atomic_transition(
 }
 
 fn ensure_current_goal_allows_handoff(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &impl Executor,
     handoff: &WorkflowHandoff,
 ) -> anyhow::Result<()> {
     let row = transaction
@@ -1330,6 +1446,10 @@ fn collect_json_files(root: &Path, output: &mut Vec<PathBuf>) -> anyhow::Result<
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "orchestration_store/backend_conformance_tests.rs"]
+mod backend_conformance_tests;
 
 #[cfg(test)]
 #[path = "orchestration_store/tests.rs"]

@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
+use crate::stateful_runtime::backend::{params, Executor, OptionalExtension, Transaction};
 use anyhow::{bail, Context};
-use rusqlite::{params, OptionalExtension, Transaction};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -193,16 +193,19 @@ impl OrchestrationStateStore {
                     "a previous legacy runtime migration attempt did not complete; retrying from unchanged sources"
                 );
             }
-            connection.execute(
+            let attempt_id: i64 = connection.query_row(
                 "INSERT INTO stateful_migration_attempts
                     (migration_id, source_fingerprint, started_at_ms)
-                 VALUES (?1, ?2, ?3)",
+                 VALUES (?1, ?2, ?3)
+                 RETURNING attempt_id",
                 params![LEGACY_RUNTIME_MIGRATION_ID, fingerprint, imported_at_ms],
+                |row| row.get(0),
             )?;
-            let attempt_id = connection.last_insert_rowid();
 
             let transaction =
-                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                connection.transaction_with_behavior(
+                crate::stateful_runtime::backend::TransactionBehavior::Immediate,
+            )?;
             transaction.execute(
                 "INSERT INTO stateful_migrations
                     (migration_id, status, source_fingerprint, record_count,
@@ -726,6 +729,7 @@ mod tests {
     use tandem_types::TenantContext;
 
     use super::*;
+    use crate::stateful_runtime::backend::ExecutorRaw as _;
     use crate::stateful_runtime::{
         OrchestrationStorePaths, StatefulReliabilityStoreFile, StatefulRuntimeScope,
         StatefulWorkflowPhase, StatefulWorkflowRunStatus,

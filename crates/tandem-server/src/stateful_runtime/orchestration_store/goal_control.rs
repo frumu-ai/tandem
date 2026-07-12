@@ -1,5 +1,7 @@
+use crate::stateful_runtime::backend::{
+    params, Executor, OptionalExtension, Transaction, TransactionBehavior,
+};
 use anyhow::{bail, Context};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use tandem_automation::{
     AutomationRunStatus, AutomationStopKind, AutomationV2RunRecord, LongRunningGoal,
@@ -186,7 +188,7 @@ struct CancelledActiveRun {
 }
 
 fn cancel_active_run(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     run_id: &str,
     tenant: &TenantContext,
     reason: &str,
@@ -237,7 +239,7 @@ fn cancel_active_run(
 }
 
 fn cancel_waits(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     run_id: &str,
     tenant: &TenantContext,
     reason: &str,
@@ -258,7 +260,7 @@ fn cancel_waits(
             ],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<crate::stateful_runtime::backend::Result<Vec<_>>>()?;
     drop(statement);
     let mut ids = Vec::new();
     for (wait_id, payload) in rows {
@@ -300,7 +302,7 @@ fn cancel_waits(
 }
 
 fn dead_letter_handoffs(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     goal_id: &str,
     tenant: &TenantContext,
     reason: &str,
@@ -314,7 +316,7 @@ fn dead_letter_handoffs(
         .query_map([goal_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<crate::stateful_runtime::backend::Result<Vec<_>>>()?;
     drop(statement);
     let mut ids = Vec::new();
     for (handoff_id, payload) in rows {

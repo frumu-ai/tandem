@@ -30,7 +30,7 @@ fn authoritative_stateful_store_for_path(
         .unwrap_or_else(|| Path::new("."))
         .join(STATEFUL_EVENTS_FILE_NAME);
     let paths = OrchestrationStorePaths::from_runtime_events_path(&runtime_events_path);
-    if !paths.database_path.exists() {
+    if !crate::stateful_runtime::backend::store_initialized_hint(&paths.database_path)? {
         return Ok(None);
     }
     let store = OrchestrationStateStore::open(paths)?;

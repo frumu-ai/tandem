@@ -1,5 +1,7 @@
+use crate::stateful_runtime::backend::{
+    params, Executor, OptionalExtension, Transaction, TransactionBehavior,
+};
 use anyhow::{bail, Context};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use tandem_automation::AutomationV2RunRecord;
 use tandem_types::TenantContext;
 
@@ -599,9 +601,7 @@ impl OrchestrationStateStore {
     }
 }
 
-fn prune_unreferenced_goal_projection_blobs(
-    transaction: &rusqlite::Transaction<'_>,
-) -> anyhow::Result<()> {
+fn prune_unreferenced_goal_projection_blobs(transaction: &Transaction<'_>) -> anyhow::Result<()> {
     transaction.execute(
         "CREATE TEMP TABLE retained_projection_blobs (digest TEXT PRIMARY KEY)",
         [],
@@ -629,7 +629,8 @@ fn prune_unreferenced_goal_projection_blobs(
         {
             for digest in reference.values().filter_map(serde_json::Value::as_str) {
                 transaction.execute(
-                    "INSERT OR IGNORE INTO retained_projection_blobs (digest) VALUES (?1)",
+                    "INSERT INTO retained_projection_blobs (digest) VALUES (?1)
+                     ON CONFLICT(digest) DO NOTHING",
                     [digest],
                 )?;
             }
@@ -644,10 +645,7 @@ fn prune_unreferenced_goal_projection_blobs(
     Ok(())
 }
 
-fn insert_wait(
-    transaction: &rusqlite::Transaction<'_>,
-    wait: &StatefulWaitRecord,
-) -> anyhow::Result<()> {
+fn insert_wait(transaction: &Transaction<'_>, wait: &StatefulWaitRecord) -> anyhow::Result<()> {
     transaction.execute(
         "INSERT INTO automation_waits
             (wait_id, goal_id, run_id, org_id, workspace_id, deployment_id,
@@ -685,7 +683,7 @@ fn insert_wait(
 }
 
 fn load_runtime_records<T>(
-    connection: &rusqlite::Connection,
+    connection: &impl Executor,
     table: &str,
     id_column: &str,
     json_column: &str,
@@ -715,7 +713,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 fn insert_reliability_record<T: serde::Serialize, S: serde::Serialize>(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     table: &str,
     id_column: &str,
     id: &str,
@@ -755,7 +753,7 @@ fn insert_reliability_record<T: serde::Serialize, S: serde::Serialize>(
 }
 
 fn delete_reliability_record<T: serde::Serialize + serde::de::DeserializeOwned>(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     table: &str,
     id_column: &str,
     id: &str,
@@ -787,7 +785,9 @@ fn delete_reliability_record<T: serde::Serialize + serde::de::DeserializeOwned>(
 
 type ScopedPayloadRow = (String, String, String, Option<String>, String);
 
-fn scoped_payload_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScopedPayloadRow> {
+fn scoped_payload_row(
+    row: &crate::stateful_runtime::backend::Row,
+) -> crate::stateful_runtime::backend::Result<ScopedPayloadRow> {
     Ok((
         row.get(0)?,
         row.get(1)?,
@@ -805,7 +805,7 @@ fn enum_name<T: serde::Serialize>(value: &T) -> anyhow::Result<String> {
 }
 
 fn insert_event(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     event: &StatefulRunEventRecord,
 ) -> anyhow::Result<bool> {
     let goal_id = event
@@ -858,7 +858,7 @@ fn insert_event(
 }
 
 pub(super) fn event_with_projection_snapshot(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     event: &StatefulRunEventRecord,
     goal_id: &str,
 ) -> anyhow::Result<StatefulRunEventRecord> {
@@ -881,7 +881,7 @@ pub(super) fn event_with_projection_snapshot(
 }
 
 pub(super) fn projection_snapshot_for_goal(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     goal_id: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let goal_row = transaction
@@ -986,7 +986,7 @@ pub(super) fn projection_snapshot_for_goal(
 }
 
 fn store_projection_blob<T: serde::Serialize>(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     tenant: &TenantContext,
     value: &T,
 ) -> anyhow::Result<String> {
@@ -1004,7 +1004,7 @@ fn store_projection_blob<T: serde::Serialize>(
 }
 
 fn json_rows(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     sql: &str,
     value: &str,
     tenant: &TenantContext,
@@ -1022,7 +1022,7 @@ fn json_rows(
 }
 
 fn event_seq_by_id(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     run_id: &str,
     event_id: &str,
 ) -> anyhow::Result<Option<u64>> {
@@ -1195,7 +1195,7 @@ mod tests {
                          deployment_id, status, active_run_id, goal_json, created_at_ms,
                          updated_at_ms)
                      VALUES (?1, ?2, 1, ?3, ?4, NULL, 'active', NULL, ?5, 1, 1)",
-                    rusqlite::params![
+                    params![
                         "goal-1",
                         "orchestration-1",
                         "org-a",
@@ -1253,7 +1253,7 @@ mod tests {
                          deployment_id, status, active_run_id, goal_json, created_at_ms,
                          updated_at_ms)
                      VALUES (?1, ?2, 1, ?3, ?4, NULL, 'active', NULL, ?5, 1, 1)",
-                    rusqlite::params![
+                    params![
                         "goal-1",
                         "orchestration-1",
                         "org-a",

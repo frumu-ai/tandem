@@ -1,4 +1,5 @@
 pub mod adapters;
+pub(crate) mod backend;
 pub(crate) mod compatibility;
 pub mod definition;
 mod durable_io;

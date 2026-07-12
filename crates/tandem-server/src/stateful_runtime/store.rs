@@ -94,7 +94,7 @@ fn authoritative_stateful_store_for_event_path(
         return None;
     }
     let paths = super::OrchestrationStorePaths::from_runtime_events_path(path);
-    if !paths.database_path.exists() {
+    if !super::backend::store_initialized_hint(&paths.database_path).ok()? {
         return None;
     }
     let store = super::OrchestrationStateStore::open(paths).ok()?;

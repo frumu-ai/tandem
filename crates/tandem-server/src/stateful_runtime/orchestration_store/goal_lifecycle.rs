@@ -6,8 +6,10 @@
 //! derived from the caller's idempotency key, so replaying a start request
 //! returns the already-created goal and root run instead of a duplicate.
 
+use crate::stateful_runtime::backend::{
+    params, Executor, OptionalExtension, Transaction, TransactionBehavior,
+};
 use anyhow::{bail, Context};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::json;
 use tandem_automation::{
     AutomationV2RunRecord, GoalRunLink, LongRunningGoal, LongRunningGoalStatus, WorkflowHandoff,
@@ -678,7 +680,7 @@ impl OrchestrationStateStore {
 }
 
 fn load_goal_for_update(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     goal_id: &str,
     tenant: &TenantContext,
 ) -> anyhow::Result<LongRunningGoal> {
@@ -701,7 +703,7 @@ fn load_goal_for_update(
 }
 
 fn insert_goal_event(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &Transaction<'_>,
     goal: &LongRunningGoal,
     actor: &PrincipalRef,
     now_ms: u64,
@@ -755,8 +757,8 @@ fn insert_goal_event(
 }
 
 fn scoped_payload_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<(String, String, String, Option<String>, String)> {
+    row: &crate::stateful_runtime::backend::Row,
+) -> crate::stateful_runtime::backend::Result<(String, String, String, Option<String>, String)> {
     Ok((
         row.get(0)?,
         row.get(1)?,
