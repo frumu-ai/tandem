@@ -1343,7 +1343,7 @@ async fn hosted_goal_start_stamps_verified_owner_and_owner_can_pause() {
 
     let goal_id = started["goal"]["goal_id"].as_str().unwrap().to_string();
     let response = crate::http::goals_api::pause_goal(
-        State(state),
+        State(state.clone()),
         Extension(tenant),
         Extension(principal),
         Some(Extension(verified)),
@@ -1354,6 +1354,19 @@ async fn hosted_goal_start_stamps_verified_owner_and_owner_can_pause() {
     assert_eq!(response.status(), StatusCode::OK);
     let paused = json_body(response).await;
     assert_eq!(paused["outcome"], "paused");
+
+    let response = crate::http::goals_api::settle_goal_completion(
+        State(state),
+        Extension(TenantContext::local_implicit()),
+        Extension(tandem_types::RequestPrincipal::authenticated_user(
+            "intruder", "test",
+        )),
+        Some(Extension(verified_context("intruder"))),
+        Path(started["goal"]["goal_id"].as_str().unwrap().to_string()),
+        Json(Default::default()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -1393,8 +1406,8 @@ async fn hosted_draft_update_accepts_principal_ref_creator_metadata() {
     update["expected_updated_at_ms"] = json!(expected_updated_at_ms);
     let payload = serde_json::from_value(update).unwrap();
     let response = crate::http::orchestrations_api::update_orchestration_draft(
-        State(state),
-        Extension(tenant),
+        State(state.clone()),
+        Extension(tenant.clone()),
         Extension(tandem_types::RequestPrincipal::authenticated_user(
             "transport-user",
             "test",
@@ -1414,4 +1427,41 @@ async fn hosted_draft_update_accepts_principal_ref_creator_metadata() {
         updated["orchestration"]["metadata"]["created_by"],
         "operator"
     );
+
+    let intruder = tandem_types::RequestPrincipal::authenticated_user("intruder", "test");
+    let verified_intruder = Some(Extension(verified_context("intruder")));
+    let refresh = serde_json::from_value(json!({
+        "expected_updated_at_ms": updated["orchestration"]["updated_at_ms"]
+    }))
+    .unwrap();
+    let response = crate::http::orchestrations_api::refresh_orchestration_references(
+        State(state.clone()),
+        Extension(tenant.clone()),
+        Extension(intruder.clone()),
+        verified_intruder.clone(),
+        Path("orch-goals".to_string()),
+        Json(refresh),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = crate::http::orchestrations_api::publish_orchestration(
+        State(state.clone()),
+        Extension(tenant.clone()),
+        Extension(intruder.clone()),
+        verified_intruder.clone(),
+        Path("orch-goals".to_string()),
+        axum::body::Bytes::new(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = crate::http::orchestrations_api::archive_orchestration_draft(
+        State(state),
+        Extension(tenant),
+        Extension(intruder),
+        verified_intruder,
+        Path("orch-goals".to_string()),
+        axum::body::Bytes::new(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }

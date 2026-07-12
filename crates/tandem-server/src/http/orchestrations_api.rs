@@ -453,13 +453,24 @@ pub(super) async fn get_orchestration(
 pub(super) async fn archive_orchestration_draft(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
     body: Bytes,
 ) -> Response {
+    let verified = verified.as_deref();
     let store = match definition_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
+    let draft = match load_tenant_draft(&store, &tenant, &orchestration_id) {
+        Ok(draft) => draft,
+        Err(response) => return response,
+    };
+    let actor = super::goals_api::effective_actor(&principal, verified);
+    if let Err(response) = require_orchestration_owner(&tenant, verified, &draft, &actor) {
+        return response;
+    }
     let expected = match revision_from_body(&body) {
         Ok(expected) => expected,
         Err(response) => return response,
@@ -582,9 +593,12 @@ pub(super) async fn orchestration_stale_references(
 pub(super) async fn refresh_orchestration_references(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
     Json(payload): Json<OrchestrationRefreshPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
     let store = match definition_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
@@ -593,6 +607,10 @@ pub(super) async fn refresh_orchestration_references(
         Ok(draft) => draft,
         Err(response) => return response,
     };
+    let actor = super::goals_api::effective_actor(&principal, verified);
+    if let Err(response) = require_orchestration_owner(&tenant, verified, &draft, &actor) {
+        return response;
+    }
     let expected = payload.expected_updated_at_ms;
     let mut refreshed = Vec::new();
     for node in &mut draft.nodes {
@@ -631,9 +649,11 @@ pub(super) async fn publish_orchestration(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
     body: Bytes,
 ) -> Response {
+    let verified = verified.as_deref();
     let store = match definition_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
@@ -642,6 +662,10 @@ pub(super) async fn publish_orchestration(
         Ok(draft) => draft,
         Err(response) => return response,
     };
+    let actor = super::goals_api::effective_actor(&principal, verified);
+    if let Err(response) = require_orchestration_owner(&tenant, verified, &draft, &actor) {
+        return response;
+    }
     let expected = match revision_from_body(&body) {
         Ok(expected) => expected,
         Err(response) => return response,
@@ -701,7 +725,7 @@ pub(super) async fn publish_orchestration(
     metadata.insert(
         "publish".to_string(),
         json!({
-            "actor": principal,
+            "actor": actor,
             "published_at_ms": now,
             "validation": validation.report,
             "workflow_definition_hashes": validation.workflow_hashes,

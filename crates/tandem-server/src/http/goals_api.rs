@@ -1158,7 +1158,7 @@ pub(super) async fn settle_goal_completion(
         Ok(store) => store,
         Err(response) => return response,
     };
-    match load_tenant_goal(&store, &tenant, &goal_id) {
+    let goal = match load_tenant_goal(&store, &tenant, &goal_id) {
         Ok(goal) if goal.status.is_terminal() => {
             return (
                 StatusCode::CONFLICT,
@@ -1170,8 +1170,12 @@ pub(super) async fn settle_goal_completion(
             )
                 .into_response()
         }
-        Ok(_) => {}
+        Ok(goal) => goal,
         Err(response) => return response,
+    };
+    let actor = effective_actor(&principal, verified);
+    if let Err(response) = require_goal_owner(&tenant, verified, &goal, &actor) {
+        return response;
     }
     if let Some(final_artifact) = payload.final_artifact.as_ref() {
         let workspace_root = state.workspace_index.snapshot().await.root;

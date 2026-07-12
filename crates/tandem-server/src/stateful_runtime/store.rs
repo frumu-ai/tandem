@@ -365,7 +365,12 @@ pub async fn compact_stateful_run_event_log(
         HashMap::<StatefulRunEventCompactionKey, StatefulRunEventCompactionSummary>::new();
     let mut pruned = 0_usize;
 
-    for row in load_stateful_run_events(path) {
+    let observed = load_stateful_run_events(path);
+    let observed_event_ids = observed
+        .iter()
+        .map(|row| row.event_id.clone())
+        .collect::<Vec<_>>();
+    for row in observed {
         // Events at or after a run's newest snapshot are the replay tail for
         // that snapshot; age-based retention must never remove them.
         let protected_by_snapshot = snapshot_floors
@@ -411,9 +416,11 @@ pub async fn compact_stateful_run_event_log(
             .then_with(|| left.event_id.cmp(&right.event_id))
     });
     if let Some(store) = authoritative_store {
-        tokio::task::spawn_blocking(move || store.replace_stateful_runtime_events(&retained))
-            .await
-            .map_err(|error| anyhow::anyhow!("stateful event compaction task failed: {error}"))??;
+        tokio::task::spawn_blocking(move || {
+            store.replace_observed_stateful_runtime_events(&observed_event_ids, &retained)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("stateful event compaction task failed: {error}"))??;
         invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
         return Ok(pruned);
     }

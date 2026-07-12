@@ -129,37 +129,58 @@ impl OrchestrationStateStore {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             transaction.execute("DELETE FROM stateful_events", [])?;
-            transaction.execute(
-                "CREATE TEMP TABLE retained_projection_blobs (digest TEXT PRIMARY KEY)",
-                [],
-            )?;
             for event in events {
                 insert_event(&transaction, event)?;
-                let stored_event = transaction.query_row(
-                    "SELECT event_json FROM stateful_events WHERE event_id = ?1",
-                    [&event.event_id],
-                    |row| row.get::<_, String>(0),
-                )?;
-                let stored_event = serde_json::from_str::<StatefulRunEventRecord>(&stored_event)?;
-                if let Some(reference) = stored_event
-                    .payload
-                    .get("projection_snapshot_ref")
-                    .and_then(serde_json::Value::as_object)
-                {
-                    for digest in reference.values().filter_map(serde_json::Value::as_str) {
-                        transaction.execute(
-                            "INSERT OR IGNORE INTO retained_projection_blobs (digest) VALUES (?1)",
-                            [digest],
-                        )?;
-                    }
-                }
             }
+            prune_unreferenced_goal_projection_blobs(&transaction)?;
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Replaces only the exact event snapshot observed by a compactor.
+    /// Events committed after that snapshot are outside `observed_event_ids`
+    /// and therefore survive alongside their projection blobs.
+    pub fn replace_observed_stateful_runtime_events(
+        &self,
+        observed_event_ids: &[String],
+        replacement_events: &[StatefulRunEventRecord],
+    ) -> anyhow::Result<()> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             transaction.execute(
-                "DELETE FROM goal_projection_blobs
-                 WHERE digest NOT IN (SELECT digest FROM retained_projection_blobs)",
+                "CREATE TEMP TABLE compaction_observed_events (event_id TEXT PRIMARY KEY)",
                 [],
             )?;
-            transaction.execute("DROP TABLE retained_projection_blobs", [])?;
+            for event_id in observed_event_ids {
+                transaction.execute(
+                    "INSERT INTO compaction_observed_events (event_id) VALUES (?1)",
+                    [event_id],
+                )?;
+            }
+            let present: usize = transaction.query_row(
+                "SELECT COUNT(*) FROM stateful_events
+                 WHERE event_id IN (SELECT event_id FROM compaction_observed_events)",
+                [],
+                |row| row.get(0),
+            )?;
+            if present != observed_event_ids.len() {
+                bail!(
+                    "stale stateful event compaction snapshot: observed {} events, found {present}",
+                    observed_event_ids.len()
+                );
+            }
+            transaction.execute(
+                "DELETE FROM stateful_events
+                 WHERE event_id IN (SELECT event_id FROM compaction_observed_events)",
+                [],
+            )?;
+            for event in replacement_events {
+                insert_event(&transaction, event)?;
+            }
+            prune_unreferenced_goal_projection_blobs(&transaction)?;
+            transaction.execute("DROP TABLE compaction_observed_events", [])?;
             transaction.commit()?;
             Ok(())
         })
@@ -428,6 +449,42 @@ impl OrchestrationStateStore {
             Ok(deleted)
         })
     }
+}
+
+fn prune_unreferenced_goal_projection_blobs(
+    transaction: &rusqlite::Transaction<'_>,
+) -> anyhow::Result<()> {
+    transaction.execute(
+        "CREATE TEMP TABLE retained_projection_blobs (digest TEXT PRIMARY KEY)",
+        [],
+    )?;
+    let payloads = {
+        let mut statement = transaction.prepare("SELECT event_json FROM stateful_events")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for payload in payloads {
+        let event = serde_json::from_str::<StatefulRunEventRecord>(&payload)?;
+        if let Some(reference) = event
+            .payload
+            .get("projection_snapshot_ref")
+            .and_then(serde_json::Value::as_object)
+        {
+            for digest in reference.values().filter_map(serde_json::Value::as_str) {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO retained_projection_blobs (digest) VALUES (?1)",
+                    [digest],
+                )?;
+            }
+        }
+    }
+    transaction.execute(
+        "DELETE FROM goal_projection_blobs
+         WHERE digest NOT IN (SELECT digest FROM retained_projection_blobs)",
+        [],
+    )?;
+    transaction.execute("DROP TABLE retained_projection_blobs", [])?;
+    Ok(())
 }
 
 fn insert_wait(
@@ -925,6 +982,121 @@ mod tests {
             .resolve_goal_projection_snapshot(reference)
             .expect("resolve retained projection snapshot");
         assert_eq!(projection["goal"]["goal_id"], "goal-1");
+    }
+
+    #[test]
+    fn observed_event_replacement_preserves_late_events_and_projection_blobs() {
+        let directory = tempfile::tempdir().expect("create test directory");
+        let store = OrchestrationStateStore::from_automation_runs_path(
+            &directory.path().join("automation_v2_runs.json"),
+        )
+        .expect("open orchestration store");
+        store
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO long_running_goals
+                        (goal_id, orchestration_id, orchestration_version, org_id, workspace_id,
+                         deployment_id, status, active_run_id, goal_json, created_at_ms,
+                         updated_at_ms)
+                     VALUES (?1, ?2, 1, ?3, ?4, NULL, 'active', NULL, ?5, 1, 1)",
+                    rusqlite::params![
+                        "goal-1",
+                        "orchestration-1",
+                        "org-a",
+                        "workspace-a",
+                        serde_json::to_string(&json!({
+                            "goal_id": "goal-1",
+                            "active_run_id": null,
+                        }))?,
+                    ],
+                )?;
+                connection.execute(
+                    "INSERT INTO goal_run_links
+                        (goal_id, run_id, orchestration_node_id, orchestration_version,
+                         hop_index, parent_run_id, triggering_handoff_id, link_json,
+                         created_at_ms)
+                     VALUES (?1, ?2, ?3, 1, 1, NULL, NULL, '{}', 1)",
+                    ["goal-1", "run-1", "node-1"],
+                )?;
+                Ok(())
+            })
+            .expect("seed goal projection");
+
+        let mut observed = event("run-1");
+        observed.event_id = "observed-event".to_string();
+        observed.seq = 1;
+        store
+            .replace_stateful_runtime_events(&[observed.clone()])
+            .expect("seed observed snapshot");
+
+        let mut late = event("run-1");
+        late.event_id = "late-event".to_string();
+        late.seq = 2;
+        store
+            .append_stateful_runtime_event(&late)
+            .expect("append event after compaction snapshot");
+        let late_before = store
+            .load_stateful_runtime_events()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.event_id == late.event_id)
+            .unwrap();
+        let late_projection_ref = late_before.payload["projection_snapshot_ref"].clone();
+        assert!(late_projection_ref.is_object());
+
+        let mut marker = event("run-1");
+        marker.event_id = "compaction-marker".to_string();
+        marker.seq = 1;
+        marker.event_type = "stateful_runtime.event_log_compacted".to_string();
+        store
+            .replace_observed_stateful_runtime_events(&[observed.event_id], &[marker])
+            .expect("replace only the observed snapshot");
+
+        let ids = store
+            .load_stateful_runtime_events()
+            .unwrap()
+            .into_iter()
+            .map(|row| row.event_id)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            ids,
+            ["compaction-marker".to_string(), "late-event".to_string()]
+                .into_iter()
+                .collect()
+        );
+        let projection = store
+            .resolve_goal_projection_snapshot(&late_projection_ref)
+            .expect("late event projection blobs survive compaction");
+        assert_eq!(projection["goal"]["goal_id"], "goal-1");
+    }
+
+    #[test]
+    fn observed_event_replacement_rejects_a_stale_snapshot() {
+        let directory = tempfile::tempdir().expect("create test directory");
+        let store = OrchestrationStateStore::from_automation_runs_path(
+            &directory.path().join("automation_v2_runs.json"),
+        )
+        .expect("open orchestration store");
+        let mut stored = event("run-1");
+        stored.event_id = "stored-event".to_string();
+        stored.seq = 1;
+        store
+            .append_stateful_runtime_event(&stored)
+            .expect("seed event");
+        let mut replacement = event("run-1");
+        replacement.event_id = "replacement-event".to_string();
+        replacement.seq = 1;
+
+        let error = store
+            .replace_observed_stateful_runtime_events(
+                &["already-compacted-event".to_string()],
+                &[replacement],
+            )
+            .expect_err("stale snapshot must abort");
+        assert!(error
+            .to_string()
+            .contains("stale stateful event compaction snapshot"));
+        assert_eq!(store.load_stateful_runtime_events().unwrap(), vec![stored]);
     }
 
     #[test]
