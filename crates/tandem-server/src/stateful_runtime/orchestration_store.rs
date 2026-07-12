@@ -1,13 +1,7 @@
-use std::{
-    fs::{File, OpenOptions},
-    io::{Seek as _, SeekFrom, Write as _},
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
-use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-use serde::{Deserialize, Serialize};
 use tandem_automation::{
     validate_orchestration_spec, AutomationV2RunRecord, GoalRunLink, LongRunningGoal,
     LongRunningGoalStatus, OrchestrationSpec, OrchestrationStatus, WorkflowHandoff,
@@ -15,6 +9,7 @@ use tandem_automation::{
 };
 
 mod definitions;
+mod engine_lock;
 mod goal_control;
 mod goal_lifecycle;
 mod migration;
@@ -23,6 +18,7 @@ mod runtime_records;
 mod transition;
 
 pub use definitions::{DRAFT_CONCURRENCY_CONFLICT, ORCHESTRATION_DRAFT_VERSION};
+pub use engine_lock::{read_engine_lock_owner, EngineLockOwner, StatefulEngineLock};
 pub use goal_control::{GoalCancellationResult, GoalControlOutcome};
 pub use goal_lifecycle::{GoalEventRow, GoalPauseOutcome, GoalResumeOutcome, StartGoalOutcome};
 pub use migration::{
@@ -67,158 +63,6 @@ fn canonical_stateful_runtime_root(path: &Path) -> &Path {
         parent.parent().unwrap_or(parent)
     } else {
         parent
-    }
-}
-
-/// Identity of the engine process holding (or last holding) the runtime lock.
-/// Written into the lock file so a blocked acquire can report who owns the
-/// root and whether that owner is still alive.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EngineLockOwner {
-    pub pid: u32,
-    pub acquired_at_ms: u64,
-    #[serde(default)]
-    pub process_start_hint: Option<String>,
-}
-
-impl EngineLockOwner {
-    fn current(acquired_at_ms: u64) -> Self {
-        Self {
-            pid: std::process::id(),
-            acquired_at_ms,
-            process_start_hint: std::env::args().next(),
-        }
-    }
-
-    /// Best-effort liveness probe for the recorded owner. `None` means the
-    /// platform cannot answer, which callers must treat as "possibly alive".
-    pub fn is_alive(&self) -> Option<bool> {
-        #[cfg(target_os = "linux")]
-        {
-            Some(Path::new(&format!("/proc/{}", self.pid)).exists())
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            None
-        }
-    }
-}
-
-/// Reads the owner metadata recorded in an engine lock file, if any.
-pub fn read_engine_lock_owner(path: &Path) -> Option<EngineLockOwner> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(raw.trim()).ok()
-}
-
-/// Process-lifetime guard preventing two local engines from sharing one state root.
-#[derive(Debug)]
-pub struct StatefulEngineLock {
-    file: File,
-    path: PathBuf,
-}
-
-impl StatefulEngineLock {
-    pub fn acquire(path: &Path) -> anyhow::Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)
-            .with_context(|| format!("failed to open engine lock {}", path.display()))?;
-        if file.try_lock_exclusive().is_err() {
-            bail!("{}", Self::held_lock_diagnostics(path));
-        }
-        // Advisory locking is not reliable on every filesystem. Treat metadata
-        // naming a different live (or unverifiable) process as an independent
-        // safety signal even when the OS allowed this lock acquisition.
-        if let Some(previous) = read_engine_lock_owner(path) {
-            if previous.pid != std::process::id() {
-                match previous.is_alive() {
-                    Some(false) => tracing::info!(
-                        lock = %path.display(),
-                        previous_pid = previous.pid,
-                        "recovered stateful engine lock from an owner that exited uncleanly"
-                    ),
-                    Some(true) => {
-                        let _ = FileExt::unlock(&file);
-                        bail!(
-                            "refusing stateful engine lock takeover at {}: recorded owner pid {} is still alive",
-                            path.display(),
-                            previous.pid
-                        );
-                    }
-                    None => {
-                        let _ = FileExt::unlock(&file);
-                        bail!(
-                            "refusing stateful engine lock takeover at {}: recorded owner pid {} cannot be checked for liveness on this platform",
-                            path.display(),
-                            previous.pid
-                        );
-                    }
-                }
-            }
-        }
-        let owner = EngineLockOwner::current(crate::util::time::now_ms());
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
-        file.write_all(serde_json::to_string(&owner)?.as_bytes())?;
-        file.sync_all()?;
-        Ok(Self {
-            file,
-            path: path.to_path_buf(),
-        })
-    }
-
-    /// Actionable diagnostics for a lock that could not be acquired: names the
-    /// recorded owner and proves (where the platform allows) whether that
-    /// owner is still alive. Recovery from a genuinely stale lock is manual by
-    /// design — automatic takeover would enable unsafe multi-engine sharing on
-    /// filesystems where advisory locks are unreliable.
-    fn held_lock_diagnostics(path: &Path) -> String {
-        let base = format!(
-            "another Tandem engine already owns runtime root lock {}",
-            path.display()
-        );
-        match read_engine_lock_owner(path) {
-            Some(owner) => match owner.is_alive() {
-                Some(true) => format!(
-                    "{base}: held by live engine pid {} since {} — stop that engine before starting another on this runtime root",
-                    owner.pid, owner.acquired_at_ms
-                ),
-                Some(false) => format!(
-                    "{base}: recorded owner pid {} is no longer alive, so the advisory lock was not released by the filesystem (common on network mounts) — after confirming no other engine uses this root, delete {} and restart",
-                    owner.pid,
-                    path.display()
-                ),
-                None => format!(
-                    "{base}: recorded owner pid {} (liveness unknown on this platform) — verify the process before removing {}",
-                    owner.pid,
-                    path.display()
-                ),
-            },
-            None => format!(
-                "{base}: no owner metadata was recorded — verify no other engine uses this root before removing the lock file"
-            ),
-        }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Owner metadata recorded by this guard.
-    pub fn owner(&self) -> Option<EngineLockOwner> {
-        read_engine_lock_owner(&self.path)
-    }
-}
-
-impl Drop for StatefulEngineLock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
     }
 }
 

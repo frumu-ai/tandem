@@ -292,8 +292,16 @@ fn tenant_scoped_reads_fail_closed_at_the_store_layer() {
         .get_workflow_handoff_for_tenant(&local, "handoff-1")
         .unwrap()
         .is_some());
-    assert!(!store
+    let local_events = store
         .query_goal_events_for_tenant(&local, "goal-1", None, 10)
+        .unwrap();
+    assert!(!local_events.is_empty());
+    assert!(store
+        .goal_event_cursor_bounds_for_tenant(&local, "goal-1")
+        .unwrap()
+        .is_some());
+    assert!(!store
+        .query_goal_event_window_for_tenant(&local, "goal-1", None, 10)
         .unwrap()
         .is_empty());
 
@@ -318,6 +326,24 @@ fn tenant_scoped_reads_fail_closed_at_the_store_layer() {
         .query_goal_events_for_tenant(&foreign, "goal-1", None, 10)
         .unwrap()
         .is_empty());
+    assert!(store
+        .goal_event_cursor_bounds_for_tenant(&foreign, "goal-1")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .query_goal_event_window_for_tenant(&foreign, "goal-1", None, 10)
+        .unwrap()
+        .is_empty());
+
+    let reference = local_events
+        .iter()
+        .find_map(|row| row.event.payload.get("projection_snapshot_ref"))
+        .expect("transition event carries a durable projection reference");
+    let mut forged_reference = reference.clone();
+    forged_reference["tenant_context"] = serde_json::to_value(&foreign).unwrap();
+    assert!(store
+        .resolve_goal_projection_snapshot(&local, &forged_reference)
+        .is_err());
 }
 
 /// TAN-705/TAN-675: the MCP tool-replay ledger seals its stored responses

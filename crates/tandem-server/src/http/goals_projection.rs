@@ -510,7 +510,7 @@ async fn build_projection(
     let store = super::goals_api::goal_store(state)?;
     let live_goal = super::goals_api::load_tenant_goal(&store, tenant, goal_id)?;
     let (retained_from_cursor, live_cursor) = store
-        .goal_event_cursor_bounds(goal_id)
+        .goal_event_cursor_bounds_for_tenant(tenant, goal_id)
         .map_err(|error| super::goals_api::goal_error_response(&error))?
         .unwrap_or((0, 0));
     if query
@@ -531,7 +531,7 @@ async fn build_projection(
         .unwrap_or(DEFAULT_TIMELINE_LIMIT)
         .clamp(1, MAX_TIMELINE_LIMIT);
     let timeline = store
-        .query_goal_event_window(goal_id, query.cursor, limit)
+        .query_goal_event_window_for_tenant(tenant, goal_id, query.cursor, limit)
         .map_err(|error| super::goals_api::goal_error_response(&error))?;
     let snapshot = match timeline.iter().rev().find(|row| {
         row.event.payload.get("projection_snapshot").is_some()
@@ -542,7 +542,10 @@ async fn build_projection(
                 value.clone()
             } else {
                 store
-                    .resolve_goal_projection_snapshot(&row.event.payload["projection_snapshot_ref"])
+                    .resolve_goal_projection_snapshot(
+                        tenant,
+                        &row.event.payload["projection_snapshot_ref"],
+                    )
                     .map_err(|error| {
                         projection_error(
                             StatusCode::CONFLICT,

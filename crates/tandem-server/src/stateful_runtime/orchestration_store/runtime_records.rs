@@ -16,6 +16,7 @@ use crate::stateful_runtime::{stateful_run_event_compacted_event_ids, StatefulRu
 impl OrchestrationStateStore {
     pub fn resolve_goal_projection_snapshot(
         &self,
+        expected_tenant: &TenantContext,
         reference: &serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
         let tenant: TenantContext = serde_json::from_value(
@@ -24,6 +25,12 @@ impl OrchestrationStateStore {
                 .cloned()
                 .context("projection snapshot is missing tenant_context")?,
         )?;
+        anyhow::ensure!(
+            tenant.org_id == expected_tenant.org_id
+                && tenant.workspace_id == expected_tenant.workspace_id
+                && tenant.deployment_id == expected_tenant.deployment_id,
+            "projection snapshot tenant does not match the authorized tenant"
+        );
         self.with_connection(|connection| {
             let component = |key: &str| -> anyhow::Result<serde_json::Value> {
                 let digest = reference
@@ -1222,7 +1229,7 @@ mod tests {
         let reference = &stored.payload["projection_snapshot_ref"];
         assert!(reference.is_object());
         let projection = store
-            .resolve_goal_projection_snapshot(reference)
+            .resolve_goal_projection_snapshot(&stored.scope.tenant_context, reference)
             .expect("resolve retained projection snapshot");
         assert_eq!(projection["goal"]["goal_id"], "goal-1");
     }
@@ -1308,7 +1315,10 @@ mod tests {
                 .collect()
         );
         let projection = store
-            .resolve_goal_projection_snapshot(&late_projection_ref)
+            .resolve_goal_projection_snapshot(
+                &late_before.scope.tenant_context,
+                &late_projection_ref,
+            )
             .expect("late event projection blobs survive compaction");
         assert_eq!(projection["goal"]["goal_id"], "goal-1");
     }

@@ -992,11 +992,9 @@ async fn workflow_reference_states(
                     )
                     .await
             }
-            None => {
-                state
-                    .validate_automation_enterprise_delegation_grants(&automation)
-                    .await
-            }
+            None => Err(anyhow::anyhow!(
+                "orchestration author identity is required to validate workflow authority"
+            )),
         };
         if let Err(denial) = authority {
             references.push(json!({

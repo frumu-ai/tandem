@@ -596,8 +596,9 @@ impl OrchestrationStateStore {
     /// A bounded chronological window ending at `through_cursor`. This is the
     /// canonical projection replay read; the descending inner query avoids
     /// scanning an entire long-lived goal just to return its recent timeline.
-    pub fn query_goal_event_window(
+    pub fn query_goal_event_window_for_tenant(
         &self,
+        tenant: &TenantContext,
         goal_id: &str,
         through_cursor: Option<i64>,
         limit: usize,
@@ -608,11 +609,20 @@ impl OrchestrationStateStore {
                     SELECT rowid, event_id, org_id, workspace_id, deployment_id, event_json
                     FROM stateful_events
                     WHERE goal_id = ?1 AND rowid <= ?2
+                      AND org_id = ?4 AND workspace_id = ?5
+                      AND (deployment_id IS ?6 OR deployment_id = ?6)
                     ORDER BY rowid DESC LIMIT ?3
                  ) ORDER BY rowid",
             )?;
             let rows = statement.query_map(
-                params![goal_id, through_cursor.unwrap_or(i64::MAX), limit as i64],
+                params![
+                    goal_id,
+                    through_cursor.unwrap_or(i64::MAX),
+                    limit as i64,
+                    tenant.org_id,
+                    tenant.workspace_id,
+                    tenant.deployment_id,
+                ],
                 |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
@@ -629,26 +639,36 @@ impl OrchestrationStateStore {
                 let (cursor, id, org, workspace, deployment, payload) = row?;
                 events.push(GoalEventRow {
                     cursor,
-                    event: protected_records::decode_scoped(
-                        &org,
-                        &workspace,
-                        deployment.as_deref(),
-                        "event",
-                        &id,
-                        &payload,
-                    )?,
+                    event: protected_records::decode(tenant, "event", &id, &payload)?,
                 });
+                anyhow::ensure!(
+                    org == tenant.org_id
+                        && workspace == tenant.workspace_id
+                        && deployment == tenant.deployment_id,
+                    "goal event escaped the authorized tenant scope"
+                );
             }
             Ok(events)
         })
     }
 
-    pub fn goal_event_cursor_bounds(&self, goal_id: &str) -> anyhow::Result<Option<(i64, i64)>> {
+    pub fn goal_event_cursor_bounds_for_tenant(
+        &self,
+        tenant: &TenantContext,
+        goal_id: &str,
+    ) -> anyhow::Result<Option<(i64, i64)>> {
         self.with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT MIN(rowid), MAX(rowid) FROM stateful_events WHERE goal_id = ?1",
-                    [goal_id],
+                    "SELECT MIN(rowid), MAX(rowid) FROM stateful_events
+                     WHERE goal_id = ?1 AND org_id = ?2 AND workspace_id = ?3
+                       AND (deployment_id IS ?4 OR deployment_id = ?4)",
+                    params![
+                        goal_id,
+                        tenant.org_id,
+                        tenant.workspace_id,
+                        tenant.deployment_id,
+                    ],
                     |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
                 )
                 .map(|(minimum, maximum)| minimum.zip(maximum))

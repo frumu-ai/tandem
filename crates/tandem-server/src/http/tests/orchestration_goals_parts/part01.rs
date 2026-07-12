@@ -433,6 +433,63 @@ async fn unauthorized_author_cannot_validate_or_publish_referenced_workflow() {
 }
 
 #[tokio::test]
+async fn missing_author_fails_closed_for_referenced_workflow_authority() {
+    let state = test_state().await;
+    let (definition_hash, _) = seed_enterprise_workflow(&state, "allowed-workflow", true).await;
+    let app = app_router(state.clone());
+    let (status, created) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/orchestrations",
+            Some(enterprise_draft_payload(
+                "allowed-workflow",
+                &definition_hash,
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+
+    let tenant = TenantContext::local_implicit();
+    let store = crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+        &state.automation_v2_runs_path,
+    )
+    .unwrap();
+    let mut draft = store
+        .get_orchestration_draft(&tenant, "enterprise-orchestration")
+        .unwrap()
+        .unwrap();
+    let expected_updated_at_ms = draft.updated_at_ms;
+    draft.metadata.as_mut().unwrap().as_object_mut().unwrap().remove("created_by");
+    store
+        .put_orchestration_draft(&draft, Some(expected_updated_at_ms))
+        .unwrap();
+
+    let (status, validation) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/orchestrations/enterprise-orchestration/validate",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{validation}");
+    assert_eq!(validation["report"]["valid"], json!(false));
+    assert!(validation["report"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|issue| {
+            issue["code"] == json!("workflow_authority_denied")
+                && issue["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("author identity is required"))
+        }));
+}
+
+#[tokio::test]
 async fn dry_run_previews_transitions_without_mutating_state() {
     let state = test_state().await;
     let app = app_router(state.clone());

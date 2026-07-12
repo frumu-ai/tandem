@@ -1,8 +1,66 @@
 use serial_test::serial;
+use sha2::{Digest, Sha256};
+use tandem_memory::decrypt_broker::{MemoryDecryptBroker, MemoryDecryptBrokerConfig};
+use tandem_memory::dek_cache::MemoryDekCache;
+use tandem_memory::envelope_crypto::HostedMemoryEnvelopeCrypto;
+use tandem_memory::kms_providers::{
+    GoogleCloudKmsDecryptClient, GoogleCloudKmsDecryptRequest, GoogleCloudKmsDekUnwrapProvider,
+    GoogleCloudKmsDekWrapProvider, GoogleCloudKmsEncryptClient, GoogleCloudKmsEncryptRequest,
+};
+use tandem_memory::types::{MemoryError, MemoryResult};
 use tandem_memory::MemoryCryptoProvider;
 use tandem_types::TenantContext;
 
-use super::protected_records;
+use super::{protected_records, OrchestrationStateStore, OrchestrationStorePaths};
+
+const PROVIDER_ID: &str = "google_cloud_kms";
+const RUNTIME_PRINCIPAL: &str = "runtime-tandem";
+const KEK_ID: &str = "projects/test/locations/global/keyRings/tandem/cryptoKeys/orchestration";
+
+#[derive(Clone)]
+struct FixtureKms(u8);
+
+impl GoogleCloudKmsEncryptClient for FixtureKms {
+    fn encrypt(&self, request: &GoogleCloudKmsEncryptRequest) -> MemoryResult<Vec<u8>> {
+        let mut wrapped = Sha256::digest(&request.additional_authenticated_data).to_vec();
+        wrapped.extend(request.plaintext.iter().map(|byte| byte ^ self.0));
+        Ok(wrapped)
+    }
+}
+
+impl GoogleCloudKmsDecryptClient for FixtureKms {
+    fn decrypt(&self, request: &GoogleCloudKmsDecryptRequest) -> MemoryResult<Vec<u8>> {
+        let expected = Sha256::digest(&request.additional_authenticated_data);
+        if request.ciphertext.len() < expected.len() {
+            return Err(MemoryError::InvalidConfig(
+                "fixture KMS ciphertext is truncated".to_string(),
+            ));
+        }
+        let (actual, ciphertext) = request.ciphertext.split_at(expected.len());
+        if actual != &expected[..] {
+            return Err(MemoryError::InvalidConfig(
+                "fixture KMS authenticated data mismatch".to_string(),
+            ));
+        }
+        Ok(ciphertext.iter().map(|byte| byte ^ self.0).collect())
+    }
+}
+
+fn hosted_provider(fingerprint: u8) -> MemoryCryptoProvider {
+    let config = MemoryDecryptBrokerConfig::hosted(PROVIDER_ID, RUNTIME_PRINCIPAL).unwrap();
+    let kms = FixtureKms(fingerprint);
+    MemoryCryptoProvider::hosted(HostedMemoryEnvelopeCrypto::new(
+        MemoryDecryptBroker::new(config).unwrap(),
+        Box::new(GoogleCloudKmsDekWrapProvider::new(kms.clone(), RUNTIME_PRINCIPAL).unwrap()),
+        Box::new(GoogleCloudKmsDekUnwrapProvider::new(kms, RUNTIME_PRINCIPAL).unwrap()),
+        MemoryDekCache::new(64),
+        PROVIDER_ID,
+        RUNTIME_PRINCIPAL,
+        KEK_ID,
+        "1",
+        0,
+    ))
+}
 
 fn tenant(org: &str, actor: &str) -> TenantContext {
     TenantContext::explicit_user_workspace(org, "workspace-a", Some("prod".to_string()), actor)
@@ -147,4 +205,87 @@ async fn hosted_required_without_kms_fails_closed() {
         }
     }
     assert!(format!("{error:?}").contains("refusing to store plaintext"));
+}
+
+#[tokio::test]
+async fn hosted_kms_store_row_round_trips_and_rejects_wrong_key_or_scope() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = OrchestrationStateStore::open(OrchestrationStorePaths {
+        database_path: directory.path().join("runtime.sqlite3"),
+        engine_lock_path: directory.path().join("engine.lock"),
+    })
+    .unwrap();
+    let authorized_tenant = tenant("org-a", "user-a");
+    let foreign = tenant("org-b", "user-a");
+    let response = serde_json::json!({"result": "hosted-secret"});
+
+    crate::encrypted_file_store::with_test_crypto_provider(
+        hosted_provider(0x5a),
+        Some(RUNTIME_PRINCIPAL),
+        async {
+            assert!(store
+                .begin_orchestration_tool_request(
+                    &authorized_tenant,
+                    "publish",
+                    "key-1",
+                    "digest-1",
+                    1,
+                )
+                .unwrap()
+                .is_none());
+            store
+                .complete_orchestration_tool_request(
+                    &authorized_tenant,
+                    "publish",
+                    "key-1",
+                    "digest-1",
+                    &response,
+                    2,
+                )
+                .unwrap();
+            let stored = store
+                .with_connection(|connection| {
+                    Ok(connection.query_row(
+                        "SELECT response_json FROM orchestration_tool_requests",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )?)
+                })
+                .unwrap();
+            assert!(stored.starts_with(crate::encrypted_file_store::SCOPED_RECORD_PREFIX));
+            assert!(!stored.contains("hosted-secret"));
+            assert_eq!(
+                store
+                    .completed_orchestration_tool_request(
+                        &authorized_tenant,
+                        "publish",
+                        "key-1",
+                        "digest-1",
+                    )
+                    .unwrap(),
+                Some(response.clone())
+            );
+            assert!(store
+                .completed_orchestration_tool_request(&foreign, "publish", "key-1", "digest-1",)
+                .unwrap()
+                .is_none());
+        },
+    )
+    .await;
+
+    crate::encrypted_file_store::with_test_crypto_provider(
+        hosted_provider(0x33),
+        Some(RUNTIME_PRINCIPAL),
+        async {
+            assert!(store
+                .completed_orchestration_tool_request(
+                    &authorized_tenant,
+                    "publish",
+                    "key-1",
+                    "digest-1",
+                )
+                .is_err());
+        },
+    )
+    .await;
 }

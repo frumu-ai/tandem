@@ -177,21 +177,28 @@ fn engine_lock_refuses_live_child_pid_and_recovers_after_exit() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn live child");
-    let owner = EngineLockOwner {
-        pid: child.id(),
-        acquired_at_ms: 1,
-        process_start_hint: Some("hardening-test-child".to_string()),
-    };
+    let owner = EngineLockOwner::for_pid(child.id(), 1);
+    assert!(owner.process_start_hint.is_some());
     std::fs::write(&lock_path, serde_json::to_vec(&owner).unwrap()).unwrap();
 
     let error = StatefulEngineLock::acquire(&lock_path)
         .expect_err("live metadata owner must prevent takeover")
         .to_string();
     assert!(error.contains("still alive"), "{error}");
-    assert_eq!(read_engine_lock_owner(&lock_path), Some(owner));
+    assert_eq!(read_engine_lock_owner(&lock_path), Some(owner.clone()));
+
+    let dead_child_owner = owner.clone();
+    let mut reused_pid_owner = owner;
+    reused_pid_owner.process_start_hint = Some("linux-start:not-the-child".to_string());
+    std::fs::write(&lock_path, serde_json::to_vec(&reused_pid_owner).unwrap()).unwrap();
+    let recovered = StatefulEngineLock::acquire(&lock_path)
+        .expect("a reused PID must not impersonate the prior engine");
+    assert_eq!(recovered.owner().unwrap().pid, std::process::id());
+    drop(recovered);
 
     child.kill().expect("kill child");
     child.wait().expect("reap child");
+    std::fs::write(&lock_path, serde_json::to_vec(&dead_child_owner).unwrap()).unwrap();
     let recovered = StatefulEngineLock::acquire(&lock_path).expect("recover dead child lock");
     assert_eq!(recovered.owner().unwrap().pid, std::process::id());
 }
