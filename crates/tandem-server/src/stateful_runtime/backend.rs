@@ -563,12 +563,13 @@ impl Connection {
             }
             #[cfg(feature = "storage-postgres")]
             ConnectionInner::Postgres(connection) => {
-                // PostgreSQL transactions always take locks as statements
-                // execute; `Immediate` has no distinct equivalent.
-                let _ = behavior;
+                // `Immediate` carries SQLite's serialized-writer contract;
+                // the Postgres backend honors it with a transaction-scoped
+                // advisory lock (see `PostgresConnection::begin_transaction`).
+                let immediate = matches!(behavior, TransactionBehavior::Immediate);
                 Ok(Transaction {
                     inner: TransactionInner::Postgres(std::cell::RefCell::new(
-                        connection.begin_transaction()?,
+                        connection.begin_transaction(immediate)?,
                     )),
                 })
             }

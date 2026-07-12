@@ -328,6 +328,47 @@ fn handoff_transition_is_exactly_once_and_tenant_scoped() {
     });
 }
 
+/// SQLite serializes writers via `BEGIN IMMEDIATE`; the PostgreSQL backend
+/// must reproduce that contract (transaction-scoped advisory lock) so racing
+/// idempotent commits resolve as Committed/AlreadyCommitted instead of one
+/// side failing on a unique constraint.
+#[test]
+fn concurrent_idempotent_handoffs_serialize_on_every_backend() {
+    for_each_backend(|name, store| {
+        let downstream_run = run("run-2");
+        let link = link_for(&downstream_run);
+        let barrier = std::sync::Barrier::new(2);
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                barrier.wait();
+                store.commit_handoff_transition(&handoff(), &downstream_run, &link, &goal("run-2"))
+            });
+            let second = scope.spawn(|| {
+                barrier.wait();
+                store.commit_handoff_transition(&handoff(), &downstream_run, &link, &goal("run-2"))
+            });
+            (
+                first.join().expect("first worker panicked").unwrap(),
+                second.join().expect("second worker panicked").unwrap(),
+            )
+        });
+        assert!(
+            matches!(
+                (first, second),
+                (
+                    AtomicHandoffCommit::Committed,
+                    AtomicHandoffCommit::AlreadyCommitted
+                ) | (
+                    AtomicHandoffCommit::AlreadyCommitted,
+                    AtomicHandoffCommit::Committed
+                )
+            ),
+            "{name}: {first:?}/{second:?}"
+        );
+        assert_eq!(store.load_automation_runs().unwrap().len(), 1, "{name}");
+    });
+}
+
 #[test]
 fn orchestration_specs_publish_and_stay_immutable() {
     for_each_backend(|name, store| {

@@ -233,6 +233,7 @@ type Pool = r2d2::Pool<PostgresConnectionManager<postgres::NoTls>>;
 /// facade is used strictly single-threaded per connection.
 pub(crate) struct PostgresConnection {
     client: std::cell::RefCell<PooledClient>,
+    write_lock_key: i64,
 }
 
 impl PostgresConnection {
@@ -259,8 +260,23 @@ impl PostgresConnection {
         Ok(())
     }
 
-    pub(crate) fn begin_transaction(&mut self) -> Result<postgres::Transaction<'_>> {
-        Ok(self.client.get_mut().transaction()?)
+    /// Begins a transaction. `immediate` reproduces SQLite's `BEGIN
+    /// IMMEDIATE` contract: store writers assume they are serialized (e.g.
+    /// `MAX(seq)+1` cursor allocation and check-then-insert idempotency), so
+    /// immediate transactions take a transaction-scoped advisory lock keyed
+    /// to this runtime root's schema. The lock releases automatically at
+    /// commit or rollback, and reads outside transactions stay concurrent —
+    /// the same single-writer-per-root model SQLite enforces today.
+    pub(crate) fn begin_transaction(
+        &mut self,
+        immediate: bool,
+    ) -> Result<postgres::Transaction<'_>> {
+        let key = self.write_lock_key;
+        let mut transaction = self.client.get_mut().transaction()?;
+        if immediate {
+            transaction.execute("SELECT pg_advisory_xact_lock($1)", &[&key])?;
+        }
+        Ok(transaction)
     }
 }
 
@@ -330,6 +346,7 @@ impl PostgresTarget {
         })?;
         Ok(PostgresConnection {
             client: std::cell::RefCell::new(client),
+            write_lock_key: write_transaction_lock_key(&self.schema),
         })
     }
 
@@ -396,6 +413,13 @@ pub(crate) fn drop_schema_for_tests(url: &str, schema: &str) -> anyhow::Result<(
 
 fn advisory_lock_key(schema: &str) -> i64 {
     let digest = Sha256::digest(format!("tandem-stateful-engine-lock:{schema}").as_bytes());
+    i64::from_be_bytes(digest[..8].try_into().expect("sha256 yields 32 bytes"))
+}
+
+/// Distinct from the engine-lock key: this one serializes immediate write
+/// transactions within a runtime root's schema (see `begin_transaction`).
+fn write_transaction_lock_key(schema: &str) -> i64 {
+    let digest = Sha256::digest(format!("tandem-stateful-write-txn:{schema}").as_bytes());
     i64::from_be_bytes(digest[..8].try_into().expect("sha256 yields 32 bytes"))
 }
 
