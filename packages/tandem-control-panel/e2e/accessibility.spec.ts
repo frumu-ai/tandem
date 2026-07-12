@@ -14,6 +14,7 @@ const primaryRoutes = [
   "studio",
   "automations",
   "orchestrations",
+  "goal-operations",
 ] as const;
 
 const wcagTags = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];

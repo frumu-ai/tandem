@@ -588,6 +588,11 @@ impl OrchestrationStateStore {
             if let Some(event) = transition_event {
                 let mut event = event.clone();
                 event.seq = next_event_seq(&transaction, &event.run_id)?;
+                let event = runtime_records::event_with_projection_snapshot(
+                    &transaction,
+                    &event,
+                    &handoff.goal_id,
+                )?;
                 transaction.execute(
                     "INSERT INTO stateful_events
                         (event_id, goal_id, run_id, seq, event_json, created_at_ms,
@@ -760,6 +765,11 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
          CREATE TABLE IF NOT EXISTS stateful_events (
             event_id TEXT PRIMARY KEY, goal_id TEXT, run_id TEXT, seq INTEGER NOT NULL,
             event_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS goal_projection_blobs (
+            digest TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL
          );
          CREATE TABLE IF NOT EXISTS stateful_snapshots (
             snapshot_id TEXT PRIMARY KEY, goal_id TEXT, run_id TEXT, seq INTEGER NOT NULL,

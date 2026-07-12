@@ -129,6 +129,11 @@ impl OrchestrationStateStore {
             }
             let mut event = cancellation_event(&goal, reason, actor, now_ms);
             event.seq = super::next_event_seq(&transaction, &event.run_id)?;
+            let event = super::runtime_records::event_with_projection_snapshot(
+                &transaction,
+                &event,
+                goal_id,
+            )?;
             transaction.execute(
                 "INSERT INTO stateful_events
                     (event_id, goal_id, run_id, seq, event_json, created_at_ms,
@@ -369,7 +374,11 @@ fn cancellation_event(
         wait_kind: None,
         causation_id: None,
         correlation_id: Some(goal.goal_id.clone()),
-        payload: json!({"goal_id": goal.goal_id, "reason": reason}),
+        payload: json!({
+            "goal_id": goal.goal_id,
+            "reason": reason,
+            "goal_snapshot": goal,
+        }),
     }
 }
 

@@ -9,6 +9,7 @@ export type RouteId =
   | "planner"
   | "workflows"
   | "orchestrations"
+  | "goal-operations"
   | "marketplace"
   | "studio"
   | "automations"
