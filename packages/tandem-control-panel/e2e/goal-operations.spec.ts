@@ -118,6 +118,18 @@ function mockGoalProjection(apiFixture: ApiFixture) {
   apiFixture.mockResponse(`/api/engine/goals/${projection.goal.goal_id}/projection`, projection);
 }
 
+test("goal picker loads the selected goal without remounting the route", async ({ page, apiFixture }) => {
+  apiFixture.mockResponse("/api/engine/goals", { goals: [projection.goal], count: 1 });
+  mockGoalProjection(apiFixture);
+  await page.goto("/#/goal-operations");
+  await waitForRoute(page, "goal-operations");
+
+  await page.getByRole("button", { name: new RegExp(projection.goal.objective) }).click();
+
+  await expect(page).toHaveURL(new RegExp(`goal_id=${projection.goal.goal_id}`));
+  await expect(page.getByRole("heading", { name: projection.goal.objective })).toBeVisible();
+});
+
 test("goal operations preserves selection and disables governed actions in replay", async ({ page, apiFixture }) => {
   mockGoalProjection(apiFixture);
   await page.goto(`/#/goal-operations?goal_id=${projection.goal.goal_id}`);

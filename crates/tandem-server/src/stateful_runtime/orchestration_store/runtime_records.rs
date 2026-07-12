@@ -135,7 +135,13 @@ impl OrchestrationStateStore {
             )?;
             for event in events {
                 insert_event(&transaction, event)?;
-                if let Some(reference) = event
+                let stored_event = transaction.query_row(
+                    "SELECT event_json FROM stateful_events WHERE event_id = ?1",
+                    [&event.event_id],
+                    |row| row.get::<_, String>(0),
+                )?;
+                let stored_event = serde_json::from_str::<StatefulRunEventRecord>(&stored_event)?;
+                if let Some(reference) = stored_event
                     .payload
                     .get("projection_snapshot_ref")
                     .and_then(serde_json::Value::as_object)
@@ -861,6 +867,64 @@ mod tests {
                 stored
             }]
         );
+    }
+
+    #[test]
+    fn event_replacement_retains_projection_blobs_injected_during_storage() {
+        let directory = tempfile::tempdir().expect("create test directory");
+        let store = OrchestrationStateStore::from_automation_runs_path(
+            &directory.path().join("automation_v2_runs.json"),
+        )
+        .expect("open orchestration store");
+        store
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO long_running_goals
+                        (goal_id, orchestration_id, orchestration_version, org_id, workspace_id,
+                         deployment_id, status, active_run_id, goal_json, created_at_ms,
+                         updated_at_ms)
+                     VALUES (?1, ?2, 1, ?3, ?4, NULL, 'active', NULL, ?5, 1, 1)",
+                    rusqlite::params![
+                        "goal-1",
+                        "orchestration-1",
+                        "org-a",
+                        "workspace-a",
+                        serde_json::to_string(&json!({
+                            "goal_id": "goal-1",
+                            "active_run_id": null,
+                        }))?,
+                    ],
+                )?;
+                connection.execute(
+                    "INSERT INTO goal_run_links
+                        (goal_id, run_id, orchestration_node_id, orchestration_version,
+                         hop_index, parent_run_id, triggering_handoff_id, link_json,
+                         created_at_ms)
+                     VALUES (?1, ?2, ?3, 1, 1, NULL, NULL, '{}', 1)",
+                    ["goal-1", "run-1", "node-1"],
+                )?;
+                Ok(())
+            })
+            .expect("seed goal projection");
+
+        let mut compacted = event("run-1");
+        compacted.event_id = "compacted-event".to_string();
+        compacted.event_type = "stateful_runtime.event_log_compacted".to_string();
+        store
+            .replace_stateful_runtime_events(&[compacted])
+            .expect("replace events");
+
+        let stored = store
+            .load_stateful_runtime_events()
+            .expect("load stored events")
+            .pop()
+            .expect("stored compacted event");
+        let reference = &stored.payload["projection_snapshot_ref"];
+        assert!(reference.is_object());
+        let projection = store
+            .resolve_goal_projection_snapshot(reference)
+            .expect("resolve retained projection snapshot");
+        assert_eq!(projection["goal"]["goal_id"], "goal-1");
     }
 
     #[test]

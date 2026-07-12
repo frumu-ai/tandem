@@ -1,6 +1,6 @@
 import type { TandemClient } from "@frumu/tandem-client";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { GoalActionControls, type GoalActionInput } from "../features/orchestration-operations/GoalActionControls";
 import { GoalOperationsCanvas } from "../features/orchestration-operations/GoalOperationsCanvas";
 import { GoalOperationsInspector } from "../features/orchestration-operations/GoalOperationsInspector";
@@ -46,7 +46,12 @@ function connectionLabel(connection: string) {
 }
 
 export function GoalOperationsPage({ client, toast, navigate }: AppPageProps) {
-  const [goalId] = useState(goalIdFromHash);
+  const [goalId, setGoalId] = useState(goalIdFromHash);
+  useEffect(() => {
+    const syncGoalId = () => setGoalId(goalIdFromHash());
+    window.addEventListener("hashchange", syncGoalId);
+    return () => window.removeEventListener("hashchange", syncGoalId);
+  }, []);
   const goalsQuery = useQuery({
     queryKey: ["goal-operations", "goals"],
     queryFn: () => client.statefulRuntime.listGoals({ limit: 100 }),
@@ -64,7 +69,10 @@ export function GoalOperationsPage({ client, toast, navigate }: AppPageProps) {
         {goalsQuery.isError ? <div role="alert" className="goal-ops-reconnect">Goals could not be loaded. <button className="tcp-btn" onClick={() => void goalsQuery.refetch()}>Retry</button></div> : null}
         <div className="goal-ops-goal-list">
           {(goalsQuery.data?.goals || []).map((goal) => (
-            <button key={goal.goal_id} onClick={() => { window.location.hash = `#/goal-operations?goal_id=${encodeURIComponent(goal.goal_id)}`; }}>
+            <button key={goal.goal_id} onClick={() => {
+              setGoalId(goal.goal_id);
+              window.location.hash = `#/goal-operations?goal_id=${encodeURIComponent(goal.goal_id)}`;
+            }}>
               <span><strong>{goal.objective}</strong><small>{goal.orchestration_id} · {goal.goal_id}</small></span>
               <span className={`goal-ops-goal-status status-${goal.status}`}>{goal.status.replaceAll("_", " ")}</span>
             </button>
