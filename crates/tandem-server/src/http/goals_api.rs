@@ -167,6 +167,27 @@ pub(super) fn run_as_context(verified: Option<&VerifiedTenantContext>) -> Value 
         .unwrap_or(Value::Null)
 }
 
+pub(super) fn publish_goal_audit_receipt(
+    state: &AppState,
+    tenant: &TenantContext,
+    event_type: &str,
+    goal_id: &str,
+    actor: &PrincipalRef,
+    verified: Option<&VerifiedTenantContext>,
+    mut details: serde_json::Map<String, Value>,
+) {
+    details.insert("goalID".to_string(), json!(goal_id));
+    details.insert("effective_actor".to_string(), json!(actor));
+    details.insert("run_as".to_string(), run_as_context(verified));
+    state
+        .event_bus
+        .publish(crate::routines::types::tenant_scoped_engine_event(
+            event_type,
+            tenant,
+            Value::Object(details),
+        ));
+}
+
 pub(super) fn verified_has_admin_authority(verified: Option<&VerifiedTenantContext>) -> bool {
     verified.is_some_and(|context| {
         context.roles.iter().any(|role| {
@@ -477,14 +498,25 @@ pub(super) async fn pause_goal(
         .pause_long_running_goal(&goal_id, &stored.tenant_context, reason, &actor)
         .await
     {
-        Ok((outcome, goal)) => Json(json!({
-            "goal": goal,
-            "outcome": match outcome {
+        Ok((outcome, goal)) => {
+            let outcome_name = match outcome {
                 GoalPauseOutcome::Applied => "paused",
                 GoalPauseOutcome::AlreadyPaused => "already_paused",
-            },
-        }))
-        .into_response(),
+            };
+            publish_goal_audit_receipt(
+                &state,
+                &tenant,
+                "orchestration.goal.action_receipt",
+                &goal_id,
+                &actor,
+                verified,
+                serde_json::Map::from_iter([
+                    ("action".to_string(), json!("pause")),
+                    ("outcome".to_string(), json!(outcome_name)),
+                ]),
+            );
+            Json(json!({"goal": goal, "outcome": outcome_name})).into_response()
+        }
         Err(error) => goal_error_response(&error),
     }
 }
@@ -518,14 +550,25 @@ pub(super) async fn resume_goal(
         .resume_long_running_goal(&goal_id, &stored.tenant_context, reason, &actor)
         .await
     {
-        Ok((outcome, goal)) => Json(json!({
-            "goal": goal,
-            "outcome": match outcome {
+        Ok((outcome, goal)) => {
+            let outcome_name = match outcome {
                 GoalResumeOutcome::Applied => "resumed",
                 GoalResumeOutcome::NotPaused => "not_paused",
-            },
-        }))
-        .into_response(),
+            };
+            publish_goal_audit_receipt(
+                &state,
+                &tenant,
+                "orchestration.goal.action_receipt",
+                &goal_id,
+                &actor,
+                verified,
+                serde_json::Map::from_iter([
+                    ("action".to_string(), json!("resume")),
+                    ("outcome".to_string(), json!(outcome_name)),
+                ]),
+            );
+            Json(json!({"goal": goal, "outcome": outcome_name})).into_response()
+        }
         Err(error) => goal_error_response(&error),
     }
 }
@@ -559,14 +602,29 @@ pub(super) async fn cancel_goal(
         .cancel_long_running_goal(&goal_id, &stored.tenant_context, reason, &actor)
         .await
     {
-        Ok(result) => Json(json!({
-            "goal": result.goal,
-            "outcome": format!("{:?}", result.outcome),
-            "cancelled_run_id": result.cancelled_run.as_ref().map(|run| &run.run_id),
-            "cancelled_wait_ids": result.cancelled_wait_ids,
-            "dead_lettered_handoff_ids": result.dead_lettered_handoff_ids,
-        }))
-        .into_response(),
+        Ok(result) => {
+            let outcome = format!("{:?}", result.outcome);
+            publish_goal_audit_receipt(
+                &state,
+                &tenant,
+                "orchestration.goal.action_receipt",
+                &goal_id,
+                &actor,
+                verified,
+                serde_json::Map::from_iter([
+                    ("action".to_string(), json!("cancel")),
+                    ("outcome".to_string(), json!(outcome)),
+                ]),
+            );
+            Json(json!({
+                "goal": result.goal,
+                "outcome": outcome,
+                "cancelled_run_id": result.cancelled_run.as_ref().map(|run| &run.run_id),
+                "cancelled_wait_ids": result.cancelled_wait_ids,
+                "dead_lettered_handoff_ids": result.dead_lettered_handoff_ids,
+            }))
+            .into_response()
+        }
         Err(error) => goal_error_response(&error),
     }
 }
@@ -1295,6 +1353,7 @@ pub(super) struct WaitResolutionPayload {
 pub(super) async fn resolve_goal_wait(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(principal): Extension<RequestPrincipal>,
     verified: Option<Extension<VerifiedTenantContext>>,
     Path((goal_id, wait_id)): Path<(String, String)>,
     Json(payload): Json<WaitResolutionPayload>,
@@ -1334,7 +1393,19 @@ pub(super) async fn resolve_goal_wait(
         )
         .await
     {
-        Ok(Some(wait)) => Json(json!({"goal_id": goal_id, "wait": wait})).into_response(),
+        Ok(Some(wait)) => {
+            let actor = effective_actor(&principal, verified);
+            publish_goal_audit_receipt(
+                &state,
+                &tenant,
+                "orchestration.goal.wait_resolution_receipt",
+                &goal_id,
+                &actor,
+                verified,
+                serde_json::Map::from_iter([("waitID".to_string(), json!(wait_id))]),
+            );
+            Json(json!({"goal_id": goal_id, "wait": wait})).into_response()
+        }
         Ok(None) => (
             StatusCode::CONFLICT,
             Json(json!({

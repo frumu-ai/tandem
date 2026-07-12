@@ -12,7 +12,7 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use tandem_automation::{OrchestrationSpec, OrchestrationStatus};
 use tandem_types::TenantContext;
 
-use super::OrchestrationStateStore;
+use super::{protected_records, OrchestrationStateStore};
 
 /// The mutable draft slot; published versions start at 1.
 pub const ORCHESTRATION_DRAFT_VERSION: u64 = 0;
@@ -47,6 +47,23 @@ fn tool_request_record_context(
         "tandem-orchestration-store:tool-replay:v1",
         format!("{operation}:{idempotency_key}"),
     )
+}
+
+fn decode_tool_request_response(
+    tenant: &TenantContext,
+    operation: &str,
+    idempotency_key: &str,
+    payload: String,
+) -> anyhow::Result<serde_json::Value> {
+    let plaintext = if crate::encrypted_file_store::is_encrypted_payload(&payload) {
+        crate::encrypted_file_store::decrypt_text(
+            &payload,
+            &tool_request_record_context(tenant, operation, idempotency_key),
+        )?
+    } else {
+        payload
+    };
+    serde_json::from_str(&plaintext).map_err(Into::into)
 }
 
 impl OrchestrationStateStore {
@@ -87,7 +104,13 @@ impl OrchestrationStateStore {
                     );
                 };
                 transaction.commit()?;
-                return Ok(Some(serde_json::from_str(&response)?));
+                return decode_tool_request_response(
+                    tenant,
+                    operation,
+                    idempotency_key,
+                    response,
+                )
+                .map(Some);
             }
             transaction.execute(
                 "INSERT INTO orchestration_tool_requests (
@@ -139,7 +162,9 @@ impl OrchestrationStateStore {
                 bail!("idempotency key is already bound to a different {operation} request");
             }
             response
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .map(|payload| {
+                    decode_tool_request_response(tenant, operation, idempotency_key, payload)
+                })
                 .transpose()
         })
     }
@@ -204,21 +229,8 @@ impl OrchestrationStateStore {
                 }
                 transaction.commit()?;
                 return response
-                    .map(|payload| -> anyhow::Result<serde_json::Value> {
-                        let plaintext =
-                            if crate::encrypted_file_store::is_encrypted_payload(&payload) {
-                                crate::encrypted_file_store::decrypt_text(
-                                    &payload,
-                                    &tool_request_record_context(
-                                        tenant,
-                                        operation,
-                                        idempotency_key,
-                                    ),
-                                )?
-                            } else {
-                                payload
-                            };
-                        serde_json::from_str(&plaintext).map_err(Into::into)
+                    .map(|payload| {
+                        decode_tool_request_response(tenant, operation, idempotency_key, payload)
                     })
                     .transpose();
             }
@@ -299,7 +311,12 @@ impl OrchestrationStateStore {
         if spec.status == OrchestrationStatus::Published {
             bail!("drafts cannot carry published status; publish creates a new version");
         }
-        let payload = serde_json::to_string(spec)?;
+        let payload = protected_records::encode(
+            &spec.tenant_context,
+            "definition",
+            &format!("{}:{}", spec.orchestration_id, ORCHESTRATION_DRAFT_VERSION),
+            spec,
+        )?;
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -377,18 +394,30 @@ impl OrchestrationStateStore {
     ) -> anyhow::Result<Vec<OrchestrationSpec>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT definition_json FROM orchestration_specs
+                "SELECT orchestration_id, version, definition_json FROM orchestration_specs
                  WHERE org_id = ?1 AND workspace_id = ?2
                    AND (deployment_id IS ?3 OR deployment_id = ?3)
                  ORDER BY orchestration_id, version",
             )?;
             let rows = statement.query_map(
                 params![tenant.org_id, tenant.workspace_id, tenant.deployment_id],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )?;
             let mut specs = Vec::new();
             for row in rows {
-                specs.push(serde_json::from_str(&row?)?);
+                let (orchestration_id, version, payload) = row?;
+                specs.push(protected_records::decode(
+                    tenant,
+                    "definition",
+                    &format!("{orchestration_id}:{version}"),
+                    &payload,
+                )?);
             }
             Ok(specs)
         })
@@ -449,7 +478,12 @@ impl OrchestrationStateStore {
         if published.version == ORCHESTRATION_DRAFT_VERSION {
             bail!("published versions must be greater than the draft slot");
         }
-        let payload = serde_json::to_string(published)?;
+        let payload = protected_records::encode(
+            &published.tenant_context,
+            "definition",
+            &format!("{}:{}", published.orchestration_id, published.version),
+            published,
+        )?;
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;

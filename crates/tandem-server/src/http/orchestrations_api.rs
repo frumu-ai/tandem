@@ -165,6 +165,15 @@ fn orchestration_metadata_principal_id<'a>(
         })
 }
 
+fn orchestration_effective_author(spec: &OrchestrationSpec) -> Option<tandem_types::PrincipalRef> {
+    let value = spec.metadata.as_ref()?.as_object()?.get("created_by")?;
+    serde_json::from_value(value.clone()).ok().or_else(|| {
+        value
+            .as_str()
+            .map(|id| tandem_types::PrincipalRef::human_user(id.to_string()))
+    })
+}
+
 fn stamp_created_by(metadata: Option<Value>, actor: &tandem_types::PrincipalRef) -> Option<Value> {
     let mut object = match metadata {
         Some(Value::Object(object)) => object,
@@ -726,6 +735,7 @@ pub(super) async fn publish_orchestration(
         "publish".to_string(),
         json!({
             "actor": actor,
+            "run_as": super::goals_api::run_as_context(verified),
             "published_at_ms": now,
             "validation": validation.report,
             "workflow_definition_hashes": validation.workflow_hashes,
@@ -734,7 +744,21 @@ pub(super) async fn publish_orchestration(
     candidate.metadata = Some(Value::Object(metadata));
 
     match store.publish_orchestration_draft(&candidate, expected) {
-        Ok(()) => (StatusCode::CREATED, Json(spec_response(&candidate))).into_response(),
+        Ok(()) => {
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "orchestration.publish_receipt",
+                    &tenant,
+                    json!({
+                        "orchestrationID": candidate.orchestration_id,
+                        "version": candidate.version,
+                        "effective_actor": actor,
+                        "run_as": super::goals_api::run_as_context(verified),
+                    }),
+                ));
+            (StatusCode::CREATED, Json(spec_response(&candidate))).into_response()
+        }
         Err(error) => orchestration_error_response(&error),
     }
 }
@@ -934,6 +958,7 @@ async fn workflow_reference_states(
     spec: &OrchestrationSpec,
 ) -> Vec<Value> {
     let mut references = Vec::new();
+    let author = orchestration_effective_author(spec);
     for node in &spec.nodes {
         let OrchestrationNodeKind::Workflow {
             automation_id,
@@ -955,12 +980,25 @@ async fn workflow_reference_states(
             }));
             continue;
         };
-        // An author cannot wire a workflow whose enterprise delegation
-        // authority is missing or expired, even inside their own tenant.
-        if let Err(denial) = state
-            .validate_automation_enterprise_delegation_grants(&automation)
-            .await
-        {
+        // Validate both the workflow's declared delegation and the persisted
+        // creator's effective authority. Publishers cannot lend their own
+        // authority to an otherwise unauthorized author.
+        let authority = match author.as_ref() {
+            Some(author) => {
+                state
+                    .validate_automation_enterprise_delegation_grants_for_author(
+                        &automation,
+                        author,
+                    )
+                    .await
+            }
+            None => {
+                state
+                    .validate_automation_enterprise_delegation_grants(&automation)
+                    .await
+            }
+        };
+        if let Err(denial) = authority {
             references.push(json!({
                 "node_id": node.node_id,
                 "automation_id": automation_id,

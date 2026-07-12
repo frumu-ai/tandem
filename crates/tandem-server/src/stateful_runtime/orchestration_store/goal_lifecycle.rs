@@ -14,7 +14,7 @@ use tandem_automation::{
 };
 use tandem_types::{PrincipalRef, TenantContext};
 
-use super::{upsert_automation_run, upsert_goal, OrchestrationStateStore};
+use super::{protected_records, upsert_automation_run, upsert_goal, OrchestrationStateStore};
 use crate::stateful_runtime::{StatefulRunEventRecord, StatefulRuntimeScope};
 
 #[derive(Debug, Clone)]
@@ -82,7 +82,12 @@ impl OrchestrationStateStore {
                 )
                 .optional()?;
             if let Some(payload) = existing {
-                let stored: LongRunningGoal = serde_json::from_str(&payload)?;
+                let stored: LongRunningGoal = protected_records::decode(
+                    &goal.tenant_context,
+                    "goal",
+                    &goal.goal_id,
+                    &payload,
+                )?;
                 let same_scope = stored.tenant_context.org_id == goal.tenant_context.org_id
                     && stored.tenant_context.workspace_id == goal.tenant_context.workspace_id
                     && stored.tenant_context.deployment_id == goal.tenant_context.deployment_id;
@@ -109,7 +114,12 @@ impl OrchestrationStateStore {
                 transaction.commit()?;
                 return Ok(StartGoalOutcome::AlreadyStarted {
                     goal: stored,
-                    root_run: serde_json::from_str(&root_payload)?,
+                    root_run: protected_records::decode(
+                        &root_run.tenant_context,
+                        "run",
+                        &root_run.run_id,
+                        &root_payload,
+                    )?,
                 });
             }
 
@@ -128,7 +138,12 @@ impl OrchestrationStateStore {
                     link.hop_index,
                     link.parent_run_id,
                     link.triggering_handoff_id,
-                    serde_json::to_string(link)?,
+                    protected_records::encode(
+                        &goal.tenant_context,
+                        "link",
+                        &link.run_id,
+                        link,
+                    )?,
                     link.created_at_ms,
                 ],
             )?;
@@ -240,18 +255,20 @@ impl OrchestrationStateStore {
     ) -> anyhow::Result<Vec<LongRunningGoal>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT goal_json FROM long_running_goals
+                "SELECT goal_id, goal_json FROM long_running_goals
                  WHERE org_id = ?1 AND workspace_id = ?2
                    AND (deployment_id IS ?3 OR deployment_id = ?3)
                  ORDER BY updated_at_ms DESC, goal_id",
             )?;
             let rows = statement.query_map(
                 params![tenant.org_id, tenant.workspace_id, tenant.deployment_id],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )?;
             let mut goals = Vec::new();
             for row in rows {
-                let goal: LongRunningGoal = serde_json::from_str(&row?)?;
+                let (goal_id, payload) = row?;
+                let goal: LongRunningGoal =
+                    protected_records::decode(tenant, "goal", &goal_id, &payload)?;
                 if let Some(status) = status {
                     let stored = serde_json::to_value(&goal.status)?;
                     if stored.as_str() != Some(status) {
@@ -294,7 +311,7 @@ impl OrchestrationStateStore {
                 )
                 .optional()?;
             payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .map(|payload| protected_records::decode(tenant, "goal", goal_id, &payload))
                 .transpose()
         })
     }
@@ -308,7 +325,7 @@ impl OrchestrationStateStore {
     ) -> anyhow::Result<Vec<GoalRunLink>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT links.link_json FROM goal_run_links links
+                "SELECT links.run_id, links.link_json FROM goal_run_links links
                  JOIN long_running_goals goals ON goals.goal_id = links.goal_id
                  WHERE links.goal_id = ?1 AND goals.org_id = ?2 AND goals.workspace_id = ?3
                    AND (goals.deployment_id IS ?4 OR goals.deployment_id = ?4)
@@ -321,11 +338,14 @@ impl OrchestrationStateStore {
                     tenant.workspace_id,
                     tenant.deployment_id
                 ],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )?;
             let mut links = Vec::new();
             for row in rows {
-                links.push(serde_json::from_str(&row?)?);
+                let (run_id, payload) = row?;
+                links.push(protected_records::decode(
+                    tenant, "link", &run_id, &payload,
+                )?);
             }
             Ok(links)
         })
@@ -334,12 +354,32 @@ impl OrchestrationStateStore {
     pub fn list_goal_run_links(&self, goal_id: &str) -> anyhow::Result<Vec<GoalRunLink>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT link_json FROM goal_run_links WHERE goal_id = ?1 ORDER BY hop_index",
+                "SELECT links.run_id, goals.org_id, goals.workspace_id, goals.deployment_id,
+                        links.link_json
+                 FROM goal_run_links links
+                 JOIN long_running_goals goals ON goals.goal_id = links.goal_id
+                 WHERE links.goal_id = ?1 ORDER BY links.hop_index",
             )?;
-            let rows = statement.query_map([goal_id], |row| row.get::<_, String>(0))?;
+            let rows = statement.query_map([goal_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
             let mut links = Vec::new();
             for row in rows {
-                links.push(serde_json::from_str(&row?)?);
+                let (run_id, org, workspace, deployment, payload) = row?;
+                links.push(protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "link",
+                    &run_id,
+                    &payload,
+                )?);
             }
             Ok(links)
         })
@@ -348,13 +388,22 @@ impl OrchestrationStateStore {
     pub fn list_goal_handoffs(&self, goal_id: &str) -> anyhow::Result<Vec<WorkflowHandoff>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT handoff_json FROM workflow_handoffs
+                "SELECT handoff_id, org_id, workspace_id, deployment_id, handoff_json
+                 FROM workflow_handoffs
                  WHERE goal_id = ?1 ORDER BY created_at_ms, handoff_id",
             )?;
-            let rows = statement.query_map([goal_id], |row| row.get::<_, String>(0))?;
+            let rows = statement.query_map([goal_id], scoped_payload_row)?;
             let mut handoffs = Vec::new();
             for row in rows {
-                handoffs.push(serde_json::from_str(&row?)?);
+                let (id, org, workspace, deployment, payload) = row?;
+                handoffs.push(protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "handoff",
+                    &id,
+                    &payload,
+                )?);
             }
             Ok(handoffs)
         })
@@ -368,7 +417,7 @@ impl OrchestrationStateStore {
     ) -> anyhow::Result<Vec<WorkflowHandoff>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT handoff_json FROM workflow_handoffs
+                "SELECT handoff_id, handoff_json FROM workflow_handoffs
                  WHERE goal_id = ?1 AND org_id = ?2 AND workspace_id = ?3
                    AND (deployment_id IS ?4 OR deployment_id = ?4)
                  ORDER BY created_at_ms, handoff_id",
@@ -380,11 +429,12 @@ impl OrchestrationStateStore {
                     tenant.workspace_id,
                     tenant.deployment_id
                 ],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )?;
             let mut handoffs = Vec::new();
             for row in rows {
-                handoffs.push(serde_json::from_str(&row?)?);
+                let (id, payload) = row?;
+                handoffs.push(protected_records::decode(tenant, "handoff", &id, &payload)?);
             }
             Ok(handoffs)
         })
@@ -413,7 +463,7 @@ impl OrchestrationStateStore {
                 )
                 .optional()?;
             payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .map(|payload| protected_records::decode(tenant, "handoff", handoff_id, &payload))
                 .transpose()
         })
     }
@@ -425,13 +475,23 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| {
             let payload = connection
                 .query_row(
-                    "SELECT handoff_json FROM workflow_handoffs WHERE handoff_id = ?1",
+                    "SELECT handoff_id, org_id, workspace_id, deployment_id, handoff_json
+                     FROM workflow_handoffs WHERE handoff_id = ?1",
                     [handoff_id],
-                    |row| row.get::<_, String>(0),
+                    scoped_payload_row,
                 )
                 .optional()?;
             payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .map(|(id, org, workspace, deployment, payload)| {
+                    protected_records::decode_scoped(
+                        &org,
+                        &workspace,
+                        deployment.as_deref(),
+                        "handoff",
+                        &id,
+                        &payload,
+                    )
+                })
                 .transpose()
         })
     }
@@ -447,21 +507,38 @@ impl OrchestrationStateStore {
     ) -> anyhow::Result<Vec<GoalEventRow>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT rowid, event_json FROM stateful_events
+                "SELECT rowid, event_id, org_id, workspace_id, deployment_id, event_json
+                 FROM stateful_events
                  WHERE goal_id = ?1 AND rowid > ?2
                  ORDER BY rowid
                  LIMIT ?3",
             )?;
             let rows = statement.query_map(
                 params![goal_id, after_cursor.unwrap_or(0), limit as i64],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
             )?;
             let mut events = Vec::new();
             for row in rows {
-                let (cursor, payload) = row?;
+                let (cursor, id, org, workspace, deployment, payload) = row?;
                 events.push(GoalEventRow {
                     cursor,
-                    event: serde_json::from_str(&payload)?,
+                    event: protected_records::decode_scoped(
+                        &org,
+                        &workspace,
+                        deployment.as_deref(),
+                        "event",
+                        &id,
+                        &payload,
+                    )?,
                 });
             }
             Ok(events)
@@ -480,7 +557,7 @@ impl OrchestrationStateStore {
     ) -> anyhow::Result<Vec<GoalEventRow>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT rowid, event_json FROM stateful_events
+                "SELECT rowid, event_id, event_json FROM stateful_events
                  WHERE goal_id = ?1 AND rowid > ?2
                    AND org_id = ?4 AND workspace_id = ?5
                    AND (deployment_id IS ?6 OR deployment_id = ?6)
@@ -496,14 +573,20 @@ impl OrchestrationStateStore {
                     tenant.workspace_id,
                     tenant.deployment_id
                 ],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )?;
             let mut events = Vec::new();
             for row in rows {
-                let (cursor, payload) = row?;
+                let (cursor, id, payload) = row?;
                 events.push(GoalEventRow {
                     cursor,
-                    event: serde_json::from_str(&payload)?,
+                    event: protected_records::decode(tenant, "event", &id, &payload)?,
                 });
             }
             Ok(events)
@@ -521,22 +604,39 @@ impl OrchestrationStateStore {
     ) -> anyhow::Result<Vec<GoalEventRow>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT rowid, event_json FROM (
-                    SELECT rowid, event_json FROM stateful_events
+                "SELECT rowid, event_id, org_id, workspace_id, deployment_id, event_json FROM (
+                    SELECT rowid, event_id, org_id, workspace_id, deployment_id, event_json
+                    FROM stateful_events
                     WHERE goal_id = ?1 AND rowid <= ?2
                     ORDER BY rowid DESC LIMIT ?3
                  ) ORDER BY rowid",
             )?;
             let rows = statement.query_map(
                 params![goal_id, through_cursor.unwrap_or(i64::MAX), limit as i64],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
             )?;
             let mut events = Vec::new();
             for row in rows {
-                let (cursor, payload) = row?;
+                let (cursor, id, org, workspace, deployment, payload) = row?;
                 events.push(GoalEventRow {
                     cursor,
-                    event: serde_json::from_str(&payload)?,
+                    event: protected_records::decode_scoped(
+                        &org,
+                        &workspace,
+                        deployment.as_deref(),
+                        "event",
+                        &id,
+                        &payload,
+                    )?,
                 });
             }
             Ok(events)
@@ -570,7 +670,7 @@ fn load_goal_for_update(
         )
         .optional()?
         .context("long-running goal not found")?;
-    let goal: LongRunningGoal = serde_json::from_str(&payload)?;
+    let goal: LongRunningGoal = protected_records::decode(tenant, "goal", goal_id, &payload)?;
     let same_scope = goal.tenant_context.org_id == tenant.org_id
         && goal.tenant_context.workspace_id == tenant.workspace_id
         && goal.tenant_context.deployment_id == tenant.deployment_id;
@@ -619,7 +719,12 @@ fn insert_goal_event(
             goal.goal_id,
             event.run_id,
             event.seq,
-            serde_json::to_string(&event)?,
+            protected_records::encode(
+                &event.scope.tenant_context,
+                "event",
+                &event.event_id,
+                &event,
+            )?,
             now_ms,
             goal.tenant_context.org_id,
             goal.tenant_context.workspace_id,
@@ -627,6 +732,18 @@ fn insert_goal_event(
         ],
     )?;
     Ok(())
+}
+
+fn scoped_payload_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(String, String, String, Option<String>, String)> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
 }
 
 fn payload_with_goal_snapshot(

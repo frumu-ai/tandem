@@ -383,6 +383,46 @@ async fn tool_replay_ledger_round_trips_encrypted_records() {
                 )
                 .unwrap();
             assert_eq!(replayed, Some(response.clone()));
+            let completed = store
+                .completed_orchestration_tool_request(
+                    &tenant,
+                    "orchestration_publish",
+                    "key-1",
+                    "digest-1",
+                )
+                .unwrap();
+            assert_eq!(completed, Some(response.clone()));
+
+            assert!(store
+                .begin_orchestration_action_request(
+                    &tenant,
+                    "goal_action:goal-1:pause",
+                    "key-2",
+                    "digest-2",
+                    13,
+                )
+                .unwrap()
+                .is_none());
+            store
+                .complete_orchestration_tool_request(
+                    &tenant,
+                    "goal_action:goal-1:pause",
+                    "key-2",
+                    "digest-2",
+                    &response,
+                    14,
+                )
+                .unwrap();
+            let action_replayed = store
+                .begin_orchestration_action_request(
+                    &tenant,
+                    "goal_action:goal-1:pause",
+                    "key-2",
+                    "digest-2",
+                    15,
+                )
+                .unwrap();
+            assert_eq!(action_replayed, Some(response.clone()));
         },
     )
     .await;

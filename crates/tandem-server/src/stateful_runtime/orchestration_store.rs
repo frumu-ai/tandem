@@ -18,6 +18,7 @@ mod definitions;
 mod goal_control;
 mod goal_lifecycle;
 mod migration;
+pub(crate) mod protected_records;
 mod runtime_records;
 mod transition;
 
@@ -131,16 +132,34 @@ impl StatefulEngineLock {
         if file.try_lock_exclusive().is_err() {
             bail!("{}", Self::held_lock_diagnostics(path));
         }
-        // The advisory lock is held, so any metadata left behind belongs to an
-        // owner that exited without unlocking (crash or kill). Surface the
-        // recovery instead of silently overwriting it.
+        // Advisory locking is not reliable on every filesystem. Treat metadata
+        // naming a different live (or unverifiable) process as an independent
+        // safety signal even when the OS allowed this lock acquisition.
         if let Some(previous) = read_engine_lock_owner(path) {
             if previous.pid != std::process::id() {
-                tracing::info!(
-                    lock = %path.display(),
-                    previous_pid = previous.pid,
-                    "recovered stateful engine lock from an owner that exited uncleanly"
-                );
+                match previous.is_alive() {
+                    Some(false) => tracing::info!(
+                        lock = %path.display(),
+                        previous_pid = previous.pid,
+                        "recovered stateful engine lock from an owner that exited uncleanly"
+                    ),
+                    Some(true) => {
+                        let _ = FileExt::unlock(&file);
+                        bail!(
+                            "refusing stateful engine lock takeover at {}: recorded owner pid {} is still alive",
+                            path.display(),
+                            previous.pid
+                        );
+                    }
+                    None => {
+                        let _ = FileExt::unlock(&file);
+                        bail!(
+                            "refusing stateful engine lock takeover at {}: recorded owner pid {} cannot be checked for liveness on this platform",
+                            path.display(),
+                            previous.pid
+                        );
+                    }
+                }
             }
         }
         let owner = EngineLockOwner::current(crate::util::time::now_ms());
@@ -259,7 +278,12 @@ impl OrchestrationStateStore {
                     .join(", ")
             );
         }
-        let payload = serde_json::to_string(spec)?;
+        let payload = protected_records::encode(
+            &spec.tenant_context,
+            "definition",
+            &format!("{}:{}", spec.orchestration_id, spec.version),
+            spec,
+        )?;
         self.with_connection(|connection| {
             let existing = connection
                 .query_row(
@@ -277,7 +301,13 @@ impl OrchestrationStateStore {
                 )
                 .optional()?;
             if let Some((status, existing_payload)) = existing {
-                if status == "published" && existing_payload != payload {
+                let existing_spec: OrchestrationSpec = protected_records::decode(
+                    &spec.tenant_context,
+                    "definition",
+                    &format!("{}:{}", spec.orchestration_id, spec.version),
+                    &existing_payload,
+                )?;
+                if status == "published" && existing_spec != *spec {
                     bail!(
                         "published orchestration {} version {} is immutable",
                         spec.orchestration_id,
@@ -325,17 +355,33 @@ impl OrchestrationStateStore {
         version: u64,
     ) -> anyhow::Result<Option<OrchestrationSpec>> {
         self.with_connection(|connection| {
-            let payload = connection
+            let row = connection
                 .query_row(
-                    "SELECT definition_json FROM orchestration_specs
+                    "SELECT org_id, workspace_id, deployment_id, definition_json
+                     FROM orchestration_specs
                      WHERE orchestration_id = ?1 AND version = ?2",
                     params![orchestration_id, version],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-                .transpose()
+            row.map(|(org, workspace, deployment, payload)| {
+                protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "definition",
+                    &format!("{orchestration_id}:{version}"),
+                    &payload,
+                )
+            })
+            .transpose()
         })
     }
 
@@ -362,7 +408,14 @@ impl OrchestrationStateStore {
                 )
                 .optional()?;
             payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .map(|payload| {
+                    protected_records::decode(
+                        tenant,
+                        "definition",
+                        &format!("{orchestration_id}:{version}"),
+                        &payload,
+                    )
+                })
                 .transpose()
         })
     }
@@ -412,13 +465,29 @@ impl OrchestrationStateStore {
     pub fn load_automation_runs(&self) -> anyhow::Result<Vec<AutomationV2RunRecord>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT run_json FROM automation_runs
+                "SELECT run_id, org_id, workspace_id, deployment_id, run_json FROM automation_runs
                  WHERE is_hot = 1 ORDER BY created_at_ms, run_id",
             )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
             let mut runs = Vec::new();
             for row in rows {
-                runs.push(serde_json::from_str(&row?)?);
+                let (id, org, workspace, deployment, payload) = row?;
+                runs.push(protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "run",
+                    &id,
+                    &payload,
+                )?);
             }
             Ok(runs)
         })
@@ -429,16 +498,32 @@ impl OrchestrationStateStore {
         run_id: &str,
     ) -> anyhow::Result<Option<AutomationV2RunRecord>> {
         self.with_connection(|connection| {
-            let payload = connection
+            let row = connection
                 .query_row(
-                    "SELECT run_json FROM automation_runs WHERE run_id = ?1",
+                    "SELECT org_id, workspace_id, deployment_id, run_json
+                     FROM automation_runs WHERE run_id = ?1",
                     [run_id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-                .transpose()
+            row.map(|(org, workspace, deployment, payload)| {
+                protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "run",
+                    run_id,
+                    &payload,
+                )
+            })
+            .transpose()
         })
     }
 
@@ -524,7 +609,12 @@ impl OrchestrationStateStore {
                         path.to_string_lossy(),
                         status,
                         handoff.consumed_by_run_id,
-                        serde_json::to_string(handoff)?,
+                        protected_records::encode(
+                            &tandem_types::TenantContext::local_implicit(),
+                            "legacy_handoff",
+                            &handoff.handoff_id,
+                            handoff,
+                        )?,
                         handoff.created_at_ms,
                         imported_at_ms,
                     ],
@@ -641,16 +731,32 @@ impl OrchestrationStateStore {
 
     pub fn get_goal(&self, goal_id: &str) -> anyhow::Result<Option<LongRunningGoal>> {
         self.with_connection(|connection| {
-            let payload = connection
+            let row = connection
                 .query_row(
-                    "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
+                    "SELECT org_id, workspace_id, deployment_id, goal_json
+                     FROM long_running_goals WHERE goal_id = ?1",
                     [goal_id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-                .transpose()
+            row.map(|(org, workspace, deployment, payload)| {
+                protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "goal",
+                    goal_id,
+                    &payload,
+                )
+            })
+            .transpose()
         })
     }
 
@@ -720,6 +826,12 @@ impl OrchestrationStateStore {
             consumed.status = WorkflowHandoffStatus::Consumed;
             consumed.consumed_by_run_id = Some(downstream_run.run_id.clone());
             consumed.updated_at_ms = consumed.updated_at_ms.max(downstream_run.created_at_ms);
+            let handoff_payload = protected_records::encode(
+                &consumed.tenant_context,
+                "handoff",
+                &consumed.handoff_id,
+                &consumed,
+            )?;
             if update_existing {
                 transaction.execute(
                     "UPDATE workflow_handoffs SET status = 'consumed', consumed_by_run_id = ?2,
@@ -727,7 +839,7 @@ impl OrchestrationStateStore {
                     params![
                         consumed.handoff_id,
                         consumed.consumed_by_run_id,
-                        serde_json::to_string(&consumed)?,
+                        handoff_payload,
                         consumed.updated_at_ms,
                     ],
                 )?;
@@ -748,7 +860,7 @@ impl OrchestrationStateStore {
                         consumed.source_run_id,
                         consumed.target_automation_id,
                         consumed.consumed_by_run_id,
-                        serde_json::to_string(&consumed)?,
+                        handoff_payload,
                         consumed.created_at_ms,
                         consumed.updated_at_ms,
                     ],
@@ -768,7 +880,12 @@ impl OrchestrationStateStore {
                     link.hop_index,
                     link.parent_run_id,
                     link.triggering_handoff_id,
-                    serde_json::to_string(link)?,
+                    protected_records::encode(
+                        &updated_goal.tenant_context,
+                        "link",
+                        &link.run_id,
+                        link,
+                    )?,
                     link.created_at_ms,
                 ],
             )?;
@@ -791,7 +908,12 @@ impl OrchestrationStateStore {
                         handoff.goal_id,
                         event.run_id,
                         event.seq,
-                        serde_json::to_string(&event)?,
+                        protected_records::encode(
+                            &event.scope.tenant_context,
+                            "event",
+                            &event.event_id,
+                            &event,
+                        )?,
                         event.occurred_at_ms,
                         event.scope.tenant_context.org_id,
                         event.scope.tenant_context.workspace_id,
@@ -1204,7 +1326,7 @@ fn upsert_automation_run(
             run.tenant_context.workspace_id,
             run.tenant_context.deployment_id,
             status.as_str().unwrap_or("unknown"),
-            serde_json::to_string(run)?,
+            protected_records::encode(&run.tenant_context, "run", &run.run_id, run)?,
             run.created_at_ms,
             run.updated_at_ms,
         ],
@@ -1249,7 +1371,7 @@ fn upsert_goal(connection: &Connection, goal: &LongRunningGoal) -> anyhow::Resul
             goal.tenant_context.deployment_id,
             status.as_str().unwrap_or("unknown"),
             goal.active_run_id,
-            serde_json::to_string(goal)?,
+            protected_records::encode(&goal.tenant_context, "goal", &goal.goal_id, goal)?,
             goal.created_at_ms,
             goal.updated_at_ms,
         ],
@@ -1305,17 +1427,32 @@ fn ensure_current_goal_allows_handoff(
     transaction: &rusqlite::Transaction<'_>,
     handoff: &WorkflowHandoff,
 ) -> anyhow::Result<()> {
-    let payload = transaction
+    let row = transaction
         .query_row(
-            "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
+            "SELECT org_id, workspace_id, deployment_id, goal_json
+             FROM long_running_goals WHERE goal_id = ?1",
             [&handoff.goal_id],
-            |row| row.get::<_, String>(0),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
         )
         .optional()?;
-    let Some(payload) = payload else {
+    let Some((org, workspace, deployment, payload)) = row else {
         return Ok(());
     };
-    let goal: LongRunningGoal = serde_json::from_str(&payload)?;
+    let goal: LongRunningGoal = protected_records::decode_scoped(
+        &org,
+        &workspace,
+        deployment.as_deref(),
+        "goal",
+        &handoff.goal_id,
+        &payload,
+    )?;
     if goal.tenant_context != handoff.tenant_context
         || goal.orchestration_id != handoff.orchestration_id
         || goal.orchestration_version != handoff.orchestration_version
@@ -1353,3 +1490,11 @@ fn collect_json_files(root: &Path, output: &mut Vec<PathBuf>) -> anyhow::Result<
 #[cfg(test)]
 #[path = "orchestration_store/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "orchestration_store/encryption_tests.rs"]
+mod encryption_tests;
+
+#[cfg(test)]
+#[path = "orchestration_store/hardening_tests.rs"]
+mod hardening_tests;

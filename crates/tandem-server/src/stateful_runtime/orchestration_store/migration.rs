@@ -7,8 +7,11 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 use tandem_automation::{AutomationV2RunRecord, HandoffArtifact};
+use tandem_types::TenantContext;
 
-use super::{collect_json_files, upsert_automation_run, OrchestrationStateStore};
+use super::{
+    collect_json_files, protected_records, upsert_automation_run, OrchestrationStateStore,
+};
 use crate::stateful_runtime::{
     stable_definition_snapshot_hash, StatefulReliabilityStoreFile, StatefulRunEventRecord,
     StatefulRunSnapshotRecord, StatefulWaitRecord,
@@ -58,8 +61,8 @@ impl LegacyRuntimeMigrationPaths {
 /// Runtime knowledge used to separate this root's legacy envelopes from
 /// foreign ones. `known_automation_ids` is the union of automations the
 /// caller can name; the importer extends it with every automation that has a
-/// legacy run on this root. When the union is empty (fresh install) the
-/// foreign check is skipped — there is no identity to compare against.
+/// legacy run on this root. An empty union is not evidence of ownership, so
+/// envelopes are quarantined until the caller can name a matching automation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LegacyImportContext {
     pub known_automation_ids: BTreeSet<String>,
@@ -262,8 +265,8 @@ fn load_legacy_rows(
     // when the caller could not name it (e.g. the spec was deleted).
     let mut known_automation_ids = context.known_automation_ids.clone();
     known_automation_ids.extend(automation_runs.iter().map(|run| run.automation_id.clone()));
-    let known = (!known_automation_ids.is_empty()).then_some(&known_automation_ids);
-    let handoffs = load_legacy_handoffs(paths.handoff_root.as_deref(), known)?;
+    let handoffs =
+        load_legacy_handoffs(paths.handoff_root.as_deref(), Some(&known_automation_ids))?;
 
     Ok(LegacyRuntimeRows {
         automation_runs,
@@ -442,15 +445,15 @@ fn validate_legacy_handoff(
             ));
         }
     }
-    if let Some(known) = known_automation_ids {
-        if !known.contains(&handoff.source_automation_id)
-            && !known.contains(&handoff.target_automation_id)
-        {
-            return Err(format!(
-                "foreign legacy handoff: neither source `{}` nor target `{}` is an automation known to this runtime root",
-                handoff.source_automation_id, handoff.target_automation_id
-            ));
-        }
+    let has_local_automation = known_automation_ids.is_some_and(|known| {
+        known.contains(&handoff.source_automation_id)
+            || known.contains(&handoff.target_automation_id)
+    });
+    if !has_local_automation {
+        return Err(format!(
+            "foreign legacy handoff: neither source `{}` nor target `{}` is an automation known to this runtime root",
+            handoff.source_automation_id, handoff.target_automation_id
+        ));
     }
     Ok(())
 }
@@ -490,7 +493,12 @@ fn import_rows(
                 goal_id_from_value(&event.payload),
                 event.run_id,
                 event.seq,
-                serde_json::to_string(event)?,
+                protected_records::encode(
+                    &event.scope.tenant_context,
+                    "event",
+                    &event.event_id,
+                    event,
+                )?,
                 event.occurred_at_ms,
                 event.scope.tenant_context.org_id,
                 event.scope.tenant_context.workspace_id,
@@ -509,7 +517,12 @@ fn import_rows(
                 snapshot.snapshot_id,
                 snapshot.run_id,
                 snapshot.seq,
-                serde_json::to_string(snapshot)?,
+                protected_records::encode(
+                    &snapshot.scope.tenant_context,
+                    "snapshot",
+                    &snapshot.snapshot_id,
+                    snapshot,
+                )?,
                 snapshot.created_at_ms,
                 snapshot.scope.tenant_context.org_id,
                 snapshot.scope.tenant_context.workspace_id,
@@ -537,7 +550,12 @@ fn import_rows(
                     .as_deref()
                     .unwrap_or(""),
                 enum_name(&wait.status)?,
-                serde_json::to_string(wait)?,
+                protected_records::encode(
+                    &wait.scope.tenant_context,
+                    "wait",
+                    &format!("{}:{}", wait.wait_id, wait.run_id),
+                    wait,
+                )?,
                 wait.updated_at_ms,
             ],
         )?;
@@ -557,7 +575,12 @@ fn import_rows(
                 path.to_string_lossy(),
                 status,
                 handoff.consumed_by_run_id,
-                serde_json::to_string(handoff)?,
+                protected_records::encode(
+                    &TenantContext::local_implicit(),
+                    "legacy_handoff",
+                    &handoff.handoff_id,
+                    handoff,
+                )?,
                 handoff.created_at_ms,
                 imported_at_ms,
             ],
@@ -591,6 +614,7 @@ fn import_reliability(
             "outbox_effects",
             "effect_id",
             &row.outbox_id,
+            "outbox",
             row.run_id.as_deref(),
             &row.scope,
             enum_name(&row.status)?,
@@ -604,6 +628,7 @@ fn import_reliability(
             "tool_effects",
             "effect_id",
             &row.effect_id,
+            "tool_effect",
             row.run_id.as_deref(),
             &row.scope,
             enum_name(&row.status)?,
@@ -617,6 +642,7 @@ fn import_reliability(
             "dead_letters",
             "dead_letter_id",
             &row.dead_letter_id,
+            "dead_letter",
             row.run_id.as_deref(),
             &row.scope,
             enum_name(&row.status)?,
@@ -630,6 +656,7 @@ fn import_reliability(
             "compensations",
             "compensation_id",
             &row.compensation_id,
+            "compensation",
             row.run_id.as_deref(),
             &row.scope,
             enum_name(&row.status)?,
@@ -646,6 +673,7 @@ fn insert_reliability_row<T: Serialize>(
     table: &str,
     id_column: &str,
     id: &str,
+    kind: &str,
     run_id: Option<&str>,
     scope: &crate::stateful_runtime::StatefulRuntimeScope,
     status: String,
@@ -671,7 +699,7 @@ fn insert_reliability_row<T: Serialize>(
             id,
             run_id,
             status,
-            serde_json::to_string(row)?,
+            protected_records::encode(&scope.tenant_context, kind, id, row)?,
             updated_at_ms,
             scope.tenant_context.org_id,
             scope.tenant_context.workspace_id,
@@ -794,6 +822,15 @@ mod tests {
         }
     }
 
+    fn local_handoff_context() -> LegacyImportContext {
+        LegacyImportContext {
+            known_automation_ids: ["planner", "executor"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        }
+    }
+
     fn reliability() -> StatefulReliabilityStoreFile {
         let scope = serde_json::to_value(StatefulRuntimeScope::from_tenant_context(
             TenantContext::local_implicit(),
@@ -854,7 +891,10 @@ mod tests {
         paths.handoff_root = Some(handoff_root);
 
         let store = store(directory.path());
-        let first = store.import_legacy_runtime_state(&paths, 100).unwrap();
+        let context = local_handoff_context();
+        let first = store
+            .import_legacy_runtime_state_with_context(&paths, &context, 100)
+            .unwrap();
         assert!(!first.already_complete);
         assert_eq!((first.events, first.snapshots, first.waits), (1, 1, 1));
         assert_eq!((first.handoffs, first.quarantined_handoffs), (1, 1));
@@ -865,7 +905,9 @@ mod tests {
         assert!(valid_handoff.exists());
         assert!(corrupt_handoff.exists());
 
-        let second = store.import_legacy_runtime_state(&paths, 200).unwrap();
+        let second = store
+            .import_legacy_runtime_state_with_context(&paths, &context, 200)
+            .unwrap();
         assert!(second.already_complete);
         store
             .with_connection(|connection| {
@@ -993,12 +1035,7 @@ mod tests {
         paths.handoff_root = Some(handoff_root);
 
         let store = store(directory.path());
-        let context = LegacyImportContext {
-            known_automation_ids: ["planner", "executor"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-        };
+        let context = local_handoff_context();
         let report = store
             .import_legacy_runtime_state_with_context(&paths, &context, 100)
             .unwrap();
@@ -1024,6 +1061,50 @@ mod tests {
                 assert!(errors
                     .iter()
                     .any(|error| error.contains("conflicting legacy handoff")));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn fresh_runtime_quarantines_foreign_handoff_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut paths = LegacyRuntimeMigrationPaths::from_runtime_root(directory.path());
+        let handoff_root = directory.path().join("handoffs");
+        std::fs::create_dir_all(&handoff_root).unwrap();
+        std::fs::write(
+            handoff_root.join("handoff-1.json"),
+            serde_json::to_vec(&handoff()).unwrap(),
+        )
+        .unwrap();
+        paths.handoff_root = Some(handoff_root);
+
+        let store = store(directory.path());
+        let first = store.import_legacy_runtime_state(&paths, 100).unwrap();
+        assert_eq!((first.handoffs, first.quarantined_handoffs), (0, 1));
+
+        // Completing the migration makes SQLite authoritative. Supplying local
+        // ownership later must not turn the quarantined envelope into an import.
+        let second = store
+            .import_legacy_runtime_state_with_context(&paths, &local_handoff_context(), 200)
+            .unwrap();
+        assert!(second.already_complete);
+        store
+            .with_connection(|connection| {
+                let imported: u64 =
+                    connection
+                        .query_row("SELECT COUNT(*) FROM legacy_handoffs", [], |row| row.get(0))?;
+                let quarantined: u64 = connection.query_row(
+                    "SELECT COUNT(*) FROM legacy_handoff_quarantine",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let attempts: u64 = connection.query_row(
+                    "SELECT COUNT(*) FROM stateful_migration_attempts",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!((imported, quarantined, attempts), (0, 1, 1));
                 Ok(())
             })
             .unwrap();
@@ -1097,10 +1178,11 @@ mod tests {
         let corrupt = handoff_root.join("corrupt.json");
         std::fs::write(&corrupt, "{not-json}").unwrap();
         let store = store(directory.path());
+        let context = local_handoff_context();
 
         assert_eq!(
             store
-                .import_legacy_handoff_directory(&handoff_root, 100)
+                .import_legacy_handoff_directory_with_context(&handoff_root, &context, 100)
                 .unwrap(),
             1
         );
@@ -1110,7 +1192,7 @@ mod tests {
         std::fs::write(&corrupt, serde_json::to_vec(&recovered).unwrap()).unwrap();
         assert_eq!(
             store
-                .import_legacy_handoff_directory(&handoff_root, 101)
+                .import_legacy_handoff_directory_with_context(&handoff_root, &context, 101)
                 .unwrap(),
             2
         );
@@ -1206,6 +1288,7 @@ mod tests {
             std::fs::write(handoff_root.join("corrupt.json"), "{not-json}").unwrap();
             paths.handoff_root = Some(handoff_root);
             let store = store(directory.path());
+            let context = local_handoff_context();
             store
                 .with_connection(|connection| {
                     connection.execute_batch(&format!(
@@ -1216,7 +1299,9 @@ mod tests {
                 })
                 .unwrap();
 
-            assert!(store.import_legacy_runtime_state(&paths, 100).is_err());
+            assert!(store
+                .import_legacy_runtime_state_with_context(&paths, &context, 100)
+                .is_err());
             assert!(!store.legacy_runtime_migration_complete().unwrap());
             store
                 .with_connection(|connection| {
@@ -1244,7 +1329,9 @@ mod tests {
                 })
                 .unwrap();
 
-            let report = store.import_legacy_runtime_state(&paths, 101).unwrap();
+            let report = store
+                .import_legacy_runtime_state_with_context(&paths, &context, 101)
+                .unwrap();
             assert_eq!(
                 (
                     report.events,
