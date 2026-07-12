@@ -379,7 +379,7 @@ jobs:
           test -n "$TANDEM_TEST_POSTGRES_URL"
           cargo test -p tandem-server --no-default-features --features storage-postgres \
             high_volume_event_replay_stays_bounded_per_goal -- --list \
-            | rg 'high_volume_event_replay_stays_bounded_per_goal'
+            | grep -F 'high_volume_event_replay_stays_bounded_per_goal'
 
       - name: Run PostgreSQL-only storage conformance and scale gates
         run: cargo test -p tandem-server --no-default-features --features storage-postgres backend_conformance_tests -- --test-threads=1
