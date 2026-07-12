@@ -420,14 +420,19 @@ impl OrchestrationStateStore {
             if &handoff.tenant_context != tenant {
                 bail!("handoff is outside the caller tenant scope");
             }
-            if handoff.status != WorkflowHandoffStatus::PendingApproval {
-                bail!("only pending handoffs can be approved or rejected");
-            }
-            handoff.status = if approve {
+            let requested_status = if approve {
                 WorkflowHandoffStatus::Approved
             } else {
                 WorkflowHandoffStatus::Rejected
             };
+            if handoff.status == requested_status {
+                transaction.commit()?;
+                return Ok(handoff);
+            }
+            if handoff.status != WorkflowHandoffStatus::PendingApproval {
+                bail!("only pending handoffs can be approved or rejected");
+            }
+            handoff.status = requested_status;
             handoff.updated_at_ms = now_ms;
             handoff.metadata = Some(merge_metadata(
                 handoff.metadata.take(),
@@ -441,6 +446,62 @@ impl OrchestrationStateStore {
                     status_name(&handoff.status)?,
                     serde_json::to_string(&handoff)?,
                     now_ms,
+                ],
+            )?;
+            let goal_payload = transaction.query_row(
+                "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
+                [&handoff.goal_id],
+                |row| row.get::<_, String>(0),
+            )?;
+            let goal: LongRunningGoal = serde_json::from_str(&goal_payload)?;
+            let run_id = format!("goal:{}", handoff.goal_id);
+            let mut event = StatefulRunEventRecord {
+                schema_version: 1,
+                event_id: format!(
+                    "{}:decision:{}",
+                    handoff.handoff_id,
+                    if approve { "approved" } else { "rejected" }
+                ),
+                run_id: run_id.clone(),
+                seq: 0,
+                event_type: "stateful_runtime.goal.handoff_decided".to_string(),
+                occurred_at_ms: now_ms,
+                scope: StatefulRuntimeScope::from_tenant_context(handoff.tenant_context.clone()),
+                actor: Some(authority.actor.clone()),
+                phase_id: None,
+                phase_transition: None,
+                wait_kind: None,
+                causation_id: Some(handoff.handoff_id.clone()),
+                correlation_id: Some(handoff.goal_id.clone()),
+                payload: json!({
+                    "goal_id": handoff.goal_id,
+                    "handoff_id": handoff.handoff_id,
+                    "approved": approve,
+                    "goal_snapshot": goal,
+                }),
+            };
+            event.seq = super::next_event_seq(&transaction, &run_id)?;
+            let event = super::runtime_records::event_with_projection_snapshot(
+                &transaction,
+                &event,
+                &handoff.goal_id,
+            )?;
+            transaction.execute(
+                "INSERT INTO stateful_events
+                    (event_id, goal_id, run_id, seq, event_json, created_at_ms,
+                     org_id, workspace_id, deployment_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(event_id) DO NOTHING",
+                params![
+                    event.event_id,
+                    handoff.goal_id,
+                    event.run_id,
+                    event.seq,
+                    serde_json::to_string(&event)?,
+                    now_ms,
+                    handoff.tenant_context.org_id,
+                    handoff.tenant_context.workspace_id,
+                    handoff.tenant_context.deployment_id,
                 ],
             )?;
             transaction.commit()?;
@@ -493,6 +554,51 @@ impl OrchestrationStateStore {
                 ],
             )?;
             super::upsert_goal(&transaction, waiting_goal)?;
+            let run_id = format!("goal:{}", handoff.goal_id);
+            let mut event = StatefulRunEventRecord {
+                schema_version: 1,
+                event_id: format!("{}:pending_approval", handoff.handoff_id),
+                run_id: run_id.clone(),
+                seq: 0,
+                event_type: "stateful_runtime.goal.handoff_pending_approval".to_string(),
+                occurred_at_ms: handoff.updated_at_ms,
+                scope: StatefulRuntimeScope::from_tenant_context(handoff.tenant_context.clone()),
+                actor: None,
+                phase_id: None,
+                phase_transition: None,
+                wait_kind: Some(crate::stateful_runtime::StatefulWaitKind::Approval),
+                causation_id: Some(handoff.source_run_id.clone()),
+                correlation_id: Some(handoff.goal_id.clone()),
+                payload: json!({
+                    "goal_id": handoff.goal_id,
+                    "handoff_id": handoff.handoff_id,
+                    "goal_snapshot": waiting_goal,
+                }),
+            };
+            event.seq = super::next_event_seq(&transaction, &run_id)?;
+            let event = super::runtime_records::event_with_projection_snapshot(
+                &transaction,
+                &event,
+                &handoff.goal_id,
+            )?;
+            transaction.execute(
+                "INSERT INTO stateful_events
+                    (event_id, goal_id, run_id, seq, event_json, created_at_ms,
+                     org_id, workspace_id, deployment_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(event_id) DO NOTHING",
+                params![
+                    event.event_id,
+                    handoff.goal_id,
+                    event.run_id,
+                    event.seq,
+                    serde_json::to_string(&event)?,
+                    handoff.updated_at_ms,
+                    handoff.tenant_context.org_id,
+                    handoff.tenant_context.workspace_id,
+                    handoff.tenant_context.deployment_id,
+                ],
+            )?;
             transaction.commit()?;
             Ok(())
         })
@@ -509,6 +615,11 @@ impl OrchestrationStateStore {
             super::upsert_goal(&transaction, goal)?;
             let mut event = event.clone();
             event.seq = super::next_event_seq(&transaction, &event.run_id)?;
+            let event = super::runtime_records::event_with_projection_snapshot(
+                &transaction,
+                &event,
+                &goal.goal_id,
+            )?;
             transaction.execute(
                 "INSERT INTO stateful_events
                     (event_id, goal_id, run_id, seq, event_json, created_at_ms,
@@ -823,6 +934,7 @@ fn transition_event(
             "edge_id": handoff.edge_id,
             "transition_key": handoff.transition_key,
             "target_node_id": handoff.target_node_id,
+            "goal_snapshot": goal,
         }),
     }
 }
@@ -854,8 +966,14 @@ fn completion_event(
         wait_kind: None,
         causation_id: None,
         correlation_id: Some(goal.goal_id.clone()),
-        payload,
+        payload: payload_with_goal_snapshot(payload, goal),
     }
+}
+
+fn payload_with_goal_snapshot(payload: Value, goal: &LongRunningGoal) -> Value {
+    let mut object = payload.as_object().cloned().unwrap_or_default();
+    object.insert("goal_snapshot".to_string(), json!(goal));
+    Value::Object(object)
 }
 
 fn stable_transition_id(prefix: &str, goal_id: &str, idempotency_key: &str) -> String {

@@ -135,12 +135,7 @@ fn require_orchestration_owner(
     if verified.is_none() || super::goals_api::verified_has_admin_authority(verified) {
         return Ok(());
     }
-    let created_by = spec
-        .metadata
-        .as_ref()
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("created_by"))
-        .and_then(Value::as_str);
+    let created_by = orchestration_metadata_principal_id(spec, "created_by");
     if created_by != Some(actor.id.as_str()) {
         return Err((
             StatusCode::FORBIDDEN,
@@ -152,6 +147,22 @@ fn require_orchestration_owner(
             .into_response());
     }
     Ok(())
+}
+
+fn orchestration_metadata_principal_id<'a>(
+    spec: &'a OrchestrationSpec,
+    key: &str,
+) -> Option<&'a str> {
+    spec.metadata
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get(key))
+        .and_then(|value| {
+            value
+                .get("id")
+                .and_then(Value::as_str)
+                .or_else(|| value.as_str())
+        })
 }
 
 fn stamp_created_by(metadata: Option<Value>, actor: &tandem_types::PrincipalRef) -> Option<Value> {
@@ -259,12 +270,7 @@ pub(super) async fn update_orchestration_draft(
     );
     // The creator recorded at draft creation survives edits: ownership is
     // not writable through the update payload.
-    let creator = existing
-        .metadata
-        .as_ref()
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("created_by"))
-        .and_then(Value::as_str)
+    let creator = orchestration_metadata_principal_id(&existing, "created_by")
         .map(|value| tandem_types::PrincipalRef::human_user(value.to_string()))
         .unwrap_or_else(|| actor.clone());
     spec.metadata = stamp_created_by(spec.metadata.take(), &creator);

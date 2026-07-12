@@ -14,8 +14,6 @@ env:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 jobs:
   lint-frontend:
@@ -57,6 +55,7 @@ jobs:
   test-control-panel:
     name: Test Control Panel
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +87,19 @@ jobs:
         run: pnpm -C packages/tandem-control-panel test
 
       - name: Run control panel Playwright and accessibility tests
-        run: pnpm -C packages/tandem-control-panel playwright test
+        run: pnpm -C packages/tandem-control-panel exec playwright test --retries=0
+
+      - name: Pack and verify control panel release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="$RUNNER_TEMP/control-panel-package"
+          mkdir -p "$package_dir"
+          npm pack --ignore-scripts \
+            --pack-destination "$package_dir" \
+            ./packages/tandem-control-panel
+          archive="$(find "$package_dir" -maxdepth 1 -name '*.tgz' -print -quit)"
+          bash scripts/verify-release-archive.sh control-panel "$archive"
 
       - name: Upload Playwright report
         if: always()
@@ -107,6 +118,14 @@ jobs:
           path: packages/tandem-control-panel/test-results
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Upload control panel release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-panel-release-package
+          path: ${{ runner.temp }}/control-panel-package/*.tgz
+          if-no-files-found: error
+          retention-days: 7
 
   lint-backend:
     name: Lint Backend
@@ -176,6 +195,7 @@ jobs:
   test-sdks:
     name: Test SDKs
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -195,25 +215,69 @@ jobs:
         working-directory: packages/tandem-client-ts
         run: pnpm install --frozen-lockfile
 
+      - name: Typecheck TS SDK
+        working-directory: packages/tandem-client-ts
+        run: pnpm typecheck
+
+      - name: Build TS SDK
+        working-directory: packages/tandem-client-ts
+        run: pnpm build
+
       - name: Test TS SDK
         working-directory: packages/tandem-client-ts
         run: pnpm test
+
+      - name: Smoke test TS SDK module formats
+        working-directory: packages/tandem-client-ts
+        run: |
+          node --input-type=module -e "await import('./dist/index.js')"
+          node -e "require('./dist/index.cjs')"
+
+      - name: Pack and verify TS SDK release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="$RUNNER_TEMP/sdk-release-packages"
+          mkdir -p "$package_dir"
+          npm pack --ignore-scripts \
+            --pack-destination "$package_dir" \
+            ./packages/tandem-client-ts
+          archive="$(find "$package_dir" -maxdepth 1 -name '*.tgz' -print -quit)"
+          bash scripts/verify-release-archive.sh ts-sdk "$archive"
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install Poetry
-        run: pip install poetry
-
       - name: Install Python dependencies
         working-directory: packages/tandem-client-py
-        run: poetry install -E dev
+        run: python -m pip install --disable-pip-version-check build ".[dev]"
 
       - name: Test Python SDK
         working-directory: packages/tandem-client-py
-        run: poetry run pytest tests/
+        run: python -m pytest tests/
+
+      - name: Build and verify Python SDK release archives
+        working-directory: packages/tandem-client-py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m build
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          sdist="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          bash ../../scripts/verify-release-archive.sh python-sdk "$wheel"
+          bash ../../scripts/verify-release-archive.sh python-sdist "$sdist"
+
+      - name: Upload SDK release archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-release-packages
+          path: |
+            ${{ runner.temp }}/sdk-release-packages/*.tgz
+            packages/tandem-client-py/dist/*
+          if-no-files-found: error
+          retention-days: 7
 
   test-rust:
     name: Test Rust
@@ -400,6 +464,7 @@ jobs:
   docs-validate:
     name: Validate Docs
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -425,6 +490,10 @@ jobs:
       - name: Verify license map
         run: node scripts/verify-license-map.mjs
 
+      - name: Type check docs
+        working-directory: guide
+        run: pnpm check
+
       - name: Build docs
         working-directory: guide
         env:
@@ -432,9 +501,24 @@ jobs:
           DOCS_BASE_PATH: ${{ env.DOCS_BASE_PATH }}
         run: pnpm build
 
-      - name: Type check docs
-        working-directory: guide
-        run: pnpm check
+      - name: Validate built docs links and assets
+        run: node scripts/verify-built-docs-links.mjs guide/dist artifacts/docs-link-report.json
+
+      - name: Validate docs under a non-root base path
+        env:
+          DOCS_BASE_PATH: /docs/
+        run: |
+          npm --prefix guide run build
+          node scripts/verify-built-docs-links.mjs guide/dist artifacts/docs-link-report-subpath.json
+
+      - name: Upload docs validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-link-validation
+          path: artifacts/docs-link-report*.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   docs:
     name: Deploy Docs

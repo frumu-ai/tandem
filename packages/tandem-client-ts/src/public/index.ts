@@ -2813,6 +2813,162 @@ export interface ResolveGoalWaitInput {
   payload?: JsonValue;
 }
 
+export interface GetGoalProjectionOptions {
+  /** Reconstruct the projection at this durable goal-event cursor. */
+  cursor?: number;
+  /** Maximum number of timeline entries returned with the projection. */
+  limit?: number;
+}
+
+export type GoalProjectionMode = "live" | "replay";
+
+export type GoalProjectionNodeState =
+  | "not_started" | "claiming" | "running" | "timer_wait" | "external_wait"
+  | "approval" | "completed" | "failed" | "paused";
+
+export type GoalProjectionEdgeState =
+  | "not_started"
+  | "eligible"
+  | "claiming"
+  | "taken";
+
+export interface GoalProjectionNodeRun {
+  run_id: string;
+  status: StatefulGoalAutomationRunStatus | null;
+  hop_index: number;
+}
+
+export interface GoalProjectionNode {
+  node_id: string;
+  name: string;
+  kind: OrchestrationNodeKind;
+  state: GoalProjectionNodeState;
+  runs: GoalProjectionNodeRun[];
+  [key: string]: unknown;
+}
+
+export interface GoalProjectionEdge {
+  edge: OrchestrationEdgeSpec;
+  state: GoalProjectionEdgeState;
+  handoff_id?: string | null;
+  [key: string]: unknown;
+}
+
+export interface GoalProjectionGraph {
+  available: boolean;
+  nodes: GoalProjectionNode[];
+  edges: GoalProjectionEdge[];
+}
+
+export interface GoalProjectionCurrentWorkflow {
+  automation_id: string;
+  run_id: string;
+  status: StatefulGoalAutomationRunStatus;
+  stage?: string | null;
+  checkpoint: {
+    completed_nodes: string[];
+    pending_nodes: string[];
+    blocked_nodes: string[];
+  };
+  outputs: Record<string, JsonValue>;
+  retries: {
+    attempts: Record<string, number>;
+    verdicts: JsonValue;
+    last_failure?: JsonValue | null;
+  };
+  [key: string]: unknown;
+}
+
+export interface GoalProjectionTimelineEntry {
+  cursor: number;
+  event: StatefulGoalEventRecord;
+}
+
+export interface GoalProjectionTimeline {
+  events: GoalProjectionTimelineEntry[];
+  count: number;
+  limit: number;
+  truncated: boolean;
+}
+
+export type GoalActionKind =
+  | "pause"
+  | "resume"
+  | "cancel"
+  | "handoff"
+  | "wait"
+  | string;
+
+export interface GoalActionDescriptor {
+  id: string;
+  kind: GoalActionKind;
+  label: string;
+  enabled: boolean;
+  destructive: boolean;
+  reason_required: boolean;
+  decision_options: string[] | null;
+  target_id: string | null;
+  impact: string;
+  disabled_reason: string | null;
+  payload_fields?: Array<{
+    name: string;
+    label: string;
+    required: boolean;
+    format?: "json" | string;
+    options?: Array<string | { value: string; label: string }> | null;
+  }>;
+}
+
+export interface GoalProjection {
+  schema_version: number;
+  goal_id: string;
+  mode: GoalProjectionMode;
+  cursor: number;
+  live_cursor: number;
+  retained_from_cursor: number;
+  goal: LongRunningGoal;
+  historical_state: {
+    source: "projection_snapshot" | "current_goal";
+    exact: boolean;
+  };
+  orchestration: OrchestrationSpec | null;
+  orchestration_source: "goal_metadata_snapshot" | "published_definition_fallback";
+  graph: GoalProjectionGraph;
+  workflow: GoalProjectionCurrentWorkflow | null;
+  waits: StatefulWaitRecord[];
+  handoffs: WorkflowHandoff[];
+  artifacts: Array<{
+    artifact: OrchestrationArtifactRef;
+    handoff_id: string;
+    source_run_id: string;
+    consumed_by_run_id?: string | null;
+  }>;
+  recovery: JsonObject | null;
+  budgets: LongRunningGoalBudgets;
+  timeline: GoalProjectionTimeline;
+  actions: GoalActionDescriptor[];
+  [key: string]: unknown;
+}
+
+export interface PerformGoalActionInput {
+  expectedUpdatedAtMs: number;
+  idempotencyKey: string;
+  reason?: string;
+  decision?: string;
+  payload?: JsonValue;
+}
+
+export interface PerformGoalActionResponse {
+  goal: LongRunningGoal;
+  action: {
+    id: string;
+    result: JsonValue;
+  };
+  projection_cursor: number;
+  projection: GoalProjection;
+  [key: string]: unknown;
+}
+
 export interface LongRunningGoalListResponse {
   goals: LongRunningGoal[];
   count: number;
@@ -3827,6 +3983,10 @@ export interface RuntimeEventEnvelope {
 export interface EngineEventBase {
   type: string;
   properties: Record<string, unknown>;
+  /** Raw SSE `id` field, preserved exactly as received. */
+  sseId?: string;
+  /** Raw SSE `event` field, preserved exactly as received. */
+  sseEvent?: string;
   /** Durable goal-event cursor when yielded by `statefulRuntime.events()`. */
   cursor?: number;
   goal_seq?: number;

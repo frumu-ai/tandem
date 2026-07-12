@@ -20,6 +20,6 @@ The Tandem Desktop app is the primary interface for multi-session AI workflows, 
 
 ## Recommended Starting Path
 
-1. Complete [Desktop First 10 Minutes](./first-10-minutes/).
-2. Review [Desktop Workflows](./workflows/).
-3. Use [Desktop Learn Walkthroughs](./learn-walkthroughs/) for guided examples.
+1. Complete [Desktop First 10 Minutes](../first-10-minutes/).
+2. Review [Desktop Workflows](../workflows/).
+3. Use [Desktop Learn Walkthroughs](../learn-walkthroughs/) for guided examples.

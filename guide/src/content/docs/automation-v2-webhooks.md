@@ -172,7 +172,7 @@ only the configured Linear project, an explicit repair-ready label such as
 start the run, but the guard returns `has_work: false` when its authoritative
 lookup finds no eligible issue, suppressing the downstream ACA nodes.
 
-For a reusable template, see [Automation Examples for Teams](./automation-examples-for-teams/#linear-repair-loop-guard-template).
+For a reusable template, see [Automation Examples for Teams](../automation-examples-for-teams/#4-linear-repair-loop-guard-template).
 
 ### Troubleshooting
 

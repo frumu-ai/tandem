@@ -5,7 +5,7 @@ description: Concrete state transitions for Tandem automation reviews, approvals
 
 Use this page when you need the runtime truth behind governance: what records exist, which transitions are allowed, and what approval actually changes.
 
-If you only need the high-level concepts, start with [Governance Reference](./governance/). If you need to operate the system as an LLM, read [Self-Operator Playbook](../self-operator-playbook/).
+If you only need the high-level concepts, start with [Governance Reference](../governance/). If you need to operate the system as an LLM, read [Self-Operator Playbook](../../self-operator-playbook/).
 
 > Edition availability: this lifecycle describes the premium governance engine. OSS builds preserve the route and tool names, but governance mutation and review surfaces may return explicit availability errors instead of managed state.
 
@@ -236,6 +236,6 @@ Use `GET /automations/v2/{id}/governance` when you need the complete state for o
 
 ## Related Docs
 
-- [Governance Reference](./governance/)
+- [Governance Reference](../governance/)
 - [Self-Operator Playbook](../self-operator-playbook/)
 - [MCP Capability Discovery And Request Flow](../mcp-capability-discovery-and-request-flow/)

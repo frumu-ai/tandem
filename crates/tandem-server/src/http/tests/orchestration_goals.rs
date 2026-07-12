@@ -33,6 +33,48 @@ fn local_request(method: &str, uri: impl Into<String>, body: Option<Value>) -> R
     orchestration_request(method, uri, "local", "local", body)
 }
 
+fn unauthenticated_local_request(
+    method: &str,
+    uri: impl Into<String>,
+    body: Option<Value>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri.into())
+        .header("x-tandem-org-id", "local")
+        .header("x-tandem-workspace-id", "local");
+    let body = match body {
+        Some(value) => {
+            builder = builder.header("content-type", "application/json");
+            Body::from(value.to_string())
+        }
+        None => Body::empty(),
+    };
+    builder.body(body).expect("unauthenticated request")
+}
+
+fn verified_context(actor_id: &str) -> tandem_types::VerifiedTenantContext {
+    let tenant_context = TenantContext::local_implicit();
+    let request_principal =
+        tandem_types::RequestPrincipal::authenticated_user(actor_id, "tandem-web");
+    tandem_types::VerifiedTenantContext {
+        tenant_context,
+        human_actor: tandem_types::HumanActor::tandem_user(actor_id),
+        authority_chain: tandem_types::AuthorityChain::from_request(request_principal),
+        roles: Vec::new(),
+        org_units: Vec::new(),
+        capabilities: Vec::new(),
+        policy_version: None,
+        strict_projection: None,
+        issuer: "tandem-web".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1_000,
+        expires_at_ms: 9_999_999_999_999,
+        assertion_id: format!("assertion-{actor_id}"),
+        assertion_key_id: None,
+    }
+}
+
 async fn json_body(response: axum::response::Response) -> Value {
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
@@ -1002,5 +1044,374 @@ async fn goal_event_stream_replays_from_last_event_id() {
     assert!(
         collected.contains(&format!("id: {}", first_cursor + 1)),
         "{collected}"
+    );
+}
+
+#[tokio::test]
+async fn canonical_goal_projection_is_bounded_isolated_and_replayable() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut state = test_state().await;
+    state.automation_v2_runs_path = directory.path().join("automation_v2_runs.json");
+    let app = app_router(state.clone());
+    publish_orchestration(&app, &state).await;
+
+    let (status, started) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/goals",
+            Some(json!({
+                "orchestration_id": "orch-goals",
+                "objective": "Project this goal",
+                "idempotency_key": "projection-contract",
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let goal_id = started["goal"]["goal_id"].as_str().unwrap().to_string();
+    let updated_at_ms = started["goal"]["updated_at_ms"].as_u64().unwrap();
+
+    let (status, projection) = dispatch(
+        &app,
+        local_request(
+            "GET",
+            format!("/goals/{goal_id}/projection?limit=99999"),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{projection}");
+    assert_eq!(projection["mode"], json!("live"));
+    assert_eq!(projection["timeline"]["limit"], json!(250));
+    assert_eq!(
+        projection["orchestration_source"],
+        json!("goal_metadata_snapshot")
+    );
+    assert_eq!(projection["graph"]["available"], json!(true));
+    assert_eq!(projection["workflow"]["automation_id"], json!("planner"));
+    assert!(projection["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|action| action["id"] == json!("pause") && action["enabled"] == json!(true)));
+    let start_cursor = projection["cursor"].as_i64().unwrap();
+
+    let (status, _) = dispatch(
+        &app,
+        orchestration_request(
+            "GET",
+            format!("/goals/{goal_id}/projection"),
+            "other",
+            "tenant",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let action = json!({
+        "expected_updated_at_ms": updated_at_ms,
+        "idempotency_key": "pause-projection",
+        "reason": "operator review",
+    });
+    let (status, denied) = dispatch(
+        &app,
+        unauthenticated_local_request(
+            "POST",
+            format!("/goals/{goal_id}/actions/pause"),
+            Some(action.clone()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+
+    let mut stale = action.clone();
+    stale["expected_updated_at_ms"] = json!(updated_at_ms.saturating_sub(1));
+    let (status, conflict) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/actions/pause"),
+            Some(stale),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    assert_eq!(conflict["error"], json!("stale_goal_action"));
+
+    let (status, paused) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/actions/pause"),
+            Some(action.clone()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{paused}");
+    assert_eq!(paused["goal"]["status"], json!("paused"));
+    assert!(paused["projection_cursor"].as_i64().unwrap() > start_cursor);
+
+    let (status, duplicate_pause) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/actions/pause"),
+            Some(action),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{duplicate_pause}");
+    assert_eq!(
+        duplicate_pause["action"]["result"]["outcome"],
+        json!("paused")
+    );
+
+    let (status, replay) = dispatch(
+        &app,
+        local_request(
+            "GET",
+            format!("/goals/{goal_id}/projection?cursor={start_cursor}"),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["mode"], json!("replay"));
+    assert_eq!(replay["goal"]["status"], json!("active"));
+    assert_eq!(replay["historical_state"]["exact"], json!(true));
+
+    // Simulate a legacy event without a full projection snapshot. The server
+    // must fail closed instead of presenting today's mutable state as history.
+    let database_path = directory.path().join("stateful_runtime.sqlite3");
+    let connection = rusqlite::Connection::open(database_path).unwrap();
+    let event_json: String = connection
+        .query_row(
+            "SELECT event_json FROM stateful_events WHERE goal_id = ?1 ORDER BY rowid LIMIT 1",
+            [&goal_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut event: Value = serde_json::from_str(&event_json).unwrap();
+    event["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("projection_snapshot_ref");
+    connection
+        .execute(
+            "UPDATE stateful_events SET event_json = ?1 WHERE goal_id = ?2 AND rowid = ?3",
+            rusqlite::params![event.to_string(), goal_id, start_cursor],
+        )
+        .unwrap();
+    drop(connection);
+    let (status, fallback) = dispatch(
+        &app,
+        local_request(
+            "GET",
+            format!("/goals/{goal_id}/projection?cursor={start_cursor}"),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{fallback}");
+    assert_eq!(
+        fallback["error"],
+        json!("historical_projection_snapshot_unavailable")
+    );
+}
+
+#[tokio::test]
+async fn canonical_handoff_decision_is_authoritatively_idempotent() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut state = test_state().await;
+    state.automation_v2_runs_path = directory.path().join("automation_v2_runs.json");
+    let app = app_router(state.clone());
+    let (planner_hash, executor_hash) = seed_workflows(&state).await;
+    let mut draft = draft_payload(&planner_hash, &executor_hash);
+    draft["edges"][0]["approval"] = json!({"required": true});
+    let (status, _) = dispatch(&app, local_request("POST", "/orchestrations", Some(draft))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, published) = dispatch(
+        &app,
+        local_request("POST", "/orchestrations/orch-goals/publish", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{published}");
+    let (status, started) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/goals",
+            Some(json!({
+                "orchestration_id": "orch-goals",
+                "objective": "Approve once",
+                "idempotency_key": "decision-idempotency",
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let goal_id = started["goal"]["goal_id"].as_str().unwrap().to_string();
+    complete_run(&state, started["root_run_id"].as_str().unwrap()).await;
+    let (status, pending) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/transitions"),
+            Some(json!({
+                "transition_key": "continue",
+                "idempotency_key": "approval-hop",
+                "artifact": {"artifact_type": "plan", "value": {"ready": true}},
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{pending}");
+    let updated_at_ms = pending["goal"]["updated_at_ms"].as_u64().unwrap();
+    let handoff_id = pending["handoff"]["handoff_id"].as_str().unwrap();
+    let action_id = format!("handoff:{handoff_id}:decision");
+    let decision = json!({
+        "expected_updated_at_ms": updated_at_ms,
+        "idempotency_key": "approve-once",
+        "decision": "approve",
+        "reason": "reviewed",
+    });
+    let (status, first) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/actions/{action_id}"),
+            Some(decision.clone()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(
+        first["action"]["result"]["handoff"]["status"],
+        json!("approved")
+    );
+
+    let (status, replayed) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/actions/{action_id}"),
+            Some(decision),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replayed}");
+    assert_eq!(replayed["action"]["result"]["outcome"], json!("decided"));
+    assert_eq!(
+        replayed["action"]["result"]["handoff"]["handoff_id"],
+        json!(handoff_id)
+    );
+}
+
+#[tokio::test]
+async fn hosted_goal_start_stamps_verified_owner_and_owner_can_pause() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    publish_orchestration(&app, &state).await;
+
+    let tenant = TenantContext::local_implicit();
+    let principal = tandem_types::RequestPrincipal::authenticated_user("transport-user", "test");
+    let verified = verified_context("goal-owner");
+    let payload = serde_json::from_value(json!({
+        "orchestration_id": "orch-goals",
+        "objective": "Own the hosted goal",
+        "idempotency_key": "hosted-owner-start",
+        "metadata": {"started_by": "forged-owner", "source": "test"}
+    }))
+    .unwrap();
+    let response = crate::http::goals_api::start_goal(
+        State(state.clone()),
+        Extension(tenant.clone()),
+        Extension(principal.clone()),
+        Some(Extension(verified.clone())),
+        Json(payload),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let started = json_body(response).await;
+    assert_eq!(
+        started["goal"]["metadata"]["started_by"]["id"],
+        "goal-owner"
+    );
+    assert_eq!(started["goal"]["metadata"]["source"], "test");
+
+    let goal_id = started["goal"]["goal_id"].as_str().unwrap().to_string();
+    let response = crate::http::goals_api::pause_goal(
+        State(state),
+        Extension(tenant),
+        Extension(principal),
+        Some(Extension(verified)),
+        Path(goal_id),
+        Json(Default::default()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let paused = json_body(response).await;
+    assert_eq!(paused["outcome"], "paused");
+}
+
+#[tokio::test]
+async fn hosted_draft_update_accepts_principal_ref_creator_metadata() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let (planner_hash, executor_hash) = seed_workflows(&state).await;
+    let (status, created) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/orchestrations",
+            Some(draft_payload(&planner_hash, &executor_hash)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+
+    let tenant = TenantContext::local_implicit();
+    let store = crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+        &state.automation_v2_runs_path,
+    )
+    .unwrap();
+    let mut draft = store
+        .get_orchestration_draft(&tenant, "orch-goals")
+        .unwrap()
+        .unwrap();
+    let expected_updated_at_ms = draft.updated_at_ms;
+    draft.metadata.as_mut().unwrap()["created_by"] =
+        json!(tandem_types::PrincipalRef::human_user("operator"));
+    store
+        .put_orchestration_draft(&draft, Some(expected_updated_at_ms))
+        .unwrap();
+
+    let mut update = draft_payload(&planner_hash, &executor_hash);
+    update["name"] = json!("Updated through hosted HTTP");
+    update["expected_updated_at_ms"] = json!(expected_updated_at_ms);
+    let payload = serde_json::from_value(update).unwrap();
+    let response = crate::http::orchestrations_api::update_orchestration_draft(
+        State(state),
+        Extension(tenant),
+        Extension(tandem_types::RequestPrincipal::authenticated_user(
+            "transport-user",
+            "test",
+        )),
+        Some(Extension(verified_context("operator"))),
+        Path("orch-goals".to_string()),
+        Json(payload),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let updated = json_body(response).await;
+    assert_eq!(
+        updated["orchestration"]["name"],
+        "Updated through hosted HTTP"
+    );
+    assert_eq!(
+        updated["orchestration"]["metadata"]["created_by"],
+        "operator"
     );
 }

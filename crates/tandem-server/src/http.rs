@@ -75,6 +75,7 @@ mod external_actions;
 mod global;
 mod goal_capability_learning;
 mod goals_api;
+mod goals_projection;
 pub(crate) mod governance;
 pub(crate) mod incident_monitor;
 mod marketplace;

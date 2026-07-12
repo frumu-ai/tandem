@@ -54,7 +54,7 @@ Use an approval queue when:
 
 Agents should emit structured requests for review instead of self-approving.
 
-For the concrete state machine behind these reviews, see [Automation Governance Lifecycle](./governance-lifecycle/).
+For the concrete state machine behind these reviews, see [Automation Governance Lifecycle](../governance-lifecycle/).
 
 ## Audit events
 
@@ -85,4 +85,4 @@ That trail is what lets Tandem answer:
 - [Engine Authentication For Agents](https://docs.tandem.ac/engine-authentication-for-agents/)
 - [Self-Operator Playbook](../self-operator-playbook/)
 - [MCP Capability Discovery And Request Flow](../mcp-capability-discovery-and-request-flow/)
-- [Automation Governance Lifecycle](./governance-lifecycle/)
+- [Automation Governance Lifecycle](../governance-lifecycle/)

@@ -1,4 +1,5 @@
 import { streamSse } from "./stream.js";
+import type { StreamSseOptions } from "./stream.js";
 import type {
   TandemClientOptions,
   JsonObject,
@@ -181,6 +182,10 @@ import type {
   LongRunningGoalWaitsResponse,
   LongRunningGoalWaitResponse,
   ResolveGoalWaitInput,
+  GetGoalProjectionOptions,
+  GoalProjection,
+  PerformGoalActionInput,
+  PerformGoalActionResponse,
   SettleGoalCompletionInput,
   StartLongRunningGoalInput,
   StartLongRunningGoalResponse,
@@ -3764,6 +3769,20 @@ class StatefulRuntime {
     return this.req<LongRunningGoalResponse>(this.goalPath(goalId));
   }
 
+  /** Get the canonical operator projection, optionally reconstructed at a cursor. */
+  async getGoalProjection(
+    goalId: string,
+    options?: GetGoalProjectionOptions
+  ): Promise<GoalProjection> {
+    const params = new URLSearchParams();
+    if (options?.cursor !== undefined) params.set("cursor", String(options.cursor));
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return this.req<GoalProjection>(
+      `${this.goalPath(goalId)}/projection${query ? `?${query}` : ""}`
+    );
+  }
+
   /** Get the goal, pinned orchestration graph, and linked runs. */
   async getGoalGraph(goalId: string): Promise<LongRunningGoalGraphResponse> {
     return this.req<LongRunningGoalGraphResponse>(`${this.goalPath(goalId)}/graph`);
@@ -3791,7 +3810,18 @@ class StatefulRuntime {
   /** Stream durable goal events after an optional store cursor. */
   events(
     goalId: string,
-    options?: { cursor?: number; signal?: AbortSignal }
+    options?: Pick<
+      StreamSseOptions,
+      | "cursor"
+      | "lastEventId"
+      | "signal"
+      | "connectTimeoutMs"
+      | "reconnect"
+      | "maxReconnectAttempts"
+      | "reconnectDelayMs"
+      | "maxReconnectDelayMs"
+      | "onSequenceGap"
+    >
   ): AsyncGenerator<EngineEvent> {
     const params = new URLSearchParams();
     if (options?.cursor !== undefined) params.set("cursor", String(options.cursor));
@@ -3799,7 +3829,28 @@ class StatefulRuntime {
     return streamSse(
       `${this.baseUrl}${this.goalPath(goalId)}/events/stream${query ? `?${query}` : ""}`,
       this.getToken(),
-      { signal: options?.signal }
+      options
+    );
+  }
+
+  /** Perform an action advertised by the current canonical goal projection. */
+  async performGoalAction(
+    goalId: string,
+    actionId: string,
+    input: PerformGoalActionInput
+  ): Promise<PerformGoalActionResponse> {
+    return this.req<PerformGoalActionResponse>(
+      `${this.goalPath(goalId)}/actions/${encodeURIComponent(actionId)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_updated_at_ms: input.expectedUpdatedAtMs,
+          idempotency_key: input.idempotencyKey,
+          ...(input.reason !== undefined ? { reason: input.reason } : {}),
+          ...(input.decision !== undefined ? { decision: input.decision } : {}),
+          ...(input.payload !== undefined ? { payload: input.payload } : {}),
+        }),
+      }
     );
   }
 

@@ -419,11 +419,11 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
         idempotencyKey: orchestrationEditorId("control-panel-goal"),
       });
     },
-    onSuccess: () => {
+    onSuccess: (response) => {
       setGoalObjective("");
       toast("ok", "Long-running goal started");
       void queryClient.invalidateQueries({ queryKey: ["orchestrations", "goals"] });
-      navigate("runs");
+      window.location.hash = `#/goal-operations?goal_id=${encodeURIComponent(response.goal.goal_id)}`;
     },
     onError: (error: any) => toast("err", error?.message || "Could not start goal"),
   });

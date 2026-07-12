@@ -820,7 +820,7 @@ Use this checklist before shipping:
 ## See Also
 
 - [Headless Service](./headless-service/)
-- [Agent Command Center](./agent-command-center/)
+- [Control Panel](../control-panel/)
 - [WebMCP for Agents](./webmcp-for-agents/)
 - [Self-Operator Playbook](./self-operator-playbook/)
 - [MCP Capability Discovery And Request Flow](./mcp-capability-discovery-and-request-flow/)

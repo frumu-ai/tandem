@@ -57,6 +57,7 @@ const incidentMonitorRoutes = unique(
 const requiredAgentIndexRoutes = [
   "/automation-examples-for-teams/",
   "/automation-v2-webhooks/",
+  "/long-running-multi-workflow-goals/",
   "/stateful-workflows/",
 ];
 
@@ -98,6 +99,10 @@ for (const route of incidentMonitorRoutes) {
 }
 
 for (const route of requiredAgentIndexRoutes) {
+  const sidebarSlug = route.slice(1, -1);
+  if (!guideConfig.includes(`"${sidebarSlug}"`)) {
+    missing.push(`guide config missing required agent route: ${route}`);
+  }
   if (!llmsDoc.includes(route)) {
     missing.push(`llms doc missing agent-index route: ${route}`);
   }

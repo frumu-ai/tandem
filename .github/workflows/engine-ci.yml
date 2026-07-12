@@ -6,6 +6,8 @@ on:
       - "engine/**"
       - "crates/**"
       - "Cargo.toml"
+      - "Cargo.lock"
+      - ".config/nextest.toml"
       - ".github/workflows/engine-ci.yml"
   push:
     branches: ["feat/engine"]
@@ -13,6 +15,8 @@ on:
       - "engine/**"
       - "crates/**"
       - "Cargo.toml"
+      - "Cargo.lock"
+      - ".config/nextest.toml"
       - ".github/workflows/engine-ci.yml"
 
 jobs:
@@ -288,6 +292,25 @@ jobs:
             --features tandem-ai/browser,tandem-server/premium-governance \
             --profile ci
 
+      # Listing after the suite reuses the compiled test binaries. This makes
+      # migration/orchestration discovery auditable without another Rust build
+      # or a second execution of the same tests.
+      - name: Verify migration and orchestration test discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo nextest list --workspace --exclude tandem \
+            --features tandem-ai/browser,tandem-server/premium-governance \
+            --profile ci > "$RUNNER_TEMP/nextest-tests.txt"
+          grep -Fq 'migration_write_failures_roll_back_every_imported_record_type' \
+            "$RUNNER_TEMP/nextest-tests.txt"
+          grep -Fq 'completed_migration_keeps_sqlite_authoritative_when_legacy_files_change' \
+            "$RUNNER_TEMP/nextest-tests.txt"
+          grep -Fq 'tan_707_goal_plan_execute_verify_complete_survives_180_day_store_journey' \
+            "$RUNNER_TEMP/nextest-tests.txt"
+          grep -Fq 'tan_707_named_replan_edge_and_day_180_limit_are_explicit' \
+            "$RUNNER_TEMP/nextest-tests.txt"
+
       - name: Report disk usage
         if: always()
         run: df -h /
@@ -297,5 +320,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nextest-junit
-          path: target/nextest/ci/junit.xml
+          path: |
+            target/nextest/ci/junit.xml
+            ${{ runner.temp }}/nextest-tests.txt
+          if-no-files-found: ignore
           retention-days: 14

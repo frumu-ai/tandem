@@ -50,6 +50,100 @@ fn tool_request_record_context(
 }
 
 impl OrchestrationStateStore {
+    pub fn begin_orchestration_action_request(
+        &self,
+        tenant: &TenantContext,
+        operation: &str,
+        idempotency_key: &str,
+        request_digest: &str,
+        now_ms: u64,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let deployment = tenant.deployment_id.as_deref().unwrap_or("");
+            let existing = transaction
+                .query_row(
+                    "SELECT request_digest, response_json FROM orchestration_tool_requests
+                     WHERE org_id = ?1 AND workspace_id = ?2 AND deployment_key = ?3
+                       AND operation = ?4 AND idempotency_key = ?5",
+                    params![
+                        tenant.org_id,
+                        tenant.workspace_id,
+                        deployment,
+                        operation,
+                        idempotency_key,
+                    ],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()?;
+            if let Some((stored_digest, response)) = existing {
+                if stored_digest != request_digest {
+                    bail!("idempotency key is already bound to a different {operation} request");
+                }
+                let Some(response) = response else {
+                    bail!(
+                        "the prior {operation} outcome is unknown; inspect authoritative state before issuing a new action"
+                    );
+                };
+                transaction.commit()?;
+                return Ok(Some(serde_json::from_str(&response)?));
+            }
+            transaction.execute(
+                "INSERT INTO orchestration_tool_requests (
+                    org_id, workspace_id, deployment_key, operation, idempotency_key,
+                    request_digest, response_json, created_at_ms, completed_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
+                params![
+                    tenant.org_id,
+                    tenant.workspace_id,
+                    deployment,
+                    operation,
+                    idempotency_key,
+                    request_digest,
+                    now_ms,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(None)
+        })
+    }
+
+    pub fn completed_orchestration_tool_request(
+        &self,
+        tenant: &TenantContext,
+        operation: &str,
+        idempotency_key: &str,
+        request_digest: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        self.with_connection(|connection| {
+            let existing = connection
+                .query_row(
+                    "SELECT request_digest, response_json FROM orchestration_tool_requests
+                     WHERE org_id = ?1 AND workspace_id = ?2 AND deployment_key = ?3
+                       AND operation = ?4 AND idempotency_key = ?5",
+                    params![
+                        tenant.org_id,
+                        tenant.workspace_id,
+                        tenant.deployment_id.as_deref().unwrap_or(""),
+                        operation,
+                        idempotency_key,
+                    ],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()?;
+            let Some((stored_digest, response)) = existing else {
+                return Ok(None);
+            };
+            if stored_digest != request_digest {
+                bail!("idempotency key is already bound to a different {operation} request");
+            }
+            response
+                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .transpose()
+        })
+    }
+
     pub fn begin_orchestration_tool_request(
         &self,
         tenant: &TenantContext,

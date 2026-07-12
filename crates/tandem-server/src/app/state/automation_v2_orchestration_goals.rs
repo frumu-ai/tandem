@@ -165,7 +165,10 @@ impl AppState {
             updated_at_ms: request.now_ms,
             finished_at_ms: None,
             final_artifact: None,
-            metadata: request.metadata.clone(),
+            metadata: Some(goal_metadata_with_orchestration_snapshot(
+                request.metadata.clone(),
+                &orchestration,
+            )),
         };
         let root_run = self
             .prepare_orchestration_node_run(
@@ -274,4 +277,20 @@ impl AppState {
         }
         Ok((outcome, goal))
     }
+}
+
+fn goal_metadata_with_orchestration_snapshot(
+    metadata: Option<serde_json::Value>,
+    orchestration: &tandem_automation::OrchestrationSpec,
+) -> serde_json::Value {
+    let mut object = match metadata {
+        Some(serde_json::Value::Object(object)) => object,
+        Some(value) => serde_json::Map::from_iter([("submitted_metadata".to_string(), value)]),
+        None => serde_json::Map::new(),
+    };
+    object.insert(
+        "orchestration_snapshot".to_string(),
+        serde_json::to_value(orchestration).expect("orchestration snapshot is serializable"),
+    );
+    serde_json::Value::Object(object)
 }
