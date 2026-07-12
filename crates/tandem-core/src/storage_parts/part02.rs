@@ -58,7 +58,8 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "ses_test");
         assert_eq!(sessions[0].title, "Legacy Session");
-        assert!(base.join("sessions.json").exists());
+        assert!(base.join("sessions.sqlite3").exists());
+        assert!(!base.join("sessions.json").exists());
     }
 
     #[tokio::test]
@@ -114,7 +115,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loads_legacy_session_store_fixture_and_rewrites_versioned_envelope() {
+    async fn imports_legacy_session_store_fixture_without_rewriting_source() {
         let base = std::env::temp_dir().join(format!(
             "tandem-core-session-store-migration-{}",
             Uuid::new_v4()
@@ -133,16 +134,9 @@ mod tests {
             .expect("fixture session");
         assert_eq!(loaded.title, "Fixture session");
 
-        let raw = stdfs::read_to_string(base.join("sessions.json")).expect("read sessions");
-        let persisted: Value = serde_json::from_str(&raw).expect("versioned sessions");
-        assert_eq!(
-            persisted.get("schema_version").and_then(Value::as_u64),
-            Some(SESSIONS_SCHEMA_VERSION as u64)
-        );
-        assert!(persisted
-            .get("sessions")
-            .and_then(|sessions| sessions.get("ses_fixture"))
-            .is_some());
+        let raw = stdfs::read_to_string(base.join("sessions.json")).expect("read source sessions");
+        assert_eq!(raw, include_str!("fixtures/sessions_v0_map.json"));
+        assert!(base.join("sessions.sqlite3").exists());
     }
 
     #[tokio::test]
@@ -1084,7 +1078,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_compacts_session_snapshot_metadata() {
+    async fn imports_snapshot_metadata_as_bounded_watermarks() {
         let base = std::env::temp_dir().join(format!(
             "tandem-core-snapshot-compaction-{}",
             Uuid::new_v4()
@@ -1136,30 +1130,20 @@ mod tests {
         .expect("write metadata");
         stdfs::write(base.join("questions.json"), "{}").expect("write questions");
 
-        let _storage = Storage::new(&base).await.expect("storage");
+        let storage = Storage::new(&base).await.expect("storage");
 
         let raw = stdfs::read_to_string(base.join("session_meta.json")).expect("read metadata");
         let stored: HashMap<String, SessionMeta> =
             serde_json::from_str(&raw).expect("parse metadata");
-        assert_eq!(stored.len(), 1);
-        let compacted = stored.get(&session_id).expect("session metadata");
-        assert_eq!(compacted.snapshots.len(), MAX_SESSION_SNAPSHOTS);
-
-        let labels = compacted
-            .snapshots
-            .iter()
-            .map(|snapshot| {
-                snapshot[0]
-                    .parts
-                    .iter()
-                    .find_map(|part| match part {
-                        MessagePart::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .expect("snapshot text")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(labels, vec!["b", "c", "d", "e", "f"]);
+        assert_eq!(stored.len(), 2, "JSON source must remain untouched");
+        let status = storage.session_status(&session_id).await.expect("status");
+        assert_eq!(status.get("snapshotCount").and_then(Value::as_i64), Some(5));
+        assert!(storage.revert_session(&session_id).await.expect("legacy revert"));
+        let reverted = storage.get_session(&session_id).await.expect("reverted session");
+        assert!(matches!(
+            reverted.messages[0].parts.first(),
+            Some(MessagePart::Text { text }) if text == "f"
+        ));
     }
 
     #[tokio::test]
@@ -1185,7 +1169,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_storage_flushes_do_not_fail() {
+    async fn concurrent_session_appends_do_not_fail() {
         let base = std::env::temp_dir().join(format!("tandem-core-flush-race-{}", Uuid::new_v4()));
         let storage = Arc::new(Storage::new(&base).await.expect("storage"));
         let session = Session::new(Some("flush race".to_string()), Some(".".to_string()));
@@ -1218,6 +1202,93 @@ mod tests {
 
         let session = storage.get_session(&session_id).await.expect("session");
         assert_eq!(session.messages.len(), 12 * 8);
-        assert!(base.join("sessions.json").exists());
+        assert!(base.join("sessions.sqlite3").exists());
+    }
+
+    #[tokio::test]
+    async fn json_import_is_once_only_and_new_writes_leave_sources_unchanged() {
+        let base = std::env::temp_dir().join(format!("tandem-core-once-import-{}", Uuid::new_v4()));
+        stdfs::create_dir_all(&base).expect("base");
+        let session = Session::new(Some("imported".to_string()), Some(".".to_string()));
+        let session_id = session.id.clone();
+        let source = serde_json::to_string_pretty(&HashMap::from([(session_id.clone(), session)]))
+            .expect("serialize source");
+        let sessions_path = base.join("sessions.json");
+        stdfs::write(&sessions_path, &source).expect("write source");
+
+        let storage = Storage::new(&base).await.expect("initial import");
+        storage
+            .append_message(
+                &session_id,
+                Message::new(
+                    MessageRole::User,
+                    vec![MessagePart::Text {
+                        text: "persist in SQLite".to_string(),
+                    }],
+                ),
+            )
+            .await
+            .expect("append");
+        assert_eq!(stdfs::read_to_string(&sessions_path).expect("read source"), source);
+
+        // A later source-file edit must not overwrite an already committed import.
+        stdfs::write(&sessions_path, "{}").expect("mutate old source");
+        drop(storage);
+        let storage = Storage::new(&base).await.expect("reopen");
+        let loaded = storage.get_session(&session_id).await.expect("authoritative session");
+        assert_eq!(loaded.messages.len(), 1);
+
+        let connection = rusqlite::Connection::open(base.join("sessions.sqlite3")).expect("open db");
+        let messages: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1",
+                [&session_id],
+                |row| row.get(0),
+            )
+            .expect("count messages");
+        assert_eq!(messages, 1);
+    }
+
+    #[tokio::test]
+    async fn fork_revert_and_unrevert_use_snapshot_watermarks() {
+        let base = std::env::temp_dir().join(format!("tandem-core-revert-watermark-{}", Uuid::new_v4()));
+        let storage = Storage::new(&base).await.expect("storage");
+        let mut session = Session::new(Some("parent".to_string()), Some(".".to_string()));
+        session.messages.push(Message::new(
+            MessageRole::User,
+            vec![MessagePart::Text {
+                text: "first".to_string(),
+            }],
+        ));
+        let parent_id = session.id.clone();
+        storage.save_session(session).await.expect("save parent");
+
+        let child = storage
+            .fork_session(&parent_id)
+            .await
+            .expect("fork")
+            .expect("child");
+        storage
+            .append_message(
+                &child.id,
+                Message::new(
+                    MessageRole::Assistant,
+                    vec![MessagePart::Text {
+                        text: "second".to_string(),
+                    }],
+                ),
+            )
+            .await
+            .expect("append child message");
+        assert!(storage.revert_session(&child.id).await.expect("revert"));
+        assert_eq!(
+            storage.get_session(&child.id).await.expect("reverted").messages.len(),
+            1
+        );
+        assert!(storage.unrevert_session(&child.id).await.expect("unrevert"));
+        assert_eq!(
+            storage.get_session(&child.id).await.expect("restored").messages.len(),
+            2
+        );
     }
 }
