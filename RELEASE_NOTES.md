@@ -2,6 +2,152 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.9 (2026-07-12)
+
+Tandem 0.6.9 delivers the long-running workflow orchestration layer end to
+end: versioned orchestration graphs that connect Automation V2 workflows
+through governed named transitions, durable goals that survive restarts and
+run for months, public durable wait nodes, a transactional SQLite stateful
+store, public authoring and runtime APIs with typed TypeScript/Python clients
+and governed MCP tools, a visual drag-and-drop Orchestration Studio, live goal
+monitoring with replay and operator actions, and enterprise scope, artifact,
+and authority enforcement with hosted-KMS sealing. It also lands the
+production PostgreSQL memory backend on the portable `MemoryStore`
+abstraction, proves the five-profile ACME Slack governance flow on the
+production path, and locks the Control Panel and orchestration runtime behind
+mandatory CI gates.
+
+### Long-Running Workflow Orchestration Kernel
+
+Orchestrations are now first-class, versioned definitions: workflow, wait, and
+terminal nodes wired by named transition edges that carry artifact contracts
+and optional approval boundaries, governed by per-goal policies. Drafts are
+mutable and validated; publishing snapshots an immutable version with pinned
+workflow definition hashes. Durable goals execute a published version across
+many Automation V2 runs with hop-indexed lineage.
+
+The stateful runtime now lives in an embedded transactional SQLite/WAL store —
+definitions, runs, goals, run links, handoffs, waits, events, snapshots, and
+reliability records — populated by a once-only atomic legacy import, after
+which the old JSON/JSONL files are compatibility mirrors only. Governed
+transitions are atomic: one transaction validates the source run, edge,
+artifact contract, scope, authority, idempotency key, hop policy, and pinned
+target version, then persists the handoff and provenance, creates the
+downstream run with its actual run ID, records lineage and events, and marks
+the handoff consumed. Exactly-once behavior holds under concurrent scheduler
+races and crash injection at every write boundary.
+
+Goal policies enforce hop limits, deadlines, and token/cost budgets with
+pause-for-review or fail semantics; terminal outcomes are explicit; completed
+workflows with no matching transition settle into awaiting-transition instead
+of silently succeeding; and cancellation propagates to the active run,
+pending waits, and claimed handoffs. Public durable wait nodes (timer,
+approval, correlated webhook, external condition) run through the checkpoint,
+scheduler, webhook, and restart paths with leased claims and idempotent wakes.
+
+### Public APIs, SDK Clients, And MCP Tools
+
+The authoring surface exposes draft create/list/get/update/archive with
+optimistic concurrency, validation with referenced-workflow checks,
+publishing, version history, stale-reference reporting and refresh, and
+dry-run transition previews. The runtime surface exposes idempotent goal
+start (atomic with the root run), lifecycle controls, the goal graph and run
+lineage, durable events with replayable cursors, an SSE change stream with
+`Last-Event-ID` reconnect, governed handoff emission and decisions, workflow
+completion settlement, wait inspection and resolution, artifacts, and
+budgets.
+
+TypeScript gains `client.orchestrations` and `client.statefulRuntime`; Python
+gains `client.orchestrations` and `client.stateful_runtime`. Ten governed MCP
+tools let agents drive the full loop — create/validate/publish, goal
+start/get/cancel, handoff emit/approve, wait inspect/resolve — with
+fail-closed authority, owner checks, and idempotent replay backed by a sealed
+request ledger.
+
+### Visual Orchestration Studio And Live Operations
+
+The Control Panel gains an Orchestrations Library with lifecycle filters and
+a Studio canvas: drag Automation V2 workflows from a searchable palette, wire
+named transitions with artifact contracts and approval boundaries, configure
+waits, terminals, and budgets through typed inspectors, and rely on visual
+validation that badges affected nodes and edges and blocks publishing invalid
+graphs. Dry-run previews, draft-vs-published comparison, immutable version
+history, and a safe refresh/republish flow round out authoring, and the whole
+path is usable without drag-and-drop: searchable add controls, form-based
+edges, keyboard movement, an ordered outline editor, responsive layouts, and
+screen-reader names throughout.
+
+Started goals reuse the same canvas as a read-only live graph with semantic
+node states, current budgets, and workflow-stage drilldown. The view stays
+current over SSE with reconnect recovery and sequence-gap detection, supports
+deterministic historical replay with a timeline scrubber, and exposes
+governed operator actions — approve/reject, resolve external conditions,
+pause/resume/cancel, retry, and recovery plans — that refresh through durable
+events rather than optimistic status.
+
+### Enterprise Scope, Artifact Policy, And Recovery Hardening
+
+Tenant scoping is now a store-level invariant: goal, lineage, handoff, and
+event reads carry org/workspace/deployment predicates in SQL, so cross-tenant
+IDs are indistinguishable from absence even if an entrypoint check is
+skipped. Approvals require `orchestration.approve`, wait resolution requires
+`orchestration.resolve_wait`, authoring and goal mutations enforce
+owner-or-admin with a recorded, non-writable `created_by`, and audit events
+record the effective actor with run-as context. Referencing a workflow whose
+delegation authority lapsed blocks validation and publish.
+
+Artifacts pass an admission policy at every emit surface: bounded inline
+values and metadata, workspace-relative content paths with traversal and
+symlink escapes rejected on canonicalized paths, and digests verified against
+the actual file. The MCP tool-replay ledger is sealed with tenant-scoped KMS
+envelopes — ciphertext at rest, fail-closed without the key, plaintext
+passthrough for local-first deployments.
+
+Recovery hardening completes the store cutover: legacy file handoffs import
+exactly once with quarantine for corrupt, foreign, conflicting, and
+workspace-escaping envelopes plus a durable migration-attempt journal;
+retention is snapshot-aware so compaction never removes a run's replay tail;
+snapshots prune with a keep-last-N floor; sweeps run periodically with WAL
+checkpointing; every connection applies `synchronous=FULL`; and the engine
+lock records its owner with liveness diagnostics for stale-lock recovery.
+
+### Long-Horizon Proof, Guides, And CI Gates
+
+A production-path E2E proof drives Goal → Plan → Execute → Verify → Replan
+across roughly 180 virtual days with timer, approval, webhook, and
+external-condition waits, bounded budgets, and an explicit final artifact.
+The canonical Long-Running Multi-Workflow Goals guide and a stateful workflow
+guide document the model for humans and MCP-connected agents. CI now mandates
+the orchestration runtime and store suites, TypeScript/Python SDK contracts,
+MCP tool tests, Control Panel typecheck/build/unit contracts, Playwright
+journeys (including drag/drop, keyboard, mobile, live graph, reconnect, and
+replay), accessibility and theme checks, and docs parity.
+
+### Memory Storage Portability And PostgreSQL
+
+The portable `MemoryStore` abstraction is complete, including private
+(subject-scoped) memory, and a production PostgreSQL/pgvector backend ships
+with protected search surfaces, scoped consolidation, owner-subject-bound
+decrypts, and hardened failure handling. Channel memory consolidation is now
+tenant- and subject-scoped and atomic, preserving source ownership.
+
+### Governance Proof, Release Gates, And Test Stability
+
+The five-profile ACME Slack governance demo now runs on the production path:
+signed Slack events drive real governed sessions, decisions persist as
+governance receipts, and the Control Panel surfaces them in the Slack-request
+receipt view. Control Panel releases are gated by required Playwright
+journeys and standardized UI contracts (routes, icons, loading, typography,
+accessibility), which also flushed out fullscreen and spinner fixes. The
+nextest quarantine is empty again — its deterministic async stream
+regressions are fixed and a policy guard keeps future quarantine entries
+owned and expiring. Governed runtime boundaries (signed Slack ingress and
+recovery, canonical provider egress, protected KMS/audit persistence,
+tenant-safe OAuth refresh, tenant-qualified routines, and Linux enterprise
+release validation) hardened the first remediation milestone. Engine releases
+now build the enterprise engine with embeddings, and panel dependencies pin
+to published npm versions.
+
 ## v0.6.8 (2026-07-09)
 
 Tandem 0.6.8 is a hosted-v1 readiness follow-up. It hardens hosted session
