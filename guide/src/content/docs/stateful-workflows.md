@@ -18,6 +18,7 @@ dead letter, compensation, MCP workflow, run recovery.
 | Authentication              | [Engine Authentication For Agents](../engine-authentication-for-agents/)                                                                                                              |
 | MCP discovery and authority | [MCP Capability Discovery And Request Flow](../mcp-capability-discovery-and-request-flow/) and [MCP Automated Agents](../mcp-automated-agents/)                                       |
 | Automation V2 authoring     | [Webhook review and publish example](#build-a-webhook-review-and-publish-workflow) and [Creating And Running Workflows And Missions](../creating-and-running-workflows-and-missions/) |
+| Multi-workflow goals        | [Long-Running Multi-Workflow Goals](../long-running-multi-workflow-goals/) for version-pinned cross-run handoffs, replay, limits, and replanning loops                           |
 | Webhook intake and routing  | [Trigger the workflow with a webhook](#trigger-the-workflow-with-a-webhook) and [Automation V2 Webhooks](../automation-v2-webhooks/)                                                  |
 | Human approval              | [Approval and continuation](#approval-and-continuation)                                                                                                                               |
 | Inspection and recovery     | [Inspect the durable run](#inspect-the-durable-run) and [Recover safely](#recover-safely)                                                                                             |

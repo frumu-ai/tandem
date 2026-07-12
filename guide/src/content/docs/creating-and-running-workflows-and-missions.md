@@ -196,6 +196,11 @@ This is the best fit for:
 - intake -> plan -> execute -> verify -> review
 - collect -> consolidate -> update state -> notify
 
+When each stage is an independently recoverable Automation V2 run under one
+durable objective, use [Long-Running Multi-Workflow Goals](../long-running-multi-workflow-goals/)
+for the released orchestration authoring, versioning, handoff, replay, and
+replanning model.
+
 ### “I want to check for work on a schedule (Smart Heartbeats)”
 
 Use:
@@ -413,3 +418,4 @@ That gives you:
 - [Automation Examples For Teams](./automation-examples-for-teams/) — Walkthrough and API examples for immediate workflow adoption.
 - [Build an Automation With the AI Assistant](./automation-composer-workflows/) — prompt-first authoring, clarification, preview, and run-now.
 - [Building Stateful Workflows in Tandem](../stateful-workflows/) — state, approval, webhook, inspection, and recovery patterns for Automation V2.
+- [Long-Running Multi-Workflow Goals](../long-running-multi-workflow-goals/) — version-pinned cross-run orchestration with Goal -> Plan -> Execute -> Verify -> Replan.

@@ -73,6 +73,7 @@ _You want to build custom clients, connect external tools via MCP, or programmat
 - **[Choosing Providers And Models For Agents](./choosing-providers-and-models-for-agents/)** — Pick stable defaults and targeted overrides without burying model choices in prompts.
 - **[Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/)** — Choose the right Tandem path and operate it correctly.
 - **[Building Stateful Workflows in Tandem](./stateful-workflows/)** — Build durable Automation V2 DAGs with checkpoints, approval waits, webhook triggers, and safe recovery.
+- **[Long-Running Multi-Workflow Goals](./long-running-multi-workflow-goals/)** — Coordinate version-pinned Plan, Execute, Verify, and Replan workflows with durable handoffs, replay, limits, and recovery.
 - **[Automation Examples For Teams](./automation-examples-for-teams/)** — End-to-end workflow proofs for control-panel and SDK-driven automation.
 - **[Automation V2 Webhooks](./automation-v2-webhooks/)** — Configure signed external triggers, including Notion and Linear issue webhook setup.
 - **[Build an Automation With the AI Assistant](./automation-composer-workflows/)** — Prompt-first workflow authoring with preview, validation, and run-now.

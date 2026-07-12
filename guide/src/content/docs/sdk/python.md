@@ -13,7 +13,7 @@ Requires **Python 3.10+**.
 
 `pip install tandem-client` installs the Python SDK only. It does not install `tandem-engine`.
 
-For recurring jobs and scheduled automations, see [Scheduling Workflows And Automations](./scheduling-automations/).
+For recurring jobs and scheduled automations, see [Scheduling Workflows And Automations](../scheduling-automations/).
 
 For agent-focused automation authoring, also start here:
 

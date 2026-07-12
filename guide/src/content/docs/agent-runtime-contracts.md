@@ -22,6 +22,7 @@ Tandem has several systems that sound similar in conversation but are intentiona
 | Knowledge     | Promoted reusable project/global fact used by preflight        | Raw notes or unvalidated output                   |
 | Workflow plan | Planner draft/session that can be previewed and applied        | A running automation by itself                    |
 | V2 automation | Persistent runnable DAG, optionally scheduled                  | A loose chat conversation                         |
+| Long-running goal | Version-pinned objective coordinating multiple Automation V2 runs | One workflow run or a hot-upgrading graph       |
 | Mission       | Higher-level staged operating loop or work tracker             | A single LLM call                                 |
 | Context run   | Durable execution state for blackboard/checkpoint/replay flows | User memory                                       |
 
@@ -124,4 +125,5 @@ When using these docs through MCP or a published index:
 - [Agents & Sessions](./agents-and-sessions/)
 - [Memory Internals](./memory-internals/)
 - [Storage Maintenance](./storage-maintenance/)
+- [Long-Running Multi-Workflow Goals](./long-running-multi-workflow-goals/)
 - [Incident Monitor Agent Runtime Guide](./incident-monitor/agent-runtime-guide/)

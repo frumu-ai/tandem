@@ -11,7 +11,7 @@ npm install @frumu/tandem-client
 
 Requires **Node.js 18+** (uses native `fetch` and `ReadableStream`).
 
-For recurring jobs and scheduled automations, see [Scheduling Workflows And Automations](./scheduling-automations/).
+For recurring jobs and scheduled automations, see [Scheduling Workflows And Automations](../scheduling-automations/).
 
 For agent-focused automation authoring, also start here:
 
@@ -19,6 +19,7 @@ For agent-focused automation authoring, also start here:
 - [Build an Automation With the AI Assistant](../automation-composer-workflows/) — prompt-first authoring and clarification flow.
 - [Agent Workflow And Mission Quickstart](../agent-workflow-mission-quickstart/)
 - [Creating And Running Workflows And Missions](../creating-and-running-workflows-and-missions/)
+- [Long-Running Multi-Workflow Goals](../long-running-multi-workflow-goals/) — complete orchestration authoring, publish, live projection, replay, and action example.
 
 ## Agent quick links in this page
 
