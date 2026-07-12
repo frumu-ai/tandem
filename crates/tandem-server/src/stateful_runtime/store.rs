@@ -9,6 +9,7 @@ use serde_json::Value;
 use tandem_types::TenantContext;
 use tokio::io::AsyncWriteExt;
 
+use super::compatibility::should_write_stateful_runtime_sidecar;
 use super::durable_io::{repair_jsonl_torn_tail, sync_parent_dir, write_file_atomically};
 use super::phases::phase_state_from_status;
 use super::types::{StatefulRunEventRecord, StatefulRunSnapshotRecord};
@@ -130,6 +131,9 @@ pub async fn append_stateful_run_event(
         if !inserted {
             return Ok(());
         }
+        if !should_write_stateful_runtime_sidecar(true) {
+            return Ok(());
+        }
     }
     append_stateful_run_event_unlocked(path, record).await?;
     invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
@@ -184,6 +188,9 @@ pub async fn append_stateful_run_event_once(
                 .await
                 .map_err(|error| anyhow::anyhow!("stateful event store task failed: {error}"))??;
         if inserted {
+            if !should_write_stateful_runtime_sidecar(true) {
+                return Ok(inserted);
+            }
             append_stateful_run_event_unlocked(path, record).await?;
             invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
         }
@@ -211,6 +218,9 @@ pub async fn append_stateful_run_event_once_with_next_seq(
         .await
         .map_err(|error| anyhow::anyhow!("stateful event store task failed: {error}"))??;
         if inserted {
+            if !should_write_stateful_runtime_sidecar(true) {
+                return Ok((inserted, seq));
+            }
             let mut compatibility_record = record.clone();
             compatibility_record.seq = seq;
             append_stateful_run_event_unlocked(path, &compatibility_record).await?;
@@ -761,20 +771,25 @@ pub async fn write_stateful_run_snapshot(
     root: &Path,
     snapshot: &StatefulRunSnapshotRecord,
 ) -> anyhow::Result<PathBuf> {
+    let path = stateful_run_snapshot_path(root, &snapshot.run_id, &snapshot.snapshot_id);
     if let Some(store) = authoritative_stateful_store_for_snapshot_root(root) {
         let snapshot = snapshot.clone();
         tokio::task::spawn_blocking(move || store.put_stateful_runtime_snapshot(&snapshot))
             .await
             .map_err(|error| anyhow::anyhow!("stateful snapshot store task failed: {error}"))??;
+        if !should_write_stateful_runtime_sidecar(true) {
+            return Ok(path);
+        }
     }
-    let dir = root.join(safe_path_segment(&snapshot.run_id));
+    let dir = path
+        .parent()
+        .expect("stateful snapshot path always has a parent");
     tokio::fs::create_dir_all(&dir).await.with_context(|| {
         format!(
             "failed to create stateful snapshot directory {}",
             dir.display()
         )
     })?;
-    let path = dir.join(format!("{}.json", safe_path_segment(&snapshot.snapshot_id)));
     let content = serde_json::to_vec_pretty(snapshot)?;
     write_file_atomically(&path, &content, "stateful snapshot").await?;
     Ok(path)
@@ -1737,8 +1752,12 @@ mod tests {
             .await
             .expect("write snapshot through SQLite");
 
+        std::fs::create_dir_all(paths.run_events_path.parent().expect("runtime root"))
+            .expect("create compatibility event parent");
         std::fs::write(&paths.run_events_path, "{not-json}\n")
             .expect("corrupt compatibility event log");
+        std::fs::create_dir_all(snapshot_path.parent().expect("snapshot parent"))
+            .expect("create compatibility snapshot parent");
         std::fs::write(&snapshot_path, "{not-json}\n").expect("corrupt compatibility snapshot");
 
         let events = query_stateful_run_events(

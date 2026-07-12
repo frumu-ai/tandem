@@ -995,11 +995,21 @@ async fn write_stateful_waits_unlocked(
 ) -> anyhow::Result<()> {
     let mut sorted = waits.to_vec();
     sort_waits(&mut sorted);
-    if let Some(store) = super::sqlite_compat::authoritative_stateful_store_for_wait_path(path)? {
-        let records = sorted.clone();
-        tokio::task::spawn_blocking(move || store.upsert_stateful_runtime_waits(&records))
-            .await
-            .map_err(|error| anyhow::anyhow!("stateful wait store task failed: {error}"))??;
+    let authoritative_store_active =
+        match super::sqlite_compat::authoritative_stateful_store_for_wait_path(path)? {
+            Some(store) => {
+                let records = sorted.clone();
+                tokio::task::spawn_blocking(move || store.upsert_stateful_runtime_waits(&records))
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("stateful wait store task failed: {error}")
+                    })??;
+                true
+            }
+            None => false,
+        };
+    if !super::compatibility::should_write_stateful_runtime_sidecar(authoritative_store_active) {
+        return Ok(());
     }
     let content = serde_json::to_vec_pretty(&sorted)?;
     write_file_atomically(path, &content, "stateful wait store").await
