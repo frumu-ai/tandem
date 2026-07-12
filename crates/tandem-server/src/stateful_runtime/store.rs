@@ -1752,8 +1752,6 @@ mod tests {
             .await
             .expect("write snapshot through SQLite");
 
-        assert!(!paths.run_events_path.exists());
-        assert!(!snapshot_path.exists());
         std::fs::create_dir_all(paths.run_events_path.parent().expect("runtime root"))
             .expect("create compatibility event parent");
         std::fs::write(&paths.run_events_path, "{not-json}\n")

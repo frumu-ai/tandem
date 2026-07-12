@@ -483,6 +483,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unreadable_legacy_source_is_not_marked_imported() {
+        let path = std::env::temp_dir().join(format!(
+            "runtime-events-unreadable-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        tokio::fs::write(&path, [0xff])
+            .await
+            .expect("write invalid UTF-8 source");
+
+        assert!(query_runtime_event_log(
+            &path,
+            &tenant_a,
+            RuntimeEventLogQuery {
+                run_id: "run-a",
+                after_seq: None,
+                limit: None
+            },
+        )
+        .is_empty());
+
+        let row =
+            RuntimeEventLogRow::from_engine_event(&event(1, "run-a", Some(tenant_a.clone()), 100))
+                .expect("canonical row");
+        tokio::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&row).expect("serialize source row")
+            ),
+        )
+        .await
+        .expect("repair source");
+        assert_eq!(
+            query_runtime_event_log(
+                &path,
+                &tenant_a,
+                RuntimeEventLogQuery {
+                    run_id: "run-a",
+                    after_seq: None,
+                    limit: None
+                },
+            )
+            .iter()
+            .map(RuntimeEventLogRow::seq)
+            .collect::<Vec<_>>(),
+            vec![1]
+        );
+        remove_runtime_event_store(&path).await;
+    }
+
+    #[tokio::test]
     async fn concurrent_replay_is_idempotent_and_preserves_cursor_pages() {
         let path =
             std::env::temp_dir().join(format!("runtime-events-cursor-{}.jsonl", Uuid::new_v4()));

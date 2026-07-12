@@ -133,14 +133,23 @@ impl RuntimeEventStore {
             return Ok(());
         }
 
-        let raw = std::fs::read_to_string(legacy_path).unwrap_or_default();
-        let digest = if legacy_path.exists() {
-            Some(format!("{:x}", Sha256::digest(raw.as_bytes())))
-        } else {
-            None
+        let raw = match std::fs::read_to_string(legacy_path) {
+            Ok(raw) => Some(raw),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to read legacy runtime event log {}",
+                        legacy_path.display()
+                    )
+                });
+            }
         };
+        let digest = raw
+            .as_ref()
+            .map(|content| format!("{:x}", Sha256::digest(content.as_bytes())));
         let mut imported_count = 0usize;
-        for (line, source) in raw.lines().enumerate() {
+        for (line, source) in raw.as_deref().unwrap_or_default().lines().enumerate() {
             match serde_json::from_str::<RuntimeEventLogRow>(source) {
                 Ok(row) => {
                     insert_row(&transaction, &row)?;
@@ -157,7 +166,7 @@ impl RuntimeEventStore {
             "INSERT INTO runtime_event_migrations (migration_name, completed_at_ms) VALUES (?1, ?2)",
             params![IMPORT_MIGRATION, now_ms()],
         )?;
-        if legacy_path.exists() {
+        if raw.is_some() {
             transaction.execute(
                 "INSERT INTO runtime_event_migration_sources
                  (migration_name, source_path, source_digest, imported_at_ms, record_count)
