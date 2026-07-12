@@ -356,7 +356,6 @@ Rebuild and run with `--engine-mode stub`.
 
 ## See Also
 
-- [EVAL_FRAMEWORK.md](../dev/EVAL_FRAMEWORK.md) — Deep dive on dataset format, architecture, regression detection
-- [AI Quality Assurance](./ai-quality-assurance.md) — User-facing compliance guide
+- [Eval Runner](../eval-runner/) — Dataset format, execution, and regression detection
 - Eval datasets: `eval_datasets/*.yaml`
 - Baseline file: `eval_baselines/main_branch.json`

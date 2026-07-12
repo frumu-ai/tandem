@@ -86,5 +86,5 @@ See:
 - [Agent Team API](./reference/agent-team-api/)
 - [Agent Team Events](./reference/agent-team-events/)
 - [TUI Commands](./reference/tui-commands/)
-- [Agent Command Center](./agent-command-center/)
-- [Agent Teams Rollout Plan](./agent-teams-rollout/)
+- [Control Panel](../control-panel/)
+- [Agent Workflow Operating Manual](../agent-workflow-operating-manual/)

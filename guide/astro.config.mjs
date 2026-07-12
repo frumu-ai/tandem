@@ -28,10 +28,22 @@ const splitSiteAndBase = (value) => {
 const explicit = splitSiteAndBase(explicitSite)
 const site = normalizeSite(explicit.site ?? (isCi ? `https://${owner}.github.io/${repo}/` : "http://localhost:4321"))
 const base = normalizeBase(explicitBase ?? explicit.base ?? (isCi && !explicitSite ? `/${repo}/` : "/"))
+const prefixPublicImageBase = () => (tree) => {
+  const visit = (node) => {
+    if (node.type === "image" && node.url?.startsWith("/images/") && base !== "/") {
+      node.url = `${base.slice(0, -1)}${node.url}`
+    }
+    node.children?.forEach(visit)
+  }
+  visit(tree)
+}
 
 export default defineConfig({
   site,
   base,
+  markdown: {
+    remarkPlugins: [prefixPublicImageBase],
+  },
   integrations: [
     mermaid({
       autoTheme: true,
@@ -69,6 +81,7 @@ export default defineConfig({
           items: [
             "automation-composer-workflows",
             "stateful-workflows",
+            "long-running-multi-workflow-goals",
             "automation-examples-for-teams",
             "automation-v2-webhooks",
             "sdk/typescript",

@@ -19,7 +19,7 @@ export type ApiFixture = {
 };
 
 type ResponseOverride = {
-  matches: (path: string, method: string) => boolean;
+  matches: (path: string, method: string, pathWithSearch: string) => boolean;
   response: unknown;
 };
 
@@ -158,7 +158,10 @@ async function fulfillApi(
     held.requested();
     await held.wait;
   }
-  const override = [...overrides].reverse().find((entry) => entry.matches(path, request.method()));
+  const pathWithSearch = `${path}${url.search}`;
+  const override = [...overrides]
+    .reverse()
+    .find((entry) => entry.matches(path, request.method(), pathWithSearch));
   await route.fulfill({
     status: 200,
     headers: jsonHeaders,
@@ -182,9 +185,11 @@ export const test = base.extend<{ apiFixture: ApiFixture }>({
         requests,
         mockResponse(path, response, method) {
           overrides.push({
-            matches: (candidate, candidateMethod) =>
+            matches: (candidate, candidateMethod, candidateWithSearch) =>
               (!method || candidateMethod === method) &&
-              (typeof path === "string" ? candidate === path : path.test(candidate)),
+              (typeof path === "string"
+                ? candidate === path || candidateWithSearch === path
+                : path.test(candidateWithSearch)),
             response,
           });
         },
