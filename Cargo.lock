@@ -8031,6 +8031,7 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "keyring",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",

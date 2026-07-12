@@ -35,10 +35,7 @@ pub struct QuestionRequest {
 
 pub struct Storage {
     base: PathBuf,
-    sessions: RwLock<HashMap<String, Session>>,
-    metadata: RwLock<HashMap<String, SessionMeta>>,
-    question_requests: RwLock<HashMap<String, QuestionRequest>>,
-    flush_lock: Mutex<()>,
+    repository: session_repository::SessionRepository,
 }
 
 #[derive(Debug, Clone)]
@@ -289,83 +286,15 @@ impl Storage {
     pub async fn new(base: impl AsRef<Path>) -> anyhow::Result<Self> {
         let base = base.as_ref().to_path_buf();
         fs::create_dir_all(&base).await?;
-        let sessions_file = base.join("sessions.json");
-        let marker_path = base.join(LEGACY_IMPORT_MARKER_FILE);
-        let sessions_file_exists = sessions_file.exists();
-        let mut imported_legacy_sessions = false;
-        let mut sessions_store_upgraded = false;
-        let mut sessions = if sessions_file_exists {
-            let raw = fs::read_to_string(&sessions_file).await?;
-            let (sessions, upgraded) = load_sessions_file(&raw)?;
-            sessions_store_upgraded = upgraded;
-            sessions
-        } else {
-            HashMap::new()
-        };
-
-        let mut marker_to_write = None;
-        if should_run_legacy_scan_on_startup(&marker_path, sessions_file_exists).await {
-            let base_for_scan = base.clone();
-            let scan = task::spawn_blocking(move || scan_legacy_sessions(&base_for_scan))
+        let repository = session_repository::SessionRepository::open(&base)?;
+        if !repository.is_imported()? {
+            let base_for_import = base.clone();
+            let legacy_state = task::spawn_blocking(move || collect_legacy_import_state(&base_for_import))
                 .await
-                .map_err(|err| anyhow::anyhow!("legacy scan task join error: {}", err))??;
-            if merge_legacy_sessions(&mut sessions, scan.sessions) {
-                imported_legacy_sessions = true;
-            }
-            marker_to_write = Some(LegacyImportMarker {
-                version: LEGACY_IMPORT_MARKER_VERSION,
-                created_at_ms: now_ms_u64(),
-                last_checked_at_ms: now_ms_u64(),
-                legacy_counts: scan.legacy_counts,
-                imported_counts: scan.imported_counts,
-            });
+                .context("legacy session import task failed")??;
+            repository.import_legacy(legacy_state)?;
         }
-
-        if hydrate_workspace_roots(&mut sessions) {
-            imported_legacy_sessions = true;
-        }
-        if repair_session_titles(&mut sessions) {
-            imported_legacy_sessions = true;
-        }
-        let metadata_file = base.join("session_meta.json");
-        let mut metadata = if metadata_file.exists() {
-            let raw = fs::read_to_string(&metadata_file).await?;
-            serde_json::from_str::<HashMap<String, SessionMeta>>(&raw).unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-        let compaction = compact_session_metadata(&sessions, &mut metadata);
-        let metadata_compacted = compaction.metadata_pruned > 0 || compaction.snapshots_removed > 0;
-        if metadata_compacted {
-            tracing::info!(
-                metadata_pruned = compaction.metadata_pruned,
-                snapshots_removed = compaction.snapshots_removed,
-                "compacted persisted session metadata"
-            );
-        }
-        let questions_file = base.join("questions.json");
-        let question_requests = if questions_file.exists() {
-            let raw = fs::read_to_string(&questions_file).await?;
-            serde_json::from_str::<HashMap<String, QuestionRequest>>(&raw).unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-        let storage = Self {
-            base,
-            sessions: RwLock::new(sessions),
-            metadata: RwLock::new(metadata),
-            question_requests: RwLock::new(question_requests),
-            flush_lock: Mutex::new(()),
-        };
-
-        if imported_legacy_sessions || metadata_compacted || sessions_store_upgraded {
-            storage.flush().await?;
-        }
-        if let Some(marker) = marker_to_write {
-            storage.write_legacy_import_marker(&marker).await?;
-        }
-
-        Ok(storage)
+        Ok(Self { base, repository })
     }
 
     pub async fn list_sessions(&self) -> Vec<Session> {
@@ -373,76 +302,52 @@ impl Storage {
     }
 
     pub async fn list_session_summaries(&self) -> Vec<Session> {
-        self.list_session_summaries_scoped(SessionListScope::Global)
-            .await
+        self.list_session_summaries_scoped(SessionListScope::Global).await
     }
 
     pub async fn list_sessions_scoped(&self, scope: SessionListScope) -> Vec<Session> {
-        let all = self
-            .sessions
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        match scope {
-            SessionListScope::Global => all,
-            SessionListScope::Workspace { workspace_root } => {
-                let Some(normalized_workspace) = normalize_workspace_path(&workspace_root) else {
-                    return Vec::new();
-                };
-                all.into_iter()
-                    .filter(|session| {
-                        let direct = session
-                            .workspace_root
-                            .as_ref()
-                            .and_then(|p| normalize_workspace_path(p))
-                            .map(|p| p == normalized_workspace)
-                            .unwrap_or(false);
-                        if direct {
-                            return true;
-                        }
-                        normalize_workspace_path(&session.directory)
-                            .map(|p| p == normalized_workspace)
-                            .unwrap_or(false)
-                    })
-                    .collect()
-            }
+        let is_workspace_scope = matches!(&scope, SessionListScope::Workspace { .. });
+        let workspace_root = match scope {
+            SessionListScope::Global => None,
+            SessionListScope::Workspace { workspace_root } => normalize_workspace_path(&workspace_root),
+        };
+        if is_workspace_scope && workspace_root.is_none() {
+            return Vec::new();
         }
+        self.run_blocking(move |repository| repository.list_sessions(workspace_root.as_deref()))
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(%error, "failed to list sessions from transactional store");
+                Vec::new()
+            })
     }
 
     pub async fn list_session_summaries_scoped(&self, scope: SessionListScope) -> Vec<Session> {
-        match scope {
-            SessionListScope::Global => {
-                let sessions = self.sessions.read().await;
-                sessions
-                    .values()
-                    .map(session_summary_without_messages)
-                    .collect()
-            }
-            SessionListScope::Workspace { workspace_root } => {
-                let Some(normalized_workspace) = normalize_workspace_path(&workspace_root) else {
-                    return Vec::new();
-                };
-                let summaries = {
-                    let sessions = self.sessions.read().await;
-                    sessions
-                        .values()
-                        .map(session_summary_without_messages)
-                        .collect::<Vec<_>>()
-                };
-                summaries
-                    .into_iter()
-                    .filter(|session| {
-                        session_matches_normalized_workspace(session, &normalized_workspace)
-                    })
-                    .collect()
-            }
+        let is_workspace_scope = matches!(&scope, SessionListScope::Workspace { .. });
+        let workspace_root = match scope {
+            SessionListScope::Global => None,
+            SessionListScope::Workspace { workspace_root } => normalize_workspace_path(&workspace_root),
+        };
+        if is_workspace_scope && workspace_root.is_none() {
+            return Vec::new();
         }
+        self.run_blocking(move |repository| repository.list_summaries(workspace_root.as_deref()))
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(%error, "failed to list session summaries from transactional store");
+                Vec::new()
+            })
     }
 
     pub async fn get_session(&self, id: &str) -> Option<Session> {
-        self.sessions.read().await.get(id).cloned()
+        let id = id.to_string();
+        let query_id = id.clone();
+        self.run_blocking(move |repository| repository.get_session(&query_id))
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(%error, session_id = %id, "failed to read session from transactional store");
+                None
+            })
     }
 
     pub async fn save_session(&self, mut session: Session) -> anyhow::Result<()> {
@@ -450,149 +355,101 @@ impl Storage {
             session.workspace_root = normalize_workspace_path(&session.directory);
         }
         if session.source_kind.is_none() {
-            if let Some((source_kind, source_metadata)) =
-                automation_v2_source_metadata_from_title(&session.title)
-            {
+            if let Some((source_kind, source_metadata)) = automation_v2_source_metadata_from_title(&session.title) {
                 session.source_kind = Some(source_kind);
                 session.source_metadata = Some(source_metadata);
             }
         }
-        let session_id = session.id.clone();
-        self.sessions
-            .write()
-            .await
-            .insert(session_id.clone(), session);
-        self.metadata
-            .write()
-            .await
-            .entry(session_id)
-            .or_insert_with(SessionMeta::default);
-        self.flush().await
+        if title_needs_repair(&session.title) {
+            let first_user_text = session.messages.iter().find_map(|message| {
+                if !matches!(message.role, MessageRole::User) {
+                    return None;
+                }
+                message.parts.iter().find_map(|part| match part {
+                    MessagePart::Text { text } if !text.trim().is_empty() => Some(text.as_str()),
+                    _ => None,
+                })
+            });
+            if let Some(title) = first_user_text.and_then(|text| derive_session_title_from_prompt(text, 60)) {
+                session.title = title;
+                session.time.updated = Utc::now();
+            }
+        }
+        self.run_blocking(move |repository| repository.save_session(&session)).await
     }
 
     pub async fn repair_sessions_from_file_store(&self) -> anyhow::Result<SessionRepairStats> {
-        let mut stats = SessionRepairStats::default();
-        let mut sessions = self.sessions.write().await;
-
-        for session in sessions.values_mut() {
-            let imported = load_legacy_session_messages(&self.base, &session.id);
-            if imported.is_empty() {
-                continue;
-            }
-
-            let (merged, merge_stats, changed) =
-                merge_session_messages(&session.messages, &imported);
-            if changed {
-                session.messages = merged;
-                session.time.updated =
-                    most_recent_message_time(&session.messages).unwrap_or(session.time.updated);
-                stats.sessions_repaired += 1;
-                stats.messages_recovered += merge_stats.messages_recovered;
-                stats.parts_recovered += merge_stats.parts_recovered;
-                stats.conflicts_merged += merge_stats.conflicts_merged;
-            }
-        }
-
-        if stats.sessions_repaired > 0 {
-            drop(sessions);
-            self.flush().await?;
-        }
-
-        Ok(stats)
+        let base = self.base.clone();
+        self.run_blocking(move |repository| {
+            repository.repair_sessions(move |session| {
+                let imported = load_legacy_session_messages(&base, &session.id);
+                if imported.is_empty() {
+                    return None;
+                }
+                let (merged, merge_stats, changed) = merge_session_messages(&session.messages, &imported);
+                if !changed {
+                    return None;
+                }
+                let mut repaired = session.clone();
+                repaired.messages = merged;
+                repaired.time.updated = most_recent_message_time(&repaired.messages)
+                    .unwrap_or(repaired.time.updated);
+                Some((repaired, SessionRepairStats {
+                    sessions_repaired: 1,
+                    messages_recovered: merge_stats.messages_recovered,
+                    parts_recovered: merge_stats.parts_recovered,
+                    conflicts_merged: merge_stats.conflicts_merged,
+                }))
+            })
+        }).await
     }
 
-    pub async fn run_legacy_storage_repair_scan(
-        &self,
-        force: bool,
-    ) -> anyhow::Result<LegacyRepairRunReport> {
-        let marker_path = self.base.join(LEGACY_IMPORT_MARKER_FILE);
-        let sessions_exists = self.base.join("sessions.json").exists();
-        let should_scan = if force {
-            true
-        } else {
-            should_run_legacy_scan_on_startup(&marker_path, sessions_exists).await
-        };
-        if !should_scan {
-            let marker = read_legacy_import_marker(&marker_path)
-                .await
-                .unwrap_or_else(|| LegacyImportMarker {
-                    version: LEGACY_IMPORT_MARKER_VERSION,
-                    created_at_ms: now_ms_u64(),
-                    last_checked_at_ms: now_ms_u64(),
-                    legacy_counts: LegacyTreeCounts::default(),
-                    imported_counts: LegacyImportedCounts::default(),
-                });
+    pub async fn run_legacy_storage_repair_scan(&self, force: bool) -> anyhow::Result<LegacyRepairRunReport> {
+        if !force {
             return Ok(LegacyRepairRunReport {
                 status: "skipped".to_string(),
                 marker_updated: false,
                 sessions_merged: 0,
                 messages_recovered: 0,
                 parts_recovered: 0,
-                legacy_counts: marker.legacy_counts,
-                imported_counts: marker.imported_counts,
+                legacy_counts: LegacyTreeCounts::default(),
+                imported_counts: LegacyImportedCounts::default(),
             });
         }
-
-        let base_for_scan = self.base.clone();
-        let scan = task::spawn_blocking(move || scan_legacy_sessions(&base_for_scan))
-            .await
-            .map_err(|err| anyhow::anyhow!("legacy scan task join error: {}", err))??;
-
-        let merge_stats = {
-            let mut sessions = self.sessions.write().await;
-            merge_legacy_sessions_with_stats(&mut sessions, scan.sessions)
-        };
-
-        if merge_stats.changed {
-            self.flush().await?;
-        }
-
-        let marker = LegacyImportMarker {
-            version: LEGACY_IMPORT_MARKER_VERSION,
-            created_at_ms: now_ms_u64(),
-            last_checked_at_ms: now_ms_u64(),
-            legacy_counts: scan.legacy_counts.clone(),
-            imported_counts: scan.imported_counts.clone(),
-        };
-        self.write_legacy_import_marker(&marker).await?;
-
-        Ok(LegacyRepairRunReport {
-            status: if merge_stats.changed {
-                "updated".to_string()
-            } else {
-                "no_changes".to_string()
-            },
-            marker_updated: true,
-            sessions_merged: merge_stats.sessions_merged,
-            messages_recovered: merge_stats.messages_recovered,
-            parts_recovered: merge_stats.parts_recovered,
-            legacy_counts: scan.legacy_counts,
-            imported_counts: scan.imported_counts,
-        })
+        let base = self.base.clone();
+        self.run_blocking(move |repository| {
+            let scan = scan_legacy_sessions(&base)?;
+            let mut sessions = repository
+                .list_sessions(None)?
+                .into_iter()
+                .map(|session| (session.id.clone(), session))
+                .collect::<HashMap<_, _>>();
+            let merge = merge_legacy_sessions_with_stats(&mut sessions, scan.sessions);
+            if merge.changed {
+                for session in sessions.values() {
+                    repository.save_session(session)?;
+                }
+            }
+            Ok(LegacyRepairRunReport {
+                status: if merge.changed { "updated" } else { "no_changes" }.to_string(),
+                marker_updated: false,
+                sessions_merged: merge.sessions_merged,
+                messages_recovered: merge.messages_recovered,
+                parts_recovered: merge.parts_recovered,
+                legacy_counts: scan.legacy_counts,
+                imported_counts: scan.imported_counts,
+            })
+        }).await
     }
 
     pub async fn delete_session(&self, id: &str) -> anyhow::Result<bool> {
-        let removed = self.sessions.write().await.remove(id).is_some();
-        self.metadata.write().await.remove(id);
-        self.question_requests
-            .write()
-            .await
-            .retain(|_, request| request.session_id != id);
-        if removed {
-            self.flush().await?;
-        }
-        Ok(removed)
+        let id = id.to_string();
+        self.run_blocking(move |repository| repository.delete_session(&id)).await
     }
 
-    pub async fn append_message(&self, session_id: &str, msg: Message) -> anyhow::Result<()> {
-        let mut sessions = self.sessions.write().await;
-        let session = sessions
-            .get_mut(session_id)
-            .context("session not found for append_message")?;
-        session.messages.push(msg);
-        session.time.updated = Utc::now();
-        drop(sessions);
-        self.flush().await
+    pub async fn append_message(&self, session_id: &str, message: Message) -> anyhow::Result<()> {
+        let session_id = session_id.to_string();
+        self.run_blocking(move |repository| repository.append_message(&session_id, &message)).await
     }
 
     pub async fn append_message_part(
@@ -601,207 +458,69 @@ impl Storage {
         message_id: &str,
         part: MessagePart,
     ) -> anyhow::Result<()> {
-        let mut sessions = self.sessions.write().await;
-        let session = sessions
-            .get_mut(session_id)
-            .context("session not found for append_message_part")?;
-        let message = if let Some(message) = session
-            .messages
-            .iter_mut()
-            .find(|message| message.id == message_id)
-        {
-            message
-        } else {
-            session
-                .messages
-                .iter_mut()
-                .rev()
-                .find(|message| matches!(message.role, MessageRole::User))
-                .context("message not found for append_message_part")?
-        };
-        reduce_message_parts(&mut message.parts, part);
-        session.time.updated = Utc::now();
-        drop(sessions);
-        self.flush().await
+        let session_id = session_id.to_string();
+        let message_id = message_id.to_string();
+        self.run_blocking(move |repository| {
+            repository.append_message_part(&session_id, &message_id, &part)
+        }).await
     }
 
     pub async fn fork_session(&self, id: &str) -> anyhow::Result<Option<Session>> {
-        let source = {
-            let sessions = self.sessions.read().await;
-            sessions.get(id).cloned()
-        };
-        let Some(mut child) = source else {
-            return Ok(None);
-        };
-
-        child.id = Uuid::new_v4().to_string();
-        child.title = format!("{} (fork)", child.title);
-        child.time.created = Utc::now();
-        child.time.updated = child.time.created;
-        child.slug = None;
-
-        self.sessions
-            .write()
-            .await
-            .insert(child.id.clone(), child.clone());
-        self.metadata.write().await.insert(
-            child.id.clone(),
-            SessionMeta {
-                parent_id: Some(id.to_string()),
-                snapshots: vec![child.messages.clone()],
-                ..SessionMeta::default()
-            },
-        );
-        self.flush().await?;
-        Ok(Some(child))
+        let id = id.to_string();
+        self.run_blocking(move |repository| repository.fork_session(&id)).await
     }
 
     pub async fn revert_session(&self, id: &str) -> anyhow::Result<bool> {
-        let mut sessions = self.sessions.write().await;
-        let Some(session) = sessions.get_mut(id) else {
-            return Ok(false);
-        };
-        let mut metadata = self.metadata.write().await;
-        let meta = metadata
-            .entry(id.to_string())
-            .or_insert_with(SessionMeta::default);
-        let Some(snapshot) = meta.snapshots.pop() else {
-            return Ok(false);
-        };
-        meta.pre_revert = Some(session.messages.clone());
-        session.messages = snapshot;
-        session.time.updated = Utc::now();
-        drop(metadata);
-        drop(sessions);
-        self.flush().await?;
-        Ok(true)
+        let id = id.to_string();
+        self.run_blocking(move |repository| repository.revert_session(&id)).await
     }
 
     pub async fn unrevert_session(&self, id: &str) -> anyhow::Result<bool> {
-        let mut sessions = self.sessions.write().await;
-        let Some(session) = sessions.get_mut(id) else {
-            return Ok(false);
-        };
-        let mut metadata = self.metadata.write().await;
-        let Some(meta) = metadata.get_mut(id) else {
-            return Ok(false);
-        };
-        let Some(previous) = meta.pre_revert.take() else {
-            return Ok(false);
-        };
-        meta.snapshots.push(session.messages.clone());
-        trim_session_snapshots(&mut meta.snapshots);
-        session.messages = previous;
-        session.time.updated = Utc::now();
-        drop(metadata);
-        drop(sessions);
-        self.flush().await?;
-        Ok(true)
+        let id = id.to_string();
+        self.run_blocking(move |repository| repository.unrevert_session(&id)).await
     }
 
     pub async fn set_shared(&self, id: &str, shared: bool) -> anyhow::Result<Option<String>> {
-        let mut metadata = self.metadata.write().await;
-        let meta = metadata
-            .entry(id.to_string())
-            .or_insert_with(SessionMeta::default);
-        meta.shared = shared;
-        if shared {
-            if meta.share_id.is_none() {
-                meta.share_id = Some(Uuid::new_v4().to_string());
-            }
-        } else {
-            meta.share_id = None;
-        }
-        let share_id = meta.share_id.clone();
-        drop(metadata);
-        self.flush().await?;
-        Ok(share_id)
+        let id = id.to_string();
+        self.run_blocking(move |repository| repository.set_shared(&id, shared)).await
     }
 
     pub async fn set_archived(&self, id: &str, archived: bool) -> anyhow::Result<bool> {
-        let mut metadata = self.metadata.write().await;
-        let meta = metadata
-            .entry(id.to_string())
-            .or_insert_with(SessionMeta::default);
-        meta.archived = archived;
-        drop(metadata);
-        self.flush().await?;
-        Ok(true)
+        let id = id.to_string();
+        self.run_blocking(move |repository| repository.set_archived(&id, archived)).await
     }
 
     pub async fn set_summary(&self, id: &str, summary: String) -> anyhow::Result<bool> {
-        let mut metadata = self.metadata.write().await;
-        let meta = metadata
-            .entry(id.to_string())
-            .or_insert_with(SessionMeta::default);
-        meta.summary = Some(summary);
-        drop(metadata);
-        self.flush().await?;
-        Ok(true)
+        let id = id.to_string();
+        self.run_blocking(move |repository| repository.set_summary(&id, summary)).await
     }
 
     pub async fn children(&self, parent_id: &str) -> Vec<Session> {
-        let child_ids = {
-            let metadata = self.metadata.read().await;
-            metadata
-                .iter()
-                .filter(|(_, meta)| meta.parent_id.as_deref() == Some(parent_id))
-                .map(|(id, _)| id.clone())
-                .collect::<Vec<_>>()
-        };
-        let sessions = self.sessions.read().await;
-        child_ids
-            .into_iter()
-            .filter_map(|id| sessions.get(&id).cloned())
-            .collect()
+        let parent_id = parent_id.to_string();
+        self.run_blocking(move |repository| repository.children(&parent_id)).await.unwrap_or_default()
     }
 
     pub async fn session_status(&self, id: &str) -> Option<Value> {
-        let metadata = self.metadata.read().await;
-        metadata.get(id).map(|meta| {
-            json!({
-                "archived": meta.archived,
-                "shared": meta.shared,
-                "parentID": meta.parent_id,
-                "snapshotCount": meta.snapshots.len()
-            })
-        })
+        let id = id.to_string();
+        self.run_blocking(move |repository| repository.session_status(&id)).await.ok().flatten()
     }
 
     pub async fn session_diff(&self, id: &str) -> Option<Value> {
-        let sessions = self.sessions.read().await;
-        let current = sessions.get(id)?;
-        let metadata = self.metadata.read().await;
-        let default = SessionMeta::default();
-        let meta = metadata.get(id).unwrap_or(&default);
-        let last_snapshot_len = meta.snapshots.last().map(|s| s.len()).unwrap_or(0);
-        Some(json!({
-            "sessionID": id,
-            "currentMessageCount": current.messages.len(),
-            "lastSnapshotMessageCount": last_snapshot_len,
-            "delta": current.messages.len() as i64 - last_snapshot_len as i64
-        }))
+        let id = id.to_string();
+        self.run_blocking(move |repository| repository.session_diff(&id)).await.ok().flatten()
     }
 
     pub async fn set_todos(&self, id: &str, todos: Vec<Value>) -> anyhow::Result<()> {
-        let mut metadata = self.metadata.write().await;
-        let meta = metadata
-            .entry(id.to_string())
-            .or_insert_with(SessionMeta::default);
-        meta.todos = normalize_todo_items(todos);
-        drop(metadata);
-        self.flush().await
+        let id = id.to_string();
+        let todos = normalize_todo_items(todos);
+        self.run_blocking(move |repository| repository.set_todos(&id, todos)).await
     }
 
     pub async fn get_todos(&self, id: &str) -> Vec<Value> {
-        let todos = self
-            .metadata
-            .read()
-            .await
-            .get(id)
-            .map(|meta| meta.todos.clone())
-            .unwrap_or_default();
-        normalize_todo_items(todos)
+        let id = id.to_string();
+        self.run_blocking(move |repository| repository.get_todos(&id)).await
+            .map(normalize_todo_items)
+            .unwrap_or_default()
     }
 
     pub async fn add_question_request(
@@ -811,10 +530,7 @@ impl Storage {
         questions: Vec<Value>,
     ) -> anyhow::Result<QuestionRequest> {
         if questions.is_empty() {
-            return Err(anyhow::anyhow!(
-                "cannot add empty question request for session {}",
-                session_id
-            ));
+            anyhow::bail!("cannot add empty question request for session {}", session_id);
         }
         let request = QuestionRequest {
             id: format!("q-{}", Uuid::new_v4()),
@@ -825,34 +541,18 @@ impl Storage {
                 message_id: message_id.to_string(),
             }),
         };
-        self.question_requests
-            .write()
-            .await
-            .insert(request.id.clone(), request.clone());
-        self.flush().await?;
+        let request_for_store = request.clone();
+        self.run_blocking(move |repository| repository.add_question(&request_for_store)).await?;
         Ok(request)
     }
 
     pub async fn list_question_requests(&self) -> Vec<QuestionRequest> {
-        self.question_requests
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect()
+        self.run_blocking(|repository| repository.list_questions()).await.unwrap_or_default()
     }
 
     pub async fn reply_question(&self, request_id: &str) -> anyhow::Result<bool> {
-        let removed = self
-            .question_requests
-            .write()
-            .await
-            .remove(request_id)
-            .is_some();
-        if removed {
-            self.flush().await?;
-        }
-        Ok(removed)
+        let request_id = request_id.to_string();
+        self.run_blocking(move |repository| repository.remove_question(&request_id)).await
     }
 
     pub async fn reject_question(&self, request_id: &str) -> anyhow::Result<bool> {
@@ -868,84 +568,117 @@ impl Storage {
         let Some(target_workspace) = normalize_workspace_path(target_workspace) else {
             return Ok(None);
         };
-        let mut sessions = self.sessions.write().await;
-        let Some(session) = sessions.get_mut(session_id) else {
-            return Ok(None);
-        };
-        let previous_workspace = session
-            .workspace_root
-            .clone()
-            .or_else(|| normalize_workspace_path(&session.directory));
-
-        if session.origin_workspace_root.is_none() {
-            session.origin_workspace_root = previous_workspace.clone();
-        }
-        session.attached_from_workspace = previous_workspace;
-        session.attached_to_workspace = Some(target_workspace.clone());
-        session.attach_timestamp_ms = Some(Utc::now().timestamp_millis().max(0) as u64);
-        session.attach_reason = Some(reason_tag.trim().to_string());
-        session.workspace_root = Some(target_workspace.clone());
-        session.project_id = workspace_project_id(&target_workspace);
-        session.directory = target_workspace;
-        session.time.updated = Utc::now();
-        let updated = session.clone();
-        drop(sessions);
-        self.flush().await?;
-        Ok(Some(updated))
+        let session_id = session_id.to_string();
+        let reason_tag = reason_tag.to_string();
+        let project_id = workspace_project_id(&target_workspace);
+        self.run_blocking(move |repository| {
+            repository.attach_to_workspace(&session_id, &target_workspace, &reason_tag, project_id)
+        }).await
     }
 
-    async fn flush(&self) -> anyhow::Result<()> {
-        let _flush_guard = self.flush_lock.lock().await;
-        {
-            let snapshot = self.sessions.read().await.clone();
-            let sessions_file = SessionsFile {
-                schema_version: SESSIONS_SCHEMA_VERSION,
-                sessions: snapshot,
+    async fn run_blocking<T, F>(&self, operation: F) -> anyhow::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(session_repository::SessionRepository) -> anyhow::Result<T> + Send + 'static,
+    {
+        let repository = self.repository.clone();
+        task::spawn_blocking(move || operation(repository))
+            .await
+            .context("session store task failed")?
+    }
+}
+
+fn collect_legacy_import_state(
+    base: &Path,
+) -> anyhow::Result<session_repository::LegacyImportState> {
+    let sessions_file = base.join("sessions.json");
+    let metadata_file = base.join("session_meta.json");
+    let questions_file = base.join("questions.json");
+    // Import and source recording must use the same byte snapshot. A later
+    // edit to one of these legacy files cannot create a mismatched digest.
+    let source_bytes = [sessions_file.clone(), metadata_file.clone(), questions_file.clone()]
+        .into_iter()
+        .map(|path| {
+            let bytes = if path.exists() {
+                Some(
+                    std::fs::read(&path)
+                        .with_context(|| format!("failed to read {}", path.display()))?,
+                )
+            } else {
+                None
             };
-            self.flush_file("sessions.json", &sessions_file).await?;
-        }
-        {
-            let metadata_snapshot = self.metadata.read().await.clone();
-            self.flush_file("session_meta.json", &metadata_snapshot)
-                .await?;
-        }
-        {
-            let questions_snapshot = self.question_requests.read().await.clone();
-            self.flush_file("questions.json", &questions_snapshot)
-                .await?;
-        }
-        Ok(())
-    }
+            Ok::<_, anyhow::Error>((path, bytes))
+        })
+        .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
-    async fn flush_file(&self, filename: &str, data: &impl serde::Serialize) -> anyhow::Result<()> {
-        let path = self.base.join(filename);
-        let temp_path = self.base.join(format!("{}.tmp", filename));
-        let payload = serde_json::to_string_pretty(data)?;
-        fs::write(&temp_path, payload).await.with_context(|| {
-            format!("failed to write temp storage file {}", temp_path.display())
-        })?;
-        if let Err(error) = sync_temp_storage_file(&temp_path).await {
-            tracing::warn!(
-                error = %error,
-                path = %temp_path.display(),
-                "continuing after temp storage file sync failed"
-            );
-        }
-        commit_temp_file(&temp_path, &path).await.with_context(|| {
-            format!(
-                "failed to atomically replace storage file {} with {}",
-                path.display(),
-                temp_path.display()
-            )
-        })?;
-        Ok(())
-    }
+    let mut sessions = if let Some(raw) = source_bytes
+        .get(&sessions_file)
+        .and_then(|bytes| bytes.as_deref())
+    {
+        load_sessions_file(std::str::from_utf8(raw).context("sessions.json must be UTF-8")?)?.0
+    } else {
+        scan_legacy_sessions(base)?.sessions
+    };
+    hydrate_workspace_roots(&mut sessions);
+    repair_session_titles(&mut sessions);
 
-    async fn write_legacy_import_marker(&self, marker: &LegacyImportMarker) -> anyhow::Result<()> {
-        let payload = serde_json::to_string_pretty(marker)?;
-        fs::write(self.base.join(LEGACY_IMPORT_MARKER_FILE), payload).await?;
-        Ok(())
-    }
+    let mut metadata = if let Some(raw) = source_bytes
+        .get(&metadata_file)
+        .and_then(|bytes| bytes.as_deref())
+    {
+        match serde_json::from_slice(raw) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::warn!(
+                    path = %metadata_file.display(),
+                    %error,
+                    "ignoring malformed optional legacy session metadata sidecar"
+                );
+                HashMap::new()
+            }
+        }
+    } else {
+        HashMap::new()
+    };
+    compact_session_metadata(&sessions, &mut metadata);
+
+    let questions = if let Some(raw) = source_bytes
+        .get(&questions_file)
+        .and_then(|bytes| bytes.as_deref())
+    {
+        match serde_json::from_slice(raw) {
+            Ok(questions) => questions,
+            Err(error) => {
+                tracing::warn!(
+                    path = %questions_file.display(),
+                    %error,
+                    "ignoring malformed optional legacy question sidecar"
+                );
+                HashMap::new()
+            }
+        }
+    } else {
+        HashMap::new()
+    };
+
+    let sources = [sessions_file, metadata_file, questions_file]
+        .into_iter()
+        .filter_map(|path| {
+            source_bytes
+                .get(&path)
+                .and_then(|bytes| bytes.as_ref())
+                .map(|bytes| session_repository::LegacySource {
+                    digest: Some(format!("{:x}", Sha256::digest(bytes))),
+                    path,
+                })
+        })
+        .collect();
+    Ok(session_repository::LegacyImportState {
+        sessions,
+        metadata,
+        questions,
+        sources,
+    })
 }
 
 async fn sync_temp_storage_file(path: &Path) -> anyhow::Result<()> {
