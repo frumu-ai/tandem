@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context};
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -6,8 +7,11 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 use tandem_automation::{AutomationV2RunRecord, HandoffArtifact};
+use tandem_types::TenantContext;
 
-use super::{collect_json_files, upsert_automation_run, OrchestrationStateStore};
+use super::{
+    collect_json_files, protected_records, upsert_automation_run, OrchestrationStateStore,
+};
 use crate::stateful_runtime::{
     stable_definition_snapshot_hash, StatefulReliabilityStoreFile, StatefulRunEventRecord,
     StatefulRunSnapshotRecord, StatefulWaitRecord,
@@ -52,6 +56,16 @@ impl LegacyRuntimeMigrationPaths {
             handoff_root: None,
         }
     }
+}
+
+/// Runtime knowledge used to separate this root's legacy envelopes from
+/// foreign ones. `known_automation_ids` is the union of automations the
+/// caller can name; the importer extends it with every automation that has a
+/// legacy run on this root. An empty union is not evidence of ownership, so
+/// envelopes are quarantined until the caller can name a matching automation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LegacyImportContext {
+    pub known_automation_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -116,6 +130,19 @@ impl OrchestrationStateStore {
         paths: &LegacyRuntimeMigrationPaths,
         imported_at_ms: u64,
     ) -> anyhow::Result<LegacyRuntimeMigrationReport> {
+        self.import_legacy_runtime_state_with_context(
+            paths,
+            &LegacyImportContext::default(),
+            imported_at_ms,
+        )
+    }
+
+    pub fn import_legacy_runtime_state_with_context(
+        &self,
+        paths: &LegacyRuntimeMigrationPaths,
+        context: &LegacyImportContext,
+        imported_at_ms: u64,
+    ) -> anyhow::Result<LegacyRuntimeMigrationReport> {
         self.with_connection(|connection| {
             let existing = connection
                 .query_row(
@@ -134,7 +161,7 @@ impl OrchestrationStateStore {
                 }
             }
 
-            let rows = load_legacy_rows(paths)?;
+            let rows = load_legacy_rows(paths, context)?;
             let fingerprint = stable_definition_snapshot_hash(&rows);
             let report = LegacyRuntimeMigrationReport {
                 automation_runs: rows.automation_runs.len(),
@@ -149,6 +176,30 @@ impl OrchestrationStateStore {
                 quarantined_handoffs: rows.handoffs.quarantined.len(),
                 ..Default::default()
             };
+
+            // The attempt row commits before the import transaction so an
+            // interrupted import leaves durable evidence. The atomic marker
+            // below rolls back with the rows, which is correct for retries
+            // but indistinguishable from "never attempted" on its own.
+            let aborted_attempts = connection.query_row(
+                "SELECT COUNT(*) FROM stateful_migration_attempts
+                 WHERE migration_id = ?1 AND outcome IS NULL",
+                [LEGACY_RUNTIME_MIGRATION_ID],
+                |row| row.get::<_, i64>(0),
+            )?;
+            if aborted_attempts > 0 {
+                tracing::warn!(
+                    aborted_attempts,
+                    "a previous legacy runtime migration attempt did not complete; retrying from unchanged sources"
+                );
+            }
+            connection.execute(
+                "INSERT INTO stateful_migration_attempts
+                    (migration_id, source_fingerprint, started_at_ms)
+                 VALUES (?1, ?2, ?3)",
+                params![LEGACY_RUNTIME_MIGRATION_ID, fingerprint, imported_at_ms],
+            )?;
+            let attempt_id = connection.last_insert_rowid();
 
             let transaction =
                 connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -175,6 +226,12 @@ impl OrchestrationStateStore {
                     imported_at_ms
                 ],
             )?;
+            transaction.execute(
+                "UPDATE stateful_migration_attempts
+                 SET outcome = 'complete', completed_at_ms = ?2
+                 WHERE attempt_id = ?1",
+                params![attempt_id, imported_at_ms],
+            )?;
             transaction.commit()?;
             Ok(report)
         })
@@ -194,14 +251,22 @@ impl OrchestrationStateStore {
     }
 }
 
-fn load_legacy_rows(paths: &LegacyRuntimeMigrationPaths) -> anyhow::Result<LegacyRuntimeRows> {
+fn load_legacy_rows(
+    paths: &LegacyRuntimeMigrationPaths,
+    context: &LegacyImportContext,
+) -> anyhow::Result<LegacyRuntimeRows> {
     let automation_runs = load_automation_runs(&paths.automation_runs_path)?;
     let events = load_jsonl_strict(&paths.run_events_path, "stateful event")?;
     validate_event_sequences(&events)?;
     let snapshots = load_snapshots(&paths.snapshots_root)?;
     let waits = load_json_file_or_default(&paths.waits_path)?;
     let reliability = load_json_file_or_default(&paths.reliability_path)?;
-    let handoffs = load_legacy_handoffs(paths.handoff_root.as_deref())?;
+    // Every automation with a legacy run on this root is locally known even
+    // when the caller could not name it (e.g. the spec was deleted).
+    let mut known_automation_ids = context.known_automation_ids.clone();
+    known_automation_ids.extend(automation_runs.iter().map(|run| run.automation_id.clone()));
+    let handoffs =
+        load_legacy_handoffs(paths.handoff_root.as_deref(), Some(&known_automation_ids))?;
 
     Ok(LegacyRuntimeRows {
         automation_runs,
@@ -267,7 +332,10 @@ fn load_snapshots(root: &Path) -> anyhow::Result<Vec<StatefulRunSnapshotRecord>>
     Ok(rows)
 }
 
-pub(super) fn load_legacy_handoffs(root: Option<&Path>) -> anyhow::Result<LegacyHandoffRows> {
+pub(super) fn load_legacy_handoffs(
+    root: Option<&Path>,
+    known_automation_ids: Option<&BTreeSet<String>>,
+) -> anyhow::Result<LegacyHandoffRows> {
     let Some(root) = root else {
         return Ok(LegacyHandoffRows {
             imported: Vec::new(),
@@ -279,6 +347,7 @@ pub(super) fn load_legacy_handoffs(root: Option<&Path>) -> anyhow::Result<Legacy
     paths.sort();
     let mut imported = Vec::new();
     let mut quarantined = Vec::new();
+    let mut digests_by_handoff_id = std::collections::HashMap::<String, String>::new();
     for path in paths {
         let raw = match std::fs::read_to_string(&path) {
             Ok(raw) => raw,
@@ -303,6 +372,34 @@ pub(super) fn load_legacy_handoffs(root: Option<&Path>) -> anyhow::Result<Legacy
                 continue;
             }
         };
+        if let Err(reason) = validate_legacy_handoff(&handoff, known_automation_ids) {
+            quarantined.push(LegacyHandoffQuarantine {
+                source_path: path,
+                source_digest: Some(source_digest),
+                error: reason,
+            });
+            continue;
+        }
+        match digests_by_handoff_id.get(&handoff.handoff_id) {
+            // The same envelope copied to another location imports once.
+            Some(existing) if existing == &source_digest => continue,
+            // Two different envelopes claiming one identity: keep the first,
+            // quarantine the impostor instead of silently overwriting.
+            Some(_) => {
+                quarantined.push(LegacyHandoffQuarantine {
+                    source_path: path,
+                    source_digest: Some(source_digest),
+                    error: format!(
+                        "conflicting legacy handoff: id `{}` already imported with different content",
+                        handoff.handoff_id
+                    ),
+                });
+                continue;
+            }
+            None => {
+                digests_by_handoff_id.insert(handoff.handoff_id.clone(), source_digest);
+            }
+        }
         let status = if handoff.consumed_by_run_id.is_some() {
             "archived"
         } else if path.components().any(|part| part.as_os_str() == "approved") {
@@ -316,6 +413,49 @@ pub(super) fn load_legacy_handoffs(root: Option<&Path>) -> anyhow::Result<Legacy
         imported,
         quarantined,
     })
+}
+
+/// Semantic validation of a well-formed legacy envelope. Malformed JSON is
+/// caught earlier; this rejects envelopes that parse but must not import:
+/// missing identity, workspace-escaping content paths, and foreign envelopes
+/// naming automations this runtime has never known.
+fn validate_legacy_handoff(
+    handoff: &HandoffArtifact,
+    known_automation_ids: Option<&BTreeSet<String>>,
+) -> Result<(), String> {
+    for (field, value) in [
+        ("handoff_id", &handoff.handoff_id),
+        ("source_automation_id", &handoff.source_automation_id),
+        ("target_automation_id", &handoff.target_automation_id),
+        ("artifact_type", &handoff.artifact_type),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("invalid legacy handoff: empty {field}"));
+        }
+    }
+    if let Some(content_path) = handoff.content_path.as_deref() {
+        let path = Path::new(content_path);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(format!(
+                "invalid legacy handoff: content_path `{content_path}` escapes the workspace root"
+            ));
+        }
+    }
+    let has_local_automation = known_automation_ids.is_some_and(|known| {
+        known.contains(&handoff.source_automation_id)
+            || known.contains(&handoff.target_automation_id)
+    });
+    if !has_local_automation {
+        return Err(format!(
+            "foreign legacy handoff: neither source `{}` nor target `{}` is an automation known to this runtime root",
+            handoff.source_automation_id, handoff.target_automation_id
+        ));
+    }
+    Ok(())
 }
 
 fn validate_event_sequences(events: &[StatefulRunEventRecord]) -> anyhow::Result<()> {
@@ -353,7 +493,12 @@ fn import_rows(
                 goal_id_from_value(&event.payload),
                 event.run_id,
                 event.seq,
-                serde_json::to_string(event)?,
+                protected_records::encode(
+                    &event.scope.tenant_context,
+                    "event",
+                    &event.event_id,
+                    event,
+                )?,
                 event.occurred_at_ms,
                 event.scope.tenant_context.org_id,
                 event.scope.tenant_context.workspace_id,
@@ -372,7 +517,12 @@ fn import_rows(
                 snapshot.snapshot_id,
                 snapshot.run_id,
                 snapshot.seq,
-                serde_json::to_string(snapshot)?,
+                protected_records::encode(
+                    &snapshot.scope.tenant_context,
+                    "snapshot",
+                    &snapshot.snapshot_id,
+                    snapshot,
+                )?,
                 snapshot.created_at_ms,
                 snapshot.scope.tenant_context.org_id,
                 snapshot.scope.tenant_context.workspace_id,
@@ -400,7 +550,12 @@ fn import_rows(
                     .as_deref()
                     .unwrap_or(""),
                 enum_name(&wait.status)?,
-                serde_json::to_string(wait)?,
+                protected_records::encode(
+                    &wait.scope.tenant_context,
+                    "wait",
+                    &format!("{}:{}", wait.wait_id, wait.run_id),
+                    wait,
+                )?,
                 wait.updated_at_ms,
             ],
         )?;
@@ -420,7 +575,12 @@ fn import_rows(
                 path.to_string_lossy(),
                 status,
                 handoff.consumed_by_run_id,
-                serde_json::to_string(handoff)?,
+                protected_records::encode(
+                    &TenantContext::local_implicit(),
+                    "legacy_handoff",
+                    &handoff.handoff_id,
+                    handoff,
+                )?,
                 handoff.created_at_ms,
                 imported_at_ms,
             ],
@@ -454,6 +614,7 @@ fn import_reliability(
             "outbox_effects",
             "effect_id",
             &row.outbox_id,
+            "outbox",
             row.run_id.as_deref(),
             &row.scope,
             enum_name(&row.status)?,
@@ -467,6 +628,7 @@ fn import_reliability(
             "tool_effects",
             "effect_id",
             &row.effect_id,
+            "tool_effect",
             row.run_id.as_deref(),
             &row.scope,
             enum_name(&row.status)?,
@@ -480,6 +642,7 @@ fn import_reliability(
             "dead_letters",
             "dead_letter_id",
             &row.dead_letter_id,
+            "dead_letter",
             row.run_id.as_deref(),
             &row.scope,
             enum_name(&row.status)?,
@@ -493,6 +656,7 @@ fn import_reliability(
             "compensations",
             "compensation_id",
             &row.compensation_id,
+            "compensation",
             row.run_id.as_deref(),
             &row.scope,
             enum_name(&row.status)?,
@@ -509,6 +673,7 @@ fn insert_reliability_row<T: Serialize>(
     table: &str,
     id_column: &str,
     id: &str,
+    kind: &str,
     run_id: Option<&str>,
     scope: &crate::stateful_runtime::StatefulRuntimeScope,
     status: String,
@@ -534,7 +699,7 @@ fn insert_reliability_row<T: Serialize>(
             id,
             run_id,
             status,
-            serde_json::to_string(row)?,
+            protected_records::encode(&scope.tenant_context, kind, id, row)?,
             updated_at_ms,
             scope.tenant_context.org_id,
             scope.tenant_context.workspace_id,
@@ -657,6 +822,15 @@ mod tests {
         }
     }
 
+    fn local_handoff_context() -> LegacyImportContext {
+        LegacyImportContext {
+            known_automation_ids: ["planner", "executor"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        }
+    }
+
     fn reliability() -> StatefulReliabilityStoreFile {
         let scope = serde_json::to_value(StatefulRuntimeScope::from_tenant_context(
             TenantContext::local_implicit(),
@@ -717,7 +891,10 @@ mod tests {
         paths.handoff_root = Some(handoff_root);
 
         let store = store(directory.path());
-        let first = store.import_legacy_runtime_state(&paths, 100).unwrap();
+        let context = local_handoff_context();
+        let first = store
+            .import_legacy_runtime_state_with_context(&paths, &context, 100)
+            .unwrap();
         assert!(!first.already_complete);
         assert_eq!((first.events, first.snapshots, first.waits), (1, 1, 1));
         assert_eq!((first.handoffs, first.quarantined_handoffs), (1, 1));
@@ -728,7 +905,9 @@ mod tests {
         assert!(valid_handoff.exists());
         assert!(corrupt_handoff.exists());
 
-        let second = store.import_legacy_runtime_state(&paths, 200).unwrap();
+        let second = store
+            .import_legacy_runtime_state_with_context(&paths, &context, 200)
+            .unwrap();
         assert!(second.already_complete);
         store
             .with_connection(|connection| {
@@ -814,6 +993,178 @@ mod tests {
     }
 
     #[test]
+    fn foreign_conflicting_and_unsafe_legacy_handoffs_quarantine_without_importing() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut paths = LegacyRuntimeMigrationPaths::from_runtime_root(directory.path());
+        let handoff_root = directory.path().join("handoffs");
+        let approved = handoff_root.join("approved");
+        std::fs::create_dir_all(&approved).unwrap();
+        // Valid envelope: source and target are automations this runtime knows.
+        std::fs::write(
+            approved.join("handoff-1.json"),
+            serde_json::to_vec(&handoff()).unwrap(),
+        )
+        .unwrap();
+        // Foreign envelope: well-formed, but names automations from another root.
+        let mut foreign = handoff();
+        foreign.handoff_id = "handoff-foreign".to_string();
+        foreign.source_automation_id = "other-root-producer".to_string();
+        foreign.target_automation_id = "other-root-consumer".to_string();
+        std::fs::write(
+            approved.join("handoff-foreign.json"),
+            serde_json::to_vec(&foreign).unwrap(),
+        )
+        .unwrap();
+        // Conflicting envelope: reuses handoff-1's identity with different content.
+        let mut conflicting = handoff();
+        conflicting.artifact_type = "forged".to_string();
+        std::fs::write(
+            approved.join("zz-conflicting.json"),
+            serde_json::to_vec(&conflicting).unwrap(),
+        )
+        .unwrap();
+        // Unsafe envelope: content path escapes the workspace root.
+        let mut escaping = handoff();
+        escaping.handoff_id = "handoff-unsafe".to_string();
+        escaping.content_path = Some("../../etc/passwd".to_string());
+        std::fs::write(
+            approved.join("handoff-unsafe.json"),
+            serde_json::to_vec(&escaping).unwrap(),
+        )
+        .unwrap();
+        paths.handoff_root = Some(handoff_root);
+
+        let store = store(directory.path());
+        let context = local_handoff_context();
+        let report = store
+            .import_legacy_runtime_state_with_context(&paths, &context, 100)
+            .unwrap();
+        assert_eq!(report.handoffs, 1);
+        assert_eq!(report.quarantined_handoffs, 3);
+        store
+            .with_connection(|connection| {
+                let imported: u64 =
+                    connection
+                        .query_row("SELECT COUNT(*) FROM legacy_handoffs", [], |row| row.get(0))?;
+                assert_eq!(imported, 1);
+                let mut statement = connection
+                    .prepare("SELECT error FROM legacy_handoff_quarantine ORDER BY source_path")?;
+                let errors = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert!(errors
+                    .iter()
+                    .any(|error| error.contains("foreign legacy handoff")));
+                assert!(errors
+                    .iter()
+                    .any(|error| error.contains("escapes the workspace root")));
+                assert!(errors
+                    .iter()
+                    .any(|error| error.contains("conflicting legacy handoff")));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn fresh_runtime_quarantines_foreign_handoff_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut paths = LegacyRuntimeMigrationPaths::from_runtime_root(directory.path());
+        let handoff_root = directory.path().join("handoffs");
+        std::fs::create_dir_all(&handoff_root).unwrap();
+        std::fs::write(
+            handoff_root.join("handoff-1.json"),
+            serde_json::to_vec(&handoff()).unwrap(),
+        )
+        .unwrap();
+        paths.handoff_root = Some(handoff_root);
+
+        let store = store(directory.path());
+        let first = store.import_legacy_runtime_state(&paths, 100).unwrap();
+        assert_eq!((first.handoffs, first.quarantined_handoffs), (0, 1));
+
+        // Completing the migration makes SQLite authoritative. Supplying local
+        // ownership later must not turn the quarantined envelope into an import.
+        let second = store
+            .import_legacy_runtime_state_with_context(&paths, &local_handoff_context(), 200)
+            .unwrap();
+        assert!(second.already_complete);
+        store
+            .with_connection(|connection| {
+                let imported: u64 =
+                    connection
+                        .query_row("SELECT COUNT(*) FROM legacy_handoffs", [], |row| row.get(0))?;
+                let quarantined: u64 = connection.query_row(
+                    "SELECT COUNT(*) FROM legacy_handoff_quarantine",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let attempts: u64 = connection.query_row(
+                    "SELECT COUNT(*) FROM stateful_migration_attempts",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!((imported, quarantined, attempts), (0, 1, 1));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn interrupted_migration_leaves_durable_attempt_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = LegacyRuntimeMigrationPaths::from_runtime_root(directory.path());
+        std::fs::write(
+            &paths.run_events_path,
+            format!("{}\n", serde_json::to_string(&event()).unwrap()),
+        )
+        .unwrap();
+        let store = store(directory.path());
+
+        // Force the import transaction to abort after the attempt row commits.
+        store
+            .with_connection(|connection| {
+                connection.execute_batch(
+                    "CREATE TRIGGER fail_import AFTER INSERT ON stateful_events
+                     BEGIN SELECT RAISE(ABORT, 'injected import failure'); END;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store.import_legacy_runtime_state(&paths, 100).is_err());
+        assert!(!store.legacy_runtime_migration_complete().unwrap());
+        store
+            .with_connection(|connection| {
+                let aborted: u64 = connection.query_row(
+                    "SELECT COUNT(*) FROM stateful_migration_attempts WHERE outcome IS NULL",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(aborted, 1, "aborted attempt must survive the rollback");
+                connection.execute_batch("DROP TRIGGER fail_import;")?;
+                Ok(())
+            })
+            .unwrap();
+
+        let report = store.import_legacy_runtime_state(&paths, 200).unwrap();
+        assert!(!report.already_complete);
+        store
+            .with_connection(|connection| {
+                let (aborted, completed): (u64, u64) = connection.query_row(
+                    "SELECT
+                        SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN outcome = 'complete' THEN 1 ELSE 0 END)
+                     FROM stateful_migration_attempts",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!((aborted, completed), (1, 1));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn direct_handoff_import_quarantines_bad_envelopes() {
         let directory = tempfile::tempdir().unwrap();
         let handoff_root = directory.path().join("handoffs");
@@ -827,10 +1178,11 @@ mod tests {
         let corrupt = handoff_root.join("corrupt.json");
         std::fs::write(&corrupt, "{not-json}").unwrap();
         let store = store(directory.path());
+        let context = local_handoff_context();
 
         assert_eq!(
             store
-                .import_legacy_handoff_directory(&handoff_root, 100)
+                .import_legacy_handoff_directory_with_context(&handoff_root, &context, 100)
                 .unwrap(),
             1
         );
@@ -840,7 +1192,7 @@ mod tests {
         std::fs::write(&corrupt, serde_json::to_vec(&recovered).unwrap()).unwrap();
         assert_eq!(
             store
-                .import_legacy_handoff_directory(&handoff_root, 101)
+                .import_legacy_handoff_directory_with_context(&handoff_root, &context, 101)
                 .unwrap(),
             2
         );
@@ -936,6 +1288,7 @@ mod tests {
             std::fs::write(handoff_root.join("corrupt.json"), "{not-json}").unwrap();
             paths.handoff_root = Some(handoff_root);
             let store = store(directory.path());
+            let context = local_handoff_context();
             store
                 .with_connection(|connection| {
                     connection.execute_batch(&format!(
@@ -946,7 +1299,9 @@ mod tests {
                 })
                 .unwrap();
 
-            assert!(store.import_legacy_runtime_state(&paths, 100).is_err());
+            assert!(store
+                .import_legacy_runtime_state_with_context(&paths, &context, 100)
+                .is_err());
             assert!(!store.legacy_runtime_migration_complete().unwrap());
             store
                 .with_connection(|connection| {
@@ -974,7 +1329,9 @@ mod tests {
                 })
                 .unwrap();
 
-            let report = store.import_legacy_runtime_state(&paths, 101).unwrap();
+            let report = store
+                .import_legacy_runtime_state_with_context(&paths, &context, 101)
+                .unwrap();
             assert_eq!(
                 (
                     report.events,
@@ -1050,9 +1407,16 @@ mod tests {
                     [],
                     |row| row.get(0),
                 )?;
-                assert_eq!(version, 4);
+                let attempts_table: String = connection.query_row(
+                    "SELECT name FROM sqlite_master
+                     WHERE type = 'table' AND name = 'stateful_migration_attempts'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(version, 5);
                 assert_eq!(table, "legacy_handoff_quarantine");
                 assert_eq!(deployment_key_columns, 1);
+                assert_eq!(attempts_table, "stateful_migration_attempts");
                 Ok(())
             })
             .unwrap();

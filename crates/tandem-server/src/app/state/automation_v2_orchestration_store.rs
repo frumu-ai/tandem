@@ -49,6 +49,13 @@ impl AppState {
         let automation_runs_path = self.automation_v2_runs_path.clone();
         let runtime_events_path = self.runtime_events_path.clone();
         let imported_at_ms = now_ms();
+        // The automations this engine can name separate local envelopes from
+        // foreign ones during the once-only import. Workspace file handoffs
+        // are imported separately post-ready (`import_legacy_workspace_handoffs`)
+        // because the workspace root lives behind the runtime.
+        let context = crate::stateful_runtime::LegacyImportContext {
+            known_automation_ids: self.automations_v2.read().await.keys().cloned().collect(),
+        };
         tokio::task::spawn_blocking(move || {
             let store =
                 crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
@@ -61,11 +68,40 @@ impl AppState {
                 automation_runs_path,
                 &runtime_events_path,
             );
-            store.import_legacy_runtime_state(&paths, imported_at_ms)?;
+            store.import_legacy_runtime_state_with_context(&paths, &context, imported_at_ms)?;
             Ok(false)
         })
         .await
         .map_err(|error| anyhow::anyhow!("stateful runtime migration task failed: {error}"))?
+    }
+
+    /// Indexes legacy workspace file handoffs into the stateful store once the
+    /// runtime (and with it the workspace root) is available. Idempotent: the
+    /// importer upserts by handoff identity and re-quarantines bad envelopes,
+    /// so re-running on every startup is safe.
+    pub async fn import_legacy_workspace_handoffs(&self) -> anyhow::Result<usize> {
+        let workspace_root = self.workspace_index.snapshot().await.root;
+        let handoff_root = std::path::Path::new(&workspace_root).join("shared/handoffs");
+        if !handoff_root.is_dir() {
+            return Ok(0);
+        }
+        let automation_runs_path = self.automation_v2_runs_path.clone();
+        let imported_at_ms = now_ms();
+        let context = crate::stateful_runtime::LegacyImportContext {
+            known_automation_ids: self.automations_v2.read().await.keys().cloned().collect(),
+        };
+        tokio::task::spawn_blocking(move || {
+            crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+                &automation_runs_path,
+            )?
+            .import_legacy_handoff_directory_with_context(
+                &handoff_root,
+                &context,
+                imported_at_ms,
+            )
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("legacy handoff import task failed: {error}"))?
     }
 
     pub(super) async fn import_automation_v2_runs_to_stateful_store(

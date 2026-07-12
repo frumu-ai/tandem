@@ -7,7 +7,7 @@ use tandem_automation::{
 };
 use tandem_types::{PrincipalRef, TenantContext};
 
-use super::{upsert_automation_run, upsert_goal, OrchestrationStateStore};
+use super::{protected_records, upsert_automation_run, upsert_goal, OrchestrationStateStore};
 use crate::stateful_runtime::{
     StatefulOutboxRecord, StatefulOutboxStatus, StatefulRunEventRecord, StatefulRuntimeScope,
     StatefulWaitRecord, StatefulWaitStatus,
@@ -49,18 +49,30 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let payload = transaction
+            let (stored_org, stored_workspace, stored_deployment, payload) = transaction
                 .query_row(
-                    "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
+                    "SELECT org_id, workspace_id, deployment_id, goal_json
+                     FROM long_running_goals WHERE goal_id = ?1",
                     [goal_id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
                 )
                 .optional()?
                 .context("long-running goal not found")?;
-            let mut goal: LongRunningGoal = serde_json::from_str(&payload)?;
-            if &goal.tenant_context != tenant {
+            if stored_org != tenant.org_id
+                || stored_workspace != tenant.workspace_id
+                || stored_deployment != tenant.deployment_id
+            {
                 bail!("goal is outside the caller tenant scope");
             }
+            let mut goal: LongRunningGoal =
+                protected_records::decode(tenant, "goal", goal_id, &payload)?;
             if goal.status.is_terminal() {
                 transaction.commit()?;
                 return Ok(GoalCancellationResult {
@@ -78,7 +90,7 @@ impl OrchestrationStateStore {
             let active_run_id = goal.cancel(now_ms);
             let cancelled = active_run_id
                 .as_deref()
-                .map(|run_id| cancel_active_run(&transaction, run_id, reason, now_ms))
+                .map(|run_id| cancel_active_run(&transaction, run_id, tenant, reason, now_ms))
                 .transpose()?
                 .flatten();
             let cancelled_session_ids = cancelled
@@ -98,7 +110,7 @@ impl OrchestrationStateStore {
                 .transpose()?
                 .unwrap_or_default();
             let dead_lettered_handoff_ids =
-                dead_letter_handoffs(&transaction, goal_id, reason, now_ms)?;
+                dead_letter_handoffs(&transaction, goal_id, tenant, reason, now_ms)?;
             upsert_goal(&transaction, &goal)?;
 
             let outbox_id = active_run_id
@@ -119,7 +131,7 @@ impl OrchestrationStateStore {
                         outbox_id,
                         goal_id,
                         run_id,
-                        serde_json::to_string(&outbox)?,
+                        protected_records::encode(tenant, "outbox", outbox_id, &outbox)?,
                         now_ms,
                         tenant.org_id,
                         tenant.workspace_id,
@@ -145,7 +157,7 @@ impl OrchestrationStateStore {
                     goal_id,
                     event.run_id,
                     event.seq,
-                    serde_json::to_string(&event)?,
+                    protected_records::encode(tenant, "event", &event.event_id, &event)?,
                     now_ms,
                     tenant.org_id,
                     tenant.workspace_id,
@@ -176,6 +188,7 @@ struct CancelledActiveRun {
 fn cancel_active_run(
     transaction: &rusqlite::Transaction<'_>,
     run_id: &str,
+    tenant: &TenantContext,
     reason: &str,
     now_ms: u64,
 ) -> anyhow::Result<Option<CancelledActiveRun>> {
@@ -189,7 +202,8 @@ fn cancel_active_run(
     let Some(payload) = payload else {
         return Ok(None);
     };
-    let mut run: AutomationV2RunRecord = serde_json::from_str(&payload)?;
+    let mut run: AutomationV2RunRecord =
+        protected_records::decode(tenant, "run", run_id, &payload)?;
     if matches!(
         run.status,
         AutomationRunStatus::Completed
@@ -248,7 +262,8 @@ fn cancel_waits(
     drop(statement);
     let mut ids = Vec::new();
     for (wait_id, payload) in rows {
-        let mut wait: StatefulWaitRecord = serde_json::from_str(&payload)?;
+        let mut wait: StatefulWaitRecord =
+            protected_records::decode(tenant, "wait", &format!("{wait_id}:{run_id}"), &payload)?;
         wait.status = StatefulWaitStatus::Cancelled;
         wait.updated_at_ms = now_ms;
         wait.completed_at_ms = Some(now_ms);
@@ -266,7 +281,12 @@ fn cancel_waits(
                 AND org_id = ?5 AND workspace_id = ?6 AND deployment_id = ?7",
             params![
                 wait_id,
-                serde_json::to_string(&wait)?,
+                protected_records::encode(
+                    tenant,
+                    "wait",
+                    &format!("{}:{}", wait.wait_id, wait.run_id),
+                    &wait,
+                )?,
                 now_ms,
                 wait.run_id,
                 tenant.org_id,
@@ -282,6 +302,7 @@ fn cancel_waits(
 fn dead_letter_handoffs(
     transaction: &rusqlite::Transaction<'_>,
     goal_id: &str,
+    tenant: &TenantContext,
     reason: &str,
     now_ms: u64,
 ) -> anyhow::Result<Vec<String>> {
@@ -297,7 +318,8 @@ fn dead_letter_handoffs(
     drop(statement);
     let mut ids = Vec::new();
     for (handoff_id, payload) in rows {
-        let mut handoff: WorkflowHandoff = serde_json::from_str(&payload)?;
+        let mut handoff: WorkflowHandoff =
+            protected_records::decode(tenant, "handoff", &handoff_id, &payload)?;
         handoff.status = WorkflowHandoffStatus::DeadLettered;
         handoff.updated_at_ms = now_ms;
         handoff.metadata = Some(merge_metadata(
@@ -307,7 +329,11 @@ fn dead_letter_handoffs(
         transaction.execute(
             "UPDATE workflow_handoffs SET status = 'dead_lettered', handoff_json = ?2,
                 updated_at_ms = ?3 WHERE handoff_id = ?1",
-            params![handoff_id, serde_json::to_string(&handoff)?, now_ms],
+            params![
+                handoff_id,
+                protected_records::encode(tenant, "handoff", &handoff.handoff_id, &handoff,)?,
+                now_ms
+            ],
         )?;
         ids.push(handoff.handoff_id);
     }

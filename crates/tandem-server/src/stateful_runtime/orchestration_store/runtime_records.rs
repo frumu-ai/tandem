@@ -1,8 +1,9 @@
 use anyhow::{bail, Context};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use tandem_automation::AutomationV2RunRecord;
+use tandem_types::TenantContext;
 
-use super::OrchestrationStateStore;
+use super::{protected_records, OrchestrationStateStore};
 use crate::stateful_runtime::reliability::{
     StatefulCompensationRecord, StatefulDeadLetterRecord, StatefulOutboxRecord,
     StatefulReliabilityStoreFile, StatefulToolEffectRecord,
@@ -10,15 +11,30 @@ use crate::stateful_runtime::reliability::{
 use crate::stateful_runtime::types::{
     StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulWaitRecord,
 };
-use crate::stateful_runtime::{
-    stable_definition_snapshot_hash, stateful_run_event_compacted_event_ids, StatefulRuntimeScope,
-};
+use crate::stateful_runtime::{stateful_run_event_compacted_event_ids, StatefulRuntimeScope};
 
 impl OrchestrationStateStore {
     pub fn resolve_goal_projection_snapshot(
         &self,
+        expected_tenant: &TenantContext,
         reference: &serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
+        let tenant = match reference.get("tenant_context") {
+            Some(value) => {
+                let tenant: TenantContext = serde_json::from_value(value.clone())?;
+                anyhow::ensure!(
+                    tenant.org_id == expected_tenant.org_id
+                        && tenant.workspace_id == expected_tenant.workspace_id
+                        && tenant.deployment_id == expected_tenant.deployment_id,
+                    "projection snapshot tenant does not match the authorized tenant"
+                );
+                tenant
+            }
+            // Legacy references contained only digests. They are safe to bind
+            // to the trusted tenant from the scoped event query; no scope is
+            // inferred from the reference itself.
+            None => expected_tenant.clone(),
+        };
         self.with_connection(|connection| {
             let component = |key: &str| -> anyhow::Result<serde_json::Value> {
                 let digest = reference
@@ -33,7 +49,7 @@ impl OrchestrationStateStore {
                     )
                     .optional()?
                     .with_context(|| format!("projection snapshot blob {digest} is missing"))?;
-                Ok(serde_json::from_str(&raw)?)
+                protected_records::decode(&tenant, "projection", digest, &raw)
             };
             Ok(serde_json::json!({
                 "goal": component("goal")?,
@@ -113,11 +129,23 @@ impl OrchestrationStateStore {
 
     pub fn load_stateful_runtime_events(&self) -> anyhow::Result<Vec<StatefulRunEventRecord>> {
         self.with_connection(|connection| {
-            let mut statement = connection
-                .prepare("SELECT event_json FROM stateful_events ORDER BY seq, run_id, event_id")?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            rows.map(|row| serde_json::from_str(&row?).map_err(Into::into))
-                .collect()
+            let mut statement = connection.prepare(
+                "SELECT event_id, org_id, workspace_id, deployment_id, event_json
+                          FROM stateful_events ORDER BY seq, run_id, event_id",
+            )?;
+            let rows = statement.query_map([], scoped_payload_row)?;
+            rows.map(|row| {
+                let (id, org, workspace, deployment, payload) = row?;
+                protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "event",
+                    &id,
+                    &payload,
+                )
+            })
+            .collect()
         })
     }
 
@@ -129,37 +157,58 @@ impl OrchestrationStateStore {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             transaction.execute("DELETE FROM stateful_events", [])?;
-            transaction.execute(
-                "CREATE TEMP TABLE retained_projection_blobs (digest TEXT PRIMARY KEY)",
-                [],
-            )?;
             for event in events {
                 insert_event(&transaction, event)?;
-                let stored_event = transaction.query_row(
-                    "SELECT event_json FROM stateful_events WHERE event_id = ?1",
-                    [&event.event_id],
-                    |row| row.get::<_, String>(0),
-                )?;
-                let stored_event = serde_json::from_str::<StatefulRunEventRecord>(&stored_event)?;
-                if let Some(reference) = stored_event
-                    .payload
-                    .get("projection_snapshot_ref")
-                    .and_then(serde_json::Value::as_object)
-                {
-                    for digest in reference.values().filter_map(serde_json::Value::as_str) {
-                        transaction.execute(
-                            "INSERT OR IGNORE INTO retained_projection_blobs (digest) VALUES (?1)",
-                            [digest],
-                        )?;
-                    }
-                }
             }
+            prune_unreferenced_goal_projection_blobs(&transaction)?;
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Replaces only the exact event snapshot observed by a compactor.
+    /// Events committed after that snapshot are outside `observed_event_ids`
+    /// and therefore survive alongside their projection blobs.
+    pub fn replace_observed_stateful_runtime_events(
+        &self,
+        observed_event_ids: &[String],
+        replacement_events: &[StatefulRunEventRecord],
+    ) -> anyhow::Result<()> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             transaction.execute(
-                "DELETE FROM goal_projection_blobs
-                 WHERE digest NOT IN (SELECT digest FROM retained_projection_blobs)",
+                "CREATE TEMP TABLE compaction_observed_events (event_id TEXT PRIMARY KEY)",
                 [],
             )?;
-            transaction.execute("DROP TABLE retained_projection_blobs", [])?;
+            for event_id in observed_event_ids {
+                transaction.execute(
+                    "INSERT INTO compaction_observed_events (event_id) VALUES (?1)",
+                    [event_id],
+                )?;
+            }
+            let present: usize = transaction.query_row(
+                "SELECT COUNT(*) FROM stateful_events
+                 WHERE event_id IN (SELECT event_id FROM compaction_observed_events)",
+                [],
+                |row| row.get(0),
+            )?;
+            if present != observed_event_ids.len() {
+                bail!(
+                    "stale stateful event compaction snapshot: observed {} events, found {present}",
+                    observed_event_ids.len()
+                );
+            }
+            transaction.execute(
+                "DELETE FROM stateful_events
+                 WHERE event_id IN (SELECT event_id FROM compaction_observed_events)",
+                [],
+            )?;
+            for event in replacement_events {
+                insert_event(&transaction, event)?;
+            }
+            prune_unreferenced_goal_projection_blobs(&transaction)?;
+            transaction.execute("DROP TABLE compaction_observed_events", [])?;
             transaction.commit()?;
             Ok(())
         })
@@ -187,7 +236,12 @@ impl OrchestrationStateStore {
                     snapshot.snapshot_id,
                     snapshot.run_id,
                     snapshot.seq,
-                    serde_json::to_string(snapshot)?,
+                    protected_records::encode(
+                        &snapshot.scope.tenant_context,
+                        "snapshot",
+                        &snapshot.snapshot_id,
+                        snapshot,
+                    )?,
                     snapshot.created_at_ms,
                     snapshot.scope.tenant_context.org_id,
                     snapshot.scope.tenant_context.workspace_id,
@@ -204,12 +258,23 @@ impl OrchestrationStateStore {
     ) -> anyhow::Result<Vec<StatefulRunSnapshotRecord>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT snapshot_json FROM stateful_snapshots
+                "SELECT snapshot_id, org_id, workspace_id, deployment_id, snapshot_json
+                 FROM stateful_snapshots
                  WHERE run_id = ?1 ORDER BY seq, snapshot_id",
             )?;
-            let rows = statement.query_map([run_id], |row| row.get::<_, String>(0))?;
-            rows.map(|row| serde_json::from_str(&row?).map_err(Into::into))
-                .collect()
+            let rows = statement.query_map([run_id], scoped_payload_row)?;
+            rows.map(|row| {
+                let (id, org, workspace, deployment, payload) = row?;
+                protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "snapshot",
+                    &id,
+                    &payload,
+                )
+            })
+            .collect()
         })
     }
 
@@ -220,13 +285,30 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| {
             let payload = connection
                 .query_row(
-                    "SELECT snapshot_json FROM stateful_snapshots WHERE snapshot_id = ?1",
+                    "SELECT org_id, workspace_id, deployment_id, snapshot_json
+                     FROM stateful_snapshots WHERE snapshot_id = ?1",
                     [snapshot_id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
                 )
                 .optional()?;
             payload
-                .map(|row| serde_json::from_str(&row).map_err(Into::into))
+                .map(|(org, workspace, deployment, payload)| {
+                    protected_records::decode_scoped(
+                        &org,
+                        &workspace,
+                        deployment.as_deref(),
+                        "snapshot",
+                        snapshot_id,
+                        &payload,
+                    )
+                })
                 .transpose()
         })
     }
@@ -234,12 +316,23 @@ impl OrchestrationStateStore {
     pub fn load_stateful_runtime_waits(&self) -> anyhow::Result<Vec<StatefulWaitRecord>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT wait_json FROM automation_waits
+                "SELECT wait_id || ':' || run_id, org_id, workspace_id, deployment_id, wait_json
+                 FROM automation_waits
                  ORDER BY updated_at_ms, wait_id, run_id",
             )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            rows.map(|row| serde_json::from_str(&row?).map_err(Into::into))
-                .collect()
+            let rows = statement.query_map([], scoped_payload_row)?;
+            rows.map(|row| {
+                let (id, org, workspace, deployment, payload) = row?;
+                protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "wait",
+                    &id,
+                    &payload,
+                )
+            })
+            .collect()
         })
     }
 
@@ -269,23 +362,63 @@ impl OrchestrationStateStore {
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let mut deleted = 0;
             for wait in waits {
-                deleted += transaction.execute(
-                    "DELETE FROM automation_waits
+                let record_id = format!("{}:{}", wait.wait_id, wait.run_id);
+                let current = transaction
+                    .query_row(
+                        "SELECT wait_json FROM automation_waits
                      WHERE wait_id = ?1 AND run_id = ?2 AND org_id = ?3
-                       AND workspace_id = ?4 AND deployment_id = ?5 AND wait_json = ?6",
-                    params![
-                        wait.wait_id,
-                        wait.run_id,
-                        wait.scope.tenant_context.org_id,
-                        wait.scope.tenant_context.workspace_id,
-                        wait.scope
-                            .tenant_context
-                            .deployment_id
-                            .as_deref()
-                            .unwrap_or(""),
-                        serde_json::to_string(wait)?,
-                    ],
-                )?;
+                       AND workspace_id = ?4 AND deployment_id = ?5",
+                        params![
+                            wait.wait_id,
+                            wait.run_id,
+                            wait.scope.tenant_context.org_id,
+                            wait.scope.tenant_context.workspace_id,
+                            wait.scope
+                                .tenant_context
+                                .deployment_id
+                                .as_deref()
+                                .unwrap_or(""),
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                let unchanged = current
+                    .map(|payload| -> anyhow::Result<bool> {
+                        let stored: StatefulWaitRecord = protected_records::decode(
+                            &wait.scope.tenant_context,
+                            "wait",
+                            &record_id,
+                            &payload,
+                        )?;
+                        Ok(
+                            protected_records::digest(&wait.scope.tenant_context, "wait", &stored)?
+                                == protected_records::digest(
+                                    &wait.scope.tenant_context,
+                                    "wait",
+                                    wait,
+                                )?,
+                        )
+                    })
+                    .transpose()?
+                    .unwrap_or(false);
+                if unchanged {
+                    deleted += transaction.execute(
+                        "DELETE FROM automation_waits
+                         WHERE wait_id = ?1 AND run_id = ?2 AND org_id = ?3
+                           AND workspace_id = ?4 AND deployment_id = ?5",
+                        params![
+                            wait.wait_id,
+                            wait.run_id,
+                            wait.scope.tenant_context.org_id,
+                            wait.scope.tenant_context.workspace_id,
+                            wait.scope
+                                .tenant_context
+                                .deployment_id
+                                .as_deref()
+                                .unwrap_or("")
+                        ],
+                    )?;
+                }
             }
             transaction.commit()?;
             Ok(deleted)
@@ -298,10 +431,34 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| {
             Ok(StatefulReliabilityStoreFile {
                 schema_version: crate::stateful_runtime::STATEFUL_RUNTIME_SCHEMA_VERSION,
-                outbox: load_runtime_records(connection, "outbox_effects", "effect_json")?,
-                tool_effects: load_runtime_records(connection, "tool_effects", "effect_json")?,
-                dead_letters: load_runtime_records(connection, "dead_letters", "record_json")?,
-                compensations: load_runtime_records(connection, "compensations", "record_json")?,
+                outbox: load_runtime_records(
+                    connection,
+                    "outbox_effects",
+                    "effect_id",
+                    "effect_json",
+                    "outbox",
+                )?,
+                tool_effects: load_runtime_records(
+                    connection,
+                    "tool_effects",
+                    "effect_id",
+                    "effect_json",
+                    "tool_effect",
+                )?,
+                dead_letters: load_runtime_records(
+                    connection,
+                    "dead_letters",
+                    "dead_letter_id",
+                    "record_json",
+                    "dead_letter",
+                )?,
+                compensations: load_runtime_records(
+                    connection,
+                    "compensations",
+                    "compensation_id",
+                    "record_json",
+                    "compensation",
+                )?,
             })
         })
     }
@@ -323,6 +480,7 @@ impl OrchestrationStateStore {
                     &row.scope,
                     &row.status,
                     "effect_json",
+                    "outbox",
                     row.updated_at_ms,
                     row,
                 )?;
@@ -337,6 +495,7 @@ impl OrchestrationStateStore {
                     &row.scope,
                     &row.status,
                     "effect_json",
+                    "tool_effect",
                     row.updated_at_ms,
                     row,
                 )?;
@@ -351,6 +510,7 @@ impl OrchestrationStateStore {
                     &row.scope,
                     &row.status,
                     "record_json",
+                    "dead_letter",
                     row.updated_at_ms,
                     row,
                 )?;
@@ -365,6 +525,7 @@ impl OrchestrationStateStore {
                     &row.scope,
                     &row.status,
                     "record_json",
+                    "compensation",
                     row.updated_at_ms,
                     row,
                 )?;
@@ -391,6 +552,8 @@ impl OrchestrationStateStore {
                     "effect_id",
                     &row.outbox_id,
                     "effect_json",
+                    "outbox",
+                    &row.scope,
                     row,
                 )?;
             }
@@ -401,6 +564,8 @@ impl OrchestrationStateStore {
                     "effect_id",
                     &row.effect_id,
                     "effect_json",
+                    "tool_effect",
+                    &row.scope,
                     row,
                 )?;
             }
@@ -411,6 +576,8 @@ impl OrchestrationStateStore {
                     "dead_letter_id",
                     &row.dead_letter_id,
                     "record_json",
+                    "dead_letter",
+                    &row.scope,
                     row,
                 )?;
             }
@@ -421,6 +588,8 @@ impl OrchestrationStateStore {
                     "compensation_id",
                     &row.compensation_id,
                     "record_json",
+                    "compensation",
+                    &row.scope,
                     row,
                 )?;
             }
@@ -428,6 +597,51 @@ impl OrchestrationStateStore {
             Ok(deleted)
         })
     }
+}
+
+fn prune_unreferenced_goal_projection_blobs(
+    transaction: &rusqlite::Transaction<'_>,
+) -> anyhow::Result<()> {
+    transaction.execute(
+        "CREATE TEMP TABLE retained_projection_blobs (digest TEXT PRIMARY KEY)",
+        [],
+    )?;
+    let payloads = {
+        let mut statement = transaction.prepare(
+            "SELECT event_id, org_id, workspace_id, deployment_id, event_json FROM stateful_events",
+        )?;
+        let rows = statement.query_map([], scoped_payload_row)?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (id, org, workspace, deployment, payload) in payloads {
+        let event: StatefulRunEventRecord = protected_records::decode_scoped(
+            &org,
+            &workspace,
+            deployment.as_deref(),
+            "event",
+            &id,
+            &payload,
+        )?;
+        if let Some(reference) = event
+            .payload
+            .get("projection_snapshot_ref")
+            .and_then(serde_json::Value::as_object)
+        {
+            for digest in reference.values().filter_map(serde_json::Value::as_str) {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO retained_projection_blobs (digest) VALUES (?1)",
+                    [digest],
+                )?;
+            }
+        }
+    }
+    transaction.execute(
+        "DELETE FROM goal_projection_blobs
+         WHERE digest NOT IN (SELECT digest FROM retained_projection_blobs)",
+        [],
+    )?;
+    transaction.execute("DROP TABLE retained_projection_blobs", [])?;
+    Ok(())
 }
 
 fn insert_wait(
@@ -458,7 +672,12 @@ fn insert_wait(
                 .as_deref()
                 .unwrap_or(""),
             enum_name(&wait.status)?,
-            serde_json::to_string(wait)?,
+            protected_records::encode(
+                &wait.scope.tenant_context,
+                "wait",
+                &format!("{}:{}", wait.wait_id, wait.run_id),
+                wait,
+            )?,
             wait.updated_at_ms,
         ],
     )?;
@@ -468,17 +687,30 @@ fn insert_wait(
 fn load_runtime_records<T>(
     connection: &rusqlite::Connection,
     table: &str,
+    id_column: &str,
     json_column: &str,
+    kind: &str,
 ) -> anyhow::Result<Vec<T>>
 where
     T: serde::de::DeserializeOwned,
 {
     let mut statement = connection.prepare(&format!(
-        "SELECT {json_column} FROM {table} ORDER BY updated_at_ms, rowid"
+        "SELECT {id_column}, org_id, workspace_id, deployment_id, {json_column}
+         FROM {table} ORDER BY updated_at_ms, rowid"
     ))?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    rows.map(|row| serde_json::from_str(&row?).map_err(Into::into))
-        .collect()
+    let rows = statement.query_map([], scoped_payload_row)?;
+    rows.map(|row| {
+        let (id, org, workspace, deployment, payload) = row?;
+        protected_records::decode_scoped(
+            &org,
+            &workspace,
+            deployment.as_deref(),
+            kind,
+            &id,
+            &payload,
+        )
+    })
+    .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -491,6 +723,7 @@ fn insert_reliability_record<T: serde::Serialize, S: serde::Serialize>(
     scope: &StatefulRuntimeScope,
     status: &S,
     json_column: &str,
+    kind: &str,
     updated_at_ms: u64,
     record: &T,
 ) -> anyhow::Result<()> {
@@ -511,7 +744,7 @@ fn insert_reliability_record<T: serde::Serialize, S: serde::Serialize>(
             id,
             run_id,
             enum_name(status)?,
-            serde_json::to_string(record)?,
+            protected_records::encode(&scope.tenant_context, kind, id, record)?,
             updated_at_ms,
             scope.tenant_context.org_id,
             scope.tenant_context.workspace_id,
@@ -521,20 +754,47 @@ fn insert_reliability_record<T: serde::Serialize, S: serde::Serialize>(
     Ok(())
 }
 
-fn delete_reliability_record<T: serde::Serialize>(
+fn delete_reliability_record<T: serde::Serialize + serde::de::DeserializeOwned>(
     transaction: &rusqlite::Transaction<'_>,
     table: &str,
     id_column: &str,
     id: &str,
     json_column: &str,
+    kind: &str,
+    scope: &StatefulRuntimeScope,
     record: &T,
 ) -> anyhow::Result<usize> {
-    transaction
-        .execute(
-            &format!("DELETE FROM {table} WHERE {id_column} = ?1 AND {json_column} = ?2"),
-            params![id, serde_json::to_string(record)?],
+    let current = transaction
+        .query_row(
+            &format!("SELECT {json_column} FROM {table} WHERE {id_column} = ?1"),
+            [id],
+            |row| row.get::<_, String>(0),
         )
+        .optional()?;
+    let Some(payload) = current else {
+        return Ok(0);
+    };
+    let stored: T = protected_records::decode(&scope.tenant_context, kind, id, &payload)?;
+    if protected_records::digest(&scope.tenant_context, kind, &stored)?
+        != protected_records::digest(&scope.tenant_context, kind, record)?
+    {
+        return Ok(0);
+    }
+    transaction
+        .execute(&format!("DELETE FROM {table} WHERE {id_column} = ?1"), [id])
         .map_err(Into::into)
+}
+
+type ScopedPayloadRow = (String, String, String, Option<String>, String);
+
+fn scoped_payload_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScopedPayloadRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
 }
 
 fn enum_name<T: serde::Serialize>(value: &T) -> anyhow::Result<String> {
@@ -582,7 +842,12 @@ fn insert_event(
             goal_id,
             event.run_id,
             event.seq,
-            serde_json::to_string(&stored_event)?,
+            protected_records::encode(
+                &stored_event.scope.tenant_context,
+                "event",
+                &stored_event.event_id,
+                &stored_event,
+            )?,
             event.occurred_at_ms,
             event.scope.tenant_context.org_id,
             event.scope.tenant_context.workspace_id,
@@ -619,26 +884,44 @@ pub(super) fn projection_snapshot_for_goal(
     transaction: &rusqlite::Transaction<'_>,
     goal_id: &str,
 ) -> anyhow::Result<serde_json::Value> {
-    let goal = transaction
+    let goal_row = transaction
         .query_row(
-            "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
+            "SELECT org_id, workspace_id, deployment_id, goal_json
+             FROM long_running_goals WHERE goal_id = ?1",
             [goal_id],
-            |row| row.get::<_, String>(0),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
         )
         .optional()?
-        .map(|raw| serde_json::from_str::<serde_json::Value>(&raw))
-        .transpose()?
         .context("goal projection snapshot is missing its goal")?;
+    let (org, workspace, deployment, goal_payload) = goal_row;
+    let goal: serde_json::Value = protected_records::decode_scoped(
+        &org,
+        &workspace,
+        deployment.as_deref(),
+        "goal",
+        goal_id,
+        &goal_payload,
+    )?;
+    let tenant = protected_records::tenant_from_scope(&org, &workspace, deployment.as_deref());
     let active_run_id = goal
         .get("active_run_id")
         .and_then(serde_json::Value::as_str);
     let links = json_rows(
         transaction,
-        "SELECT link_json FROM (
-            SELECT link_json, hop_index FROM goal_run_links
+        "SELECT run_id, link_json FROM (
+            SELECT run_id, link_json, hop_index FROM goal_run_links
             WHERE goal_id = ?1 ORDER BY hop_index DESC LIMIT 250
          ) ORDER BY hop_index",
         goal_id,
+        &tenant,
+        "link",
     )?;
     let runs = active_run_id
         .map(|run_id| {
@@ -653,7 +936,8 @@ pub(super) fn projection_snapshot_for_goal(
         .transpose()?
         .flatten()
         .map(|raw| -> anyhow::Result<serde_json::Value> {
-            let mut run = serde_json::from_str::<AutomationV2RunRecord>(&raw)?;
+            let mut run: AutomationV2RunRecord =
+                protected_records::decode(&tenant, "run", active_run_id.unwrap_or_default(), &raw)?;
             run.active_session_ids.clear();
             run.latest_session_id = None;
             run.active_instance_ids.clear();
@@ -669,42 +953,52 @@ pub(super) fn projection_snapshot_for_goal(
         .collect::<Vec<_>>();
     let waits = json_rows(
         transaction,
-        "SELECT wait_json FROM (
-            SELECT w.wait_json, w.updated_at_ms, w.wait_id
+        "SELECT wait_id || ':' || run_id, wait_json FROM (
+            SELECT w.wait_id, w.run_id, w.wait_json, w.updated_at_ms
             FROM automation_waits w
             INNER JOIN goal_run_links l ON l.run_id = w.run_id
             WHERE l.goal_id = ?1
             ORDER BY w.updated_at_ms DESC, w.wait_id DESC LIMIT 250
          ) ORDER BY updated_at_ms, wait_id",
         goal_id,
+        &tenant,
+        "wait",
     )?;
     let handoffs = json_rows(
         transaction,
-        "SELECT handoff_json FROM (
+        "SELECT handoff_id, handoff_json FROM (
             SELECT handoff_json, created_at_ms, handoff_id FROM workflow_handoffs
             WHERE goal_id = ?1 ORDER BY created_at_ms DESC, handoff_id DESC LIMIT 250
          ) ORDER BY created_at_ms, handoff_id",
         goal_id,
+        &tenant,
+        "handoff",
     )?;
     Ok(serde_json::json!({
         "schema_version": 2,
-        "goal": store_projection_blob(transaction, &goal)?,
-        "links": store_projection_blob(transaction, &links)?,
-        "runs": store_projection_blob(transaction, &runs)?,
-        "waits": store_projection_blob(transaction, &waits)?,
-        "handoffs": store_projection_blob(transaction, &handoffs)?,
+        "tenant_context": tenant.clone(),
+        "goal": store_projection_blob(transaction, &tenant, &goal)?,
+        "links": store_projection_blob(transaction, &tenant, &links)?,
+        "runs": store_projection_blob(transaction, &tenant, &runs)?,
+        "waits": store_projection_blob(transaction, &tenant, &waits)?,
+        "handoffs": store_projection_blob(transaction, &tenant, &handoffs)?,
     }))
 }
 
 fn store_projection_blob<T: serde::Serialize>(
     transaction: &rusqlite::Transaction<'_>,
+    tenant: &TenantContext,
     value: &T,
 ) -> anyhow::Result<String> {
-    let digest = stable_definition_snapshot_hash(value);
+    let digest = protected_records::digest(tenant, "projection", value)?;
     transaction.execute(
         "INSERT INTO goal_projection_blobs (digest, payload_json, created_at_ms)
          VALUES (?1, ?2, ?3) ON CONFLICT(digest) DO NOTHING",
-        params![digest, serde_json::to_string(value)?, crate::now_ms()],
+        params![
+            digest,
+            protected_records::encode(tenant, "projection", &digest, value)?,
+            crate::now_ms()
+        ],
     )?;
     Ok(digest)
 }
@@ -713,10 +1007,18 @@ fn json_rows(
     transaction: &rusqlite::Transaction<'_>,
     sql: &str,
     value: &str,
+    tenant: &TenantContext,
+    kind: &str,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let mut statement = transaction.prepare(sql)?;
-    let rows = statement.query_map([value], |row| row.get::<_, String>(0))?;
-    rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    let rows = statement.query_map([value], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.map(|row| {
+        let (id, payload) = row?;
+        protected_records::decode(tenant, kind, &id, &payload)
+    })
+    .collect()
 }
 
 fn event_seq_by_id(
@@ -725,12 +1027,21 @@ fn event_seq_by_id(
     event_id: &str,
 ) -> anyhow::Result<Option<u64>> {
     let mut statement = transaction.prepare(
-        "SELECT event_json FROM stateful_events WHERE run_id = ?1 ORDER BY seq, event_id",
+        "SELECT event_id, org_id, workspace_id, deployment_id, event_json
+         FROM stateful_events WHERE run_id = ?1 ORDER BY seq, event_id",
     )?;
-    let rows = statement.query_map([run_id], |row| row.get::<_, String>(0))?;
+    let rows = statement.query_map([run_id], scoped_payload_row)?;
     for row in rows {
-        let event: StatefulRunEventRecord =
-            serde_json::from_str(&row?).context("stored stateful event could not be decoded")?;
+        let (id, org, workspace, deployment, payload) = row?;
+        let event: StatefulRunEventRecord = protected_records::decode_scoped(
+            &org,
+            &workspace,
+            deployment.as_deref(),
+            "event",
+            &id,
+            &payload,
+        )
+        .context("stored stateful event could not be decoded")?;
         if event.event_id == event_id
             || stateful_run_event_compacted_event_ids(&event)
                 .iter()
@@ -922,9 +1233,127 @@ mod tests {
         let reference = &stored.payload["projection_snapshot_ref"];
         assert!(reference.is_object());
         let projection = store
-            .resolve_goal_projection_snapshot(reference)
+            .resolve_goal_projection_snapshot(&stored.scope.tenant_context, reference)
             .expect("resolve retained projection snapshot");
         assert_eq!(projection["goal"]["goal_id"], "goal-1");
+    }
+
+    #[test]
+    fn observed_event_replacement_preserves_late_events_and_projection_blobs() {
+        let directory = tempfile::tempdir().expect("create test directory");
+        let store = OrchestrationStateStore::from_automation_runs_path(
+            &directory.path().join("automation_v2_runs.json"),
+        )
+        .expect("open orchestration store");
+        store
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO long_running_goals
+                        (goal_id, orchestration_id, orchestration_version, org_id, workspace_id,
+                         deployment_id, status, active_run_id, goal_json, created_at_ms,
+                         updated_at_ms)
+                     VALUES (?1, ?2, 1, ?3, ?4, NULL, 'active', NULL, ?5, 1, 1)",
+                    rusqlite::params![
+                        "goal-1",
+                        "orchestration-1",
+                        "org-a",
+                        "workspace-a",
+                        serde_json::to_string(&json!({
+                            "goal_id": "goal-1",
+                            "active_run_id": null,
+                        }))?,
+                    ],
+                )?;
+                connection.execute(
+                    "INSERT INTO goal_run_links
+                        (goal_id, run_id, orchestration_node_id, orchestration_version,
+                         hop_index, parent_run_id, triggering_handoff_id, link_json,
+                         created_at_ms)
+                     VALUES (?1, ?2, ?3, 1, 1, NULL, NULL, '{}', 1)",
+                    ["goal-1", "run-1", "node-1"],
+                )?;
+                Ok(())
+            })
+            .expect("seed goal projection");
+
+        let mut observed = event("run-1");
+        observed.event_id = "observed-event".to_string();
+        observed.seq = 1;
+        store
+            .replace_stateful_runtime_events(&[observed.clone()])
+            .expect("seed observed snapshot");
+
+        let mut late = event("run-1");
+        late.event_id = "late-event".to_string();
+        late.seq = 2;
+        store
+            .append_stateful_runtime_event(&late)
+            .expect("append event after compaction snapshot");
+        let late_before = store
+            .load_stateful_runtime_events()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.event_id == late.event_id)
+            .unwrap();
+        let late_projection_ref = late_before.payload["projection_snapshot_ref"].clone();
+        assert!(late_projection_ref.is_object());
+
+        let mut marker = event("run-1");
+        marker.event_id = "compaction-marker".to_string();
+        marker.seq = 1;
+        marker.event_type = "stateful_runtime.event_log_compacted".to_string();
+        store
+            .replace_observed_stateful_runtime_events(&[observed.event_id], &[marker])
+            .expect("replace only the observed snapshot");
+
+        let ids = store
+            .load_stateful_runtime_events()
+            .unwrap()
+            .into_iter()
+            .map(|row| row.event_id)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            ids,
+            ["compaction-marker".to_string(), "late-event".to_string()]
+                .into_iter()
+                .collect()
+        );
+        let projection = store
+            .resolve_goal_projection_snapshot(
+                &late_before.scope.tenant_context,
+                &late_projection_ref,
+            )
+            .expect("late event projection blobs survive compaction");
+        assert_eq!(projection["goal"]["goal_id"], "goal-1");
+    }
+
+    #[test]
+    fn observed_event_replacement_rejects_a_stale_snapshot() {
+        let directory = tempfile::tempdir().expect("create test directory");
+        let store = OrchestrationStateStore::from_automation_runs_path(
+            &directory.path().join("automation_v2_runs.json"),
+        )
+        .expect("open orchestration store");
+        let mut stored = event("run-1");
+        stored.event_id = "stored-event".to_string();
+        stored.seq = 1;
+        store
+            .append_stateful_runtime_event(&stored)
+            .expect("seed event");
+        let mut replacement = event("run-1");
+        replacement.event_id = "replacement-event".to_string();
+        replacement.seq = 1;
+
+        let error = store
+            .replace_observed_stateful_runtime_events(
+                &["already-compacted-event".to_string()],
+                &[replacement],
+            )
+            .expect_err("stale snapshot must abort");
+        assert!(error
+            .to_string()
+            .contains("stale stateful event compaction snapshot"));
+        assert_eq!(store.load_stateful_runtime_events().unwrap(), vec![stored]);
     }
 
     #[test]

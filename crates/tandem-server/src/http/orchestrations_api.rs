@@ -121,6 +121,74 @@ pub(super) fn orchestration_error_response(error: &anyhow::Error) -> Response {
     (status, Json(json!({"error": code, "detail": message}))).into_response()
 }
 
+/// Drafts belong to their recorded creator unless the caller carries
+/// administrative authority. Enforced for verified (hosted) callers — hosted
+/// ingress rejects unverified explicit tenants upstream, so an absent
+/// assertion means local single-tenant mode where the operator owns
+/// everything.
+fn require_orchestration_owner(
+    _tenant: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    spec: &OrchestrationSpec,
+    actor: &tandem_types::PrincipalRef,
+) -> Result<(), Response> {
+    if verified.is_none() || super::goals_api::verified_has_admin_authority(verified) {
+        return Ok(());
+    }
+    let created_by = orchestration_metadata_principal_id(spec, "created_by");
+    if created_by != Some(actor.id.as_str()) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "orchestration_forbidden",
+                "detail": "orchestration mutation requires its owner or an authorized administrator",
+            })),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+fn orchestration_metadata_principal_id<'a>(
+    spec: &'a OrchestrationSpec,
+    key: &str,
+) -> Option<&'a str> {
+    spec.metadata
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get(key))
+        .and_then(|value| {
+            value
+                .get("id")
+                .and_then(Value::as_str)
+                .or_else(|| value.as_str())
+        })
+}
+
+fn orchestration_effective_author(spec: &OrchestrationSpec) -> Option<tandem_types::PrincipalRef> {
+    let value = spec.metadata.as_ref()?.as_object()?.get("created_by")?;
+    serde_json::from_value(value.clone()).ok().or_else(|| {
+        value
+            .as_str()
+            .map(|id| tandem_types::PrincipalRef::human_user(id.to_string()))
+    })
+}
+
+fn stamp_created_by(metadata: Option<Value>, actor: &tandem_types::PrincipalRef) -> Option<Value> {
+    let mut object = match metadata {
+        Some(Value::Object(object)) => object,
+        Some(other) => {
+            let mut object = serde_json::Map::new();
+            object.insert("value".to_string(), other);
+            object
+        }
+        None => serde_json::Map::new(),
+    };
+    // Ownership is never writable through the request payload.
+    object.insert("created_by".to_string(), json!(actor.id));
+    Some(Value::Object(object))
+}
+
 fn spec_response(spec: &OrchestrationSpec) -> Value {
     json!({
         "orchestration": spec,
@@ -134,8 +202,11 @@ fn spec_response(spec: &OrchestrationSpec) -> Value {
 pub(super) async fn create_orchestration_draft(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(payload): Json<OrchestrationDraftPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
     if payload.expected_updated_at_ms.is_some() {
         return (
             StatusCode::BAD_REQUEST,
@@ -157,7 +228,9 @@ pub(super) async fn create_orchestration_draft(
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| format!("orch-{}", uuid::Uuid::new_v4()));
-    let spec = draft_spec(&tenant, orchestration_id, &payload, now, now);
+    let actor = super::goals_api::effective_actor(&principal, verified);
+    let mut spec = draft_spec(&tenant, orchestration_id, &payload, now, now);
+    spec.metadata = stamp_created_by(spec.metadata.take(), &actor);
     match store.put_orchestration_draft(&spec, None) {
         Ok(()) => (StatusCode::CREATED, Json(spec_response(&spec))).into_response(),
         Err(error) => orchestration_error_response(&error),
@@ -167,9 +240,12 @@ pub(super) async fn create_orchestration_draft(
 pub(super) async fn update_orchestration_draft(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
     Json(payload): Json<OrchestrationDraftPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
     let store = match definition_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
@@ -178,6 +254,10 @@ pub(super) async fn update_orchestration_draft(
         Ok(existing) => existing,
         Err(response) => return response,
     };
+    let actor = super::goals_api::effective_actor(&principal, verified);
+    if let Err(response) = require_orchestration_owner(&tenant, verified, &existing, &actor) {
+        return response;
+    }
     let Some(expected) = payload.expected_updated_at_ms else {
         return (
             StatusCode::CONFLICT,
@@ -190,13 +270,19 @@ pub(super) async fn update_orchestration_draft(
             .into_response();
     };
     let now = crate::util::time::now_ms();
-    let spec = draft_spec(
+    let mut spec = draft_spec(
         &tenant,
         orchestration_id,
         &payload,
         existing.created_at_ms,
         now,
     );
+    // The creator recorded at draft creation survives edits: ownership is
+    // not writable through the update payload.
+    let creator = orchestration_metadata_principal_id(&existing, "created_by")
+        .map(|value| tandem_types::PrincipalRef::human_user(value.to_string()))
+        .unwrap_or_else(|| actor.clone());
+    spec.metadata = stamp_created_by(spec.metadata.take(), &creator);
     match store.put_orchestration_draft(&spec, Some(expected)) {
         Ok(()) => Json(spec_response(&spec)).into_response(),
         Err(error) => orchestration_error_response(&error),
@@ -376,13 +462,24 @@ pub(super) async fn get_orchestration(
 pub(super) async fn archive_orchestration_draft(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
     body: Bytes,
 ) -> Response {
+    let verified = verified.as_deref();
     let store = match definition_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
+    let draft = match load_tenant_draft(&store, &tenant, &orchestration_id) {
+        Ok(draft) => draft,
+        Err(response) => return response,
+    };
+    let actor = super::goals_api::effective_actor(&principal, verified);
+    if let Err(response) = require_orchestration_owner(&tenant, verified, &draft, &actor) {
+        return response;
+    }
     let expected = match revision_from_body(&body) {
         Ok(expected) => expected,
         Err(response) => return response,
@@ -505,9 +602,12 @@ pub(super) async fn orchestration_stale_references(
 pub(super) async fn refresh_orchestration_references(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
     Json(payload): Json<OrchestrationRefreshPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
     let store = match definition_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
@@ -516,6 +616,10 @@ pub(super) async fn refresh_orchestration_references(
         Ok(draft) => draft,
         Err(response) => return response,
     };
+    let actor = super::goals_api::effective_actor(&principal, verified);
+    if let Err(response) = require_orchestration_owner(&tenant, verified, &draft, &actor) {
+        return response;
+    }
     let expected = payload.expected_updated_at_ms;
     let mut refreshed = Vec::new();
     for node in &mut draft.nodes {
@@ -554,9 +658,11 @@ pub(super) async fn publish_orchestration(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
     body: Bytes,
 ) -> Response {
+    let verified = verified.as_deref();
     let store = match definition_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
@@ -565,6 +671,10 @@ pub(super) async fn publish_orchestration(
         Ok(draft) => draft,
         Err(response) => return response,
     };
+    let actor = super::goals_api::effective_actor(&principal, verified);
+    if let Err(response) = require_orchestration_owner(&tenant, verified, &draft, &actor) {
+        return response;
+    }
     let expected = match revision_from_body(&body) {
         Ok(expected) => expected,
         Err(response) => return response,
@@ -624,7 +734,8 @@ pub(super) async fn publish_orchestration(
     metadata.insert(
         "publish".to_string(),
         json!({
-            "actor": principal,
+            "actor": actor,
+            "run_as": super::goals_api::run_as_context(verified),
             "published_at_ms": now,
             "validation": validation.report,
             "workflow_definition_hashes": validation.workflow_hashes,
@@ -633,7 +744,21 @@ pub(super) async fn publish_orchestration(
     candidate.metadata = Some(Value::Object(metadata));
 
     match store.publish_orchestration_draft(&candidate, expected) {
-        Ok(()) => (StatusCode::CREATED, Json(spec_response(&candidate))).into_response(),
+        Ok(()) => {
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "orchestration.publish_receipt",
+                    &tenant,
+                    json!({
+                        "orchestrationID": candidate.orchestration_id,
+                        "version": candidate.version,
+                        "effective_actor": actor,
+                        "run_as": super::goals_api::run_as_context(verified),
+                    }),
+                ));
+            (StatusCode::CREATED, Json(spec_response(&candidate))).into_response()
+        }
         Err(error) => orchestration_error_response(&error),
     }
 }
@@ -795,6 +920,21 @@ pub(super) async fn full_validation_report(
                     edge_id: None,
                 });
             }
+            // Deny wins: a graph must not reference a workflow whose
+            // enterprise delegation authority is no longer active.
+            "denied" => {
+                report.valid = false;
+                report.issues.push(OrchestrationValidationIssue {
+                    code: "workflow_authority_denied".to_string(),
+                    message: format!(
+                        "workflow {} referenced by node {node_id} cannot be used: {}",
+                        reference["automation_id"].as_str().unwrap_or_default(),
+                        reference["denial"].as_str().unwrap_or("authority denied")
+                    ),
+                    node_id: Some(node_id),
+                    edge_id: None,
+                });
+            }
             "stale" => stale.push(reference.clone()),
             _ => {}
         }
@@ -818,6 +958,7 @@ async fn workflow_reference_states(
     spec: &OrchestrationSpec,
 ) -> Vec<Value> {
     let mut references = Vec::new();
+    let author = orchestration_effective_author(spec);
     for node in &spec.nodes {
         let OrchestrationNodeKind::Workflow {
             automation_id,
@@ -839,6 +980,31 @@ async fn workflow_reference_states(
             }));
             continue;
         };
+        // Validate both the workflow's declared delegation and the persisted
+        // creator's effective authority. Publishers cannot lend their own
+        // authority to an otherwise unauthorized author.
+        let authority = match author.as_ref() {
+            Some(author) => {
+                state
+                    .validate_automation_enterprise_delegation_grants_for_author(
+                        &automation,
+                        author,
+                    )
+                    .await
+            }
+            None => Err(anyhow::anyhow!(
+                "orchestration author identity is required to validate workflow authority"
+            )),
+        };
+        if let Err(denial) = authority {
+            references.push(json!({
+                "node_id": node.node_id,
+                "automation_id": automation_id,
+                "state": "denied",
+                "denial": denial.to_string(),
+            }));
+            continue;
+        }
         let current = automation_definition_snapshot_hash(&automation);
         let reference_state = match pinned_definition_hash.as_deref() {
             None => "unpinned",

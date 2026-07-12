@@ -97,6 +97,30 @@ pub(super) async fn dispatch_goal_action(
         Ok(goal) => goal,
         Err(response) => return response,
     };
+    let verified = verified_tenant.as_deref();
+    let actor = super::goals_api::effective_actor(&principal, verified);
+    let approval_action = (action_id.starts_with("handoff:") || action_id.starts_with("approval:"))
+        && action_id.ends_with(":decision");
+    let wait_resolution_action = action_id.starts_with("wait:") && action_id.ends_with(":resolve");
+    let required_capability = if approval_action {
+        Some("orchestration.approve")
+    } else if wait_resolution_action {
+        Some("orchestration.resolve_wait")
+    } else {
+        None
+    };
+    if let Err(response) =
+        super::goals_api::require_goal_authority(&tenant, verified, required_capability)
+    {
+        return response;
+    }
+    if !approval_action && !wait_resolution_action {
+        if let Err(response) =
+            super::goals_api::require_goal_owner(&tenant, verified, &goal, &actor)
+        {
+            return response;
+        }
+    }
     let operation = format!("goal_action:{goal_id}:{action_id}");
     let request_digest = stable_definition_snapshot_hash(&json!({
         "goal_id": goal_id,
@@ -139,7 +163,10 @@ pub(super) async fn dispatch_goal_action(
     }
 
     let waits = bounded_waits(&state, &tenant, &store, &goal_id);
-    let handoffs = store.list_goal_handoffs(&goal_id).unwrap_or_default();
+    let handoffs = match store.list_goal_handoffs_for_tenant(&tenant, &goal_id) {
+        Ok(handoffs) => handoffs,
+        Err(error) => return super::goals_api::goal_error_response(&error),
+    };
     let run = goal
         .active_run_id
         .as_deref()
@@ -171,6 +198,7 @@ pub(super) async fn dispatch_goal_action(
         // though the now-settled descriptor is no longer enabled.
         if let Some(response) = duplicate_handoff_decision_response(
             &store,
+            &tenant,
             &goal,
             &action_id,
             payload.decision.as_deref(),
@@ -214,12 +242,7 @@ pub(super) async fn dispatch_goal_action(
             Err(response) => return response,
         };
         match state
-            .pause_long_running_goal(
-                &goal_id,
-                &goal.tenant_context,
-                reason,
-                &super::goals_api::request_actor(&principal),
-            )
+            .pause_long_running_goal(&goal_id, &goal.tenant_context, reason, &actor)
             .await
         {
             Ok((outcome, goal)) => json!({
@@ -237,7 +260,7 @@ pub(super) async fn dispatch_goal_action(
                 &goal_id,
                 &goal.tenant_context,
                 payload.reason.as_deref().unwrap_or("operator resume"),
-                &super::goals_api::request_actor(&principal),
+                &actor,
             )
             .await
         {
@@ -256,12 +279,7 @@ pub(super) async fn dispatch_goal_action(
             Err(response) => return response,
         };
         match state
-            .cancel_long_running_goal(
-                &goal_id,
-                &goal.tenant_context,
-                reason,
-                &super::goals_api::request_actor(&principal),
-            )
+            .cancel_long_running_goal(&goal_id, &goal.tenant_context, reason, &actor)
             .await
         {
             Ok(result) => json!({"outcome": format!("{:?}", result.outcome), "goal": result.goal}),
@@ -290,7 +308,7 @@ pub(super) async fn dispatch_goal_action(
             );
         }
         let authority = OrchestrationTransitionAuthority {
-            actor: super::goals_api::request_actor(&principal),
+            actor: actor.clone(),
             can_emit: true,
             can_approve: true,
         };
@@ -463,6 +481,16 @@ pub(super) async fn dispatch_goal_action(
         );
     }
 
+    super::goals_api::publish_goal_audit_receipt(
+        &state,
+        &tenant,
+        "orchestration.goal.action_receipt",
+        &goal_id,
+        &actor,
+        verified,
+        serde_json::Map::from_iter([("action".to_string(), json!(action_id))]),
+    );
+
     action_response(&state, &tenant, &principal, &goal_id, &action_id, outcome).await
 }
 
@@ -504,7 +532,7 @@ async fn build_projection(
     let store = super::goals_api::goal_store(state)?;
     let live_goal = super::goals_api::load_tenant_goal(&store, tenant, goal_id)?;
     let (retained_from_cursor, live_cursor) = store
-        .goal_event_cursor_bounds(goal_id)
+        .goal_event_cursor_bounds_for_tenant(tenant, goal_id)
         .map_err(|error| super::goals_api::goal_error_response(&error))?
         .unwrap_or((0, 0));
     if query
@@ -525,7 +553,7 @@ async fn build_projection(
         .unwrap_or(DEFAULT_TIMELINE_LIMIT)
         .clamp(1, MAX_TIMELINE_LIMIT);
     let timeline = store
-        .query_goal_event_window(goal_id, query.cursor, limit)
+        .query_goal_event_window_for_tenant(tenant, goal_id, query.cursor, limit)
         .map_err(|error| super::goals_api::goal_error_response(&error))?;
     let snapshot = match timeline.iter().rev().find(|row| {
         row.event.payload.get("projection_snapshot").is_some()
@@ -536,7 +564,10 @@ async fn build_projection(
                 value.clone()
             } else {
                 store
-                    .resolve_goal_projection_snapshot(&row.event.payload["projection_snapshot_ref"])
+                    .resolve_goal_projection_snapshot(
+                        tenant,
+                        &row.event.payload["projection_snapshot_ref"],
+                    )
                     .map_err(|error| {
                         projection_error(
                             StatusCode::CONFLICT,
@@ -579,7 +610,9 @@ async fn build_projection(
             true,
         )
     } else {
-        let mut links = store.list_goal_run_links(goal_id).unwrap_or_default();
+        let mut links = store
+            .list_goal_run_links_for_tenant(tenant, goal_id)
+            .map_err(|error| super::goals_api::goal_error_response(&error))?;
         if links.len() > MAX_PROJECTION_RECORDS {
             links.drain(..links.len() - MAX_PROJECTION_RECORDS);
         }
@@ -587,7 +620,9 @@ async fn build_projection(
             .iter()
             .filter_map(|link| store.get_automation_run(&link.run_id).ok().flatten())
             .collect::<Vec<_>>();
-        let mut handoffs = store.list_goal_handoffs(goal_id).unwrap_or_default();
+        let mut handoffs = store
+            .list_goal_handoffs_for_tenant(tenant, goal_id)
+            .map_err(|error| super::goals_api::goal_error_response(&error))?;
         if handoffs.len() > MAX_PROJECTION_RECORDS {
             handoffs.drain(..handoffs.len() - MAX_PROJECTION_RECORDS);
         }
@@ -1122,6 +1157,7 @@ fn recovery_payload_fields(plan: &Value) -> Value {
 
 fn duplicate_handoff_decision_response(
     store: &OrchestrationStateStore,
+    tenant: &TenantContext,
     goal: &LongRunningGoal,
     action_id: &str,
     decision: Option<&str>,
@@ -1129,7 +1165,10 @@ fn duplicate_handoff_decision_response(
     let handoff_id = action_id
         .strip_prefix("handoff:")?
         .strip_suffix(":decision")?;
-    let handoff = store.get_workflow_handoff(handoff_id).ok().flatten()?;
+    let handoff = store
+        .get_workflow_handoff_for_tenant(tenant, handoff_id)
+        .ok()
+        .flatten()?;
     if handoff.goal_id != goal.goal_id {
         return None;
     }

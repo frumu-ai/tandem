@@ -1,10 +1,6 @@
-use std::{
-    fs::{File, OpenOptions},
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
-use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use tandem_automation::{
     validate_orchestration_spec, AutomationV2RunRecord, GoalRunLink, LongRunningGoal,
@@ -13,22 +9,27 @@ use tandem_automation::{
 };
 
 mod definitions;
+mod engine_lock;
 mod goal_control;
 mod goal_lifecycle;
 mod migration;
+pub(crate) mod protected_records;
 mod runtime_records;
 mod transition;
 
 pub use definitions::{DRAFT_CONCURRENCY_CONFLICT, ORCHESTRATION_DRAFT_VERSION};
+pub use engine_lock::{read_engine_lock_owner, EngineLockOwner, StatefulEngineLock};
 pub use goal_control::{GoalCancellationResult, GoalControlOutcome};
 pub use goal_lifecycle::{GoalEventRow, GoalPauseOutcome, GoalResumeOutcome, StartGoalOutcome};
-pub use migration::{LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport};
+pub use migration::{
+    LegacyImportContext, LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport,
+};
 pub use transition::{
     GovernedTransitionRequest, GovernedTransitionResult, OrchestrationTransitionAuthority,
     WorkflowCompletionResult,
 };
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationStorePaths {
@@ -62,48 +63,6 @@ fn canonical_stateful_runtime_root(path: &Path) -> &Path {
         parent.parent().unwrap_or(parent)
     } else {
         parent
-    }
-}
-
-/// Process-lifetime guard preventing two local engines from sharing one state root.
-#[derive(Debug)]
-pub struct StatefulEngineLock {
-    file: File,
-    path: PathBuf,
-}
-
-impl StatefulEngineLock {
-    pub fn acquire(path: &Path) -> anyhow::Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)
-            .with_context(|| format!("failed to open engine lock {}", path.display()))?;
-        file.try_lock_exclusive().with_context(|| {
-            format!(
-                "another Tandem engine already owns runtime root lock {}",
-                path.display()
-            )
-        })?;
-        Ok(Self {
-            file,
-            path: path.to_path_buf(),
-        })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for StatefulEngineLock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
     }
 }
 
@@ -163,7 +122,12 @@ impl OrchestrationStateStore {
                     .join(", ")
             );
         }
-        let payload = serde_json::to_string(spec)?;
+        let payload = protected_records::encode(
+            &spec.tenant_context,
+            "definition",
+            &format!("{}:{}", spec.orchestration_id, spec.version),
+            spec,
+        )?;
         self.with_connection(|connection| {
             let existing = connection
                 .query_row(
@@ -181,7 +145,13 @@ impl OrchestrationStateStore {
                 )
                 .optional()?;
             if let Some((status, existing_payload)) = existing {
-                if status == "published" && existing_payload != payload {
+                let existing_spec: OrchestrationSpec = protected_records::decode(
+                    &spec.tenant_context,
+                    "definition",
+                    &format!("{}:{}", spec.orchestration_id, spec.version),
+                    &existing_payload,
+                )?;
+                if status == "published" && existing_spec != *spec {
                     bail!(
                         "published orchestration {} version {} is immutable",
                         spec.orchestration_id,
@@ -229,17 +199,33 @@ impl OrchestrationStateStore {
         version: u64,
     ) -> anyhow::Result<Option<OrchestrationSpec>> {
         self.with_connection(|connection| {
-            let payload = connection
+            let row = connection
                 .query_row(
-                    "SELECT definition_json FROM orchestration_specs
+                    "SELECT org_id, workspace_id, deployment_id, definition_json
+                     FROM orchestration_specs
                      WHERE orchestration_id = ?1 AND version = ?2",
                     params![orchestration_id, version],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-                .transpose()
+            row.map(|(org, workspace, deployment, payload)| {
+                protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "definition",
+                    &format!("{orchestration_id}:{version}"),
+                    &payload,
+                )
+            })
+            .transpose()
         })
     }
 
@@ -266,7 +252,14 @@ impl OrchestrationStateStore {
                 )
                 .optional()?;
             payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .map(|payload| {
+                    protected_records::decode(
+                        tenant,
+                        "definition",
+                        &format!("{orchestration_id}:{version}"),
+                        &payload,
+                    )
+                })
                 .transpose()
         })
     }
@@ -316,13 +309,29 @@ impl OrchestrationStateStore {
     pub fn load_automation_runs(&self) -> anyhow::Result<Vec<AutomationV2RunRecord>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT run_json FROM automation_runs
+                "SELECT run_id, org_id, workspace_id, deployment_id, run_json FROM automation_runs
                  WHERE is_hot = 1 ORDER BY created_at_ms, run_id",
             )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
             let mut runs = Vec::new();
             for row in rows {
-                runs.push(serde_json::from_str(&row?)?);
+                let (id, org, workspace, deployment, payload) = row?;
+                runs.push(protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "run",
+                    &id,
+                    &payload,
+                )?);
             }
             Ok(runs)
         })
@@ -333,16 +342,32 @@ impl OrchestrationStateStore {
         run_id: &str,
     ) -> anyhow::Result<Option<AutomationV2RunRecord>> {
         self.with_connection(|connection| {
-            let payload = connection
+            let row = connection
                 .query_row(
-                    "SELECT run_json FROM automation_runs WHERE run_id = ?1",
+                    "SELECT org_id, workspace_id, deployment_id, run_json
+                     FROM automation_runs WHERE run_id = ?1",
                     [run_id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-                .transpose()
+            row.map(|(org, workspace, deployment, payload)| {
+                protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "run",
+                    run_id,
+                    &payload,
+                )
+            })
+            .transpose()
         })
     }
 
@@ -380,7 +405,32 @@ impl OrchestrationStateStore {
         handoff_root: &Path,
         imported_at_ms: u64,
     ) -> anyhow::Result<usize> {
-        let handoffs = migration::load_legacy_handoffs(Some(handoff_root))?;
+        self.import_legacy_handoff_directory_with_context(
+            handoff_root,
+            &migration::LegacyImportContext::default(),
+            imported_at_ms,
+        )
+    }
+
+    pub fn import_legacy_handoff_directory_with_context(
+        &self,
+        handoff_root: &Path,
+        context: &migration::LegacyImportContext,
+        imported_at_ms: u64,
+    ) -> anyhow::Result<usize> {
+        // Envelopes naming automations this runtime has never known are
+        // foreign and must quarantine instead of importing (they can never
+        // trigger local work, only leak another root's records into this one).
+        let mut known_automation_ids = self.with_connection(|connection| {
+            let mut statement =
+                connection.prepare("SELECT DISTINCT automation_id FROM automation_runs")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<std::collections::BTreeSet<_>, _>>()
+                .map_err(Into::into)
+        })?;
+        known_automation_ids.extend(context.known_automation_ids.iter().cloned());
+        let known = (!known_automation_ids.is_empty()).then_some(&known_automation_ids);
+        let handoffs = migration::load_legacy_handoffs(Some(handoff_root), known)?;
         let source = handoff_root.to_string_lossy().to_string();
         self.with_connection(|connection| {
             let transaction =
@@ -403,7 +453,12 @@ impl OrchestrationStateStore {
                         path.to_string_lossy(),
                         status,
                         handoff.consumed_by_run_id,
-                        serde_json::to_string(handoff)?,
+                        protected_records::encode(
+                            &tandem_types::TenantContext::local_implicit(),
+                            "legacy_handoff",
+                            &handoff.handoff_id,
+                            handoff,
+                        )?,
                         handoff.created_at_ms,
                         imported_at_ms,
                     ],
@@ -447,22 +502,105 @@ impl OrchestrationStateStore {
         })
     }
 
+    /// Highest snapshot sequence per run. Event retention must never prune
+    /// events at or above this floor, or replay-from-latest-snapshot breaks.
+    pub fn latest_stateful_snapshot_seqs(
+        &self,
+    ) -> anyhow::Result<std::collections::HashMap<String, u64>> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare("SELECT run_id, MAX(seq) FROM stateful_snapshots GROUP BY run_id")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            rows.map(|row| {
+                let (run_id, seq) = row?;
+                Ok((run_id, seq.max(0) as u64))
+            })
+            .collect()
+        })
+    }
+
+    /// Deletes snapshots older than `cutoff_ms`, always retaining the newest
+    /// `keep_last_per_run` snapshots of every run so replay never loses its
+    /// most recent restore point. Returns the deleted snapshot IDs so callers
+    /// can prune file mirrors.
+    pub fn prune_stateful_runtime_snapshots(
+        &self,
+        cutoff_ms: u64,
+        keep_last_per_run: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        let keep = keep_last_per_run.max(1) as i64;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let pruned = {
+                let mut statement = transaction.prepare(
+                    "SELECT snapshot_id FROM stateful_snapshots
+                     WHERE created_at_ms < ?1
+                       AND snapshot_id NOT IN (
+                          SELECT newer.snapshot_id FROM stateful_snapshots newer
+                          WHERE newer.run_id = stateful_snapshots.run_id
+                          ORDER BY newer.seq DESC, newer.snapshot_id DESC
+                          LIMIT ?2
+                       )",
+                )?;
+                let rows =
+                    statement.query_map(params![cutoff_ms, keep], |row| row.get::<_, String>(0))?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+            for snapshot_id in &pruned {
+                transaction.execute(
+                    "DELETE FROM stateful_snapshots WHERE snapshot_id = ?1",
+                    [snapshot_id],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(pruned)
+        })
+    }
+
+    /// Truncates the WAL back into the main database file so long-running
+    /// engines reclaim log space between retention sweeps.
+    pub fn checkpoint_wal(&self) -> anyhow::Result<()> {
+        self.with_connection(|connection| {
+            connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+            Ok(())
+        })
+    }
+
     pub fn put_goal(&self, goal: &LongRunningGoal) -> anyhow::Result<()> {
         self.with_connection(|connection| upsert_goal(connection, goal))
     }
 
     pub fn get_goal(&self, goal_id: &str) -> anyhow::Result<Option<LongRunningGoal>> {
         self.with_connection(|connection| {
-            let payload = connection
+            let row = connection
                 .query_row(
-                    "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
+                    "SELECT org_id, workspace_id, deployment_id, goal_json
+                     FROM long_running_goals WHERE goal_id = ?1",
                     [goal_id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-                .transpose()
+            row.map(|(org, workspace, deployment, payload)| {
+                protected_records::decode_scoped(
+                    &org,
+                    &workspace,
+                    deployment.as_deref(),
+                    "goal",
+                    goal_id,
+                    &payload,
+                )
+            })
+            .transpose()
         })
     }
 
@@ -532,6 +670,12 @@ impl OrchestrationStateStore {
             consumed.status = WorkflowHandoffStatus::Consumed;
             consumed.consumed_by_run_id = Some(downstream_run.run_id.clone());
             consumed.updated_at_ms = consumed.updated_at_ms.max(downstream_run.created_at_ms);
+            let handoff_payload = protected_records::encode(
+                &consumed.tenant_context,
+                "handoff",
+                &consumed.handoff_id,
+                &consumed,
+            )?;
             if update_existing {
                 transaction.execute(
                     "UPDATE workflow_handoffs SET status = 'consumed', consumed_by_run_id = ?2,
@@ -539,7 +683,7 @@ impl OrchestrationStateStore {
                     params![
                         consumed.handoff_id,
                         consumed.consumed_by_run_id,
-                        serde_json::to_string(&consumed)?,
+                        handoff_payload,
                         consumed.updated_at_ms,
                     ],
                 )?;
@@ -560,7 +704,7 @@ impl OrchestrationStateStore {
                         consumed.source_run_id,
                         consumed.target_automation_id,
                         consumed.consumed_by_run_id,
-                        serde_json::to_string(&consumed)?,
+                        handoff_payload,
                         consumed.created_at_ms,
                         consumed.updated_at_ms,
                     ],
@@ -580,7 +724,12 @@ impl OrchestrationStateStore {
                     link.hop_index,
                     link.parent_run_id,
                     link.triggering_handoff_id,
-                    serde_json::to_string(link)?,
+                    protected_records::encode(
+                        &updated_goal.tenant_context,
+                        "link",
+                        &link.run_id,
+                        link,
+                    )?,
                     link.created_at_ms,
                 ],
             )?;
@@ -603,7 +752,12 @@ impl OrchestrationStateStore {
                         handoff.goal_id,
                         event.run_id,
                         event.seq,
-                        serde_json::to_string(&event)?,
+                        protected_records::encode(
+                            &event.scope.tenant_context,
+                            "event",
+                            &event.event_id,
+                            &event,
+                        )?,
                         event.occurred_at_ms,
                         event.scope.tenant_context.org_id,
                         event.scope.tenant_context.workspace_id,
@@ -628,6 +782,10 @@ impl OrchestrationStateStore {
         })?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        // `synchronous` is a per-connection pragma: without this, every
+        // connection after `initialize_schema` would silently fall back to the
+        // SQLite default and weaken the store's crash durability contract.
+        connection.pragma_update(None, "synchronous", "FULL")?;
         operation(&mut connection)
     }
 }
@@ -847,6 +1005,10 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
         migrate_schema_v3_to_v4(connection)?;
         version = 4;
     }
+    if version == 4 {
+        migrate_schema_v4_to_v5(connection)?;
+        version = 5;
+    }
     if version != SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {SCHEMA_VERSION}"
@@ -944,6 +1106,27 @@ fn migrate_schema_v3_to_v4(connection: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn migrate_schema_v4_to_v5(connection: &mut Connection) -> anyhow::Result<()> {
+    // Durable migration-attempt journal: rows are committed before the import
+    // transaction starts, so an interrupted import leaves evidence that the
+    // atomic once-only marker cannot (a rolled-back marker looks identical to
+    // "never attempted").
+    connection.execute_batch(
+        "BEGIN IMMEDIATE;
+         CREATE TABLE IF NOT EXISTS stateful_migration_attempts (
+            attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            migration_id TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            started_at_ms INTEGER NOT NULL,
+            outcome TEXT,
+            completed_at_ms INTEGER
+         );
+         UPDATE schema_metadata SET schema_version = 5;
+         COMMIT;",
+    )?;
+    Ok(())
+}
+
 fn add_scope_columns(connection: &Connection, table: &str) -> anyhow::Result<()> {
     for (column, definition) in [
         ("org_id", "TEXT NOT NULL DEFAULT ''"),
@@ -987,7 +1170,7 @@ fn upsert_automation_run(
             run.tenant_context.workspace_id,
             run.tenant_context.deployment_id,
             status.as_str().unwrap_or("unknown"),
-            serde_json::to_string(run)?,
+            protected_records::encode(&run.tenant_context, "run", &run.run_id, run)?,
             run.created_at_ms,
             run.updated_at_ms,
         ],
@@ -1032,7 +1215,7 @@ fn upsert_goal(connection: &Connection, goal: &LongRunningGoal) -> anyhow::Resul
             goal.tenant_context.deployment_id,
             status.as_str().unwrap_or("unknown"),
             goal.active_run_id,
-            serde_json::to_string(goal)?,
+            protected_records::encode(&goal.tenant_context, "goal", &goal.goal_id, goal)?,
             goal.created_at_ms,
             goal.updated_at_ms,
         ],
@@ -1088,17 +1271,32 @@ fn ensure_current_goal_allows_handoff(
     transaction: &rusqlite::Transaction<'_>,
     handoff: &WorkflowHandoff,
 ) -> anyhow::Result<()> {
-    let payload = transaction
+    let row = transaction
         .query_row(
-            "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
+            "SELECT org_id, workspace_id, deployment_id, goal_json
+             FROM long_running_goals WHERE goal_id = ?1",
             [&handoff.goal_id],
-            |row| row.get::<_, String>(0),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
         )
         .optional()?;
-    let Some(payload) = payload else {
+    let Some((org, workspace, deployment, payload)) = row else {
         return Ok(());
     };
-    let goal: LongRunningGoal = serde_json::from_str(&payload)?;
+    let goal: LongRunningGoal = protected_records::decode_scoped(
+        &org,
+        &workspace,
+        deployment.as_deref(),
+        "goal",
+        &handoff.goal_id,
+        &payload,
+    )?;
     if goal.tenant_context != handoff.tenant_context
         || goal.orchestration_id != handoff.orchestration_id
         || goal.orchestration_version != handoff.orchestration_version
@@ -1134,466 +1332,13 @@ fn collect_json_files(root: &Path, output: &mut Vec<PathBuf>) -> anyhow::Result<
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tandem_automation::{
-        GoalLimitAction, GoalPolicy, LongRunningGoalStatus, OrchestrationArtifactRef,
-        WorkflowHandoffStatus,
-    };
-    use tandem_types::TenantContext;
+#[path = "orchestration_store/tests.rs"]
+mod tests;
 
-    use crate::stateful_runtime::{StatefulRunEventRecord, StatefulRuntimeScope};
+#[cfg(test)]
+#[path = "orchestration_store/encryption_tests.rs"]
+mod encryption_tests;
 
-    fn run(run_id: &str) -> AutomationV2RunRecord {
-        serde_json::from_value(serde_json::json!({
-            "run_id": run_id,
-            "automation_id": "executor",
-            "trigger_type": "orchestration_handoff",
-            "status": "queued",
-            "created_at_ms": 20,
-            "updated_at_ms": 20,
-            "checkpoint": {}
-        }))
-        .expect("minimal run fixture")
-    }
-
-    fn goal(run_id: &str) -> LongRunningGoal {
-        LongRunningGoal {
-            schema_version: 1,
-            goal_id: "goal-1".to_string(),
-            orchestration_id: "orch-1".to_string(),
-            orchestration_version: 3,
-            objective: "Plan, execute, and verify".to_string(),
-            status: LongRunningGoalStatus::Active,
-            tenant_context: TenantContext::local_implicit(),
-            policy: GoalPolicy {
-                max_hops: 10,
-                deadline_at_ms: None,
-                max_total_tokens: None,
-                max_total_cost_usd: None,
-                on_limit: GoalLimitAction::PauseForReview,
-            },
-            active_run_id: Some(run_id.to_string()),
-            current_node_id: Some("execute".to_string()),
-            hop_count: 1,
-            total_tokens: 0,
-            total_cost_usd: 0.0,
-            created_at_ms: 1,
-            updated_at_ms: 20,
-            finished_at_ms: None,
-            final_artifact: None,
-            metadata: None,
-        }
-    }
-
-    fn handoff() -> WorkflowHandoff {
-        WorkflowHandoff {
-            schema_version: 1,
-            handoff_id: "handoff-1".to_string(),
-            idempotency_key: "goal-1:plan:continue:1".to_string(),
-            goal_id: "goal-1".to_string(),
-            orchestration_id: "orch-1".to_string(),
-            orchestration_version: 3,
-            tenant_context: TenantContext::local_implicit(),
-            edge_id: "plan-to-execute".to_string(),
-            transition_key: "continue".to_string(),
-            source_automation_id: "planner".to_string(),
-            source_run_id: "run-1".to_string(),
-            source_node_id: "plan".to_string(),
-            target_automation_id: "executor".to_string(),
-            target_node_id: "execute".to_string(),
-            artifact: OrchestrationArtifactRef {
-                artifact_type: "plan".to_string(),
-                content_path: Some("artifacts/plan.json".to_string()),
-                content_digest: Some("sha256:abc".to_string()),
-                value: None,
-            },
-            status: WorkflowHandoffStatus::Approved,
-            created_at_ms: 10,
-            updated_at_ms: 10,
-            consumed_by_run_id: None,
-            metadata: None,
-        }
-    }
-
-    fn event() -> StatefulRunEventRecord {
-        StatefulRunEventRecord {
-            schema_version: 1,
-            event_id: "event-1".to_string(),
-            run_id: "goal:goal-1".to_string(),
-            seq: 0,
-            event_type: "stateful_runtime.goal.transitioned".to_string(),
-            occurred_at_ms: 20,
-            scope: StatefulRuntimeScope::from_tenant_context(TenantContext::local_implicit()),
-            actor: None,
-            phase_id: None,
-            phase_transition: None,
-            wait_kind: None,
-            causation_id: Some("run-1".to_string()),
-            correlation_id: Some("goal-1".to_string()),
-            payload: serde_json::json!({"handoff_id": "handoff-1"}),
-        }
-    }
-
-    fn assert_transition_record_count(store: &OrchestrationStateStore, expected: u64) {
-        store
-            .with_connection(|connection| {
-                for table in [
-                    "workflow_handoffs",
-                    "automation_runs",
-                    "goal_run_links",
-                    "long_running_goals",
-                    "stateful_events",
-                ] {
-                    let count: u64 = connection.query_row(
-                        &format!("SELECT COUNT(*) FROM {table}"),
-                        [],
-                        |row| row.get(0),
-                    )?;
-                    assert_eq!(count, expected, "unexpected {table} record count");
-                }
-                Ok(())
-            })
-            .unwrap();
-    }
-
-    fn published_spec() -> OrchestrationSpec {
-        serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "orchestration_id": "orch-1",
-            "name": "Plan and finish",
-            "status": "published",
-            "version": 3,
-            "root_node_id": "plan",
-            "nodes": [
-                {
-                    "node_id": "plan",
-                    "name": "Plan",
-                    "x": 0.0,
-                    "y": 0.0,
-                    "kind": "workflow",
-                    "automation_id": "planner",
-                    "pinned_definition_hash": "sha256:planner-v3",
-                    "allowed_transition_keys": ["complete"],
-                    "emits_artifact_types": ["plan"]
-                },
-                {
-                    "node_id": "complete",
-                    "name": "Complete",
-                    "x": 200.0,
-                    "y": 0.0,
-                    "kind": "terminal",
-                    "outcome": "complete",
-                    "final_artifact_type": "plan"
-                }
-            ],
-            "edges": [{
-                "edge_id": "plan-complete",
-                "from_node_id": "plan",
-                "to_node_id": "complete",
-                "transition_key": "complete",
-                "artifact_contract": {"artifact_type": "plan", "required": true}
-            }],
-            "goal_policy": {"max_hops": 3},
-            "tenant_context": {
-                "org_id": "local",
-                "workspace_id": "local",
-                "source": "local_implicit"
-            },
-            "created_at_ms": 1,
-            "updated_at_ms": 2,
-            "published_at_ms": 2
-        }))
-        .expect("published orchestration fixture")
-    }
-
-    #[test]
-    fn atomic_handoff_commit_is_exactly_once() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
-            database_path: directory.path().join("runtime.sqlite3"),
-            engine_lock_path: directory.path().join("engine.lock"),
-        })
-        .unwrap();
-        let downstream_run = run("run-2");
-        let link = GoalRunLink {
-            goal_id: "goal-1".to_string(),
-            run_id: downstream_run.run_id.clone(),
-            orchestration_node_id: "execute".to_string(),
-            orchestration_version: 3,
-            hop_index: 1,
-            parent_run_id: Some("run-1".to_string()),
-            triggering_handoff_id: Some("handoff-1".to_string()),
-            created_at_ms: 20,
-        };
-
-        assert_eq!(
-            store
-                .commit_handoff_transition(&handoff(), &downstream_run, &link, &goal("run-2"))
-                .unwrap(),
-            AtomicHandoffCommit::Committed
-        );
-        assert_eq!(
-            store
-                .commit_handoff_transition(&handoff(), &downstream_run, &link, &goal("run-2"))
-                .unwrap(),
-            AtomicHandoffCommit::AlreadyCommitted
-        );
-        assert_eq!(store.load_automation_runs().unwrap().len(), 1);
-        assert_eq!(
-            store.get_goal("goal-1").unwrap().unwrap().active_run_id,
-            Some("run-2".to_string())
-        );
-        let mut cross_tenant_run = downstream_run;
-        cross_tenant_run.tenant_context = TenantContext::explicit("other", "other", None);
-        assert!(store
-            .commit_handoff_transition(&handoff(), &cross_tenant_run, &link, &goal("run-2"))
-            .is_err());
-    }
-
-    #[test]
-    fn atomic_handoff_commit_rolls_back_every_write_boundary() {
-        for table in [
-            "workflow_handoffs",
-            "automation_runs",
-            "goal_run_links",
-            "long_running_goals",
-            "stateful_events",
-        ] {
-            let directory = tempfile::tempdir().unwrap();
-            let store = OrchestrationStateStore::open(OrchestrationStorePaths {
-                database_path: directory.path().join("runtime.sqlite3"),
-                engine_lock_path: directory.path().join("engine.lock"),
-            })
-            .unwrap();
-            let downstream_run = run("run-2");
-            let link = GoalRunLink {
-                goal_id: "goal-1".to_string(),
-                run_id: downstream_run.run_id.clone(),
-                orchestration_node_id: "execute".to_string(),
-                orchestration_version: 3,
-                hop_index: 1,
-                parent_run_id: Some("run-1".to_string()),
-                triggering_handoff_id: Some("handoff-1".to_string()),
-                created_at_ms: 20,
-            };
-            store
-                .with_connection(|connection| {
-                    connection.execute_batch(&format!(
-                        "CREATE TRIGGER injected_atomic_failure AFTER INSERT ON {table}
-                         BEGIN SELECT RAISE(ABORT, 'injected atomic failure'); END;"
-                    ))?;
-                    Ok(())
-                })
-                .unwrap();
-
-            assert!(store
-                .commit_handoff_transition_with_event(
-                    &handoff(),
-                    &downstream_run,
-                    &link,
-                    &goal("run-2"),
-                    Some(&event()),
-                )
-                .is_err());
-            assert_transition_record_count(&store, 0);
-            store
-                .with_connection(|connection| {
-                    connection.execute_batch("DROP TRIGGER injected_atomic_failure")?;
-                    Ok(())
-                })
-                .unwrap();
-            assert_eq!(
-                store
-                    .commit_handoff_transition_with_event(
-                        &handoff(),
-                        &downstream_run,
-                        &link,
-                        &goal("run-2"),
-                        Some(&event()),
-                    )
-                    .unwrap(),
-                AtomicHandoffCommit::Committed
-            );
-            assert_transition_record_count(&store, 1);
-        }
-    }
-
-    #[test]
-    fn concurrent_idempotent_handoffs_create_one_downstream_run() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
-            database_path: directory.path().join("runtime.sqlite3"),
-            engine_lock_path: directory.path().join("engine.lock"),
-        })
-        .unwrap();
-        let downstream_run = run("run-2");
-        let link = GoalRunLink {
-            goal_id: "goal-1".to_string(),
-            run_id: downstream_run.run_id.clone(),
-            orchestration_node_id: "execute".to_string(),
-            orchestration_version: 3,
-            hop_index: 1,
-            parent_run_id: Some("run-1".to_string()),
-            triggering_handoff_id: Some("handoff-1".to_string()),
-            created_at_ms: 20,
-        };
-        let barrier = std::sync::Barrier::new(2);
-        let (first, second) = std::thread::scope(|scope| {
-            let first = scope.spawn(|| {
-                barrier.wait();
-                store.commit_handoff_transition(&handoff(), &downstream_run, &link, &goal("run-2"))
-            });
-            let second = scope.spawn(|| {
-                barrier.wait();
-                store.commit_handoff_transition(&handoff(), &downstream_run, &link, &goal("run-2"))
-            });
-            (
-                first.join().expect("first worker panicked").unwrap(),
-                second.join().expect("second worker panicked").unwrap(),
-            )
-        });
-        assert!(matches!(
-            (first, second),
-            (
-                AtomicHandoffCommit::Committed,
-                AtomicHandoffCommit::AlreadyCommitted
-            ) | (
-                AtomicHandoffCommit::AlreadyCommitted,
-                AtomicHandoffCommit::Committed
-            )
-        ));
-        store
-            .with_connection(|connection| {
-                for table in ["workflow_handoffs", "automation_runs", "goal_run_links"] {
-                    let count: u64 = connection.query_row(
-                        &format!("SELECT COUNT(*) FROM {table}"),
-                        [],
-                        |row| row.get(0),
-                    )?;
-                    assert_eq!(count, 1, "{table} should have exactly one row");
-                }
-                Ok(())
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn hot_sync_retains_archived_rows_without_reloading_them() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
-            database_path: directory.path().join("runtime.sqlite3"),
-            engine_lock_path: directory.path().join("engine.lock"),
-        })
-        .unwrap();
-        let archived = run("run-archived");
-        let hot = run("run-hot");
-
-        store.sync_hot_automation_runs([&archived, &hot]).unwrap();
-        store.sync_hot_automation_runs([&hot]).unwrap();
-
-        let loaded = store.load_automation_runs().unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].run_id, "run-hot");
-        assert_eq!(
-            store
-                .get_automation_run("run-archived")
-                .unwrap()
-                .unwrap()
-                .run_id,
-            "run-archived"
-        );
-    }
-
-    #[test]
-    fn engine_lock_rejects_a_second_owner() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
-            database_path: directory.path().join("runtime.sqlite3"),
-            engine_lock_path: directory.path().join("engine.lock"),
-        })
-        .unwrap();
-        let first = store.acquire_engine_lock().unwrap();
-        assert_eq!(first.path(), directory.path().join("engine.lock"));
-        assert!(store.acquire_engine_lock().is_err());
-    }
-
-    #[test]
-    fn published_versions_are_immutable() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
-            database_path: directory.path().join("runtime.sqlite3"),
-            engine_lock_path: directory.path().join("engine.lock"),
-        })
-        .unwrap();
-        let spec = published_spec();
-        store.put_orchestration(&spec).unwrap();
-        assert_eq!(
-            store.get_orchestration("orch-1", 3).unwrap(),
-            Some(spec.clone())
-        );
-
-        let mut changed = spec;
-        changed.name = "Changed after publish".to_string();
-        changed.updated_at_ms += 1;
-        assert!(store.put_orchestration(&changed).is_err());
-    }
-
-    #[test]
-    fn tool_request_ledger_blocks_concurrent_replays_and_reclaims_stale_leases() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
-            database_path: directory.path().join("runtime.sqlite3"),
-            engine_lock_path: directory.path().join("engine.lock"),
-        })
-        .unwrap();
-        let tenant = TenantContext::local_implicit();
-
-        assert_eq!(
-            store
-                .begin_orchestration_tool_request(&tenant, "publish", "request-1", "digest-1", 100)
-                .unwrap(),
-            None
-        );
-        let error = store
-            .begin_orchestration_tool_request(&tenant, "publish", "request-1", "digest-1", 101)
-            .expect_err("a live reservation must block a concurrent replay");
-        assert!(error.to_string().contains("still in flight"));
-
-        assert_eq!(
-            store
-                .begin_orchestration_tool_request(
-                    &tenant,
-                    "publish",
-                    "request-1",
-                    "digest-1",
-                    30_100,
-                )
-                .unwrap(),
-            None
-        );
-        let response = serde_json::json!({"version": 3});
-        store
-            .complete_orchestration_tool_request(
-                &tenant,
-                "publish",
-                "request-1",
-                "digest-1",
-                &response,
-                30_101,
-            )
-            .unwrap();
-        assert_eq!(
-            store
-                .begin_orchestration_tool_request(
-                    &tenant,
-                    "publish",
-                    "request-1",
-                    "digest-1",
-                    30_102,
-                )
-                .unwrap(),
-            Some(response)
-        );
-    }
-}
+#[cfg(test)]
+#[path = "orchestration_store/hardening_tests.rs"]
+mod hardening_tests;

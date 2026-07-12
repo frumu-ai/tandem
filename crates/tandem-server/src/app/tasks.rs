@@ -16,8 +16,9 @@ use crate::runtime_event_log::{
     append_runtime_event_log_row, prune_runtime_event_log, RuntimeEventLogRow,
 };
 use crate::stateful_runtime::{
-    compact_stateful_run_event_log, prune_stateful_reliability_store, prune_stateful_wait_store,
-    stateful_reliability_path_from_runtime_events_path, StatefulRuntimeStoragePaths,
+    compact_stateful_run_event_log, prune_stateful_reliability_store, prune_stateful_run_snapshots,
+    prune_stateful_wait_store, stateful_reliability_path_from_runtime_events_path,
+    StatefulRuntimeStoragePaths,
 };
 use crate::util::time::now_ms;
 
@@ -408,6 +409,131 @@ pub async fn run_runtime_event_log_persister(state: AppState) {
     run_runtime_event_log_persister_with_registration_signal(state, None).await;
 }
 
+/// One retention pass over every stateful-runtime store: runtime event log,
+/// stateful event compaction (snapshot-aware), snapshot pruning, terminal
+/// waits, settled reliability records, and a WAL checkpoint so reclaimed
+/// space returns to the filesystem.
+async fn run_stateful_retention_sweep(state: &AppState, retention_ms: u64, retention_days: u64) {
+    match prune_runtime_event_log(&state.runtime_events_path, retention_ms, now_ms()).await {
+        Ok(pruned) if pruned > 0 => {
+            tracing::info!(
+                pruned,
+                retention_days,
+                "runtime event log persister pruned stale events"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "runtime event log persister could not prune stale events"
+            );
+        }
+    }
+
+    let stateful_paths =
+        StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+    match compact_stateful_run_event_log(&stateful_paths.run_events_path, retention_ms, now_ms())
+        .await
+    {
+        Ok(pruned) if pruned > 0 => {
+            tracing::info!(
+                pruned,
+                retention_days,
+                "runtime event log persister compacted stale stateful events"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "runtime event log persister could not compact stale stateful events"
+            );
+        }
+    }
+
+    let snapshot_keep_last = std::env::var("TANDEM_RUNTIME_SNAPSHOT_KEEP_LAST")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(3);
+    match prune_stateful_run_snapshots(
+        &stateful_paths.snapshots_root,
+        retention_ms,
+        snapshot_keep_last,
+        now_ms(),
+    )
+    .await
+    {
+        Ok(pruned) if pruned > 0 => {
+            tracing::info!(
+                pruned,
+                retention_days,
+                snapshot_keep_last,
+                "runtime event log persister pruned stale stateful snapshots"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "runtime event log persister could not prune stale stateful snapshots"
+            );
+        }
+    }
+
+    match prune_stateful_wait_store(&stateful_paths.waits_path, retention_ms, now_ms()).await {
+        Ok(pruned) if pruned > 0 => {
+            tracing::info!(
+                pruned,
+                retention_days,
+                "runtime event log persister pruned stale stateful waits"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "runtime event log persister could not prune stale stateful waits"
+            );
+        }
+    }
+
+    let reliability_path =
+        stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+    if let Err(error) =
+        prune_stateful_reliability_store(&reliability_path, retention_ms, now_ms()).await
+    {
+        tracing::warn!(
+            error = %error,
+            "runtime event log persister could not prune settled stateful reliability records"
+        );
+    }
+
+    let automation_runs_path = state.automation_v2_runs_path.clone();
+    let checkpoint = tokio::task::spawn_blocking(move || {
+        crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+            &automation_runs_path,
+        )?
+        .checkpoint_wal()
+    })
+    .await;
+    match checkpoint {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(
+                error = %error,
+                "runtime event log persister could not checkpoint the stateful store WAL"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "stateful store WAL checkpoint task failed"
+            );
+        }
+    }
+}
+
 async fn run_runtime_event_log_persister_with_registration_signal(
     state: AppState,
     registered: Option<tokio::sync::oneshot::Sender<()>>,
@@ -432,75 +558,25 @@ async fn run_runtime_event_log_persister_with_registration_signal(
         .unwrap_or(30);
     if retention_days > 0 {
         let retention_ms = retention_days.saturating_mul(24 * 60 * 60 * 1_000);
-        match prune_runtime_event_log(&state.runtime_events_path, retention_ms, now_ms()).await {
-            Ok(pruned) if pruned > 0 => {
-                tracing::info!(
-                    pruned,
-                    retention_days,
-                    "runtime event log persister pruned stale events"
-                );
+        run_stateful_retention_sweep(&state, retention_ms, retention_days).await;
+        // Long-lived engines re-prune on an interval; a boot-only sweep lets
+        // the store grow without bound under continuous workloads.
+        let sweep_hours = std::env::var("TANDEM_RUNTIME_RETENTION_SWEEP_HOURS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|hours| *hours > 0)
+            .unwrap_or(6);
+        let sweep_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(sweep_hours.saturating_mul(3600)));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await; // the boot sweep above covers the first tick
+            loop {
+                interval.tick().await;
+                run_stateful_retention_sweep(&sweep_state, retention_ms, retention_days).await;
             }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "runtime event log persister could not prune stale events"
-                );
-            }
-        }
-
-        let stateful_paths =
-            StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
-        match compact_stateful_run_event_log(
-            &stateful_paths.run_events_path,
-            retention_ms,
-            now_ms(),
-        )
-        .await
-        {
-            Ok(pruned) if pruned > 0 => {
-                tracing::info!(
-                    pruned,
-                    retention_days,
-                    "runtime event log persister compacted stale stateful events"
-                );
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "runtime event log persister could not compact stale stateful events"
-                );
-            }
-        }
-
-        match prune_stateful_wait_store(&stateful_paths.waits_path, retention_ms, now_ms()).await {
-            Ok(pruned) if pruned > 0 => {
-                tracing::info!(
-                    pruned,
-                    retention_days,
-                    "runtime event log persister pruned stale stateful waits"
-                );
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "runtime event log persister could not prune stale stateful waits"
-                );
-            }
-        }
-
-        let reliability_path =
-            stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
-        if let Err(error) =
-            prune_stateful_reliability_store(&reliability_path, retention_ms, now_ms()).await
-        {
-            tracing::warn!(
-                error = %error,
-                "runtime event log persister could not prune settled stateful reliability records"
-            );
-        }
+        });
     }
 
     let mut context_cache = RuntimeEventLogContextCache::default();

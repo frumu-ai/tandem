@@ -8,7 +8,7 @@ use tandem_automation::{
 };
 use tandem_types::{PrincipalRef, TenantContext};
 
-use super::{AtomicHandoffCommit, OrchestrationStateStore};
+use super::{protected_records, AtomicHandoffCommit, OrchestrationStateStore};
 use crate::stateful_runtime::{
     automation_definition_snapshot_hash, stable_definition_snapshot_hash, StatefulRunEventRecord,
     StatefulRuntimeScope,
@@ -416,7 +416,8 @@ impl OrchestrationStateStore {
                 )
                 .optional()?
                 .context("handoff not found")?;
-            let mut handoff: WorkflowHandoff = serde_json::from_str(&payload)?;
+            let mut handoff: WorkflowHandoff =
+                protected_records::decode(tenant, "handoff", handoff_id, &payload)?;
             if &handoff.tenant_context != tenant {
                 bail!("handoff is outside the caller tenant scope");
             }
@@ -444,7 +445,7 @@ impl OrchestrationStateStore {
                 params![
                     handoff.handoff_id,
                     status_name(&handoff.status)?,
-                    serde_json::to_string(&handoff)?,
+                    protected_records::encode(tenant, "handoff", &handoff.handoff_id, &handoff,)?,
                     now_ms,
                 ],
             )?;
@@ -453,7 +454,8 @@ impl OrchestrationStateStore {
                 [&handoff.goal_id],
                 |row| row.get::<_, String>(0),
             )?;
-            let goal: LongRunningGoal = serde_json::from_str(&goal_payload)?;
+            let goal: LongRunningGoal =
+                protected_records::decode(tenant, "goal", &handoff.goal_id, &goal_payload)?;
             let run_id = format!("goal:{}", handoff.goal_id);
             let mut event = StatefulRunEventRecord {
                 schema_version: 1,
@@ -497,7 +499,7 @@ impl OrchestrationStateStore {
                     handoff.goal_id,
                     event.run_id,
                     event.seq,
-                    serde_json::to_string(&event)?,
+                    protected_records::encode(tenant, "event", &event.event_id, &event)?,
                     now_ms,
                     handoff.tenant_context.org_id,
                     handoff.tenant_context.workspace_id,
@@ -519,14 +521,19 @@ impl OrchestrationStateStore {
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let existing = transaction
                 .query_row(
-                    "SELECT handoff_json FROM workflow_handoffs
+                    "SELECT handoff_id, handoff_json FROM workflow_handoffs
                      WHERE goal_id = ?1 AND idempotency_key = ?2",
                     params![handoff.goal_id, handoff.idempotency_key],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?;
-            if let Some(payload) = existing {
-                let current: WorkflowHandoff = serde_json::from_str(&payload)?;
+            if let Some((existing_id, payload)) = existing {
+                let current: WorkflowHandoff = protected_records::decode(
+                    &handoff.tenant_context,
+                    "handoff",
+                    &existing_id,
+                    &payload,
+                )?;
                 if current.handoff_id != handoff.handoff_id {
                     bail!("idempotency key is already bound to another handoff");
                 }
@@ -548,7 +555,12 @@ impl OrchestrationStateStore {
                     handoff.tenant_context.deployment_id,
                     handoff.source_run_id,
                     handoff.target_automation_id,
-                    serde_json::to_string(handoff)?,
+                    protected_records::encode(
+                        &handoff.tenant_context,
+                        "handoff",
+                        &handoff.handoff_id,
+                        handoff,
+                    )?,
                     handoff.created_at_ms,
                     handoff.updated_at_ms,
                 ],
@@ -592,7 +604,12 @@ impl OrchestrationStateStore {
                     handoff.goal_id,
                     event.run_id,
                     event.seq,
-                    serde_json::to_string(&event)?,
+                    protected_records::encode(
+                        &event.scope.tenant_context,
+                        "event",
+                        &event.event_id,
+                        &event,
+                    )?,
                     handoff.updated_at_ms,
                     handoff.tenant_context.org_id,
                     handoff.tenant_context.workspace_id,
@@ -631,7 +648,12 @@ impl OrchestrationStateStore {
                     goal.goal_id,
                     event.run_id,
                     event.seq,
-                    serde_json::to_string(&event)?,
+                    protected_records::encode(
+                        &event.scope.tenant_context,
+                        "event",
+                        &event.event_id,
+                        &event,
+                    )?,
                     event.occurred_at_ms,
                     event.scope.tenant_context.org_id,
                     event.scope.tenant_context.workspace_id,
@@ -651,14 +673,32 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| {
             let payload = connection
                 .query_row(
-                    "SELECT handoff_json FROM workflow_handoffs
+                    "SELECT handoff_id, org_id, workspace_id, deployment_id, handoff_json
+                     FROM workflow_handoffs
                      WHERE goal_id = ?1 AND idempotency_key = ?2",
                     params![goal_id, idempotency_key],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
                 )
                 .optional()?;
             payload
-                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .map(|(id, org, workspace, deployment, payload)| {
+                    protected_records::decode_scoped(
+                        &org,
+                        &workspace,
+                        deployment.as_deref(),
+                        "handoff",
+                        &id,
+                        &payload,
+                    )
+                })
                 .transpose()
         })
     }
@@ -700,9 +740,24 @@ impl OrchestrationStateStore {
             Ok(GovernedTransitionResult::Committed {
                 commit: AtomicHandoffCommit::AlreadyCommitted,
                 handoff: handoff.clone(),
-                downstream_run: serde_json::from_str(&run_payload)?,
-                link: serde_json::from_str(&link_payload)?,
-                goal: serde_json::from_str(&goal_payload)?,
+                downstream_run: protected_records::decode(
+                    &handoff.tenant_context,
+                    "run",
+                    downstream_run_id,
+                    &run_payload,
+                )?,
+                link: protected_records::decode(
+                    &handoff.tenant_context,
+                    "link",
+                    downstream_run_id,
+                    &link_payload,
+                )?,
+                goal: protected_records::decode(
+                    &handoff.tenant_context,
+                    "goal",
+                    &handoff.goal_id,
+                    &goal_payload,
+                )?,
             })
         })
     }
@@ -805,10 +860,51 @@ fn validate_downstream_run(
     Ok(())
 }
 
+/// Inline artifact values (and their serialized handoffs) are bounded so a
+/// single transition cannot balloon the durable store or downstream prompts.
+pub const MAX_ARTIFACT_VALUE_BYTES: usize = 256 * 1024;
+
+/// Structural admission policy applied to every emitted artifact, contract or
+/// not: bounded inline payloads, workspace-relative content paths, and digest
+/// provenance for file-backed content. Filesystem resolution (symlink escape,
+/// digest-vs-content) happens at the API surfaces where a workspace root is
+/// known; this layer rejects everything that is invalid on shape alone.
+pub(super) fn validate_artifact_shape(artifact: &OrchestrationArtifactRef) -> anyhow::Result<()> {
+    if let Some(value) = artifact.value.as_ref() {
+        let bytes = serde_json::to_vec(value)?.len();
+        if bytes > MAX_ARTIFACT_VALUE_BYTES {
+            bail!(
+                "handoff artifact value is {bytes} bytes; the admission bound is {MAX_ARTIFACT_VALUE_BYTES} bytes — store large content in the workspace and reference it by content_path + digest"
+            );
+        }
+    }
+    if let Some(content_path) = artifact.content_path.as_deref() {
+        let path = std::path::Path::new(content_path);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            bail!("handoff artifact content_path `{content_path}` escapes the workspace root");
+        }
+        if artifact.content_digest.is_none() {
+            bail!("file-backed handoff artifacts require a content_digest for provenance");
+        }
+    }
+    if let Some(digest) = artifact.content_digest.as_deref() {
+        let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+        if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("handoff artifact content_digest must be a sha256 hex digest");
+        }
+    }
+    Ok(())
+}
+
 fn validate_artifact(
     contract: Option<&tandem_automation::OrchestrationArtifactContract>,
     artifact: &OrchestrationArtifactRef,
 ) -> anyhow::Result<()> {
+    validate_artifact_shape(artifact)?;
     let Some(contract) = contract else {
         return Ok(());
     };
