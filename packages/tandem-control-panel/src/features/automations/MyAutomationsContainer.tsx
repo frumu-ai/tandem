@@ -401,7 +401,10 @@ export function MyAutomationsContainer({
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
-  const openWorkflowAutomationEdit = async (automation: any) => {
+  const openWorkflowAutomationEdit = async (
+    automation: any,
+    editorInitialView: "flow" | "configure" = "flow"
+  ) => {
     const automationId = String(
       automation?.automation_id || automation?.automationId || automation?.id || ""
     ).trim();
@@ -416,7 +419,10 @@ export function MyAutomationsContainer({
         toast("err", "Could not load full workflow definition; showing cached summary.");
       }
     }
-    setWorkflowEditDraft(workflowAutomationToEditDraft(fullAutomation));
+    setWorkflowEditDraft({
+      ...workflowAutomationToEditDraft(fullAutomation),
+      editorInitialView,
+    });
   };
 
   const automationActionMutation = useMutation({

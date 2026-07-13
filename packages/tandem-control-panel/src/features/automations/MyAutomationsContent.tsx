@@ -253,6 +253,21 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
     const categoryLabel = String(row?.categoryLabel || "").trim();
     const sourceLabel = String(row?.sourceLabel || "").trim();
     const createdAtMs = Number(row?.createdAtMs || 0) || 0;
+    const missionBlueprint = isMissionBlueprintAutomation(automation);
+    const openWorkflowEditor = (editorInitialView: "flow" | "configure") => {
+      if (missionBlueprint) {
+        onOpenAdvancedEdit(automation);
+        return;
+      }
+      if (typeof openWorkflowAutomationEdit === "function") {
+        openWorkflowAutomationEdit(automation, editorInitialView);
+      } else {
+        setWorkflowEditDraft({
+          ...workflowAutomationToEditDraft(automation),
+          editorInitialView,
+        });
+      }
+    };
     return (
       <div key={id} className="tcp-card flex flex-col gap-3 group">
         <div className="flex items-start justify-between gap-2">
@@ -289,19 +304,20 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
             >
               <Icon name="star" className={`w-3.5 h-3.5 ${favorite ? "fill-current" : ""}`} />
             </button>
+            {!missionBlueprint ? (
+              <button
+                className="tcp-icon-btn h-8 w-8"
+                onClick={() => openWorkflowEditor("flow")}
+                disabled={!id}
+                title="View workflow flow"
+                aria-label="View workflow flow"
+              >
+                <Icon name="network" className="w-3.5 h-3.5" />
+              </button>
+            ) : null}
             <button
               className="tcp-icon-btn h-8 w-8 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity"
-              onClick={() => {
-                if (isMissionBlueprintAutomation(automation)) {
-                  onOpenAdvancedEdit(automation);
-                  return;
-                }
-                if (typeof openWorkflowAutomationEdit === "function") {
-                  openWorkflowAutomationEdit(automation);
-                } else {
-                  setWorkflowEditDraft(workflowAutomationToEditDraft(automation));
-                }
-              }}
+              onClick={() => openWorkflowEditor("configure")}
               disabled={!id}
               title="Edit workflow automation"
               aria-label="Edit workflow automation"

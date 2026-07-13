@@ -17,6 +17,8 @@ import { WorkflowEditFlowMap } from "./WorkflowEditFlowMap";
 import { AutomationWebhookManager } from "./AutomationWebhookManager";
 import { Icon, type IconName } from "../../ui/Icon";
 
+type WorkflowEditorView = "flow" | "configure";
+
 function normalizeMcpNamespaceSegment(raw: string) {
   let out = "";
   let previousUnderscore = false;
@@ -474,6 +476,17 @@ export function WorkflowAutomationEditDialog({
 
   if (!workflowEditDraft) return null;
 
+  const requestedEditorView = String(workflowEditDraft.editorInitialView || "").trim();
+  const editorView: WorkflowEditorView =
+    requestedEditorView === "configure"
+      ? "configure"
+      : requestedEditorView === "flow" || workflowEditDraft.nodes?.length > 1
+        ? "flow"
+        : "configure";
+  const setEditorView = (nextView: WorkflowEditorView) =>
+    setWorkflowEditDraft((current: any) =>
+      current ? { ...current, editorInitialView: nextView } : current
+    );
   const selectedExecutionMode =
     automationWizardConfig.executionModes.find(
       (mode: any) => mode.id === workflowEditDraft.executionMode
@@ -484,6 +497,7 @@ export function WorkflowAutomationEditDialog({
     const nextNodeId = String(nodeId || "").trim();
     if (!nextNodeId) return;
     setSelectedFlowNodeId(nextNodeId);
+    setEditorView("configure");
     window.setTimeout(() => {
       document
         .getElementById(workflowNodeEditorDomId(nextNodeId))
@@ -513,26 +527,60 @@ export function WorkflowAutomationEditDialog({
         exit={{ opacity: 0, y: 6, scale: 0.98 }}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3 border-b border-slate-800/70 px-4 py-4">
-          <div>
-            <h3 className="tcp-confirm-title">Edit workflow automation</h3>
-            <div className="mt-1 text-sm text-slate-400">
-              Update scheduling, model routing, MCP access, and the actual step prompts.
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800/70 px-4 py-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-semibold uppercase text-slate-500">
+              Workflow automation
             </div>
+            <h3 className="tcp-confirm-title mt-1 truncate">
+              {workflowEditDraft.name || "Untitled workflow"}
+            </h3>
           </div>
-          <button aria-label="Close workflow editor" className="tcp-btn h-9 w-9 px-0" onClick={() => setWorkflowEditDraft(null)}>
-            <Icon name="x" />
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="workflow-editor-tabs" role="tablist" aria-label="Workflow editor view">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={editorView === "flow"}
+                className={editorView === "flow" ? "active" : ""}
+                onClick={() => setEditorView("flow")}
+              >
+                <Icon name="network" />
+                Flow
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={editorView === "configure"}
+                className={editorView === "configure" ? "active" : ""}
+                onClick={() => setEditorView("configure")}
+              >
+                <Icon name="settings-2" />
+                Configure
+              </button>
+            </div>
+            <button
+              aria-label="Close workflow editor"
+              className="tcp-btn h-9 w-9 px-0"
+              onClick={() => setWorkflowEditDraft(null)}
+            >
+              <Icon name="x" />
+            </button>
+          </div>
         </div>
         <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
-          <div className="grid content-start gap-4 min-w-0">
+          {editorView === "flow" ? (
             <WorkflowEditFlowMap
               nodes={workflowEditDraft.nodes || []}
               workflowMcpServers={workflowEditDraft.selectedMcpServers || []}
               selectedNodeId={activeFlowNodeId}
               onSelectNode={selectWorkflowNode}
+              executionMode={workflowEditDraft.executionMode}
+              maxParallelAgents={workflowEditDraft.maxParallelAgents}
+              variant="full"
             />
-
+          ) : (
+            <div className="grid content-start gap-4 min-w-0">
             <AccordionSection title="General setup" defaultOpen={true}>
               <div className="grid gap-1">
                 <label className="text-xs text-slate-400">Automation name</label>
@@ -1750,6 +1798,7 @@ export function WorkflowAutomationEditDialog({
               </AccordionSection>
             </div>
           </div>
+          )}
         </div>
         <div className="tcp-confirm-actions border-t border-slate-800/70 px-4 py-3">
           <button

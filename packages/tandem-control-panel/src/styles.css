@@ -1710,11 +1710,60 @@ svg.lucide-loader-circle,
   border-radius: 0;
 }
 
+.workflow-editor-tabs {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 5px;
+  background: var(--color-surface);
+  padding: 2px;
+}
+
+.workflow-editor-tabs button {
+  display: inline-flex;
+  min-width: 92px;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 3px;
+  padding: 4px 10px;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+
+.workflow-editor-tabs button.active {
+  background: color-mix(in srgb, var(--color-surface-elevated) 86%, #f59e0b 14%);
+  color: #fbbf24;
+}
+
+.workflow-flow-map-full {
+  min-height: min(62dvh, 680px);
+}
+
+.workflow-flow-map-full > .overflow-x-auto {
+  min-height: min(50dvh, 560px);
+}
+
 @media (max-width: 1024px) {
   .tcp-workflow-editor-modal {
     width: min(96vw, 96vw);
     max-width: min(96vw, 96vw);
     max-height: calc(100vh - 1rem);
+  }
+}
+
+@media (max-width: 640px) {
+  .workflow-editor-tabs {
+    width: calc(100vw - 6rem);
+  }
+
+  .workflow-editor-tabs button {
+    min-width: 0;
+    flex: 1;
   }
 }
 
