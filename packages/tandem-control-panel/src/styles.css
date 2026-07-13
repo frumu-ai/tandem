@@ -1344,7 +1344,7 @@ svg.lucide-loader-circle,
   border-radius: 3px;
   padding: 1px 5px;
   color: var(--color-text-subtle);
-  font-size: 10px;
+  font-size: var(--font-size-micro);
   text-align: center;
 }
 .orch-palette-add,
