@@ -1119,37 +1119,6 @@ pub(super) async fn workflow_planner_session_reset(
     workflow_planner_session_response(&state, &session, response).await
 }
 
-pub(super) fn workflow_plan_mutation_actor_id(
-    tenant_context: &tandem_types::TenantContext,
-    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
-) -> Result<String, (StatusCode, Json<Value>)> {
-    if let Some(verified) = verified_tenant_context {
-        if super::ensure_same_tenant(tenant_context, &verified.tenant_context).is_err() {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(json!({
-                    "error": "verified principal does not match the request tenant",
-                    "code": "WORKFLOW_PLAN_TENANT_MISMATCH",
-                })),
-            ));
-        }
-        let actor_id = verified.human_actor.actor_id.trim();
-        if !actor_id.is_empty() {
-            return Ok(actor_id.to_string());
-        }
-    }
-    if tenant_context.is_local_implicit() {
-        return Ok("local-operator".to_string());
-    }
-    Err((
-        StatusCode::UNAUTHORIZED,
-        Json(json!({
-            "error": "workflow materialization requires a verified tenant principal",
-            "code": "WORKFLOW_PLAN_AUTH_REQUIRED",
-        })),
-    ))
-}
-
 pub(super) async fn workflow_plan_apply(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<tandem_types::TenantContext>,
@@ -1354,21 +1323,16 @@ pub(super) async fn workflow_plan_apply(
             })),
         )
     })?;
-    crate::audit::append_protected_audit_event(
+    append_workflow_plan_materialization_audit(
         &state,
-        "workflow_plan.materialized",
         &tenant_context,
-        Some(creator_id.clone()),
-        json!({
-            "plan_id": plan_id.clone(),
-            "automation_id": stored.automation_id.clone(),
-            "actor_id": creator_id.clone(),
-            "requested_creator_id": requested_creator_id.clone(),
-            "plan_source": plan.plan_source.clone(),
-        }),
+        &creator_id,
+        requested_creator_id.as_deref(),
+        plan_id.as_deref(),
+        &stored.automation_id,
+        &plan.plan_source,
     )
-    .await
-    .map_err(super::protected_audit_error_response)?;
+    .await?;
     if let Some(plan_id) = plan_id.as_deref() {
         if let Some(mut draft) = state.get_workflow_plan_draft(plan_id).await {
             draft.last_success_materialization = Some(approved_plan_success_memory);
