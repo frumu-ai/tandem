@@ -1,11 +1,19 @@
 import { useMemo } from "preact/hooks";
 import { Icon } from "../../ui/Icon";
+import {
+  buildWorkflowFlowGraph,
+  workflowFlowNodeDependencies,
+  workflowFlowNodeId,
+} from "./workflowFlowModel";
 
 type WorkflowEditFlowMapProps = {
   nodes: any[];
   workflowMcpServers?: string[];
   selectedNodeId?: string;
   onSelectNode?: (nodeId: string) => void;
+  executionMode?: string;
+  maxParallelAgents?: number | string;
+  variant?: "compact" | "full";
 };
 
 function safeString(value: unknown) {
@@ -13,25 +21,17 @@ function safeString(value: unknown) {
 }
 
 function stringList(value: unknown) {
-  return Array.isArray(value)
-    ? value.map((entry) => safeString(entry)).filter(Boolean)
-    : [];
+  return Array.isArray(value) ? value.map((entry) => safeString(entry)).filter(Boolean) : [];
 }
 
 function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.map((value) => safeString(value)).filter(Boolean))).sort();
 }
 
-function nodeId(node: any, index = 0) {
-  return safeString(node?.nodeId || node?.node_id || node?.id || `node-${index + 1}`);
-}
-
 function nodeTitle(node: any, index = 0) {
-  return safeString(node?.title || node?.name || node?.nodeId || node?.node_id) || `Step ${index + 1}`;
-}
-
-function nodeDependsOn(node: any) {
-  return stringList(node?.dependsOn || node?.depends_on);
+  return (
+    safeString(node?.title || node?.name || node?.nodeId || node?.node_id) || `Step ${index + 1}`
+  );
 }
 
 function nodeInputRefs(node: any) {
@@ -86,65 +86,15 @@ function displayMcpServers(servers: string[], max = 2) {
   return `${labels.slice(0, max).join(", ")} +${labels.length - max}`;
 }
 
-function computeNodeDepths(nodes: any[]) {
-  const ids = new Map(nodes.map((node, index) => [nodeId(node, index), node]));
-  const cache = new Map<string, number>();
-  const visit = (id: string, seen = new Set<string>()): number => {
-    if (cache.has(id)) return Number(cache.get(id) || 0);
-    if (seen.has(id)) return 0;
-    const node = ids.get(id);
-    if (!node) return 0;
-    const deps = nodeDependsOn(node).filter((dep) => ids.has(dep));
-    if (!deps.length) {
-      cache.set(id, 0);
-      return 0;
-    }
-    const nextSeen = new Set(seen);
-    nextSeen.add(id);
-    const depth = deps.reduce((max, dep) => Math.max(max, visit(dep, nextSeen)), 0) + 1;
-    cache.set(id, depth);
-    return depth;
-  };
-  for (const id of ids.keys()) visit(id);
-  return cache;
-}
-
 export function WorkflowEditFlowMap({
   nodes,
   workflowMcpServers = [],
   selectedNodeId,
   onSelectNode,
+  executionMode,
+  maxParallelAgents,
+  variant = "compact",
 }: WorkflowEditFlowMapProps) {
-  const graph = useMemo(() => {
-    const normalizedNodes = Array.isArray(nodes) ? nodes : [];
-    const depths = computeNodeDepths(normalizedNodes);
-    const byDepth = new Map<number, any[]>();
-    const ids = new Set(normalizedNodes.map((node, index) => nodeId(node, index)));
-    let edgeCount = 0;
-    let missingDependencyCount = 0;
-    let customMcpCount = 0;
-
-    normalizedNodes.forEach((node, index) => {
-      const id = nodeId(node, index);
-      const depth = Number(depths.get(id) || 0);
-      byDepth.set(depth, [...(byDepth.get(depth) || []), node]);
-      const deps = nodeDependsOn(node);
-      edgeCount += deps.length;
-      missingDependencyCount += deps.filter((dep) => !ids.has(dep)).length;
-      if ((node?.toolAccessMode || "inherit") === "custom" && nodeMcpServers(node).length) {
-        customMcpCount += 1;
-      }
-    });
-
-    return {
-      columns: Array.from(byDepth.entries()).sort(([left], [right]) => left - right),
-      edgeCount,
-      missingDependencyCount,
-      customMcpCount,
-      startCount: normalizedNodes.filter((node) => nodeDependsOn(node).length === 0).length,
-    };
-  }, [nodes]);
-
   function nodeMcpServers(node: any) {
     const tools = explicitMcpTools(node);
     return uniqueStrings([
@@ -152,6 +102,18 @@ export function WorkflowEditFlowMap({
       ...inferredMcpServersFromTools(tools),
     ]);
   }
+
+  const graph = useMemo(
+    () => buildWorkflowFlowGraph({ nodes, executionMode, maxParallelAgents }),
+    [executionMode, maxParallelAgents, nodes]
+  );
+  const customMcpCount = useMemo(
+    () =>
+      nodes.filter(
+        (node) => (node?.toolAccessMode || "inherit") === "custom" && nodeMcpServers(node).length
+      ).length,
+    [nodes]
+  );
 
   if (!nodes?.length) {
     return (
@@ -162,22 +124,37 @@ export function WorkflowEditFlowMap({
   }
 
   return (
-    <div className="rounded-xl border border-slate-800/70 bg-slate-950/30 p-3">
+    <div
+      className={`workflow-flow-map rounded-lg border border-slate-800/70 bg-slate-950/30 p-3 ${
+        variant === "full" ? "workflow-flow-map-full" : ""
+      }`}
+    >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-            Workflow flow
+            Automation flow
           </div>
           <div className="mt-1 text-sm text-slate-300">
-            Select a node to jump to its prompt, model, and MCP controls.
+            Dependency stages and concurrent task lanes
           </div>
         </div>
         <div className="flex flex-wrap gap-2 tcp-text-caption">
           <span className="tcp-badge-info">{nodes.length} nodes</span>
           <span className="tcp-badge-info">{graph.edgeCount} dependencies</span>
-          <span className="tcp-badge-info">{graph.startCount} starts</span>
-          {graph.customMcpCount ? (
-            <span className="tcp-badge-warn">{graph.customMcpCount} task MCP overrides</span>
+          <span className="tcp-badge-info">
+            {graph.startCount} start{graph.startCount === 1 ? "" : "s"}
+          </span>
+          <span className="tcp-badge-info">
+            {graph.maxConcurrentTasks} concurrent / {graph.concurrencyLimit} max
+          </span>
+          {graph.parallelStageCount ? (
+            <span className="tcp-badge-info">
+              {graph.parallelStageCount} parallel stage
+              {graph.parallelStageCount === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {customMcpCount ? (
+            <span className="tcp-badge-warn">{customMcpCount} task MCP overrides</span>
           ) : null}
           {graph.missingDependencyCount ? (
             <span className="tcp-badge-err">{graph.missingDependencyCount} missing deps</span>
@@ -187,17 +164,25 @@ export function WorkflowEditFlowMap({
 
       <div className="overflow-x-auto pb-1">
         <div className="flex min-w-max items-stretch gap-3">
-          {graph.columns.map(([depth, columnNodes], columnIndex) => (
-            <div key={`flow-column-${depth}`} className="contents">
-              <div className="grid w-[260px] content-start gap-2">
-                <div className="flex items-center justify-between gap-2 text-xs uppercase tracking-wide text-slate-500">
-                  <span>Stage {depth + 1}</span>
-                  <span>{columnNodes.length}</span>
+          {graph.stages.map((stage, stageIndex) => (
+            <div key={`flow-column-${stage.depth}`} className="contents">
+              <div
+                className={`grid content-start gap-2 ${variant === "full" ? "w-[290px]" : "w-[260px]"}`}
+              >
+                <div className="flex min-h-7 items-center justify-between gap-2 text-xs uppercase tracking-wide text-slate-500">
+                  <span>{stage.depth === 0 ? "Start" : `Stage ${stage.depth + 1}`}</span>
+                  <span className="inline-flex items-center gap-1.5">
+                    {stage.hasParallelTasks ? (
+                      <span className="tcp-badge-info">Parallel</span>
+                    ) : null}
+                    <span>{stage.nodes.length}</span>
+                  </span>
                 </div>
-                {columnNodes.map((node, index) => {
-                  const id = nodeId(node, index);
+                {stage.nodes.map((node, index) => {
+                  const sourceIndex = nodes.indexOf(node);
+                  const id = workflowFlowNodeId(node, sourceIndex >= 0 ? sourceIndex : index);
                   const active = selectedNodeId === id;
-                  const deps = nodeDependsOn(node);
+                  const deps = workflowFlowNodeDependencies(node);
                   const refs = nodeInputRefs(node);
                   const mcpServers =
                     (node?.toolAccessMode || "inherit") === "custom"
@@ -206,21 +191,27 @@ export function WorkflowEditFlowMap({
                   const mcpTools = explicitMcpTools(node);
                   const sendCapable = mcpTools.some(toolLooksSendCapable);
                   const missingDeps = deps.filter(
-                    (dep) => !nodes.some((candidate, candidateIndex) => nodeId(candidate, candidateIndex) === dep)
+                    (dep) =>
+                      !nodes.some(
+                        (candidate, candidateIndex) =>
+                          workflowFlowNodeId(candidate, candidateIndex) === dep
+                      )
                   );
+                  const title = nodeTitle(node, index);
                   return (
                     <button
                       key={id}
                       type="button"
-                      className={`tcp-list-item min-h-[132px] text-left transition ${
-                        active ? "border-amber-400/70 bg-amber-400/10" : ""
-                      }`}
+                      aria-label={`Configure ${title}`}
+                      className={`tcp-list-item text-left transition ${
+                        variant === "full" ? "min-h-[154px]" : "min-h-[132px]"
+                      } ${active ? "border-amber-400/70 bg-amber-400/10" : ""}`}
                       onClick={() => onSelectNode?.(id)}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="truncate text-sm font-semibold text-slate-100">
-                            {nodeTitle(node, index)}
+                            {title}
                           </div>
                           <div className="mt-1 truncate tcp-text-caption text-slate-500">{id}</div>
                         </div>
@@ -237,7 +228,9 @@ export function WorkflowEditFlowMap({
                         ) : (
                           <span className="tcp-badge-info">start</span>
                         )}
-                        {refs.length ? <span className="tcp-badge-muted">{refs.length} inputs</span> : null}
+                        {refs.length ? (
+                          <span className="tcp-badge-muted">{refs.length} inputs</span>
+                        ) : null}
                         {safeString(node?.outputKind || node?.output_kind) ? (
                           <span className="tcp-badge-info">
                             {safeString(node?.outputKind || node?.output_kind)}
@@ -266,14 +259,12 @@ export function WorkflowEditFlowMap({
                   );
                 })}
               </div>
-              {columnIndex < graph.columns.length - 1 ? (
+              {stageIndex < graph.stages.length - 1 ? (
                 <div
-                  className="flex w-8 flex-col items-center justify-center gap-2 text-slate-500"
+                  className="flex w-8 self-start items-center justify-center pt-24 text-slate-500"
                   aria-hidden="true"
                 >
-                  <span className="h-10 w-px bg-slate-800"></span>
                   <Icon name="arrow-right" />
-                  <span className="h-10 w-px bg-slate-800"></span>
                 </div>
               ) : null}
             </div>
