@@ -41,6 +41,8 @@ pub(super) struct WorkflowPlanApplyRequest {
     #[serde(default)]
     pub plan: Option<crate::WorkflowPlan>,
     #[serde(default)]
+    /// Legacy authoring-surface hint. Materialization attribution is derived
+    /// from the verified request principal and never from this value.
     pub creator_id: Option<String>,
     #[serde(default)]
     pub pack_builder_export: Option<WorkflowPlanPackBuilderExportRequest>,

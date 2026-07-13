@@ -63,6 +63,7 @@ pub enum ToolDefaultVisibility {
 pub enum ToolRiskTier {
     ReadDiscover,
     InternalWrite,
+    ConsequentialWrite,
     ExternalDraft,
     ExternalSend,
     CustomerDataAccess,
@@ -78,6 +79,7 @@ impl ToolRiskTier {
         match self {
             Self::ReadDiscover => "read_discover",
             Self::InternalWrite => "internal_write",
+            Self::ConsequentialWrite => "consequential_write",
             Self::ExternalDraft => "external_draft",
             Self::ExternalSend => "external_send",
             Self::CustomerDataAccess => "customer_data_access",
@@ -92,7 +94,8 @@ impl ToolRiskTier {
     pub fn approval_required_by_default(self) -> bool {
         matches!(
             self,
-            Self::ExternalSend
+            Self::ConsequentialWrite
+                | Self::ExternalSend
                 | Self::FinancialRecordAccess
                 | Self::CredentialAdmin
                 | Self::DestructiveDelete

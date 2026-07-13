@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
 use crate::tool_capabilities::{
-    canonical_tool_name, tool_schema_matches_profile, ToolCapabilityProfile,
+    canonical_tool_name, tool_schema_matches_profile, tool_schema_risk_tier, ToolCapabilityProfile,
 };
 use crate::tool_policy::tool_name_matches_policy;
-use tandem_types::ToolSchema;
+use tandem_types::{ToolRiskTier, ToolSchema};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolIntent {
@@ -16,6 +16,8 @@ pub enum ToolIntent {
     WebLookup,
     MemoryOps,
     McpExplicit,
+    ProductAuthoring,
+    ProductControl,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +74,14 @@ pub fn classify_intent(input: &str) -> ToolIntent {
     let lower = input.trim().to_ascii_lowercase();
     if lower.is_empty() {
         return ToolIntent::Knowledge;
+    }
+
+    if is_product_control_request(&lower) {
+        return ToolIntent::ProductControl;
+    }
+
+    if is_product_authoring_request(&lower) {
+        return ToolIntent::ProductAuthoring;
     }
 
     if lower.contains("mcp")
@@ -185,6 +195,8 @@ pub fn should_escalate_auto_tools(
             | ToolIntent::WebLookup
             | ToolIntent::MemoryOps
             | ToolIntent::McpExplicit
+            | ToolIntent::ProductAuthoring
+            | ToolIntent::ProductControl
     ) {
         return true;
     }
@@ -234,6 +246,10 @@ pub fn select_tool_subset(
     let mut selected = Vec::new();
     let mut seen = HashSet::new();
     let include_mcp = intent == ToolIntent::McpExplicit;
+    let product_intent = matches!(
+        intent,
+        ToolIntent::ProductAuthoring | ToolIntent::ProductControl
+    );
 
     for schema in available {
         let norm = normalize_tool_name(&schema.name);
@@ -241,7 +257,10 @@ pub fn select_tool_subset(
             && request_allowlist
                 .iter()
                 .any(|pattern| tool_name_matches_policy(pattern, &norm));
-        if !request_allowlist.is_empty() && !explicitly_allowed {
+        let intrinsic_product_tool = product_intent
+            && !norm.starts_with("mcp.")
+            && tool_schema_matches_profile(&schema, ToolCapabilityProfile::ProductControl);
+        if !request_allowlist.is_empty() && !explicitly_allowed && !intrinsic_product_tool {
             continue;
         }
         if !include_mcp && norm.starts_with("mcp.") && !explicitly_allowed {
@@ -296,6 +315,18 @@ fn tool_matches_intent(intent: ToolIntent, schema: &ToolSchema) -> bool {
         ToolIntent::MemoryOps => {
             tool_schema_matches_profile(schema, ToolCapabilityProfile::MemoryOperation)
         }
+        ToolIntent::ProductAuthoring => {
+            tool_schema_matches_profile(schema, ToolCapabilityProfile::ProductControl)
+                && matches!(
+                    tool_schema_risk_tier(schema),
+                    ToolRiskTier::ReadDiscover
+                        | ToolRiskTier::InternalWrite
+                        | ToolRiskTier::ExternalDraft
+                )
+        }
+        ToolIntent::ProductControl => {
+            tool_schema_matches_profile(schema, ToolCapabilityProfile::ProductControl)
+        }
         ToolIntent::McpExplicit => {
             name.starts_with("mcp.") || matches!(name.as_str(), "read" | "grep" | "search")
         }
@@ -304,6 +335,99 @@ fn tool_matches_intent(intent: ToolIntent, schema: &ToolSchema) -> bool {
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn is_product_control_request(input: &str) -> bool {
+    if !has_product_resource_signal(input) || has_repository_workflow_signal(input) {
+        return false;
+    }
+    contains_any(
+        input,
+        &[
+            "publish",
+            "enable",
+            "activate",
+            "disable",
+            "cancel",
+            "archive",
+            "delete",
+            "approve",
+            "reject",
+            "resolve wait",
+            "start goal",
+            "run workflow",
+            "start workflow",
+            "launch workflow",
+        ],
+    )
+}
+
+fn is_product_authoring_request(input: &str) -> bool {
+    if has_repository_workflow_signal(input) {
+        return false;
+    }
+    let action = contains_any(
+        input,
+        &[
+            "create",
+            "build",
+            "make",
+            "draft",
+            "design",
+            "plan",
+            "schedule",
+            "automate",
+            "orchestrate",
+            "revise",
+            "update",
+            "modify",
+            "edit",
+            "duplicate",
+            "validate",
+            "inspect",
+            "show",
+            "list",
+            "add ",
+            "remove ",
+            "what automation",
+            "what workflow",
+        ],
+    );
+    action && has_product_resource_signal(input)
+}
+
+fn has_repository_workflow_signal(input: &str) -> bool {
+    contains_any(
+        input,
+        &[
+            ".github/workflows",
+            "github action",
+            "github workflow",
+            "ci workflow",
+            "workflow file",
+            "workflow test",
+            "test workflow",
+            "actions workflow",
+        ],
+    )
+}
+
+fn has_product_resource_signal(input: &str) -> bool {
+    contains_any(
+        input,
+        &[
+            "workflow",
+            "automation",
+            "orchestration",
+            "pipeline",
+            "workflow plan",
+            "this plan",
+            "approval step",
+            "trigger node",
+            "workflow node",
+            "transition key",
+        ],
+    )
 }
 
 fn is_chitchat_phrase(input: &str) -> bool {
@@ -345,6 +469,20 @@ mod tests {
         ToolSchema::new(name, "", serde_json::json!({}))
     }
 
+    fn product_schema(
+        name: &str,
+        effect: tandem_types::ToolEffect,
+        risk_tier: ToolRiskTier,
+    ) -> ToolSchema {
+        ToolSchema::new(name, "", serde_json::json!({}))
+            .with_capabilities(
+                tandem_types::ToolCapabilities::new()
+                    .effect(effect)
+                    .domain(tandem_types::ToolDomain::Planning),
+            )
+            .with_security(tandem_types::ToolSecurityDescriptor::new().risk_tier(risk_tier))
+    }
+
     #[test]
     fn classifies_short_greeting_as_chitchat() {
         assert_eq!(classify_intent("hello"), ToolIntent::Chitchat);
@@ -355,6 +493,35 @@ mod tests {
         assert_eq!(
             classify_intent("use local code evidence in engine/src/main.rs"),
             ToolIntent::WorkspaceRead
+        );
+    }
+
+    #[test]
+    fn classifies_product_authoring_before_mcp_setup_language() {
+        assert_eq!(
+            classify_intent("Create a workflow that uses the Slack MCP integration"),
+            ToolIntent::ProductAuthoring
+        );
+        assert_eq!(
+            classify_intent("Add an approval step to this workflow"),
+            ToolIntent::ProductAuthoring
+        );
+    }
+
+    #[test]
+    fn classifies_consequential_product_controls_separately() {
+        assert_eq!(
+            classify_intent("Publish and enable this workflow"),
+            ToolIntent::ProductControl
+        );
+        assert_eq!(
+            classify_intent("How do Tandem workflows work?"),
+            ToolIntent::Knowledge
+        );
+        assert_eq!(classify_intent("run workflow tests"), ToolIntent::ShellExec);
+        assert_eq!(
+            classify_intent("edit the GitHub workflow file"),
+            ToolIntent::WorkspaceWrite
         );
     }
 
@@ -399,6 +566,74 @@ mod tests {
             normalize_tool_name(&selected[0].name),
             "mcp.arcade.gmail_create"
         );
+    }
+
+    #[test]
+    fn product_authoring_keeps_safe_first_party_tools_with_external_allowlist() {
+        let mut allowlist = HashSet::new();
+        allowlist.insert("mcp.slack.*".to_string());
+        let selected = select_tool_subset(
+            vec![
+                product_schema(
+                    "orchestration_create_draft",
+                    tandem_types::ToolEffect::Write,
+                    ToolRiskTier::InternalWrite,
+                ),
+                product_schema(
+                    "orchestration_validate",
+                    tandem_types::ToolEffect::Read,
+                    ToolRiskTier::ReadDiscover,
+                ),
+                product_schema(
+                    "orchestration_publish",
+                    tandem_types::ToolEffect::Write,
+                    ToolRiskTier::ConsequentialWrite,
+                ),
+                schema("mcp.slack.post_message"),
+            ],
+            ToolIntent::ProductAuthoring,
+            &allowlist,
+            false,
+        );
+        let names = selected
+            .iter()
+            .map(|schema| normalize_tool_name(&schema.name))
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"orchestration_create_draft".to_string()));
+        assert!(names.contains(&"orchestration_validate".to_string()));
+        assert!(names.contains(&"mcp.slack.post_message".to_string()));
+        assert!(!names.contains(&"orchestration_publish".to_string()));
+    }
+
+    #[test]
+    fn explicit_product_control_can_offer_consequential_tools() {
+        let selected = select_tool_subset(
+            vec![product_schema(
+                "orchestration_publish",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::ConsequentialWrite,
+            )],
+            ToolIntent::ProductControl,
+            &HashSet::new(),
+            false,
+        );
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].name, "orchestration_publish");
+    }
+
+    #[test]
+    fn generic_planning_tools_are_not_product_controls() {
+        let selected = select_tool_subset(
+            vec![product_schema(
+                "todo_write",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::InternalWrite,
+            )],
+            ToolIntent::ProductAuthoring,
+            &HashSet::new(),
+            false,
+        );
+        assert!(selected.is_empty());
     }
 
     #[test]

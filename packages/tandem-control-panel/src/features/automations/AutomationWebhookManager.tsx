@@ -19,6 +19,7 @@ const RISK_OPTIONS = [
   "",
   "read_discover",
   "internal_write",
+  "consequential_write",
   "external_draft",
   "external_send",
   "customer_data_access",

@@ -1127,7 +1127,7 @@ async fn workflow_plan_apply_persists_automation_v2_with_planner_metadata() {
         .and_then(Value::as_str)
         .expect("plan id");
 
-    let apply_req = Request::builder()
+    let mut apply_req = Request::builder()
         .method("POST")
         .uri("/workflow-plans/apply")
         .header("x-tandem-org-id", "org-a")
@@ -1142,6 +1142,10 @@ async fn workflow_plan_apply_persists_automation_v2_with_planner_metadata() {
             .to_string(),
         ))
         .expect("apply request");
+    apply_req.extensions_mut().insert(verified_workflow_plan_context(
+        tandem_types::TenantContext::explicit("org-a", "workspace-a", None),
+        "user-a",
+    ));
     let apply_resp = app
         .clone()
         .oneshot(apply_req)
@@ -1166,7 +1170,23 @@ async fn workflow_plan_apply_persists_automation_v2_with_planner_metadata() {
     assert_eq!(tenant.org_id, "org-a");
     assert_eq!(tenant.workspace_id, "workspace-a");
     assert_eq!(tenant.actor_id.as_deref(), Some("user-a"));
-    assert_eq!(stored.creator_id, "control-panel");
+    assert_eq!(stored.creator_id, "user-a");
+    assert_eq!(
+        stored
+            .metadata
+            .as_ref()
+            .and_then(|row| row.get("authoring_actor_id"))
+            .and_then(Value::as_str),
+        Some("user-a")
+    );
+    assert_eq!(
+        stored
+            .metadata
+            .as_ref()
+            .and_then(|row| row.get("requested_creator_id"))
+            .and_then(Value::as_str),
+        Some("control-panel")
+    );
     assert_eq!(
         stored.workspace_root.as_deref(),
         Some("/tmp/custom-workspace")
@@ -1301,7 +1321,7 @@ async fn workflow_plan_apply_persists_automation_v2_with_planner_metadata() {
         manual_trigger_record
             .get("triggered_by")
             .and_then(Value::as_str),
-        Some("control-panel")
+        Some("user-a")
     );
     assert_eq!(
         manual_trigger_record

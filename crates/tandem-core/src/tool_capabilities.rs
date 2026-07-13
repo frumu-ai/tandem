@@ -13,6 +13,7 @@ pub enum ToolCapabilityProfile {
     VerifyCommand,
     ShellExecution,
     MemoryOperation,
+    ProductControl,
     EmailDelivery,
     EmailSend,
     EmailDraft,
@@ -351,6 +352,14 @@ pub fn tool_name_matches_profile(tool_name: &str, profile: ToolCapabilityProfile
             normalized.as_str(),
             "memory_search" | "memory_store" | "memory_list" | "memory_delete"
         ),
+        ToolCapabilityProfile::ProductControl => {
+            normalized.starts_with("workflow_plan_")
+                || normalized.starts_with("automation_")
+                || normalized.starts_with("orchestration_")
+                || normalized.starts_with("goal_")
+                || normalized.starts_with("handoff_")
+                || normalized.starts_with("wait_")
+        }
         ToolCapabilityProfile::EmailDelivery => tool_name_looks_like_email_delivery(tool_name),
         ToolCapabilityProfile::EmailSend => tool_name_looks_like_email_send(tool_name),
         ToolCapabilityProfile::EmailDraft => tool_name_looks_like_email_draft(tool_name),
@@ -426,6 +435,10 @@ fn tool_schema_matches_profile_from_metadata(
         }
         ToolCapabilityProfile::MemoryOperation => {
             capabilities.domains.contains(&ToolDomain::Memory)
+        }
+        ToolCapabilityProfile::ProductControl => {
+            capabilities.domains.contains(&ToolDomain::Planning)
+                && tool_name_matches_profile(&schema.name, ToolCapabilityProfile::ProductControl)
         }
         ToolCapabilityProfile::ExternalMutation => {
             capabilities.network_access

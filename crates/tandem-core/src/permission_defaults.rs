@@ -26,6 +26,35 @@ fn allows_any(allowed_tools: Option<&[String]>, names: &[&str]) -> bool {
         .any(|candidate| allowed.iter().any(|t| canonical_tool_name(t) == candidate))
 }
 
+const FIRST_PARTY_PRODUCT_READ_TOOLS: &[&str] =
+    &["orchestration_validate", "goal_get", "wait_inspect"];
+const FIRST_PARTY_PRODUCT_DRAFT_TOOLS: &[&str] = &["orchestration_create_draft"];
+const FIRST_PARTY_PRODUCT_CONSEQUENTIAL_TOOLS: &[&str] = &[
+    "orchestration_publish",
+    "goal_start",
+    "goal_cancel",
+    "handoff_emit",
+    "handoff_approve",
+    "wait_resolve",
+];
+
+fn push_tool_rules(
+    rules: &mut Vec<PermissionRuleTemplate>,
+    allowed_tools: Option<&[String]>,
+    names: &[&str],
+    action: &str,
+) {
+    for permission in names {
+        if allows_any(allowed_tools, &[*permission]) {
+            rules.push(PermissionRuleTemplate {
+                permission: (*permission).to_string(),
+                pattern: "*".to_string(),
+                action: action.to_string(),
+            });
+        }
+    }
+}
+
 pub fn build_mode_permission_rules(
     allowed_tools: Option<&[String]>,
 ) -> Vec<PermissionRuleTemplate> {
@@ -38,6 +67,25 @@ pub fn build_mode_permission_rules(
             action: "allow".to_string(),
         });
     }
+
+    push_tool_rules(
+        &mut rules,
+        allowed_tools,
+        FIRST_PARTY_PRODUCT_READ_TOOLS,
+        "allow",
+    );
+    push_tool_rules(
+        &mut rules,
+        allowed_tools,
+        FIRST_PARTY_PRODUCT_DRAFT_TOOLS,
+        "allow",
+    );
+    push_tool_rules(
+        &mut rules,
+        allowed_tools,
+        FIRST_PARTY_PRODUCT_CONSEQUENTIAL_TOOLS,
+        "ask",
+    );
 
     if allows_any(
         allowed_tools,
@@ -211,5 +259,36 @@ mod tests {
                 rule.permission == permission && rule.pattern == "*" && rule.action == "ask"
             }));
         }
+    }
+
+    #[test]
+    fn product_drafts_are_allowed_but_consequential_controls_ask() {
+        let rules = default_tui_permission_rules();
+        assert!(rules.iter().any(|rule| {
+            rule.permission == "orchestration_create_draft" && rule.action == "allow"
+        }));
+        for permission in ["orchestration_publish", "goal_start", "goal_cancel"] {
+            assert!(rules
+                .iter()
+                .any(|rule| rule.permission == permission && rule.action == "ask"));
+        }
+    }
+
+    #[test]
+    fn product_rules_respect_an_explicit_tool_allowlist() {
+        let allowed = vec![
+            "orchestration_create_draft".to_string(),
+            "orchestration_validate".to_string(),
+        ];
+        let rules = build_mode_permission_rules(Some(&allowed));
+        assert!(rules
+            .iter()
+            .any(|rule| rule.permission == "orchestration_create_draft"));
+        assert!(rules
+            .iter()
+            .any(|rule| rule.permission == "orchestration_validate"));
+        assert!(!rules
+            .iter()
+            .any(|rule| rule.permission == "orchestration_publish"));
     }
 }

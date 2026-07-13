@@ -356,6 +356,9 @@ async fn bootstrap_mcp_servers_installs_builtin_tandem_docs_server() {
     assert_eq!(server_row.transport, endpoint);
     assert!(server_row.enabled);
     assert!(server_row.connected);
+    assert!(server_row.headers.is_empty());
+    assert!(server_row.secret_headers.is_empty());
+    assert!(server_row.auth_kind.is_empty());
     assert!(server_row
         .tool_cache
         .iter()

@@ -1122,8 +1122,16 @@ pub(super) async fn workflow_planner_session_reset(
 pub(super) async fn workflow_plan_apply(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanApplyRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let requested_creator_id = input.creator_id.clone();
+    let creator_id = workflow_plan_mutation_actor_id(
+        &tenant_context,
+        verified_tenant_context
+            .as_ref()
+            .map(|Extension(verified)| verified),
+    )?;
     let plan_id = input
         .plan_id
         .as_deref()
@@ -1240,7 +1248,7 @@ pub(super) async fn workflow_plan_apply(
     }
     if let Some(entry) = compiler_api::overlap_log_entry_from_analysis(
         &overlap_analysis,
-        input.creator_id.as_deref().unwrap_or("workflow_planner"),
+        &creator_id,
         &chrono::Utc::now().to_rfc3339(),
     ) {
         plan_package
@@ -1250,11 +1258,8 @@ pub(super) async fn workflow_plan_apply(
             .push(entry);
     }
 
-    let mut automation = compile_plan_to_automation_v2(
-        &plan,
-        Some(&plan_package),
-        input.creator_id.as_deref().unwrap_or("workflow_planner"),
-    );
+    let mut automation =
+        compile_plan_to_automation_v2(&plan, Some(&plan_package), &creator_id);
     let approved_plan_materialization = compiler_api::approved_plan_materialization(&plan_package);
     let approved_plan_success_memory =
         compiler_api::approved_plan_success_memory_value(&plan_package);
@@ -1288,6 +1293,14 @@ pub(super) async fn workflow_plan_apply(
             "planner_diagnostics".to_string(),
             planner_diagnostics.clone().unwrap_or(Value::Null),
         );
+        metadata.insert(
+            "authoring_actor_id".to_string(),
+            json!(creator_id.clone()),
+        );
+        metadata.insert(
+            "requested_creator_id".to_string(),
+            requested_creator_id.clone().map(Value::String).unwrap_or(Value::Null),
+        );
     } else {
         automation.metadata = Some(json!({
             "plan_package": plan_package,
@@ -1296,6 +1309,8 @@ pub(super) async fn workflow_plan_apply(
             "overlap_analysis": overlap_analysis,
             "approved_plan_materialization": approved_plan_success_memory.clone(),
             "planner_diagnostics": planner_diagnostics,
+            "authoring_actor_id": creator_id.clone(),
+            "requested_creator_id": requested_creator_id.clone(),
         }));
     }
     automation.set_tenant_context(&tenant_context);
@@ -1308,6 +1323,16 @@ pub(super) async fn workflow_plan_apply(
             })),
         )
     })?;
+    append_workflow_plan_materialization_audit(
+        &state,
+        &tenant_context,
+        &creator_id,
+        requested_creator_id.as_deref(),
+        plan_id.as_deref(),
+        &stored.automation_id,
+        &plan.plan_source,
+    )
+    .await?;
     if let Some(plan_id) = plan_id.as_deref() {
         if let Some(mut draft) = state.get_workflow_plan_draft(plan_id).await {
             draft.last_success_materialization = Some(approved_plan_success_memory);

@@ -31,6 +31,19 @@ fn external_send_risk_tier_requires_approval() {
 }
 
 #[test]
+fn consequential_internal_write_requires_human_approval() {
+    let outcome = matrix().resolve(&GateRequest::new(
+        Some(ToolRiskTier::ConsequentialWrite),
+        None,
+    ));
+    assert!(outcome.requires_approval());
+    assert_eq!(
+        outcome.reviewer_eligibility,
+        ReviewerEligibility::AnyHumanReviewer
+    );
+}
+
+#[test]
 fn sensitive_data_classes_require_elevated_reviewer() {
     for class in [
         DataClass::Restricted,

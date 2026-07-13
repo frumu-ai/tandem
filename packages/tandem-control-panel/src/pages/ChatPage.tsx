@@ -45,6 +45,7 @@ import {
   seedAutomationPlanner,
   seedWorkflowPlanner,
   setupCardFromResponse,
+  shouldContinueSetupToModel,
   shouldShowSetupCard,
   timelineSummaryForEvent,
   timelineTitleForEvent,
@@ -617,6 +618,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
       promptRaw || (attached.length ? "Please analyze the attached file(s)." : "");
     if (!resolvedPrompt) return;
 
+    setSetupCard(null);
     try {
       const setup = (await api("/api/engine/setup/understand", {
         method: "POST",
@@ -637,13 +639,9 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
           },
         }),
       })) as SetupUnderstandResponse;
-      if (
-        setup.intent_kind !== "workflow_planner_create" &&
-        shouldShowSetupCard(resolvedPrompt, setup)
-      ) {
-        const card = setupCardFromResponse(setup);
-        if (card) {
-          setSetupCard(card);
+      if (shouldShowSetupCard(resolvedPrompt, setup)) {
+        setSetupCard(setupCardFromResponse(setup));
+        if (!shouldContinueSetupToModel(resolvedPrompt, setup)) {
           setPrompt("");
           return;
         }

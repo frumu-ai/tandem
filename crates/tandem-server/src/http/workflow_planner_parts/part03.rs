@@ -1,6 +1,63 @@
 use tandem_types::EngineEvent;
 use tandem_workflows::plan_package::WorkflowPlanDraftReviewRecord;
 
+pub(super) fn workflow_plan_mutation_actor_id(
+    tenant_context: &tandem_types::TenantContext,
+    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
+) -> Result<String, (StatusCode, Json<Value>)> {
+    if let Some(verified) = verified_tenant_context {
+        if super::ensure_same_tenant(tenant_context, &verified.tenant_context).is_err() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "verified principal does not match the request tenant",
+                    "code": "WORKFLOW_PLAN_TENANT_MISMATCH",
+                })),
+            ));
+        }
+        let actor_id = verified.human_actor.actor_id.trim();
+        if !actor_id.is_empty() {
+            return Ok(actor_id.to_string());
+        }
+    }
+    if tenant_context.is_local_implicit() {
+        return Ok("local-operator".to_string());
+    }
+    Err((
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "error": "workflow materialization requires a verified tenant principal",
+            "code": "WORKFLOW_PLAN_AUTH_REQUIRED",
+        })),
+    ))
+}
+
+async fn append_workflow_plan_materialization_audit(
+    state: &AppState,
+    tenant_context: &tandem_types::TenantContext,
+    actor_id: &str,
+    requested_creator_id: Option<&str>,
+    plan_id: Option<&str>,
+    automation_id: &str,
+    plan_source: &str,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    crate::audit::append_protected_audit_event(
+        state,
+        "workflow_plan.materialized",
+        tenant_context,
+        Some(actor_id.to_string()),
+        json!({
+            "plan_id": plan_id,
+            "automation_id": automation_id,
+            "actor_id": actor_id,
+            "requested_creator_id": requested_creator_id,
+            "plan_source": plan_source,
+        }),
+    )
+    .await
+    .map_err(super::protected_audit_error_response)
+}
+
 fn normalize_workflow_planning_record(
     planning: &mut WorkflowPlannerSessionPlanningRecord,
     current_plan_id: Option<&str>,

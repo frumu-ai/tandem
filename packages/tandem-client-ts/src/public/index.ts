@@ -3659,6 +3659,7 @@ export type AutomationWebhookDataClass =
 export type AutomationWebhookRiskTier =
   | "read_discover"
   | "internal_write"
+  | "consequential_write"
   | "external_draft"
   | "external_send"
   | "customer_data_access"

@@ -190,7 +190,8 @@ fn should_gate_external_dispatch(event: &ToolDispatchPreSendEvent) -> bool {
 fn gated_risk_tier(risk_tier: &str) -> bool {
     matches!(
         risk_tier,
-        "external_send"
+        "consequential_write"
+            | "external_send"
             | "destructive_delete"
             | "money_movement_contract"
             | "financial_record_access"
@@ -762,7 +763,7 @@ mod tests {
         let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
         let mut event = external_event("tool-dispatch-inferred-risk-tier", tenant);
         event.external_side_effect = false;
-        event.risk_tier = Some("external_send".to_string());
+        event.risk_tier = Some("consequential_write".to_string());
 
         let receipt = prepare_pre_send_outbox(&runtime_events_path, event)
             .await

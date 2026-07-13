@@ -44,6 +44,40 @@ is allowed to use.
   acted as, which connection credential was used, and which upstream account was
   reached.
 
+## First-Party Chat Authority Boundary
+
+Control Panel chat is a first-party Tandem surface, not an external MCP client.
+The runtime already knows the signed-in human through the verified session
+context, so first-party product tools must execute with that delegated identity.
+They must never ask the user to paste a Tandem API key into chat or expose the
+runtime transport token to the model.
+
+| Caller and target | Authentication boundary | Credential visible to the model |
+| --- | --- | --- |
+| Control Panel chat to Tandem product tools | Existing browser/desktop session plus `VerifiedTenantContext` | None |
+| External agent to the Tandem API | Supported API token or OAuth entry credential plus hosted context assertion where required | Never; the agent host owns transport authentication |
+| Tandem to a third-party MCP/service | Principal-scoped connection or governed service credential | Only an opaque connection reference |
+| Tandem Docs MCP | Public read-only endpoint; catalog contract is `requires_auth = false` | None |
+
+The desktop sidecar may use a generated local transport token internally. That
+is an implementation detail of the trusted desktop boundary, not a credential
+the user should configure for chat authoring.
+
+First-party tool dispatch must:
+
+- derive actor and tenant from server-injected verified context;
+- ignore caller-supplied actor or creator fields for authenticated mutations;
+- require a verified principal outside local implicit mode;
+- keep raw cookies, API tokens, OAuth tokens, authorization headers, and secret
+  values out of prompts, tool arguments, results, logs, and audit payloads;
+- use the local `local-operator` identity only in local implicit mode;
+- keep external MCP selection and credentials separate from first-party Tandem
+  capability routing.
+
+If the hosted Tandem Docs MCP deployment requests authentication, the deployment
+is out of contract with the bundled catalog and must be repaired rather than
+worked around by prompting an in-product user for an API key.
+
 ## Core Model
 
 ### McpServerDefinition

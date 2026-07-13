@@ -51,6 +51,16 @@ impl OrchestrationToolKind {
     fn read_only(self) -> bool {
         matches!(self, Self::Validate | Self::GoalGet | Self::WaitInspect)
     }
+
+    fn risk_tier(self) -> ToolRiskTier {
+        if self.read_only() {
+            ToolRiskTier::ReadDiscover
+        } else if matches!(self, Self::CreateDraft) {
+            ToolRiskTier::InternalWrite
+        } else {
+            ToolRiskTier::ConsequentialWrite
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -218,11 +228,7 @@ impl Tool for OrchestrationTool {
             ToolSecurityDescriptor::new()
                 .permission(permission)
                 .resource_kind(resource)
-                .risk_tier(if self.kind.read_only() {
-                    ToolRiskTier::ReadDiscover
-                } else {
-                    ToolRiskTier::InternalWrite
-                }),
+                .risk_tier(self.kind.risk_tier()),
         )
     }
 
