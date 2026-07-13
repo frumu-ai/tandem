@@ -338,7 +338,7 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
 }
 
 fn is_product_control_request(input: &str) -> bool {
-    if !has_product_resource_signal(input) {
+    if !has_product_resource_signal(input) || has_repository_workflow_signal(input) {
         return false;
     }
     contains_any(
@@ -363,6 +363,9 @@ fn is_product_control_request(input: &str) -> bool {
 }
 
 fn is_product_authoring_request(input: &str) -> bool {
+    if has_repository_workflow_signal(input) {
+        return false;
+    }
     let action = contains_any(
         input,
         &[
@@ -391,6 +394,22 @@ fn is_product_authoring_request(input: &str) -> bool {
         ],
     );
     action && has_product_resource_signal(input)
+}
+
+fn has_repository_workflow_signal(input: &str) -> bool {
+    contains_any(
+        input,
+        &[
+            ".github/workflows",
+            "github action",
+            "github workflow",
+            "ci workflow",
+            "workflow file",
+            "workflow test",
+            "test workflow",
+            "actions workflow",
+        ],
+    )
 }
 
 fn has_product_resource_signal(input: &str) -> bool {
@@ -498,6 +517,11 @@ mod tests {
         assert_eq!(
             classify_intent("How do Tandem workflows work?"),
             ToolIntent::Knowledge
+        );
+        assert_eq!(classify_intent("run workflow tests"), ToolIntent::ShellExec);
+        assert_eq!(
+            classify_intent("edit the GitHub workflow file"),
+            ToolIntent::WorkspaceWrite
         );
     }
 

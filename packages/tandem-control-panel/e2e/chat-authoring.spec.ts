@@ -50,3 +50,35 @@ test("setup guidance stays advisory and product authoring reaches the model", as
 
   modelRequest.release();
 });
+
+test("setup-only prompts stop before model execution", async ({ page, apiFixture }) => {
+  apiFixture.mockResponse(
+    "/api/engine/setup/understand",
+    {
+      decision: "intercept",
+      intent_kind: "provider_setup",
+      clarifier: null,
+      slots: {
+        provider_ids: ["openai"],
+        model_ids: [],
+        integration_targets: [],
+        channel_targets: [],
+        goal: null,
+      },
+      proposed_action: { type: "provider_setup", payload: { provider_id: "openai" } },
+    },
+    "POST"
+  );
+
+  await page.goto("/#/chat");
+  await waitForRoute(page, "chat");
+  const composer = page.getByPlaceholder(
+    "Ask anything... (Enter to send, Shift+Enter newline)"
+  );
+  await composer.fill("Help me configure OpenAI");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  await expect(page.getByText("Provider setup", { exact: true })).toBeVisible();
+  await expect(composer).toHaveValue("");
+  expect(apiFixture.requests.some((request) => request.includes("/prompt_async"))).toBe(false);
+});

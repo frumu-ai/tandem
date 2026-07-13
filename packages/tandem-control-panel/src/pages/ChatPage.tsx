@@ -45,6 +45,7 @@ import {
   seedAutomationPlanner,
   seedWorkflowPlanner,
   setupCardFromResponse,
+  shouldContinueSetupToModel,
   shouldShowSetupCard,
   timelineSummaryForEvent,
   timelineTitleForEvent,
@@ -640,6 +641,10 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
       })) as SetupUnderstandResponse;
       if (shouldShowSetupCard(resolvedPrompt, setup)) {
         setSetupCard(setupCardFromResponse(setup));
+        if (!shouldContinueSetupToModel(resolvedPrompt, setup)) {
+          setPrompt("");
+          return;
+        }
       }
     } catch {
       // continue with normal chat flow

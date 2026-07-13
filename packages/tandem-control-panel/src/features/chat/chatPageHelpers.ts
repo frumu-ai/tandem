@@ -352,6 +352,22 @@ export function shouldShowSetupCard(prompt: string, setup: SetupUnderstandRespon
   return explicitWorkflowAction || explicitPlannerPhrase;
 }
 
+export function shouldContinueSetupToModel(prompt: string, setup: SetupUnderstandResponse) {
+  if (
+    setup.intent_kind === "automation_create" ||
+    setup.intent_kind === "workflow_planner_create"
+  ) {
+    return true;
+  }
+  const text = String(prompt || "")
+    .trim()
+    .toLowerCase();
+  return (
+    /\b(create|build|make|draft|design|plan|schedule|automate|orchestrate)\b/.test(text) &&
+    /\b(workflow|workflows|pipeline|handoff|automation|automations)\b/.test(text)
+  );
+}
+
 export function timelineToneForEvent(type: string, props: any): RunTimelineTone {
   const lower = String(type || "").toLowerCase();
   const status = String(props?.status || props?.state || "").toLowerCase();

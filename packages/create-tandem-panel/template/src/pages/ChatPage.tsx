@@ -67,6 +67,7 @@ type SetupIntentKind =
   | "provider_setup"
   | "integration_setup"
   | "automation_create"
+  | "workflow_planner_create"
   | "channel_setup_help"
   | "setup_help"
   | "general";
@@ -202,6 +203,22 @@ function setupCardFromResponse(response: SetupUnderstandResponse): SetupCard | n
     payload: response.proposed_action.payload || {},
     clarifier: response.clarifier || undefined,
   };
+}
+
+function shouldContinueSetupToModel(prompt: string, setup: SetupUnderstandResponse) {
+  if (
+    setup.intent_kind === "automation_create" ||
+    setup.intent_kind === "workflow_planner_create"
+  ) {
+    return true;
+  }
+  const text = String(prompt || "")
+    .trim()
+    .toLowerCase();
+  return (
+    /\b(create|build|make|draft|design|plan|schedule|automate|orchestrate)\b/.test(text) &&
+    /\b(workflow|workflows|pipeline|handoff|automation|automations)\b/.test(text)
+  );
 }
 
 export function ChatPage({ client, api, toast, providerStatus, identity, navigate }: AppPageProps) {
@@ -677,6 +694,10 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
       })) as SetupUnderstandResponse;
       if (setup.decision !== "pass_through") {
         setSetupCard(setupCardFromResponse(setup));
+        if (!shouldContinueSetupToModel(resolvedPrompt, setup)) {
+          setPrompt("");
+          return;
+        }
       }
     } catch {
       // continue with normal chat flow
