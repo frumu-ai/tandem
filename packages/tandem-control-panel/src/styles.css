@@ -1338,7 +1338,37 @@ svg.lucide-loader-circle,
   font-size: var(--font-size-xs);
   text-align: left;
 }
+.orch-palette-count {
+  min-width: 20px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: var(--color-text-subtle);
+  font-size: 10px;
+  text-align: center;
+}
+.orch-palette-add,
+.orch-node-remove {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--color-text-subtle);
+}
+.orch-palette-add:hover,
+.orch-palette-add:focus-visible,
+.orch-node-remove:hover,
+.orch-node-remove:focus-visible {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  outline: none;
+}
 .orch-palette-item:hover,
+.orch-palette-item:focus-within,
 .orch-palette-item:focus-visible {
   border-color: color-mix(in srgb, #3b82f6 45%, transparent);
   background: color-mix(in srgb, var(--color-surface-elevated) 90%, #2563eb 10%);
@@ -1399,6 +1429,22 @@ svg.lucide-loader-circle,
   gap: 3px;
   color: #fbbf24;
   font-size: var(--font-size-xs);
+}
+.orch-node-actions {
+  display: flex;
+  min-width: 26px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.orch-node-remove {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.orch-node:hover .orch-node-remove,
+.orch-node.selected .orch-node-remove,
+.orch-node-remove:focus-visible {
+  opacity: 1;
 }
 .orch-edge.selected path {
   stroke: #60a5fa;
@@ -1567,7 +1613,8 @@ svg.lucide-loader-circle,
 
 @media (prefers-reduced-motion: reduce) {
   .orch-library-card,
-  .orch-palette-item {
+  .orch-palette-item,
+  .orch-node-remove {
     transition: none;
   }
 }

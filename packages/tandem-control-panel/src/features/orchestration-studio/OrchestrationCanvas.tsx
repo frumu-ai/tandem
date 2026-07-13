@@ -15,13 +15,11 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { OrchestrationEdgeSpec, OrchestrationNodeSpec } from "@frumu/tandem-client";
-import { useRef } from "react";
+import { useMemo, useRef } from "react";
 import { Icon } from "../../ui/Icon";
 
 export type OrchestrationSelection =
-  | { kind: "node"; id: string }
-  | { kind: "edge"; id: string }
-  | null;
+  { kind: "node"; id: string } | { kind: "edge"; id: string } | null;
 
 type CanvasNodeData = {
   spec: OrchestrationNodeSpec;
@@ -29,6 +27,8 @@ type CanvasNodeData = {
   issueCount: number;
   stale: boolean;
   loop: boolean;
+  readOnly?: boolean;
+  onRemove?: (nodeId: string) => void;
 };
 
 function kindLabel(spec: OrchestrationNodeSpec) {
@@ -66,12 +66,28 @@ function OrchestrationNode({ data, selected }: any) {
             {value.loop ? <span className="orch-node-tag loop">Loop</span> : null}
           </div>
         </div>
-        {value.issueCount ? (
-          <span className="orch-issue-count" title={`${value.issueCount} validation issues`}>
-            <Icon name="triangle-alert" size={13} />
-            {value.issueCount}
-          </span>
-        ) : null}
+        <div className="orch-node-actions">
+          {value.issueCount ? (
+            <span className="orch-issue-count" title={`${value.issueCount} validation issues`}>
+              <Icon name="triangle-alert" size={13} />
+              {value.issueCount}
+            </span>
+          ) : null}
+          {!value.readOnly && value.onRemove ? (
+            <button
+              type="button"
+              className="orch-node-remove nodrag nowheel"
+              title={`Remove ${value.spec.name}`}
+              aria-label={`Remove ${value.spec.name}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                value.onRemove?.(value.spec.node_id);
+              }}
+            >
+              <Icon name="trash-2" size={14} />
+            </button>
+          ) : null}
+        </div>
       </div>
       {value.spec.kind === "workflow" ? (
         <div className="mt-3 truncate font-mono text-xs text-[var(--color-text-subtle)]">
@@ -142,6 +158,7 @@ export function OrchestrationCanvas({
   onConnect,
   onReconnect,
   onDropNode,
+  onDeleteNode,
   readOnly = false,
 }: {
   nodes: OrchestrationNodeSpec[];
@@ -160,19 +177,40 @@ export function OrchestrationCanvas({
   onConnect: (connection: Connection) => void;
   onReconnect: (edgeId: string, connection: Connection) => void;
   onDropNode: (kind: string, position: { x: number; y: number }) => void;
+  onDeleteNode: (nodeId: string) => void;
   readOnly?: boolean;
 }) {
   const flowRef = useRef<any>(null);
-  const canvasNodes = toCanvasNodes(nodes, rootNodeId, issueCounts, staleNodeIds, loopNodeIds).map(
-    (node) => ({
-      ...node,
-      selected: selectedNodeIds.has(node.id),
-    })
+  const canvasNodes = useMemo(
+    () =>
+      toCanvasNodes(nodes, rootNodeId, issueCounts, staleNodeIds, loopNodeIds).map((node) => ({
+        ...node,
+        selected: selectedNodeIds.has(node.id),
+        data: {
+          ...node.data,
+          readOnly,
+          onRemove: onDeleteNode,
+        },
+      })),
+    [
+      issueCounts,
+      loopNodeIds,
+      nodes,
+      onDeleteNode,
+      readOnly,
+      rootNodeId,
+      selectedNodeIds,
+      staleNodeIds,
+    ]
   );
-  const canvasEdges = toCanvasEdges(edges, loopEdgeIds).map((edge) => ({
-    ...edge,
-    selected: selectedEdgeIds.has(edge.id),
-  }));
+  const canvasEdges = useMemo(
+    () =>
+      toCanvasEdges(edges, loopEdgeIds).map((edge) => ({
+        ...edge,
+        selected: selectedEdgeIds.has(edge.id),
+      })),
+    [edges, loopEdgeIds, selectedEdgeIds]
+  );
 
   return (
     <ReactFlowProvider>

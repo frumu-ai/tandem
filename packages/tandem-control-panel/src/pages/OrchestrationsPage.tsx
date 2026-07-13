@@ -21,11 +21,12 @@ import {
   type OrchestrationSelection,
 } from "../features/orchestration-studio/OrchestrationCanvas";
 import { OrchestrationInspector } from "../features/orchestration-studio/OrchestrationInspector";
+import { OrchestrationPalette } from "../features/orchestration-studio/OrchestrationPalette";
 import { analyzeGraph } from "../features/orchestration-studio/graph";
 import { autoLayoutLeftToRight } from "../features/orchestration-studio/layout";
+import { synchronizeSavedDraftQueries } from "../features/orchestration-studio/queryCache";
 import { validateOrchestrationDraft } from "../features/orchestration-studio/validation";
 import {
-  PaletteItem,
   automationId,
   automationName,
   compareOrchestrationSpecs,
@@ -56,7 +57,6 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set());
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<Set<string>>(() => new Set());
   const [editorMode, setEditorMode] = useState<EditorMode>("canvas");
-  const [paletteSearch, setPaletteSearch] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "conflict" | "error">("saved");
   const [showCreate, setShowCreate] = useState(false);
@@ -128,12 +128,13 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
           .get(summary.orchestration_id)
           .catch(() => null);
         const inspectDraft = aggregate?.draft?.status === "draft";
-        const [validation, stale] = inspectLibraryHealth && inspectDraft
-          ? await Promise.all([
-              client.orchestrations.validate(summary.orchestration_id).catch(() => null),
-              client.orchestrations.staleReferences(summary.orchestration_id).catch(() => null),
-            ])
-          : [null, null];
+        const [validation, stale] =
+          inspectLibraryHealth && inspectDraft
+            ? await Promise.all([
+                client.orchestrations.validate(summary.orchestration_id).catch(() => null),
+                client.orchestrations.staleReferences(summary.orchestration_id).catch(() => null),
+              ])
+            : [null, null];
         return {
           spec: aggregate?.draft || aggregate?.latest_published || null,
           valid: validation?.report.valid,
@@ -204,20 +205,20 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
           metadata: value.metadata,
           expected_updated_at_ms: value.updated_at_ms,
         });
-        const changedWhileSaving = revisionRef.current !== savedRevision;
         const stillOpen = selectedIdRef.current === savedOrchestrationId;
         if (stillOpen) {
           setDraft((current) => {
             if (current?.orchestration_id !== savedOrchestrationId) return current;
-            return changedWhileSaving
+            return revisionRef.current !== savedRevision
               ? { ...current, updated_at_ms: response.orchestration.updated_at_ms }
               : response.orchestration;
           });
-          setDirty(changedWhileSaving);
+          setDirty(() => revisionRef.current !== savedRevision);
           setSaveState("saved");
           hydratedId.current = `${response.orchestration_id}:${response.updated_at_ms}`;
         }
-        await queryClient.invalidateQueries({ queryKey: ["orchestrations"] });
+        await synchronizeSavedDraftQueries(queryClient, response.orchestration);
+        const changedWhileSaving = revisionRef.current !== savedRevision;
         return changedWhileSaving || !stillOpen ? null : response.orchestration;
       } catch (error: any) {
         const conflict = String(error?.message || "")
@@ -236,8 +237,7 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
   );
 
   useEffect(() => {
-    if (readOnlySnapshot || !dirty || !draft || saveState !== "saved")
-      return;
+    if (readOnlySnapshot || !dirty || !draft || saveState !== "saved") return;
     const timer = window.setTimeout(() => void saveDraft(draft), 1200);
     return () => window.clearTimeout(timer);
   }, [dirty, draft, readOnlySnapshot, saveDraft, saveState]);
@@ -370,8 +370,10 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
         persisted = saved;
       }
       if (operation === "validate") return client.orchestrations.validate(selectedId);
-      if (operation === "publish") return client.orchestrations.publish(selectedId, persisted.updated_at_ms);
-      if (operation === "archive") return client.orchestrations.archive(selectedId, persisted.updated_at_ms);
+      if (operation === "publish")
+        return client.orchestrations.publish(selectedId, persisted.updated_at_ms);
+      if (operation === "archive")
+        return client.orchestrations.archive(selectedId, persisted.updated_at_ms);
       return client.orchestrations.refreshReferences(selectedId, persisted.updated_at_ms);
     },
     onSuccess: async (_, operation) => {
@@ -383,7 +385,9 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
       if (operation === "archive") setSelectedId("");
     },
     onError: (error: any) => {
-      const conflict = String(error?.message || "").toLowerCase().includes("conflict");
+      const conflict = String(error?.message || "")
+        .toLowerCase()
+        .includes("conflict");
       if (conflict) setDirty(true);
       if (conflict) setSaveState("conflict");
       toast("err", error?.message || "Orchestration action failed");
@@ -463,6 +467,25 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
   );
   const referencesNeedRefresh =
     staleQuery.data?.references.some((reference) => reference.state !== "fresh") ?? false;
+  const graphAnalysis = useMemo(() => (draft ? analyzeGraph(draft) : null), [draft]);
+  const loopNodeIds = useMemo(
+    () => new Set(graphAnalysis?.loopComponents.flat() || []),
+    [graphAnalysis]
+  );
+  const loopEdgeIds = useMemo(
+    () =>
+      new Set(
+        draft?.edges
+          .filter((edge) =>
+            graphAnalysis?.loopComponents.some(
+              (component) =>
+                component.includes(edge.from_node_id) && component.includes(edge.to_node_id)
+            )
+          )
+          .map((edge) => edge.edge_id) || []
+      ),
+    [draft?.edges, graphAnalysis]
+  );
 
   const addNode = useCallback(
     (kind: string, position?: { x: number; y: number }) => {
@@ -516,6 +539,14 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
           (change) => change.type === "remove" || (change.type === "position" && !change.dragging)
         )
       );
+      const removedNodeIds = new Set(
+        graphChanges.filter((change) => change.type === "remove").map((change) => change.id)
+      );
+      if (removedNodeIds.size) {
+        setSelectedNodeIds(new Set());
+        setSelectedEdgeIds(new Set());
+        setSelection(null);
+      }
     },
     [draft, issueCounts, mutateDraft, staleNodeIds]
   );
@@ -529,6 +560,13 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
         ...current,
         edges: current.edges.filter((edge) => next.some((item) => item.id === edge.edge_id)),
       }));
+      const removedEdgeIds = new Set(graphChanges.map((change) => change.id));
+      setSelectedEdgeIds(
+        (current) => new Set([...current].filter((edgeId) => !removedEdgeIds.has(edgeId)))
+      );
+      setSelection((current) =>
+        current?.kind === "edge" && removedEdgeIds.has(current.id) ? null : current
+      );
     },
     [draft, mutateDraft]
   );
@@ -582,26 +620,39 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
     [mutateDraft]
   );
 
+  const deleteItem = useCallback(
+    (item: Exclude<OrchestrationSelection, null>) => {
+      mutateDraft((current) => {
+        if (item.kind === "edge")
+          return { ...current, edges: current.edges.filter((edge) => edge.edge_id !== item.id) };
+        const nodes = current.nodes.filter((node) => node.node_id !== item.id);
+        return {
+          ...current,
+          root_node_id:
+            current.root_node_id === item.id
+              ? nodes.find((node) => node.kind === "workflow")?.node_id || ""
+              : current.root_node_id,
+          nodes,
+          edges: current.edges.filter(
+            (edge) => edge.from_node_id !== item.id && edge.to_node_id !== item.id
+          ),
+        };
+      });
+      setSelection(null);
+      setSelectedNodeIds(new Set());
+      setSelectedEdgeIds(new Set());
+    },
+    [mutateDraft]
+  );
   const deleteSelection = useCallback(() => {
-    if (!selection) return;
-    mutateDraft((current) => {
-      if (selection.kind === "edge")
-        return { ...current, edges: current.edges.filter((edge) => edge.edge_id !== selection.id) };
-      const nodes = current.nodes.filter((node) => node.node_id !== selection.id);
-      return {
-        ...current,
-        root_node_id:
-          current.root_node_id === selection.id
-            ? nodes.find((node) => node.kind === "workflow")?.node_id || ""
-            : current.root_node_id,
-        nodes,
-        edges: current.edges.filter(
-          (edge) => edge.from_node_id !== selection.id && edge.to_node_id !== selection.id
-        ),
-      };
-    });
-    setSelection(null);
-  }, [mutateDraft, selection]);
+    if (selection) deleteItem(selection);
+  }, [deleteItem, selection]);
+  const deleteNode = useCallback(
+    (nodeId: string) => {
+      deleteItem({ kind: "node", id: nodeId });
+    },
+    [deleteItem]
+  );
 
   const returnToLibrary = useCallback(async () => {
     if (dirty && draft) {
@@ -631,19 +682,7 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
   }
 
   if (selectedId && draft) {
-    const graphAnalysis = analyzeGraph(draft);
-    const graph = graphAnalysis.counts;
-    const loopNodeIds = new Set(graphAnalysis.loopComponents.flat());
-    const loopEdgeIds = new Set(
-      draft.edges
-        .filter((edge) =>
-          graphAnalysis.loopComponents.some(
-            (component) =>
-              component.includes(edge.from_node_id) && component.includes(edge.to_node_id)
-          )
-        )
-        .map((edge) => edge.edge_id)
-    );
+    const graph = graphAnalysis!.counts;
     const published = aggregateQuery.data?.latest_published;
     const comparisonChanges = compareOrchestrationSpecs(draft, published || null);
     const graphValid =
@@ -677,7 +716,11 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
               />
               <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-subtle)]">
                 <span>
-                  {publishedOnly ? "Published snapshot" : archivedDraft ? "Archived draft" : "Draft"}
+                  {publishedOnly
+                    ? "Published snapshot"
+                    : archivedDraft
+                      ? "Archived draft"
+                      : "Draft"}
                 </span>
                 <span>Version {draft.version}</span>
                 <span>{graph.workflows} workflows</span>
@@ -738,8 +781,12 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
             </button>
             <button
               className="tcp-btn"
-              disabled={readOnlySnapshot || saveState !== "saved" ||
-                !referencesNeedRefresh || operationMutation.isPending}
+              disabled={
+                readOnlySnapshot ||
+                saveState !== "saved" ||
+                !referencesNeedRefresh ||
+                operationMutation.isPending
+              }
               onClick={() => operationMutation.mutate("refresh")}
             >
               <Icon name="refresh-cw" />
@@ -813,7 +860,9 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
         {saveState === "error" ? (
           <div className="orch-conflict" role="alert">
             <Icon name="triangle-alert" />
-            <span>Autosave failed. Your edits remain local until you retry, preserve a copy, or reload.</span>
+            <span>
+              Autosave failed. Your edits remain local until you retry, preserve a copy, or reload.
+            </span>
             <button className="tcp-btn-primary" onClick={() => void saveDraft(draft)}>
               <Icon name="refresh-cw" />
               Retry save
@@ -841,73 +890,12 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
         ) : null}
 
         <div className="orch-studio-grid">
-          <aside className="orch-palette" aria-label="Node palette">
-            <fieldset disabled={readOnlySnapshot} className="contents">
-              <div className="border-b border-[var(--color-border-subtle)] p-3">
-                <div className="mb-2 text-xs font-semibold uppercase text-[var(--color-text-subtle)]">
-                  Add nodes
-                </div>
-                <div className="relative">
-                  <Icon
-                    name="search"
-                    className="absolute left-2.5 top-2.5 text-[var(--color-text-subtle)]"
-                  />
-                  <SearchInput
-                    aria-label="Search workflows"
-                    className="tcp-input w-full pl-8"
-                    placeholder="Search workflows"
-                    value={paletteSearch}
-                    onInput={(event) => setPaletteSearch(event.currentTarget.value)}
-                  />
-                </div>
-              </div>
-              <div className="grid gap-1 overflow-y-auto p-3">
-                <div className="orch-palette-heading">Workflows</div>
-                {workflows
-                  .filter((row: any) =>
-                    automationName(row).toLowerCase().includes(paletteSearch.toLowerCase())
-                  )
-                  .map((row: any) => (
-                    <PaletteItem
-                      key={automationId(row)}
-                      kind={`workflow:${automationId(row)}`}
-                      label={automationName(row)}
-                      icon="workflow"
-                      onAdd={addNode}
-                    />
-                  ))}
-                <div className="orch-palette-heading mt-3">Waits</div>
-                <PaletteItem kind="wait:timer" label="Timer" icon="clock" onAdd={addNode} />
-                <PaletteItem
-                  kind="wait:approval"
-                  label="Approval"
-                  icon="shield-check"
-                  onAdd={addNode}
-                />
-                <PaletteItem kind="wait:webhook" label="Webhook" icon="webhook" onAdd={addNode} />
-                <PaletteItem
-                  kind="wait:external_condition"
-                  label="External condition"
-                  icon="radio"
-                  onAdd={addNode}
-                />
-                <div className="orch-palette-heading mt-3">Terminals</div>
-                <PaletteItem
-                  kind="terminal:complete"
-                  label="Complete"
-                  icon="square-check-big"
-                  onAdd={addNode}
-                />
-                <PaletteItem
-                  kind="terminal:pause"
-                  label="Pause"
-                  icon="pause-circle"
-                  onAdd={addNode}
-                />
-                <PaletteItem kind="terminal:fail" label="Fail" icon="x-circle" onAdd={addNode} />
-              </div>
-            </fieldset>
-          </aside>
+          <OrchestrationPalette
+            workflows={workflows}
+            nodes={draft.nodes}
+            onAdd={addNode}
+            readOnly={readOnlySnapshot}
+          />
 
           <main className="min-w-0 overflow-hidden">
             <div className="orch-mode-tabs" role="tablist" aria-label="Authoring mode">
@@ -970,6 +958,7 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
                 onConnect={onConnect}
                 onReconnect={onReconnect}
                 onDropNode={addNode}
+                onDeleteNode={deleteNode}
                 readOnly={readOnlySnapshot}
               />
             ) : (
@@ -1169,9 +1158,16 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <strong className="text-sm">Validation</strong>
-                <span className={`orch-validation-state ${archivedDraft ? "unchecked" : graphValid ? "valid" : "invalid"}`}>
-                  {archivedDraft ? "Not checked" : validationQuery.isFetching ? "Checking" :
-                    graphValid ? "Valid" : `${validationIssues.length} issues`}
+                <span
+                  className={`orch-validation-state ${archivedDraft ? "unchecked" : graphValid ? "valid" : "invalid"}`}
+                >
+                  {archivedDraft
+                    ? "Not checked"
+                    : validationQuery.isFetching
+                      ? "Checking"
+                      : graphValid
+                        ? "Valid"
+                        : `${validationIssues.length} issues`}
                 </span>
               </div>
               <div className="grid max-h-32 gap-1 overflow-y-auto">
@@ -1198,8 +1194,9 @@ export function OrchestrationsPage({ client, toast, setNavigationLock, navigate 
                   ))
                 ) : (
                   <div className="text-xs text-[var(--color-text-subtle)]">
-                    {archivedDraft ? "Server validation is not run for archived drafts." :
-                      "No server validation issues."}
+                    {archivedDraft
+                      ? "Server validation is not run for archived drafts."
+                      : "No server validation issues."}
                   </div>
                 )}
               </div>

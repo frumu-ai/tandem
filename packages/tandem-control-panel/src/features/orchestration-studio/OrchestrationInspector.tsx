@@ -454,12 +454,13 @@ export function OrchestrationInspector({
         </div>
         {selection && !readOnly ? (
           <button
-            className="tcp-icon-btn"
-            title="Delete selected item"
-            aria-label="Delete selected item"
+            className="tcp-btn"
+            title={node ? `Remove ${node.name}` : "Remove transition"}
+            aria-label={node ? `Remove selected node: ${node.name}` : "Remove selected transition"}
             onClick={onDelete}
           >
             <Icon name="trash-2" />
+            {node ? "Remove node" : "Remove transition"}
           </button>
         ) : null}
       </div>

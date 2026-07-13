@@ -165,27 +165,54 @@ export function PaletteItem({
   kind,
   label,
   icon,
+  instanceCount = 0,
+  disabled = false,
   onAdd,
 }: {
   kind: string;
   label: string;
   icon: any;
+  instanceCount?: number;
+  disabled?: boolean;
   onAdd: (kind: string) => void;
 }) {
   return (
-    <button
-      type="button"
+    <div
       className="orch-palette-item"
-      draggable
+      draggable={!disabled}
+      role="group"
+      aria-label={`${label} node`}
       onDragStart={(event) => {
+        if (disabled) {
+          event.preventDefault();
+          return;
+        }
         event.dataTransfer.setData("application/tandem-orchestration-node", kind);
         event.dataTransfer.effectAllowed = "copy";
       }}
       data-node-kind={kind}
-      onClick={() => onAdd(kind)}
     >
       <Icon name={icon} />
-      <span className="truncate">{label}</span>
-    </button>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {instanceCount > 0 ? (
+        <span
+          className="orch-palette-count"
+          aria-label={`${instanceCount} on canvas`}
+          title={`${instanceCount} on canvas`}
+        >
+          {instanceCount}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        className="orch-palette-add nodrag"
+        disabled={disabled}
+        title={`Add ${label} node`}
+        aria-label={`Add ${label} node`}
+        onClick={() => onAdd(kind)}
+      >
+        <Icon name="plus" />
+      </button>
+    </div>
   );
 }

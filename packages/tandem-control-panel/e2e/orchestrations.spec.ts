@@ -160,12 +160,31 @@ test("orchestration library opens a canonical draft in the visual and outline ed
     );
   });
   expect(renderedPixels).toBe(true);
+  const versionsRequestsBeforeEdits = apiFixture.requests.filter(
+    (request) => request === `GET /api/engine/orchestrations/${draft.orchestration_id}/versions`
+  ).length;
 
-  await page.getByRole("button", { name: "Timer", exact: true }).click();
+  await page.getByLabel("Search nodes").fill("timer");
+  await expect(page.getByRole("group", { name: "Timer node" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Approval node" })).toHaveCount(0);
+  await page.getByLabel("Search nodes").fill("");
+  const timerItem = page.getByRole("group", { name: "Timer node" });
+  await timerItem.click();
+  await expect(page.getByText("timer wait", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Add Approval node" }).click();
+  await expect(
+    page.getByText("approval wait", { exact: true }).filter({ visible: true }).first()
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Remove selected node: approval wait" }).click();
+  await expect(page.getByText("approval wait", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Add Timer node" }).click();
   await expect(
     page.getByText("timer wait", { exact: true }).filter({ visible: true }).first()
   ).toBeVisible();
-  await page.getByRole("button", { name: "Webhook", exact: true }).click();
+  await expect(timerItem.getByLabel("1 on canvas")).toBeVisible();
+  await page.getByRole("button", { name: "Add Webhook node" }).click();
   await expect(page.getByLabel("Correlation source")).toBeVisible();
 
   await page.getByRole("tab", { name: "Outline" }).click();
@@ -182,11 +201,84 @@ test("orchestration library opens a canonical draft in the visual and outline ed
   await expect
     .poll(() => savedBody?.edges?.some((edge: any) => edge.transition_key === "wait"))
     .toBe(true);
+  await page.waitForTimeout(250);
+  expect(
+    apiFixture.requests.filter(
+      (request) => request === `GET /api/engine/orchestrations/${draft.orchestration_id}/versions`
+    )
+  ).toHaveLength(versionsRequestsBeforeEdits);
   expect(savedBody.expected_updated_at_ms).toBeGreaterThanOrEqual(draft.updated_at_ms);
   expect(
     savedBody.nodes.some((node: any) => node.kind === "wait" && node.wait.kind === "timer")
   ).toBe(true);
   await expect(page.getByText("webhook_trigger_invalid", { exact: true })).toBeVisible();
+});
+
+test("edits made while autosave is in flight remain in the draft", async ({ page, apiFixture }) => {
+  mockOrchestration(apiFixture);
+  let releaseFirstSave!: () => void;
+  let markFirstSaveRequested!: () => void;
+  const firstSaveReleased = new Promise<void>((resolve) => {
+    releaseFirstSave = resolve;
+  });
+  const firstSaveRequested = new Promise<void>((resolve) => {
+    markFirstSaveRequested = resolve;
+  });
+  const savedBodies: any[] = [];
+  let currentDraft: any = draft;
+
+  await page.route(`**/api/engine/orchestrations/${draft.orchestration_id}`, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          orchestration_id: draft.orchestration_id,
+          draft: currentDraft,
+          latest_published: null,
+        }),
+      });
+      return;
+    }
+    if (route.request().method() !== "PUT") return route.fallback();
+    const body = route.request().postDataJSON();
+    savedBodies.push(body);
+    if (savedBodies.length === 1) {
+      markFirstSaveRequested();
+      await firstSaveReleased;
+    }
+    currentDraft = {
+      ...currentDraft,
+      ...body,
+      updated_at_ms: currentDraft.updated_at_ms + 1,
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        orchestration: currentDraft,
+        orchestration_id: draft.orchestration_id,
+        version: 0,
+        status: "draft",
+        updated_at_ms: currentDraft.updated_at_ms,
+      }),
+    });
+  });
+
+  await page.goto("/#/orchestrations");
+  await waitForRoute(page, "orchestrations");
+  await page.getByRole("button", { name: /Plan and execute/ }).click();
+  await page.getByLabel("Orchestration name").fill("Autosave race");
+  await firstSaveRequested;
+  await page.getByRole("button", { name: "Add Timer node" }).click();
+  releaseFirstSave();
+
+  await expect.poll(() => savedBodies.length).toBeGreaterThanOrEqual(2);
+  expect(savedBodies[1].nodes.some((node: any) => node.kind === "wait")).toBe(true);
+  await expect(page.getByLabel("Orchestration name")).toHaveValue("Autosave race");
+  await expect(
+    page.getByText("timer wait", { exact: true }).filter({ visible: true }).first()
+  ).toBeVisible();
 });
 
 test("published-only orchestrations open as read-only inspectable snapshots", async ({
