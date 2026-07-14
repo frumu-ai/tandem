@@ -507,8 +507,7 @@ fn extract_apply_patch_paths(patch: &str) -> Vec<String> {
 }
 
 pub(super) fn is_mcp_tool_name(tool_name: &str) -> bool {
-    let normalized = normalize_tool_name(tool_name);
-    normalized == "mcp_list" || normalized.starts_with("mcp.")
+    is_mcp_tool_or_discovery(tool_name)
 }
 
 pub(super) fn agent_can_use_tool(agent: &AgentDefinition, tool_name: &str) -> bool {

@@ -437,6 +437,8 @@ fn mcp_server_from_tool_name_parses_server_segment() {
 #[test]
 fn mcp_tools_are_exempt_from_workspace_sandbox_path_checks() {
     assert!(is_mcp_tool_name("mcp_list"));
+    assert!(is_mcp_tool_name("mcp_list_catalog"));
+    assert!(is_mcp_tool_name("mcp_request_capability"));
     assert!(is_mcp_tool_name("mcp.tandem_mcp.get_doc"));
     assert!(is_mcp_tool_name("MCP.TANDEM_MCP.GET_DOC"));
     assert!(!is_mcp_tool_name("read"));

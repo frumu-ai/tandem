@@ -543,8 +543,7 @@ impl EngineLoop {
                     });
                 }
                 if intent == ToolIntent::ProductAuthoring {
-                    tool_schemas
-                        .retain(|schema| !normalize_tool_name(&schema.name).starts_with("mcp."));
+                    tool_schemas.retain(|schema| !is_mcp_tool_or_discovery(&schema.name));
                 }
                 let prewrite_gate = evaluate_prewrite_gate(
                     requested_write_required,
@@ -741,7 +740,7 @@ impl EngineLoop {
                     total_available_count: all_tools.len(),
                     mcp_included: tool_schemas
                         .iter()
-                        .any(|schema| normalize_tool_name(&schema.name).starts_with("mcp.")),
+                        .any(|schema| is_mcp_tool_or_discovery(&schema.name)),
                 };
                 self.event_bus.publish(EngineEvent::new(
                     "tool.routing.decision",

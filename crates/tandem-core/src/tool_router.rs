@@ -70,6 +70,15 @@ pub fn is_short_simple_prompt(input: &str) -> bool {
     words > 0 && words <= 10
 }
 
+pub(crate) fn is_mcp_tool_or_discovery(tool_name: &str) -> bool {
+    let normalized = normalize_tool_name(tool_name);
+    normalized.starts_with("mcp.")
+        || matches!(
+            normalized.as_str(),
+            "mcp_list" | "mcp_list_catalog" | "mcp_request_capability"
+        )
+}
+
 pub fn classify_intent(input: &str) -> ToolIntent {
     let lower = input.trim().to_ascii_lowercase();
     if lower.is_empty() {
@@ -267,7 +276,7 @@ pub fn select_tool_subset(
 
     for schema in available {
         let norm = normalize_tool_name(&schema.name);
-        if intent == ToolIntent::ProductAuthoring && norm.starts_with("mcp.") {
+        if intent == ToolIntent::ProductAuthoring && is_mcp_tool_or_discovery(&norm) {
             continue;
         }
         let explicitly_allowed = !request_allowlist.is_empty()
@@ -275,12 +284,12 @@ pub fn select_tool_subset(
                 .iter()
                 .any(|pattern| tool_name_matches_policy(pattern, &norm));
         let intrinsic_product_tool = product_intent
-            && !norm.starts_with("mcp.")
+            && !is_mcp_tool_or_discovery(&norm)
             && tool_schema_matches_profile(&schema, ToolCapabilityProfile::ProductControl);
         if !request_allowlist.is_empty() && !explicitly_allowed && !intrinsic_product_tool {
             continue;
         }
-        if !include_mcp && norm.starts_with("mcp.") && !explicitly_allowed {
+        if !include_mcp && is_mcp_tool_or_discovery(&norm) && !explicitly_allowed {
             continue;
         }
         if !tool_matches_intent(intent, &schema) && !explicitly_allowed {
@@ -380,7 +389,7 @@ fn tool_matches_intent(intent: ToolIntent, schema: &ToolSchema) -> bool {
             tool_schema_matches_profile(schema, ToolCapabilityProfile::ProductControl)
         }
         ToolIntent::McpExplicit => {
-            name.starts_with("mcp.") || matches!(name.as_str(), "read" | "grep" | "search")
+            is_mcp_tool_or_discovery(&name) || matches!(name.as_str(), "read" | "grep" | "search")
         }
     }
 }
@@ -662,6 +671,9 @@ mod tests {
     fn product_authoring_excludes_external_tools_even_with_an_allowlist() {
         let mut allowlist = HashSet::new();
         allowlist.insert("mcp.slack.*".to_string());
+        allowlist.insert("mcp_list".to_string());
+        allowlist.insert("mcp_list_catalog".to_string());
+        allowlist.insert("mcp_request_capability".to_string());
         let selected = select_tool_subset(
             vec![
                 product_schema(
@@ -680,6 +692,9 @@ mod tests {
                     ToolRiskTier::ConsequentialWrite,
                 ),
                 schema("mcp.slack.post_message"),
+                schema("mcp_list"),
+                schema("mcp_list_catalog"),
+                schema("mcp_request_capability"),
             ],
             ToolIntent::ProductAuthoring,
             &allowlist,
@@ -692,6 +707,9 @@ mod tests {
         assert!(names.contains(&"orchestration_create_draft".to_string()));
         assert!(names.contains(&"orchestration_validate".to_string()));
         assert!(!names.contains(&"mcp.slack.post_message".to_string()));
+        assert!(!names.contains(&"mcp_list".to_string()));
+        assert!(!names.contains(&"mcp_list_catalog".to_string()));
+        assert!(!names.contains(&"mcp_request_capability".to_string()));
         assert!(!names.contains(&"orchestration_publish".to_string()));
     }
 
