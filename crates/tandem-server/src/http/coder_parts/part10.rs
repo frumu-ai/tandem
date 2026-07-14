@@ -425,6 +425,29 @@ mod issue_fix_handoff_tests {
         assert!(args.get("pull_number").is_none());
         assert!(args.get("merge_method").is_none());
     }
+
+    #[test]
+    fn github_merge_payload_preserves_declared_squash_for_legacy_number() {
+        let args = github_merge_pull_request_args(
+            &json!({
+                "type": "object",
+                "properties": {
+                    "owner": {"type": "string"},
+                    "repo": {"type": "string"},
+                    "number": {"type": "integer"},
+                    "merge_method": {"type": "string"}
+                }
+            }),
+            "frumu-ai",
+            "tandem",
+            1894,
+        );
+        assert_eq!(args.get("number").and_then(Value::as_u64), Some(1894));
+        assert_eq!(
+            args.get("merge_method").and_then(Value::as_str),
+            Some("squash")
+        );
+    }
 }
 async fn call_merge_pull_request(
     state: &AppState,
@@ -461,11 +484,15 @@ fn github_merge_pull_request_args(
     if properties
         .is_some_and(|fields| fields.contains_key("number") && !fields.contains_key("pull_number"))
     {
-        json!({
+        let mut args = json!({
             "owner": owner,
             "repo": repo,
             "number": pull_number,
-        })
+        });
+        if properties.is_some_and(|fields| fields.contains_key("merge_method")) {
+            args["merge_method"] = json!("squash");
+        }
+        args
     } else {
         json!({
             "owner": owner,
