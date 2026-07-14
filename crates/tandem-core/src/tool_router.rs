@@ -556,10 +556,8 @@ fn is_live_integration_inspection_request(input: &str) -> bool {
     ) {
         return false;
     }
-    let integration_subject = contains_any(
-        input,
-        &["live integration", "integration tools", "mcp tools"],
-    );
+    let integration_subject =
+        contains_any(input, &["live integration", "integration tools", "mcp"]);
     let inspection_action = contains_any(
         input,
         &["inspect", "discover", "test", "list", "check", "show"],
@@ -969,6 +967,14 @@ mod tests {
         );
         assert_eq!(
             classify_intent("Create an automation and check MCP tools before drafting"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create a Slack automation and inspect the Slack MCP integration"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create a Slack automation and inspect Slack MCP first"),
             ToolIntent::ProductAuthoringWithMcp
         );
         assert_eq!(
