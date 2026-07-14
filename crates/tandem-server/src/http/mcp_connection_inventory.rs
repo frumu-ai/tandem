@@ -156,6 +156,8 @@ fn public_mcp_connection_view(connection: &McpConnection) -> Value {
     json!({
         "connection_id": &connection.connection_id,
         "connectionId": &connection.connection_id,
+        "connection_generation": &connection.connection_generation,
+        "connectionGeneration": &connection.connection_generation,
         "server": &connection.server_id,
         "server_id": &connection.server_id,
         "serverId": &connection.server_id,
