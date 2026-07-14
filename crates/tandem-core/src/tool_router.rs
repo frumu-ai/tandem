@@ -107,6 +107,27 @@ pub(crate) fn product_authoring_needs_catalog_fallback(
     has_planner_start(all_tools) && !has_planner_start(candidate_tools)
 }
 
+pub(crate) fn product_authoring_execution_scope(
+    request_allowlist: &HashSet<String>,
+    intent: ToolIntent,
+    all_tools: &[ToolSchema],
+) -> Vec<String> {
+    let mut scope = request_allowlist.iter().cloned().collect::<HashSet<_>>();
+    if intent == ToolIntent::ProductAuthoring && !scope.is_empty() {
+        scope.extend(
+            all_tools
+                .iter()
+                .filter(|schema| {
+                    is_product_authoring_tool(schema) && !is_mcp_tool_or_discovery(&schema.name)
+                })
+                .map(|schema| normalize_tool_name(&schema.name)),
+        );
+    }
+    let mut scope = scope.into_iter().collect::<Vec<_>>();
+    scope.sort();
+    scope
+}
+
 pub fn classify_intent(input: &str) -> ToolIntent {
     let lower = input.trim().to_ascii_lowercase();
     if lower.is_empty() {
@@ -761,6 +782,50 @@ mod tests {
             &allowlist,
             ToolIntent::ProductAuthoring,
         ));
+    }
+
+    #[test]
+    fn connector_only_allowlist_extends_product_authoring_execution_scope() {
+        let allowlist = HashSet::from(["mcp.slack.*".to_string()]);
+        let tools = vec![
+            product_schema(
+                "workflow_plan_start",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::InternalWrite,
+            ),
+            product_schema(
+                "workflow_plan_materialize",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::InternalWrite,
+            ),
+            product_schema(
+                "orchestration_publish",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::ConsequentialWrite,
+            ),
+            product_schema(
+                "mcp.slack.post_message",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::ExternalDraft,
+            ),
+            schema("read"),
+        ];
+
+        let scope =
+            product_authoring_execution_scope(&allowlist, ToolIntent::ProductAuthoring, &tools);
+        assert!(scope.contains(&"mcp.slack.*".to_string()));
+        assert!(scope.contains(&"workflow_plan_start".to_string()));
+        assert!(scope.contains(&"workflow_plan_materialize".to_string()));
+        assert!(!scope.contains(&"orchestration_publish".to_string()));
+        assert!(!scope.contains(&"mcp.slack.post_message".to_string()));
+        assert!(!scope.contains(&"read".to_string()));
+
+        assert!(product_authoring_execution_scope(
+            &HashSet::new(),
+            ToolIntent::ProductAuthoring,
+            &tools,
+        )
+        .is_empty());
     }
 
     #[test]

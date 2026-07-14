@@ -110,15 +110,6 @@ impl EngineLoop {
             concrete_mcp_tools_required_before_write(&request_tool_allowlist);
         let required_mcp_source_wildcards_before_write =
             mcp_source_wildcards_required_before_write(&request_tool_allowlist);
-        // Propagate per-request tool allowlist to session-level enforcement so
-        // that execution-time checks (and mcp_list scoping) also respect it.
-        if request_tool_allowlist_is_explicit {
-            self.set_session_allowed_tools(
-                &session_id,
-                request_tool_allowlist.iter().cloned().collect(),
-            )
-            .await;
-        }
         let text = req
             .parts
             .iter()
@@ -137,6 +128,17 @@ impl EngineLoop {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let intent = classify_intent(&text);
+        // Propagate the request scope into every execution-time check. Product
+        // authoring keeps safe first-party tools when a channel only grants
+        // connector capabilities; connector and publish tools are not added.
+        if request_tool_allowlist_is_explicit {
+            let all_tools = self.tools.list().await;
+            let execution_scope =
+                product_authoring_execution_scope(&request_tool_allowlist, intent, &all_tools);
+            self.set_session_allowed_tools(&session_id, execution_scope)
+                .await;
+        }
         let runtime_attachments = build_runtime_attachments(&provider_id, &request_parts).await;
         self.auto_rename_session_from_user_text(&session_id, &text)
             .await;
@@ -260,7 +262,6 @@ impl EngineLoop {
             let mut email_action_executed = false;
             let mut latest_email_action_note: Option<String> = None;
             let mut email_tools_ever_offered = false;
-            let intent = classify_intent(&text);
             let router_enabled = tool_router_enabled();
             let retrieval_enabled = semantic_tool_retrieval_enabled();
             let retrieval_k = semantic_tool_retrieval_k();
