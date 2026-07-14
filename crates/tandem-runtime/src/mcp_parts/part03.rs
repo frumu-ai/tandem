@@ -1293,6 +1293,79 @@ mod tests {
             oauth_replaced.connection_generation
         );
 
+        let explicit_tenant =
+            TenantContext::explicit("org-a", "workspace-a", Some("user-a".to_string()));
+        registry
+            .set_oauth_refresh_config_for_tenant(
+                "reauth",
+                "oauth-provider".to_string(),
+                "https://example.com/token".to_string(),
+                "tenant-client-one".to_string(),
+                Some("tenant-secret-one".to_string()),
+                &explicit_tenant,
+            )
+            .await
+            .expect("set tenant oauth config");
+        let tenant_oauth_first = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.tenant_context == explicit_tenant)
+            .expect("tenant oauth connection");
+        registry
+            .set_oauth_refresh_config_for_tenant(
+                "reauth",
+                "oauth-provider".to_string(),
+                "https://example.com/token".to_string(),
+                "tenant-client-two".to_string(),
+                Some("tenant-secret-two".to_string()),
+                &explicit_tenant,
+            )
+            .await
+            .expect("replace tenant oauth config");
+        let tenant_oauth_replaced = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.tenant_context == explicit_tenant)
+            .expect("replaced tenant oauth connection");
+        assert_ne!(
+            tenant_oauth_first.connection_generation,
+            tenant_oauth_replaced.connection_generation
+        );
+
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn local_runtime_refresh_preserves_connection_generation() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let tenant = TenantContext::local_implicit();
+        registry
+            .add(
+                "stable-refresh".to_string(),
+                "https://example.com/mcp".to_string(),
+            )
+            .await;
+        let before = registry
+            .connection_for_tenant("stable-refresh", &tenant)
+            .await
+            .expect("local connection");
+
+        registry
+            .set_runtime_state_for_current_tenant(
+                "stable-refresh",
+                &tenant,
+                McpRuntimeState::disconnected(Some("temporary".to_string()), None),
+            )
+            .await;
+        let after = registry
+            .connection_for_tenant("stable-refresh", &tenant)
+            .await
+            .expect("refreshed local connection");
+
+        assert_eq!(before.connection_generation, after.connection_generation);
         let _ = std::fs::remove_file(file);
     }
 

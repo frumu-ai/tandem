@@ -319,7 +319,6 @@ impl McpRegistry {
         let credential_ref = compatibility_credential_ref(server_id, &server);
         let mut connections = self.connections.write().await;
         if let Some(existing) = connections.get_mut(&connection_id) {
-            existing.connection_generation = new_mcp_connection_generation();
             existing.enabled = server.enabled;
             if current_tenant.is_local_implicit() {
                 existing.credential_ref = credential_ref;
@@ -458,6 +457,7 @@ impl McpRegistry {
         };
         let mut connections = self.connections.write().await;
         if let Some(existing) = connections.get_mut(&connection_id) {
+            existing.connection_generation = new_mcp_connection_generation();
             existing.enabled = server.enabled;
             existing.credential_ref = Some(credential_ref);
             existing.oauth = Some(oauth);
