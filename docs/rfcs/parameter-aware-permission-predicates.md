@@ -127,6 +127,7 @@ Each condition produces `match`, `no_match`, or `indeterminate`.
 - A present value of the wrong type, an unnormalizable value, a selector budget violation, or an internal evaluation error produces `indeterminate`.
 - `all` returns `no_match` if any child is `no_match`, otherwise `indeterminate` if any child is indeterminate.
 - `any` returns `match` if any child matches, otherwise `indeterminate` if any child is indeterminate.
+- `not(match)` returns `no_match`, `not(no_match)` returns `match`, and `not(indeterminate)` returns `indeterminate`. An indeterminate child is never inverted into authority.
 
 Rule matching maps the result by effect:
 
@@ -151,6 +152,14 @@ Predicate evaluation filters rules before the existing inheritance winner is sel
 
 Predicates add no separate priority dimension. Two same-level rules that both match resolve using the existing effect, version, update-time, and rule-ID order. Publishing two indistinguishable same-level rules with conflicting effects generates a validation warning; the preview must show the deterministic winner.
 
+## Dispatcher outcome and approval lifecycle
+
+The dispatcher policy contract must add `ApprovalRequired` as a first-class `ToolDispatchPolicyOutcome` alongside `Allowed` and `Denied`. The outcome carries the policy decision ID, winning rule and version, required approval class, and a redacted argument digest. Native, MCP, batch, CLI, and HTTP paths must all return or pause on this outcome; no adapter may collapse it to `Allowed` or treat it as a terminal `Denied` result.
+
+On `ApprovalRequired`, the dispatcher writes the policy-decision and approval-request receipts before it exposes the request to a client or approval worker. It then returns a non-executable pending handle. Approval creates a single-use, decision-bound approval receipt with an expiry and the original normalized tool name and argument digest; denial or expiry creates a terminal receipt and the tool is not called. Resume re-enters the same dispatcher, verifies and atomically consumes the approval receipt, re-evaluates non-waivable lower-level guards, writes the allow receipt, executes at most once, and links the execution receipt to the original decision. Changed tool identity, arguments, scope, policy version, connector generation, expired approval, or an already-consumed receipt fails closed and requires a new decision.
+
+The implementation must change `ToolDispatchPolicyOutcome` and every exhaustive consumer before predicate rules with `approval_required` can be published. Until that migration is complete, publication validation rejects predicate rules with that effect rather than silently degrading their behavior.
+
 ## Expiry, publication, and invalid policy handling
 
 - `expires_at_ms` is optional. An expired rule is ignored for allow and approval outcomes and treated as a candidate deny only when the rule is a non-overridable deny whose expiry cannot be verified because the clock is unavailable.
@@ -166,7 +175,7 @@ Policy decision receipts add a bounded `predicate_evidence` object:
 ```json
 {
   "expression_version": "permission_predicates/v1",
-  "expression_digest": "sha256:...",
+  "expression_digest": "hmac-sha256:...",
   "result": "match",
   "conditions": [
     {
@@ -182,9 +191,9 @@ Policy decision receipts add a bounded `predicate_evidence` object:
 }
 ```
 
-Receipts never contain raw selected values, raw operands, email local parts, paths, repository URLs, or request arguments. `value_digest` uses a deployment-scoped audit HMAC key so operators can correlate equal values inside one deployment without enabling cross-deployment correlation or offline guessing. Low-cardinality values such as booleans and currency codes omit `value_digest`. Evidence contains at most 32 condition rows and records truncation or indeterminate causes using stable reason codes.
+Receipts never contain raw selected values, raw operands, email local parts, paths, repository URLs, or request arguments. `expression_digest`, `selector_digest`, and `value_digest` use a deployment-scoped audit HMAC key so operators can correlate identical expressions, selectors, or values inside one deployment without enabling cross-deployment correlation or offline guessing. The expression digest covers the canonical complete expression, including operands, only after HMAC protection; no unkeyed digest of policy operands is emitted. Low-cardinality selected values such as booleans and currency codes omit `value_digest`. Evidence contains at most 32 condition rows and records truncation or indeterminate causes using stable reason codes.
 
-Allow, deny, approval-required, and execution receipts link to the same policy decision ID and expression digest. Failure to write a required policy receipt remains fail closed.
+Allow, deny, approval-required, and execution receipts link to the same policy decision ID and expression digest. Policy-decision, deny, approval-request, approval-resolution, approval-consumption, allow, and execution-attempt receipts are mandatory writes. The dispatcher must receive a durable success result for each write required before the next state transition; a write error blocks dispatch, approval publication, resume, or execution as applicable. Existing optional or best-effort recording helpers, including MCP preflight helpers that return `Option`, cannot satisfy this contract and must be replaced with required `Result`-returning calls on predicate-governed paths. A post-execution result receipt may report an execution that already occurred, but failure to persist it places the server in an operator-visible unhealthy state and prevents retry under the same decision rather than risking duplicate execution.
 
 ## Authoring and preview contract
 
