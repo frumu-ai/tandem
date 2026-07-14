@@ -92,6 +92,9 @@ fn is_connector_only_allowlist(request_allowlist: &HashSet<String>) -> bool {
         && request_allowlist
             .iter()
             .all(|tool| is_mcp_tool_or_discovery(tool))
+        && request_allowlist
+            .iter()
+            .any(|tool| normalize_tool_name(tool).starts_with("mcp."))
 }
 
 pub(crate) fn tool_survives_explicit_allowlist(
@@ -845,6 +848,34 @@ mod tests {
                 &[capabilities, planner],
             ),
             vec!["workflow_plan_capabilities".to_string()]
+        );
+    }
+
+    #[test]
+    fn discovery_only_allowlist_does_not_grant_authoring_tools() {
+        let allowlist = HashSet::from([
+            "mcp_list".to_string(),
+            "mcp_list_catalog".to_string(),
+            "mcp_request_capability".to_string(),
+        ]);
+        let planner = product_schema(
+            "workflow_plan_start",
+            tandem_types::ToolEffect::Write,
+            ToolRiskTier::InternalWrite,
+        );
+
+        assert!(!tool_survives_explicit_allowlist(
+            &planner,
+            &allowlist,
+            ToolIntent::ProductAuthoring,
+        ));
+        assert_eq!(
+            product_authoring_execution_scope(&allowlist, ToolIntent::ProductAuthoring, &[planner],),
+            vec![
+                "mcp_list".to_string(),
+                "mcp_list_catalog".to_string(),
+                "mcp_request_capability".to_string(),
+            ]
         );
     }
 
