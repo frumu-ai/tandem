@@ -222,9 +222,13 @@ describe("Workflow planning SDK coverage", () => {
     });
 
     const originalFetch = globalThis.fetch;
-    const calls: Array<{ url: string; method: string }> = [];
+    const calls: Array<{ url: string; method: string; body: string }> = [];
     globalThis.fetch = (async (input, init) => {
-      calls.push({ url: String(input), method: String(init?.method ?? "GET") });
+      calls.push({
+        url: String(input),
+        method: String(init?.method ?? "GET"),
+        body: String(init?.body ?? ""),
+      });
       const url = String(input);
       if (url.endsWith("/workflow-plans/import/preview")) {
         return new Response(
@@ -269,7 +273,10 @@ describe("Workflow planning SDK coverage", () => {
 
     try {
       const preview = await client.workflowPlans.preview({ prompt: "Create a release checklist" });
-      const applied = await client.workflowPlans.apply({ planId: preview.plan.plan_id });
+      const applied = await client.workflowPlans.apply({
+        planId: preview.plan.plan_id,
+        idempotencyKey: "wizard-plan-1",
+      });
       const importedPreview = await client.workflowPlans.importPreview({ bundle: { bundle: "x" } });
       const imported = await client.workflowPlans.importPlan({ bundle: { bundle: "x" } });
 
@@ -279,6 +286,7 @@ describe("Workflow planning SDK coverage", () => {
       expect(imported.summary).toEqual({ plan_id: "plan-1" });
       expect(calls[0]?.url).toContain("/workflow-plans/preview");
       expect(calls[1]?.url).toContain("/workflow-plans/apply");
+      expect(JSON.parse(calls[1]?.body || "{}").idempotency_key).toBe("wizard-plan-1");
       expect(calls[2]?.url).toContain("/workflow-plans/import/preview");
       expect(calls[3]?.url).toContain("/workflow-plans/import");
     } finally {

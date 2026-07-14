@@ -14,6 +14,7 @@ import {
 import type { ExecutionProfile } from "../AutomationsRunHelpers";
 import type { NavigationLockState } from "../../../pages/pageTypes";
 import { Icon } from "../../../ui/Icon";
+import { useEngineStream } from "../../stream/useEngineStream";
 
 type ExecutionMode = "single" | "team" | "swarm";
 type WizardExecutionProfile = "" | ExecutionProfile;
@@ -72,6 +73,35 @@ type PlannerClarificationState = {
   status: "none" | "waiting";
   question: string;
 };
+
+type PlannerLiveProgress = {
+  phase: string;
+  providerID: string;
+  modelID: string;
+  responseChars: number;
+  elapsedMs: number;
+};
+
+function plannerProgressStage(phase: string): string {
+  switch (phase) {
+    case "dispatch":
+      return "Sending the request to the model";
+    case "waiting":
+      return "Waiting for the model's first response";
+    case "thinking":
+      return "The model is working on the plan";
+    case "streaming":
+      return "Receiving the model response";
+    case "retrying":
+      return "Retrying with a compatible response mode";
+    case "validating":
+      return "Validating and assembling the plan";
+    case "failed":
+      return "The planner request failed";
+    default:
+      return "Preparing the planner request";
+  }
+}
 
 interface AutomationWizardConfig {
   defaults: {
@@ -174,6 +204,30 @@ const AUTOMATION_IMPORT_FIELDS = [
 
 function safeString(value: unknown) {
   return String(value || "").trim();
+}
+
+function automationApplyIdempotencyKey(
+  plan: any,
+  overlapDecision: string,
+  exportPackDraft: boolean
+) {
+  const serialized = JSON.stringify({ plan, overlapDecision, exportPackDraft });
+  let hash = 2166136261;
+  for (let index = 0; index < serialized.length; index += 1) {
+    hash = Math.imul(hash ^ serialized.charCodeAt(index), 16777619);
+  }
+  const planID = safeString(plan?.plan_id || plan?.planId || "plan").slice(0, 96);
+  return `automation-wizard:${planID}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function describePlannerFallback(diagnostics: any) {
+  const reason = safeString(diagnostics?.fallback_reason || diagnostics?.fallbackReason);
+  if (!reason) return "";
+  const detail = safeString(diagnostics?.detail);
+  const reasonLabel = reason.replace(/_/g, " ");
+  return detail
+    ? `Automation was not created. Plan generation failed (${reasonLabel}): ${detail}`
+    : `Automation was not created. Plan generation failed: ${reasonLabel}.`;
 }
 
 function objectValue(value: unknown): Record<string, any> | null {
@@ -546,6 +600,8 @@ export function CreateWizard({
   });
   const [plannerError, setPlannerError] = useState<string>("");
   const [plannerDiagnostics, setPlannerDiagnostics] = useState<any>(null);
+  const [plannerLiveProgress, setPlannerLiveProgress] = useState<PlannerLiveProgress | null>(null);
+  const [plannerElapsedSeconds, setPlannerElapsedSeconds] = useState(0);
   const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false);
   const [workspaceBrowserDir, setWorkspaceBrowserDir] = useState("");
   const [workspaceBrowserSearch, setWorkspaceBrowserSearch] = useState("");
@@ -631,6 +687,12 @@ export function CreateWizard({
   const invalidateMcp = async () => {
     await queryClient.invalidateQueries({ queryKey: ["mcp"] });
   };
+  const reportPlannerDiagnostics = (response: any) => {
+    const diagnostics = response?.planner_diagnostics || response?.plannerDiagnostics || null;
+    setPlannerDiagnostics(diagnostics);
+    const fallbackError = describePlannerFallback(diagnostics);
+    if (fallbackError) toast("err", fallbackError);
+  };
 
   useEffect(() => {
     const configDefaultProvider = String(
@@ -703,7 +765,7 @@ export function CreateWizard({
       setPlanningChangeSummary([]);
       setPlanningClarification(clarification);
       setPlannerError("");
-      setPlannerDiagnostics(res?.planner_diagnostics || res?.plannerDiagnostics || null);
+      reportPlannerDiagnostics(res);
     },
     onError: (error) => {
       setPlanPreview(null);
@@ -736,7 +798,7 @@ export function CreateWizard({
       );
       setPlanningClarification(clarification);
       setPlannerError("");
-      setPlannerDiagnostics(res?.planner_diagnostics || res?.plannerDiagnostics || null);
+      reportPlannerDiagnostics(res);
     },
     onError: (error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -759,7 +821,7 @@ export function CreateWizard({
       setPlanningChangeSummary([]);
       setPlanningClarification(clarification);
       setPlannerError("");
-      setPlannerDiagnostics(res?.planner_diagnostics || res?.plannerDiagnostics || null);
+      reportPlannerDiagnostics(res);
     },
     onError: (error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -768,6 +830,52 @@ export function CreateWizard({
       toast("err", message);
     },
   });
+  const plannerProviderPending =
+    compileMutation.isPending || planningMessageMutation.isPending;
+  useEffect(() => {
+    if (!plannerProviderPending) return;
+    const startedAt = Date.now();
+    setPlannerLiveProgress(null);
+    setPlannerElapsedSeconds(0);
+    const interval = window.setInterval(() => {
+      setPlannerElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1_000)));
+    }, 1_000);
+    return () => window.clearInterval(interval);
+  }, [plannerProviderPending]);
+  useEngineStream(
+    "/api/engine/global/event",
+    (event) => {
+      if (!plannerProviderPending) return;
+      try {
+        const payload = JSON.parse(String(event.data || "{}"));
+        if (payload?.type !== "workflow_planner.progress") return;
+        const properties = payload?.properties || {};
+        const runID = String(properties.runID || "").trim();
+        const expectedRunID = compileMutation.isPending
+          ? `workflow-plan-build:${planSource}`
+          : planningMessageMutation.isPending && planPreview?.plan_id
+            ? `workflow-plan-revision:${String(planPreview.plan_id).trim()}`
+            : "";
+        if (!expectedRunID || runID !== expectedRunID) return;
+        const phase = String(properties.phase || "").trim().toLowerCase();
+        const responseChars = Math.max(0, Number(properties.responseChars) || 0);
+        const elapsedMs = Math.max(0, Number(properties.elapsedMs) || 0);
+        setPlannerLiveProgress((current) => ({
+          phase,
+          providerID: String(properties.providerID || current?.providerID || "").trim(),
+          modelID: String(properties.modelID || current?.modelID || "").trim(),
+          responseChars:
+            phase === "dispatch" || phase === "retrying"
+              ? responseChars
+              : Math.max(current?.responseChars || 0, responseChars),
+          elapsedMs: Math.max(current?.elapsedMs || 0, elapsedMs),
+        }));
+      } catch {
+        // Ignore malformed or unrelated global events.
+      }
+    },
+    { enabled: true }
+  );
   const mcpActionMutation = useMutation({
     mutationFn: async ({
       action,
@@ -936,7 +1044,8 @@ export function CreateWizard({
       );
       if (fallbackReason) {
         throw new Error(
-          "Planner returned a fallback draft instead of a real workflow plan. Regenerate the plan before creating the automation."
+          describePlannerFallback(plannerDiagnostics) ||
+            "Planner returned a fallback draft instead of a real workflow plan. Regenerate the plan before creating the automation."
         );
       }
       const preview =
@@ -953,13 +1062,21 @@ export function CreateWizard({
       ) {
         throw new Error("Select an overlap decision before creating the automation.");
       }
-      return client.workflowPlans.apply({
-        plan: nextPlan,
-        creator_id: "control-panel",
-        overlap_decision: overlapDecision.trim() || undefined,
-        ...(wizard.exportPackDraft
-          ? { pack_builder_export: { enabled: true, auto_apply: false } }
-          : {}),
+      return api("/api/engine/workflow-plans/apply", {
+        method: "POST",
+        body: JSON.stringify({
+          plan: nextPlan,
+          creator_id: "control-panel",
+          overlap_decision: overlapDecision.trim() || undefined,
+          idempotency_key: automationApplyIdempotencyKey(
+            nextPlan,
+            overlapDecision.trim(),
+            wizard.exportPackDraft
+          ),
+          ...(wizard.exportPackDraft
+            ? { pack_builder_export: { enabled: true, auto_apply: false } }
+            : {}),
+        }),
       });
     },
     onSuccess: async (res) => {
@@ -1007,10 +1124,20 @@ export function CreateWizard({
       setStep(1);
       onCreated?.();
     },
-    onError: (error) => {
+    onError: async (error) => {
       const message = error instanceof Error ? error.message : String(error);
-      setPlannerError(message);
-      toast("err", message);
+      const auditOutcomeUncertain =
+        message.includes("PROTECTED_AUDIT_PERSISTENCE_FAILED") &&
+        message.toLowerCase().includes("operation was applied");
+      const displayedMessage = auditOutcomeUncertain
+        ? "The automation was saved, but its required audit record failed. Tandem opened the Library so you can verify it. Do not click Create again while audit storage is unhealthy."
+        : message;
+      setPlannerError(displayedMessage);
+      toast("err", displayedMessage);
+      if (auditOutcomeUncertain) {
+        await queryClient.invalidateQueries({ queryKey: ["automations"] });
+        onCreated?.();
+      }
     },
   });
   const importAutomationMutation = useMutation({
@@ -1081,7 +1208,17 @@ export function CreateWizard({
     if (compileMutation.isPending) {
       return {
         title: "Generating mission plan",
-        message: "Tandem is drafting the workflow plan. Stay on this page until it finishes.",
+        message: "Tandem is drafting the workflow plan. Live planner activity appears below.",
+        progress: {
+          stage: plannerProgressStage(plannerLiveProgress?.phase || "preparing"),
+          provider: plannerLiveProgress?.providerID || wizard.plannerModelProvider,
+          model: plannerLiveProgress?.modelID || wizard.plannerModelId,
+          elapsedSeconds: Math.max(
+            plannerElapsedSeconds,
+            Math.ceil((plannerLiveProgress?.elapsedMs || 0) / 1_000)
+          ),
+          responseChars: plannerLiveProgress?.responseChars || 0,
+        },
       };
     }
     if (generateSkillMutation.isPending || installGeneratedSkillMutation.isPending) {
@@ -1093,7 +1230,21 @@ export function CreateWizard({
     if (planningMessageMutation.isPending || planningResetMutation.isPending) {
       return {
         title: "Updating planning draft",
-        message: "Tandem is revising the draft. Stay on this page until it finishes.",
+        message: planningMessageMutation.isPending
+          ? "Tandem is revising the draft. Live planner activity appears below."
+          : "Tandem is resetting the planning draft. Stay on this page until it finishes.",
+        progress: planningMessageMutation.isPending
+          ? {
+              stage: plannerProgressStage(plannerLiveProgress?.phase || "preparing"),
+              provider: plannerLiveProgress?.providerID || wizard.plannerModelProvider,
+              model: plannerLiveProgress?.modelID || wizard.plannerModelId,
+              elapsedSeconds: Math.max(
+                plannerElapsedSeconds,
+                Math.ceil((plannerLiveProgress?.elapsedMs || 0) / 1_000)
+              ),
+              responseChars: plannerLiveProgress?.responseChars || 0,
+            }
+          : undefined,
       };
     }
     if (deployMutation.isPending) {
@@ -1115,8 +1266,12 @@ export function CreateWizard({
     generateSkillMutation.isPending,
     importAutomationMutation.isPending,
     installGeneratedSkillMutation.isPending,
+    plannerElapsedSeconds,
+    plannerLiveProgress,
     planningMessageMutation.isPending,
     planningResetMutation.isPending,
+    wizard.plannerModelId,
+    wizard.plannerModelProvider,
   ]);
   useLayoutEffect(() => {
     onNavigationLockChange?.(navigationLock);

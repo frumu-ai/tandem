@@ -53,6 +53,14 @@ const FULL_HEIGHT_ROUTES = new Set([
   "control-loop",
 ]);
 
+function formatElapsedSeconds(value: number | undefined): string {
+  const seconds = Math.max(0, Math.floor(Number(value) || 0));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
+}
+
 export function AppShell({
   identity,
   currentRoute,
@@ -616,6 +624,41 @@ export function AppShell({
                   <p className="tcp-confirm-message">{navigationLock.message}</p>
                 </div>
               </div>
+              {navigationLock.progress ? (
+                <div className="tcp-confirm-progress">
+                  <div className="tcp-confirm-progress-heading">
+                    <StatusPulse tone="live" text={navigationLock.progress.stage} />
+                    <span className="tcp-subtle text-xs" aria-label="Elapsed time">
+                      {formatElapsedSeconds(navigationLock.progress.elapsedSeconds)} elapsed
+                    </span>
+                  </div>
+                  <div className="tcp-confirm-progress-details">
+                    {navigationLock.progress.provider || navigationLock.progress.model ? (
+                      <span
+                        className="truncate"
+                        title={[
+                          navigationLock.progress.provider,
+                          navigationLock.progress.model,
+                        ]
+                          .filter(Boolean)
+                          .join(" / ")}
+                      >
+                        {[navigationLock.progress.provider, navigationLock.progress.model]
+                          .filter(Boolean)
+                          .join(" / ")}
+                      </span>
+                    ) : null}
+                    {(navigationLock.progress.responseChars || 0) > 0 ? (
+                      <span>
+                        {Number(navigationLock.progress.responseChars).toLocaleString()} response
+                        characters received
+                      </span>
+                    ) : (
+                      <span>Connecting to the provider stream</span>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </motion.div>
           </motion.div>
         ) : null}

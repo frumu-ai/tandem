@@ -1074,6 +1074,31 @@ impl AppState {
         Ok(removed)
     }
 
+    /// Compensate a creation that could not complete its required audit write.
+    ///
+    /// This deliberately does not emit another audit event: the original
+    /// operation never committed successfully, and the audit store may be the
+    /// failing dependency. It also removes the provisional governance record so
+    /// a retry with the same idempotent automation id starts cleanly.
+    pub(crate) async fn rollback_automation_v2_creation(
+        &self,
+        automation_id: &str,
+    ) -> anyhow::Result<()> {
+        let _guard = self.automations_v2_persistence.lock().await;
+        self.automations_v2.write().await.remove(automation_id);
+        {
+            let mut governance = self.automation_governance.write().await;
+            governance.records.remove(automation_id);
+            governance.deleted_automations.remove(automation_id);
+            governance.updated_at_ms = now_ms();
+        }
+        self.persist_automation_governance().await?;
+        self.persist_automations_v2_locked().await?;
+        self.verify_automation_v2_persisted_locked(automation_id, false)
+            .await?;
+        Ok(())
+    }
+
     pub async fn create_automation_v2_run(
         &self,
         automation: &AutomationV2Spec,

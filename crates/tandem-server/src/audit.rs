@@ -142,14 +142,25 @@ fn parse_protected_audit_records(
     lines: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> anyhow::Result<Vec<ProtectedAuditEnvelope>> {
     let mut records = Vec::new();
-    for line in lines {
+    for (line_index, line) in lines.into_iter().enumerate() {
         let line = line.as_ref().trim();
         if line.is_empty() {
             continue;
         }
-        let record = serde_json::from_str::<ProtectedAuditEnvelope>(line)
-            .context("parse protected audit record")?;
-        records.push(record);
+        // Older appenders wrote the JSON value and its newline in separate
+        // writes. Concurrent callers could therefore leave multiple complete
+        // JSON objects adjacent on one physical JSONL line. Stream parsing
+        // recovers those valid, self-delimiting records while still rejecting
+        // truncated or otherwise malformed audit data.
+        for record in serde_json::Deserializer::from_str(line).into_iter::<ProtectedAuditEnvelope>()
+        {
+            records.push(record.with_context(|| {
+                format!(
+                    "parse protected audit record at physical line {}",
+                    line_index.saturating_add(1)
+                )
+            })?);
+        }
     }
     Ok(records)
 }
@@ -600,6 +611,27 @@ mod tests {
         let second = audit_row(2, Some(first.record_hash.clone()));
         let third = audit_row(3, Some(second.record_hash.clone()));
         vec![first, second, third]
+    }
+
+    #[test]
+    fn protected_audit_parser_recovers_legacy_concatenated_jsonl_records() {
+        let rows = chained_rows();
+        let concatenated = format!(
+            "{}{}",
+            serde_json::to_string(&rows[0]).expect("serialize first row"),
+            serde_json::to_string(&rows[1]).expect("serialize second row")
+        );
+        let third = serde_json::to_string(&rows[2]).expect("serialize third row");
+
+        let parsed = parse_protected_audit_records([concatenated, String::new(), third])
+            .expect("parse legacy concatenated records");
+
+        assert_eq!(
+            parsed.iter().map(|row| row.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(verify_protected_audit_records(&parsed).valid);
+        assert!(parse_protected_audit_records(["{not-json}"]).is_err());
     }
 
     #[test]

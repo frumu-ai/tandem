@@ -26,6 +26,13 @@ export type NavigationLockState = {
   title: string;
   message: string;
   showOverlay?: boolean;
+  progress?: {
+    stage: string;
+    provider?: string;
+    model?: string;
+    elapsedSeconds?: number;
+    responseChars?: number;
+  };
 };
 
 export type NavigationPreferences = {

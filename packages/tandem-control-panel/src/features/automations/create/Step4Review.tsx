@@ -230,6 +230,12 @@ export function Step4Review({
   const plannerFallbackDetail = String(plannerDiagnostics?.detail || "").trim();
   const clarificationWaiting = planningClarification.status === "waiting";
   const planIsFallbackDraft = !!plannerFallbackReason;
+  const createBlockedMessage = planIsFallbackDraft
+    ? plannerFallbackDetail ||
+      `Planner failure: ${plannerFallbackReason.replace(/_/g, " ") || "invalid workflow plan"}.`
+    : clarificationWaiting
+      ? planningClarification.question || "The planner needs clarification."
+      : plannerError || "";
   const overlapMatchLayer = String(
     overlapAnalysis?.match_layer || overlapAnalysis?.matchLayer || ""
   )
@@ -238,6 +244,14 @@ export function Step4Review({
   const overlapRequiresConfirmation = Boolean(
     overlapAnalysis?.requires_user_confirmation || overlapAnalysis?.requiresUserConfirmation
   );
+  const createDisabled =
+    isPending ||
+    isPreviewing ||
+    !wizard.goal.trim() ||
+    !planPreview ||
+    clarificationWaiting ||
+    planIsFallbackDraft ||
+    (overlapRequiresConfirmation && !overlapDecision);
   const overlapScore = Number(
     overlapAnalysis?.similarity_score ?? overlapAnalysis?.similarityScore ?? NaN
   );
@@ -407,17 +421,25 @@ export function Step4Review({
               </div>
             </div>
           ) : planIsFallbackDraft ? (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-sm text-amber-100">
-              <div className="font-medium text-amber-200">Planner returned a fallback draft</div>
-              <div className="mt-1">
-                {plannerFallbackReason.replace(/_/g, " ") || "fallback draft"}
+            <div
+              className="rounded-lg border border-red-500/50 bg-red-950/40 px-3 py-3 text-sm text-red-100"
+              role="alert"
+              aria-live="assertive"
+            >
+              <div className="font-semibold text-red-200">
+                Plan validation failed — creation is blocked
+              </div>
+              <div className="mt-1 text-xs uppercase tracking-wide text-red-300/80">
+                {plannerFallbackReason.replace(/_/g, " ") || "invalid workflow plan"}
               </div>
               {plannerFallbackDetail ? (
-                <div className="mt-2 text-xs text-amber-100/80">{plannerFallbackDetail}</div>
+                <code className="mt-2 block break-words rounded border border-red-500/20 bg-black/20 px-2 py-2 text-xs text-red-100">
+                  {plannerFallbackDetail}
+                </code>
               ) : null}
-              <div className="mt-2 text-xs text-amber-100/80">
-                Tandem is hiding the scaffolded workflow here so we do not accidentally create a
-                generic automation from a failed planning run.
+              <div className="mt-2 text-xs text-red-100/80">
+                No automation was created. Revise or reset the plan; creation becomes available
+                only after Tandem produces a valid workflow.
               </div>
             </div>
           ) : planPreview ? (
@@ -680,20 +702,27 @@ export function Step4Review({
         <strong className="text-slate-300">{effectiveSchedule}</strong>. You can pause, edit or
         delete it anytime.
       </div>
+      {planIsFallbackDraft ? (
+        <div
+          id="automation-create-blocked"
+          className="rounded-xl border border-red-500/40 bg-red-950/30 p-3 text-sm text-red-100"
+        >
+          <strong>Automation creation is blocked.</strong> The planner error above must be resolved;
+          clicking Create cannot save a fallback scaffold.
+        </div>
+      ) : null}
       <button
-        className="tcp-btn-primary"
-        disabled={
-          isPending ||
-          isPreviewing ||
-          !wizard.goal.trim() ||
-          !planPreview ||
-          clarificationWaiting ||
-          planIsFallbackDraft ||
-          (overlapRequiresConfirmation && !overlapDecision)
-        }
+        className={planIsFallbackDraft ? "tcp-btn border-red-500/40 text-red-200" : "tcp-btn-primary"}
+        disabled={createDisabled}
+        aria-describedby={planIsFallbackDraft ? "automation-create-blocked" : undefined}
+        title={createBlockedMessage || undefined}
         onClick={onSubmit}
       >
-        {isPending ? "Creating automation…" : "🚀 Create Automation"}
+        {isPending
+          ? "Creating automation…"
+          : planIsFallbackDraft
+            ? "Creation blocked — fix plan error"
+            : "🚀 Create Automation"}
       </button>
     </div>
   );

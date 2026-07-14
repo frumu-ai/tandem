@@ -1824,6 +1824,36 @@ svg.lucide-loader-circle,
   line-height: 1.45;
 }
 
+.tcp-confirm-progress {
+  margin-top: 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 24%, var(--color-border) 76%);
+  background: color-mix(in srgb, var(--color-surface) 88%, var(--color-primary) 12%);
+  padding: 0.75rem;
+}
+
+.tcp-confirm-progress-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.tcp-confirm-progress-details {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+@media (max-width: 520px) {
+  .tcp-confirm-progress-details {
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+}
+
 .tcp-confirm-actions {
   margin-top: 1rem;
   display: flex;

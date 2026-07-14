@@ -19,6 +19,7 @@ pub(crate) fn workflow_plan_common_sections() -> String {
             "- do not split a concise report into one task per requested section; draft required sections together in one synthesis or brief-writing step\n",
             "- steps must form a valid DAG\n",
             "- input_refs and depends_on must reference existing steps\n",
+            "- every input_refs[].from_step_id must also appear in that same step's depends_on array because data handoffs are scheduling dependencies\n",
             "WorkflowPlan.step schema:\n",
             "- each step must use fields: step_id, kind, objective, agent_role, depends_on, input_refs, output_contract; metadata is optional\n",
             "- do not use alternate keys like id, type, label, or config as the primary step schema\n",
@@ -115,6 +116,9 @@ mod tests {
         assert!(sections.contains("reading/materializing the referenced remote result file"));
         assert!(sections.contains("max_parallel_agents"));
         assert!(sections.contains("explicit input_refs for the upstream steps"));
+        assert!(sections.contains(
+            "every input_refs[].from_step_id must also appear in that same step's depends_on"
+        ));
         assert!(sections.contains("final recap, merged summary, or daily rollup"));
     }
 

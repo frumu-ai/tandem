@@ -366,3 +366,77 @@ async fn workflow_plan_apply_can_materialize_a_disabled_draft_with_planner_metad
         .iter()
         .any(|node| !node.input_refs.is_empty()));
 }
+
+#[tokio::test]
+async fn workflow_plan_apply_rolls_back_when_protected_audit_persistence_fails() {
+    let state = test_state().await;
+    tokio::fs::create_dir_all(&state.protected_audit_path)
+        .await
+        .expect("make protected audit path unwritable as a file");
+    crate::audit::reset_protected_audit_tail_for_test(&state.protected_audit_path).await;
+    let app = app_router(state.clone());
+    let plan = llm_plan_json(
+        "Audited workflow",
+        "Create a report only when the required audit can be persisted.",
+        manual_schedule_json(),
+        "/tmp/workspace",
+        vec![step_json(
+            "generate_report",
+            "report",
+            "Generate the report.",
+            &[],
+            "writer",
+            json!([]),
+            "report_markdown",
+        )],
+        None,
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/workflow-plans/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "plan": plan,
+                        "creator_id": "control-panel",
+                        "idempotency_key": "audit-rollback-test",
+                    })
+                    .to_string(),
+                ))
+                .expect("apply request"),
+        )
+        .await
+        .expect("apply response");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("error body");
+    let payload: Value = serde_json::from_slice(&body).expect("error json");
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("PROTECTED_AUDIT_PERSISTENCE_FAILED")
+    );
+    assert_eq!(
+        payload.get("operationApplied").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(
+        state.list_automations_v2().await.is_empty(),
+        "an unaudited workflow materialization must be rolled back"
+    );
+    assert!(
+        state
+            .get_idempotency_key(
+                &tandem_types::TenantContext::local_implicit(),
+                "workflow_plan.apply",
+                "audit-rollback-test",
+            )
+            .await
+            .is_none(),
+        "a rolled-back apply must release its idempotency reservation"
+    );
+}

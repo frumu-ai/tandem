@@ -2059,6 +2059,28 @@ pub trait WorkflowInputRefLike {
     }
 }
 
+fn synchronize_input_ref_dependencies<I, O>(step: &mut WorkflowPlanStep<I, O>)
+where
+    I: WorkflowInputRefLike,
+{
+    let mut normalized_dependencies = step
+        .depends_on
+        .iter()
+        .map(|dependency| normalize_workflow_step_id(dependency))
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for input_ref in &step.input_refs {
+        let from_step_id = input_ref.from_step_id().trim();
+        if from_step_id.is_empty() {
+            continue;
+        }
+        let normalized_input = normalize_workflow_step_id(from_step_id);
+        if normalized_dependencies.insert(normalized_input) {
+            step.depends_on.push(from_step_id.to_string());
+        }
+    }
+}
+
 pub fn validate_workflow_plan<S, I, O>(
     plan: &WorkflowPlan<S, WorkflowPlanStep<I, O>>,
 ) -> Result<(), String>
@@ -2350,6 +2372,7 @@ where
     let step_count = candidate.steps.len();
     for step in &mut candidate.steps {
         normalize_step(step);
+        synchronize_input_ref_dependencies(step);
     }
     for (step_index, step) in candidate.steps.iter_mut().enumerate() {
         workflow_step_decomposition_metadata_defaults(

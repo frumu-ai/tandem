@@ -878,6 +878,56 @@ The Notion page should include:
     }
 
     #[test]
+    fn planner_normalization_adds_input_refs_to_depends_on_before_validation() {
+        let mut plan = test_plan_with_steps(vec![
+            WorkflowPlanStep {
+                step_id: "assess_incoming_issue".to_string(),
+                kind: "analysis".to_string(),
+                objective: "Assess the incoming issue.".to_string(),
+                depends_on: vec![],
+                agent_role: "analyst".to_string(),
+                input_refs: vec![],
+                output_contract: Some(json!({"kind":"structured_json"})),
+                metadata: None,
+            },
+            WorkflowPlanStep {
+                step_id: "draft_implementation_plan".to_string(),
+                kind: "write".to_string(),
+                objective: "Draft an implementation plan.".to_string(),
+                depends_on: vec![],
+                agent_role: "writer".to_string(),
+                input_refs: vec![json!({
+                    "from_step_id": "assess_incoming_issue",
+                    "alias": "issue_assessment"
+                })],
+                output_contract: Some(json!({"kind":"report_markdown"})),
+                metadata: None,
+            },
+        ]);
+
+        let context = PlannerPlanNormalizationContext {
+            mode: PlannerPlanMode::Create,
+            plan_id: "wfplan-normalized",
+            planner_version: "v1",
+            plan_source: "unit_test",
+            original_prompt: "Assess an incoming issue and draft an implementation plan.",
+            normalized_prompt: "assess an incoming issue and draft an implementation plan",
+            resolved_workspace_root: "/tmp/workspace",
+            explicit_schedule: None,
+            request_allowed_mcp_servers: &[],
+            request_operator_preferences: None,
+        };
+
+        plan = normalize_and_validate_planner_plan(plan, &context, |_| {})
+            .expect("planner normalization should repair the data dependency");
+
+        assert_eq!(
+            plan.steps[1].depends_on,
+            vec!["assess_incoming_issue".to_string()]
+        );
+    }
+
+    #[test]
     fn infer_explicit_output_targets_extracts_path_like_workspace_targets() {
         let prompt = "Generate and save /home/user/marketing-tandem/YOUTUBE_TANDEM_MARKETING_RESEARCH_AND_SCRIPTS.md and also summarize the findings.";
 

@@ -7,6 +7,56 @@ use tracing::Level;
 
 use super::*;
 
+fn workflow_planner_progress_event(
+    tenant_context: &tandem_types::TenantContext,
+    phase: &str,
+    session_id: &str,
+    run_id: &str,
+    provider_id: &str,
+    model_id: &str,
+    response_chars: usize,
+    elapsed_ms: u64,
+) -> tandem_types::EngineEvent {
+    crate::routines::types::tenant_scoped_engine_event(
+        "workflow_planner.progress",
+        tenant_context,
+        json!({
+            "phase": phase,
+            "sessionID": session_id,
+            "runID": run_id,
+            "providerID": provider_id,
+            "modelID": model_id,
+            "responseChars": response_chars,
+            "elapsedMs": elapsed_ms,
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_workflow_planner_progress(
+    state: &AppState,
+    tenant_context: &tandem_types::TenantContext,
+    phase: &str,
+    session_id: &str,
+    run_id: &str,
+    provider_id: &str,
+    model_id: &str,
+    response_chars: usize,
+    started_at: std::time::Instant,
+) {
+    let elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    state.event_bus.publish(workflow_planner_progress_event(
+        tenant_context,
+        phase,
+        session_id,
+        run_id,
+        provider_id,
+        model_id,
+        response_chars,
+        elapsed_ms,
+    ));
+}
+
 pub(crate) async fn invoke_planner_provider(
     state: &AppState,
     session_id: &str,
@@ -17,6 +67,18 @@ pub(crate) async fn invoke_planner_provider(
     tenant_context: &tandem_types::TenantContext,
 ) -> Result<String, tandem_plan_compiler::api::PlannerInvocationFailure> {
     let cancel = CancellationToken::new();
+    let started_at = std::time::Instant::now();
+    publish_workflow_planner_progress(
+        state,
+        tenant_context,
+        "dispatch",
+        session_id,
+        run_id,
+        model.provider_id.as_str(),
+        model.model_id.as_str(),
+        0,
+        started_at,
+    );
     emit_event(
         Level::INFO,
         ProcessKind::Engine,
@@ -74,6 +136,17 @@ pub(crate) async fn invoke_planner_provider(
             .collect::<Vec<_>>()
             .join("\n");
         let completion_fallback = || async {
+            publish_workflow_planner_progress(
+                state,
+                tenant_context,
+                "retrying",
+                session_id,
+                run_id,
+                model.provider_id.as_str(),
+                model.model_id.as_str(),
+                0,
+                started_at,
+            );
             tracing::warn!(
                 session_id = %session_id,
                 provider_id = %model.provider_id,
@@ -117,7 +190,10 @@ pub(crate) async fn invoke_planner_provider(
                     Some(model.model_id.as_str()),
                 )
                 .await
-                .map(|output| (output, None))
+                .map(|output| {
+                    let response_chars = output.chars().count();
+                    (output, None, response_chars)
+                })
                 .map_err(|error| planner_failure(&error.to_string()))
         };
         state.event_bus.publish(tandem_types::EngineEvent::new(
@@ -155,13 +231,29 @@ pub(crate) async fn invoke_planner_provider(
                 return Err(planner_failure(&error_text));
             }
         };
+        publish_workflow_planner_progress(
+            state,
+            tenant_context,
+            "waiting",
+            session_id,
+            run_id,
+            model.provider_id.as_str(),
+            model.model_id.as_str(),
+            0,
+            started_at,
+        );
         tokio::pin!(stream);
         let mut output = String::new();
         let mut saw_first_delta = false;
+        let mut saw_reasoning_delta = false;
+        let mut response_chars = 0usize;
+        let mut last_progress_chars = 0usize;
+        let mut last_progress_at = std::time::Instant::now();
         let mut usage: Option<TokenUsage> = None;
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(StreamChunk::TextDelta(delta)) => {
+                    response_chars = response_chars.saturating_add(delta.chars().count());
                     if !saw_first_delta && !delta.trim().is_empty() {
                         saw_first_delta = true;
                         emit_event(
@@ -183,10 +275,55 @@ pub(crate) async fn invoke_planner_provider(
                                 detail: Some("first text delta"),
                             },
                         );
+                        publish_workflow_planner_progress(
+                            state,
+                            tenant_context,
+                            "streaming",
+                            session_id,
+                            run_id,
+                            model.provider_id.as_str(),
+                            model.model_id.as_str(),
+                            response_chars,
+                            started_at,
+                        );
+                        last_progress_chars = response_chars;
+                        last_progress_at = std::time::Instant::now();
+                    } else if saw_first_delta
+                        && response_chars > last_progress_chars
+                        && (response_chars.saturating_sub(last_progress_chars) >= 512
+                            || last_progress_at.elapsed() >= std::time::Duration::from_secs(1))
+                    {
+                        publish_workflow_planner_progress(
+                            state,
+                            tenant_context,
+                            "streaming",
+                            session_id,
+                            run_id,
+                            model.provider_id.as_str(),
+                            model.model_id.as_str(),
+                            response_chars,
+                            started_at,
+                        );
+                        last_progress_chars = response_chars;
+                        last_progress_at = std::time::Instant::now();
                     }
                     output.push_str(&delta);
                 }
                 Ok(StreamChunk::ReasoningDelta(delta)) => {
+                    if !saw_first_delta && !saw_reasoning_delta && !delta.trim().is_empty() {
+                        saw_reasoning_delta = true;
+                        publish_workflow_planner_progress(
+                            state,
+                            tenant_context,
+                            "thinking",
+                            session_id,
+                            run_id,
+                            model.provider_id.as_str(),
+                            model.model_id.as_str(),
+                            response_chars,
+                            started_at,
+                        );
+                    }
                     output.push_str(&delta);
                 }
                 Ok(StreamChunk::Done {
@@ -208,9 +345,9 @@ pub(crate) async fn invoke_planner_provider(
                 }
             }
         }
-        Ok::<(String, Option<TokenUsage>), tandem_plan_compiler::api::PlannerInvocationFailure>((
-            output, usage,
-        ))
+        Ok::<(String, Option<TokenUsage>, usize), tandem_plan_compiler::api::PlannerInvocationFailure>(
+            (output, usage, response_chars),
+        )
     };
 
     let planner_future = crate::http::session_run_retry::scope_provider_auth_for_tenant(
@@ -223,7 +360,18 @@ pub(crate) async fn invoke_planner_provider(
         planner_future,
     );
     match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), planner_future).await {
-        Ok(Ok((output, usage))) => {
+        Ok(Ok((output, usage, response_chars))) => {
+            publish_workflow_planner_progress(
+                state,
+                tenant_context,
+                "validating",
+                session_id,
+                run_id,
+                model.provider_id.as_str(),
+                model.model_id.as_str(),
+                response_chars,
+                started_at,
+            );
             let finish_detail = usage
                 .as_ref()
                 .map(|value| {
@@ -255,6 +403,17 @@ pub(crate) async fn invoke_planner_provider(
             Ok(output)
         }
         Ok(Err(error)) => {
+            publish_workflow_planner_progress(
+                state,
+                tenant_context,
+                "failed",
+                session_id,
+                run_id,
+                model.provider_id.as_str(),
+                model.model_id.as_str(),
+                0,
+                started_at,
+            );
             emit_event(
                 Level::ERROR,
                 ProcessKind::Engine,
@@ -278,6 +437,17 @@ pub(crate) async fn invoke_planner_provider(
         }
         Err(_) => {
             cancel.cancel();
+            publish_workflow_planner_progress(
+                state,
+                tenant_context,
+                "failed",
+                session_id,
+                run_id,
+                model.provider_id.as_str(),
+                model.model_id.as_str(),
+                0,
+                started_at,
+            );
             emit_event(
                 Level::WARN,
                 ProcessKind::Engine,
@@ -324,7 +494,10 @@ fn should_retry_planner_completion_fallback(error: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{invoke_planner_provider, should_retry_planner_completion_fallback};
+    use super::{
+        invoke_planner_provider, should_retry_planner_completion_fallback,
+        workflow_planner_progress_event,
+    };
     use crate::http::session_run_retry::provider_auth_test_support::install_capturing_codex_provider;
     use futures::Stream;
     use std::{
@@ -340,6 +513,30 @@ mod tests {
         ToolSchema,
     };
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn workflow_planner_progress_is_tenant_scoped_and_content_free() {
+        let tenant = TenantContext::explicit("planner-org", "planner-workspace", None);
+        let event = workflow_planner_progress_event(
+            &tenant,
+            "streaming",
+            "planner-session",
+            "workflow-plan-build:automations_page",
+            "openai-codex",
+            "gpt-test",
+            1_024,
+            2_500,
+        );
+
+        assert_eq!(event.event_type, "workflow_planner.progress");
+        assert_eq!(event.properties["phase"], "streaming");
+        assert_eq!(event.properties["responseChars"], 1_024);
+        assert_eq!(event.properties["elapsedMs"], 2_500);
+        assert!(event.properties.get("tenantContext").is_some());
+        for forbidden in ["text", "delta", "reasoning", "prompt", "response"] {
+            assert!(event.properties.get(forbidden).is_none());
+        }
+    }
 
     struct StreamFailureProvider {
         complete_calls: Arc<AtomicUsize>,
