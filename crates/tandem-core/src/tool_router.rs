@@ -91,6 +91,22 @@ pub(crate) fn tool_survives_explicit_allowlist(
         || (intent == ToolIntent::ProductAuthoring && is_product_authoring_tool(schema))
 }
 
+pub(crate) fn product_authoring_needs_catalog_fallback(
+    intent: ToolIntent,
+    candidate_tools: &[ToolSchema],
+    all_tools: &[ToolSchema],
+) -> bool {
+    if intent != ToolIntent::ProductAuthoring {
+        return false;
+    }
+    let has_planner_start = |tools: &[ToolSchema]| {
+        tools
+            .iter()
+            .any(|schema| normalize_tool_name(&schema.name) == "workflow_plan_start")
+    };
+    has_planner_start(all_tools) && !has_planner_start(candidate_tools)
+}
+
 pub fn classify_intent(input: &str) -> ToolIntent {
     let lower = input.trim().to_ascii_lowercase();
     if lower.is_empty() {
@@ -744,6 +760,39 @@ mod tests {
             &unrelated,
             &allowlist,
             ToolIntent::ProductAuthoring,
+        ));
+    }
+
+    #[test]
+    fn product_authoring_falls_back_when_retrieval_misses_planner_start() {
+        let candidates = vec![product_schema(
+            "automation_manage_draft",
+            tandem_types::ToolEffect::Write,
+            ToolRiskTier::InternalWrite,
+        )];
+        let all_tools = vec![
+            candidates[0].clone(),
+            product_schema(
+                "workflow_plan_start",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::InternalWrite,
+            ),
+        ];
+
+        assert!(product_authoring_needs_catalog_fallback(
+            ToolIntent::ProductAuthoring,
+            &candidates,
+            &all_tools,
+        ));
+        assert!(!product_authoring_needs_catalog_fallback(
+            ToolIntent::ProductAuthoring,
+            &all_tools,
+            &all_tools,
+        ));
+        assert!(!product_authoring_needs_catalog_fallback(
+            ToolIntent::Knowledge,
+            &candidates,
+            &all_tools,
         ));
     }
 

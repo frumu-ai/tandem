@@ -464,6 +464,14 @@ impl EngineLoop {
                     if candidate_tools.is_empty() && !all_tools.is_empty() {
                         candidate_tools = all_tools.clone();
                         retrieval_fallback_reason = Some("retrieval_empty_result");
+                    } else if product_authoring_needs_catalog_fallback(
+                        intent,
+                        &candidate_tools,
+                        &all_tools,
+                    ) {
+                        candidate_tools = all_tools.clone();
+                        retrieval_fallback_reason =
+                            Some("missing_workflow_planner_for_product_authoring");
                     } else if web_research_requested
                         && has_web_research_tools(&all_tools)
                         && !has_web_research_tools(&candidate_tools)
