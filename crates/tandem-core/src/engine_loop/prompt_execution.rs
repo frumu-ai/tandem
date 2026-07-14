@@ -106,10 +106,6 @@ impl EngineLoop {
             .map(|tool| normalize_tool_name(&tool))
             .filter(|tool| !tool.trim().is_empty())
             .collect::<HashSet<_>>();
-        let required_mcp_tools_before_write =
-            concrete_mcp_tools_required_before_write(&request_tool_allowlist);
-        let required_mcp_source_wildcards_before_write =
-            mcp_source_wildcards_required_before_write(&request_tool_allowlist);
         let text = req
             .parts
             .iter()
@@ -129,6 +125,8 @@ impl EngineLoop {
             .collect::<Vec<_>>()
             .join("\n");
         let intent = classify_intent(&text);
+        let (required_mcp_tools_before_write, required_mcp_source_wildcards_before_write) =
+            mcp_prewrite_requirements_for_intent(&request_tool_allowlist, intent);
         // Propagate the request scope into every execution-time check. Product
         // authoring keeps safe first-party tools when a channel only grants
         // connector capabilities; connector and publish tools are not added.

@@ -161,6 +161,19 @@ pub(super) fn concrete_mcp_tools_required_before_write(
     tools
 }
 
+pub(super) fn mcp_prewrite_requirements_for_intent(
+    tool_allowlist: &HashSet<String>,
+    intent: ToolIntent,
+) -> (Vec<String>, Vec<String>) {
+    if intent == ToolIntent::ProductAuthoring {
+        return (Vec::new(), Vec::new());
+    }
+    (
+        concrete_mcp_tools_required_before_write(tool_allowlist),
+        mcp_source_wildcards_required_before_write(tool_allowlist),
+    )
+}
+
 pub(super) fn mcp_source_wildcards_required_before_write(
     tool_allowlist: &HashSet<String>,
 ) -> Vec<String> {
