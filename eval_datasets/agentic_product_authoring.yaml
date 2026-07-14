@@ -127,7 +127,7 @@ test_cases:
       output_format: "json"
 
   - id: "agentic_authoring_004"
-    description: "Explicit publish and enable request routes to consequential controls"
+    description: "Explicit publish and enable request reaches product-control routing for confirmation or an honest capability gap"
     priority: 3
     enabled: true
     tags: ["routing", "confirmation_boundary"]

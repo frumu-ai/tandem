@@ -41,9 +41,9 @@ approval requirements instead of treating every tool response as success.
 Planner sessions, revisions, chat/run provenance, and artifact links are
 durable. Follow-up requests such as "revise it" resolve to an explicitly active
 artifact when one is available, and ambiguous conversations do not silently
-edit an arbitrary plan. Materialization is draft-first and disabled by default;
-publishing, enabling, and other consequential controls remain permission- and
-confirmation-gated.
+edit an arbitrary plan. Materialization is draft-first and disabled by default.
+Supported consequential controls remain permission- and confirmation-gated,
+while unsupported publish and enable requests are not exposed as chat actions.
 
 The run path is designed for interruption. Prompt submission, planning,
 revision, materialization, and automation mutations use durable idempotency so
@@ -63,13 +63,12 @@ running at once are not misrepresented as a sequential chain.
 
 Users can validate, request another revision in chat, duplicate or create a
 draft, and open the exact linked artifact and current revision in the full
-workflow planner. Policy-controlled actions use the shared confirmation flow.
-Revisions update the artifact in place while preserving the earlier
-conversation, and streaming tool events show running, completed, failed,
-canceled, and approval-wait states without remounting the artifact. Stable
-layout and retained transcript position remove the flashing and viewport jumps
-that made earlier updates difficult to follow, including on narrow viewports
-and keyboard or screen-reader paths.
+workflow planner. Revisions update the artifact in place while preserving the
+earlier conversation, and streaming tool events show running, completed,
+failed, canceled, and approval-wait states without remounting the artifact.
+Stable layout and retained transcript position remove the flashing and viewport
+jumps that made earlier updates difficult to follow, including on narrow
+viewports and keyboard or screen-reader paths.
 
 ### Product-Authoring Acceptance Gate
 
@@ -77,7 +76,8 @@ A dedicated acceptance suite protects the conversation-to-artifact contract.
 It covers vague, partial, and detailed requests; scheduled and parallel
 workflows; follow-up revisions and active-artifact references; explain-only
 versus create intent; validation, connection, overlap, and provider failures;
-publish and enable confirmations; permission denial; cancellation, retry, and
+supported control confirmations and honest publish/enable capability gaps;
+permission denial; cancellation, retry, and
 reconnect; and attempts to disclose credentials or cross tenant boundaries.
 
 The gate checks authoritative outcomes as well as assistant wording: selected

@@ -62,11 +62,7 @@ export function useWorkflowArtifactActions({
         const command =
           action === "validate"
             ? `Validate workflow planner session ${artifact.sessionId} at revision ${artifact.revision}. Use the first-party workflow validation tool and report authoritative blockers, warnings, required connections, and approvals.`
-            : action === "materialize"
-              ? `Create a disabled Automation V2 draft from workflow planner session ${artifact.sessionId} at revision ${artifact.revision}. Validate it first and do not publish or enable it.`
-              : action === "publish"
-                ? `Publish the automation draft linked to workflow planner session ${artifact.sessionId}. Follow the shared confirmation and authorization policy before making this consequential change.`
-                : `Enable the automation linked to workflow planner session ${artifact.sessionId}. Follow the shared confirmation and authorization policy before making this consequential change.`;
+            : `Create a disabled Automation V2 draft from workflow planner session ${artifact.sessionId} at revision ${artifact.revision}. Validate it first and do not publish or enable it.`;
         await sendPrompt(command);
         await refresh();
       } catch (error) {

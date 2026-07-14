@@ -303,6 +303,15 @@ test("failed planner operations remain visible without remounting the artifact",
         goal: "Follow up on overdue invoices",
         created_at_ms: 10,
         updated_at_ms: 20,
+        artifact_links: [
+          {
+            link_id: "failed-automation-link",
+            kind: "automation",
+            resource_id: "billing-follow-up-draft",
+            resource_url: "/#/automations?automation_id=billing-follow-up-draft",
+            linked_at_ms: 19,
+          },
+        ],
         operation: {
           request_id: "planner-request-failed",
           kind: "revise",
@@ -324,4 +333,6 @@ test("failed planner operations remain visible without remounting the artifact",
   await expect(artifact.getByText("The provider rejected the planner request.")).toBeVisible();
   await expect(artifact.getByText("Workflow structure is being prepared.")).toBeVisible();
   await expect(artifact.getByRole("button", { name: "Validate" })).toBeEnabled();
+  await expect(artifact.getByRole("button", { name: "Publish" })).toHaveCount(0);
+  await expect(artifact.getByRole("button", { name: "Enable" })).toHaveCount(0);
 });

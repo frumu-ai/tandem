@@ -6,9 +6,7 @@ export type WorkflowArtifactAction =
   | "revise"
   | "open"
   | "duplicate"
-  | "materialize"
-  | "publish"
-  | "enable";
+  | "materialize";
 
 type WorkflowArtifactCardProps = {
   artifact: ChatWorkflowArtifact;
@@ -41,7 +39,7 @@ function ArtifactAction({
 }: {
   action: WorkflowArtifactAction;
   label: string;
-  icon: "badge-check" | "pencil" | "external-link" | "copy" | "file-plus" | "rocket" | "play";
+  icon: "badge-check" | "pencil" | "external-link" | "copy" | "file-plus";
   busy: boolean;
   disabled?: boolean;
   onAction: (action: WorkflowArtifactAction) => void;
@@ -80,8 +78,6 @@ export function WorkflowArtifactCard({
   ] as const;
   const hasDetails = details.some(([, values]) => values.length);
   const canMaterialize = artifact.lifecycle === "draft";
-  const canPublish = artifact.lifecycle === "materialized";
-  const canEnable = artifact.lifecycle !== "draft" && Boolean(artifact.automationUrl);
 
   return (
     <article
@@ -241,26 +237,6 @@ export function WorkflowArtifactCard({
             label="Create draft"
             icon="file-plus"
             busy={actionBusy === "materialize"}
-            disabled={operationActive}
-            onAction={onAction}
-          />
-        ) : null}
-        {canPublish ? (
-          <ArtifactAction
-            action="publish"
-            label="Publish"
-            icon="rocket"
-            busy={actionBusy === "publish"}
-            disabled={operationActive}
-            onAction={onAction}
-          />
-        ) : null}
-        {canEnable ? (
-          <ArtifactAction
-            action="enable"
-            label="Enable"
-            icon="play"
-            busy={actionBusy === "enable"}
             disabled={operationActive}
             onAction={onAction}
           />

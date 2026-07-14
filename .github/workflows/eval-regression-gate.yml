@@ -107,11 +107,11 @@ jobs:
           fi
           echo "## Agentic Product Authoring Acceptance" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Profile:** $(jq -r '.execution_profile')" >> $GITHUB_STEP_SUMMARY
-          echo "**Pass rate:** $(jq -r '(.pass_rate * 100 | tostring) + "%"')" >> $GITHUB_STEP_SUMMARY
-          echo "**Threshold:** $(jq -r '(.required_pass_rate * 100 | tostring) + "%"')" >> $GITHUB_STEP_SUMMARY
-          echo "**Gate passed:** $(jq -r '.gate_passed')" >> $GITHUB_STEP_SUMMARY
-          echo "**Missing coverage:** $(jq -r 'if (.missing_coverage | length) == 0 then "none" else (.missing_coverage | join(", ")) end')" >> $GITHUB_STEP_SUMMARY
+          echo "**Profile:** $(jq -r '.execution_profile' /tmp/agentic_authoring_results.json)" >> $GITHUB_STEP_SUMMARY
+          echo "**Pass rate:** $(jq -r '(.pass_rate * 100 | tostring) + "%"' /tmp/agentic_authoring_results.json)" >> $GITHUB_STEP_SUMMARY
+          echo "**Threshold:** $(jq -r '(.required_pass_rate * 100 | tostring) + "%"' /tmp/agentic_authoring_results.json)" >> $GITHUB_STEP_SUMMARY
+          echo "**Gate passed:** $(jq -r '.gate_passed' /tmp/agentic_authoring_results.json)" >> $GITHUB_STEP_SUMMARY
+          echo "**Missing coverage:** $(jq -r 'if (.missing_coverage | length) == 0 then "none" else (.missing_coverage | join(", ")) end' /tmp/agentic_authoring_results.json)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           jq -r '.test_results[] | "- " + (if .passed then "[PASS]" else "[FAIL]" end) + " `" + .test_id + "` " + .description' /tmp/agentic_authoring_results.json >> $GITHUB_STEP_SUMMARY
 

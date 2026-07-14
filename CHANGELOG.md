@@ -21,8 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   approvals, assumptions, connection requirements, validation blockers, and
   draft or published state without exposing the underlying JSON contract.
 - Added artifact actions for validation, conversational revision, duplication,
-  draft creation, and opening the exact artifact revision in the full canvas;
-  publish and enable actions continue through the shared confirmation policy.
+  draft creation, and opening the exact artifact revision in the full canvas.
+  Unsupported publish and enable controls stay outside the chat tool surface.
 - Added agentic product-authoring acceptance coverage for vague and detailed
   requests, parallel and scheduled workflows, follow-up revisions, validation
   and provider failures, permissions and confirmations, internal identity and
@@ -41,7 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tandem API key that the product already possesses through the session.
 - Workflow materialization remains draft-first and disabled by default.
   Validation, required connections, permissions, and approval boundaries are
-  returned as structured outcomes before consequential actions can proceed.
+  returned as structured outcomes before supported consequential actions can
+  proceed.
 - Inline artifacts update in place as revisions and tool events arrive while
   preserving transcript history, scroll position, and stable layout on desktop
   and narrow viewports.
