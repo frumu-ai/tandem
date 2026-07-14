@@ -278,6 +278,8 @@ pub struct WorkflowPlannerSessionRecord {
 pub(super) struct WorkflowPlannerSessionListQuery {
     #[serde(default)]
     pub project_slug: Option<String>,
+    #[serde(default)]
+    pub linked_chat_session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -376,6 +378,12 @@ pub(super) struct WorkflowPlannerSessionDuplicateRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct WorkflowPlannerSessionListItem {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_chat_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_chat_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_referenced_at_ms: Option<u64>,
     pub title: String,
     pub project_slug: String,
     pub workspace_root: String,
@@ -389,6 +397,10 @@ pub(super) struct WorkflowPlannerSessionListItem {
     pub source_pack_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_plan_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_revision: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at_ms: Option<u64>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -807,6 +819,9 @@ fn workflow_planner_session_list_item(
 ) -> WorkflowPlannerSessionListItem {
     WorkflowPlannerSessionListItem {
         session_id: session.session_id.clone(),
+        linked_chat_session_id: session.linked_chat_session_id.clone(),
+        linked_chat_run_id: session.linked_chat_run_id.clone(),
+        last_referenced_at_ms: session.last_referenced_at_ms,
         title: session.title.clone(),
         project_slug: session.project_slug.clone(),
         workspace_root: session.workspace_root.clone(),
@@ -815,6 +830,8 @@ fn workflow_planner_session_list_item(
         source_pack_id: session.source_pack_id.clone(),
         source_pack_version: session.source_pack_version.clone(),
         current_plan_id: session.current_plan_id.clone(),
+        plan_revision: session.draft.as_ref().map(|draft| draft.plan_revision),
+        published_at_ms: session.published_at_ms,
         created_at_ms: session.created_at_ms,
         updated_at_ms: session.updated_at_ms,
         goal: if session.goal.trim().is_empty() {

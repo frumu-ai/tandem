@@ -151,7 +151,7 @@ fn prompt_idempotency_key(headers: &HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
-pub(super) fn failure_category(status: &str, error: Option<&str>) -> Option<&'static str> {
+pub(crate) fn failure_category(status: &str, error: Option<&str>) -> Option<&'static str> {
     match status {
         "completed" => None,
         "cancelled" | "canceled" => Some("user_cancelled"),

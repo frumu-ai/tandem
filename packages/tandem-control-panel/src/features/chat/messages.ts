@@ -6,6 +6,32 @@ export type ChatMessage = {
   markdown: boolean;
 };
 
+export function countAssistantReplies(rows: ChatMessage[]): number {
+  return rows.filter((row) => row.role === "assistant" && row.text.trim().length > 0).length;
+}
+
+export function appendUniqueAssistantMessage(
+  rows: ChatMessage[],
+  runId: string,
+  assistantName: string,
+  text: string
+): ChatMessage[] {
+  const content = text.trim();
+  if (!content) return rows;
+  const last = rows[rows.length - 1];
+  if (last?.role === "assistant" && last.text.trim() === content) return rows;
+  return [
+    ...rows,
+    {
+      id: `local-assistant-${runId || Date.now()}`,
+      role: "assistant",
+      displayRole: assistantName || "Assistant",
+      text: content,
+      markdown: true,
+    },
+  ];
+}
+
 function textFromParts(parts: any): string {
   if (!Array.isArray(parts)) return "";
   const chunks = parts

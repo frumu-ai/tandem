@@ -194,6 +194,10 @@ async fn operator_artifact_context_is_tenant_scoped_and_refuses_ambiguous_follow
         single.pointer("/active/planner_session_id"),
         Some(&json!("planner-a1"))
     );
+    assert_eq!(
+        single.pointer("/active/url"),
+        Some(&json!("/#/planner?session_id=planner-a1"))
+    );
 
     state
         .put_workflow_planner_session(planner_record(tenant_a.clone(), "planner-a2", "chat-1", 20))

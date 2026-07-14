@@ -1,3 +1,4 @@
+pub mod agentic_product_authoring;
 /// AI Evaluation Framework
 ///
 /// This module provides structured evaluation infrastructure for testing AI system quality,
@@ -20,6 +21,9 @@ pub mod runner;
 pub mod scripted_provider;
 pub mod spec_mapper;
 
+pub use agentic_product_authoring::{
+    run_agentic_product_authoring_acceptance, AgenticAuthoringAcceptanceReport,
+};
 pub use bootstrap::{bootstrap_eval_app_state, EvalBootstrapOptions};
 pub use dataset::{ArtifactStatus, EvalDataset, EvalExpectedOutput, EvalTestCase, MetricTolerance};
 pub use engine_executor::{

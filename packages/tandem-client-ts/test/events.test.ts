@@ -595,7 +595,10 @@ describe("Workflow planner session SDK coverage", () => {
     }) as typeof fetch;
 
     try {
-      const listed = await client.workflowPlannerSessions.list({ project_slug: "planner-project" });
+      const listed = await client.workflowPlannerSessions.list({
+        project_slug: "planner-project",
+        linkedChatSessionId: "chat-session-1",
+      });
       const created = await client.workflowPlannerSessions.create({
         project_slug: "planner-project",
         title: "Planner session",
@@ -631,7 +634,8 @@ describe("Workflow planner session SDK coverage", () => {
       expect(messaged.session?.updated_at_ms).toBe(6);
       expect(reset.planner_diagnostics).toEqual({ mode: "reset" });
       expect(deleted.ok).toBe(true);
-      expect(calls[0]?.url).toContain("/workflow-plans/sessions?project_slug=planner-project");
+      expect(calls[0]?.url).toContain("project_slug=planner-project");
+      expect(calls[0]?.url).toContain("linked_chat_session_id=chat-session-1");
       expect(calls[1]?.method).toBe("POST");
       expect(calls[2]?.method).toBe("GET");
       expect(calls[3]?.method).toBe("PATCH");

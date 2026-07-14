@@ -7,7 +7,7 @@ fn tenant_matches(left: &TenantContext, right: &TenantContext) -> bool {
 }
 
 fn planner_url(session_id: &str) -> String {
-    format!("/#/automations?planner_session_id={session_id}")
+    format!("/#/planner?session_id={session_id}")
 }
 
 pub(crate) async fn product_capabilities(

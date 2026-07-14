@@ -3210,10 +3210,15 @@ class WorkflowPlannerSessions {
   async list(options?: {
     projectSlug?: string;
     project_slug?: string;
+    linkedChatSessionId?: string;
+    linked_chat_session_id?: string;
   }): Promise<WorkflowPlannerSessionListResponse> {
     const params = new URLSearchParams();
     const projectSlug = options?.project_slug ?? options?.projectSlug;
     if (projectSlug) params.set("project_slug", projectSlug);
+    const linkedChatSessionId =
+      options?.linked_chat_session_id ?? options?.linkedChatSessionId;
+    if (linkedChatSessionId) params.set("linked_chat_session_id", linkedChatSessionId);
     const qs = params.toString() ? `?${params.toString()}` : "";
     return this.req<WorkflowPlannerSessionListResponse>(`/workflow-plans/sessions${qs}`);
   }

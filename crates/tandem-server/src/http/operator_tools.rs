@@ -494,7 +494,7 @@ async fn active_chat_run_id(state: &AppState, chat_session_id: &str) -> Option<S
 }
 
 fn planner_url(session_id: &str) -> String {
-    format!("/#/automations?planner_session_id={session_id}")
+    format!("/#/planner?session_id={session_id}")
 }
 
 fn automation_url(automation_id: &str) -> String {

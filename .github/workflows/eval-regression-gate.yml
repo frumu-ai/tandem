@@ -32,10 +32,12 @@ jobs:
       # The gate must fail when the eval-runner cannot be built. A broken build
       # previously fell back to hardcoded stub results, which let governance
       # regressions pass CI with a plausible-looking green check (TAN-219).
-      - name: Build eval-runner binary
+      - name: Build evaluation binaries
         run: |
-          if ! cargo build --release --bin eval-runner -p tandem-eval; then
-            echo "::error::eval-runner failed to build — the evaluation gate cannot run. Fix the build; there is no stub fallback."
+          if ! cargo build --release -p tandem-eval \
+            --bin eval-runner \
+            --bin agentic-authoring-acceptance; then
+            echo "::error::Evaluation binaries failed to build - the gate cannot run and has no stub fallback."
             exit 1
           fi
 
@@ -86,6 +88,32 @@ jobs:
             --output /tmp/cross_user_memory_isolation_results.json \
             --simulation \
             --verbose
+
+      - name: Run agentic product-authoring acceptance
+        id: eval-run-agentic-authoring
+        run: |
+          ./target/release/agentic-authoring-acceptance \
+            --dataset eval_datasets/agentic_product_authoring.yaml \
+            --output /tmp/agentic_authoring_results.json
+
+      - name: Publish agentic authoring acceptance summary
+        if: always()
+        run: |
+          if [ ! -f /tmp/agentic_authoring_results.json ]; then
+            echo "## Agentic Product Authoring Acceptance" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No report was produced. The build or acceptance runner failed; inspect the preceding step." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          echo "## Agentic Product Authoring Acceptance" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Profile:** $(jq -r '.execution_profile')" >> $GITHUB_STEP_SUMMARY
+          echo "**Pass rate:** $(jq -r '(.pass_rate * 100 | tostring) + "%"')" >> $GITHUB_STEP_SUMMARY
+          echo "**Threshold:** $(jq -r '(.required_pass_rate * 100 | tostring) + "%"')" >> $GITHUB_STEP_SUMMARY
+          echo "**Gate passed:** $(jq -r '.gate_passed')" >> $GITHUB_STEP_SUMMARY
+          echo "**Missing coverage:** $(jq -r 'if (.missing_coverage | length) == 0 then "none" else (.missing_coverage | join(", ")) end')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          jq -r '.test_results[] | "- " + (if .passed then "[PASS]" else "[FAIL]" end) + " `" + .test_id + "` " + .description' /tmp/agentic_authoring_results.json >> $GITHUB_STEP_SUMMARY
 
       - name: Tenant-isolation regression check
         id: regression-check-tenant
@@ -184,6 +212,7 @@ jobs:
             /tmp/tenant_isolation_results.json
             /tmp/action_firewall_results.json
             /tmp/cross_user_memory_isolation_results.json
+            /tmp/agentic_authoring_results.json
           retention-days: 30
 
       - name: Comment PR with results
@@ -201,17 +230,18 @@ jobs:
             const tenant = read('/tmp/tenant_isolation_results.json');
             const actionFirewall = read('/tmp/action_firewall_results.json');
             const crossUser = read('/tmp/cross_user_memory_isolation_results.json');
+            const authoring = read('/tmp/agentic_authoring_results.json');
 
             const line = (label, r) => r
               ? `\n**${label}:** ${(r.pass_rate * 100).toFixed(1)}% (${r.passed_tests}/${r.total_tests})`
               : `\n**${label}:** ❌ no results produced (build or eval run failed — see job logs)`;
 
-            const header = (results && tenant && actionFirewall && crossUser)
+            const header = (results && tenant && actionFirewall && crossUser && authoring && authoring.gate_passed)
               ? '## 📊 AI Evaluation Results'
               : '## ❌ AI Evaluation Gate Failed';
 
             const comment = `${header}
-            ${line('Critical path', results)}${line('Tenant isolation', tenant)}${line('Action Firewall', actionFirewall)}${line('Cross-user memory isolation', crossUser)}
+            ${line('Critical path', results)}${line('Tenant isolation', tenant)}${line('Action Firewall', actionFirewall)}${line('Cross-user memory isolation', crossUser)}${line('Agentic product authoring', authoring)}
 
             See artifacts for detailed results.`;
 

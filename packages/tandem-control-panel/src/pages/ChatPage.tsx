@@ -11,7 +11,12 @@ import {
   loadStoredSessionId,
   saveStoredSessionId,
 } from "../features/chat/session";
-import { normalizeMessages, type ChatMessage } from "../features/chat/messages";
+import {
+  appendUniqueAssistantMessage,
+  countAssistantReplies,
+  normalizeMessages,
+  type ChatMessage,
+} from "../features/chat/messages";
 import { openFilesExplorer } from "../features/files/explorerHandoff";
 import {
   extractRunId,
@@ -61,42 +66,17 @@ import {
   type UploadProgressRow,
 } from "../features/chat/chatPageHelpers";
 import { Icon } from "../ui/Icon";
+import { WorkflowArtifactCard } from "../features/chat/WorkflowArtifactCard";
+import { useChatWorkflowArtifact } from "../features/chat/useChatWorkflowArtifact";
+import { useWorkflowArtifactActions } from "../features/chat/useWorkflowArtifactActions";
 
 const CHAT_UPLOAD_DIR = "uploads";
-
-function countAssistantReplies(rows: ChatMessage[]): number {
-  return rows.filter((row) => row.role === "assistant" && row.text.trim().length > 0).length;
-}
-
-function appendUniqueAssistantMessage(
-  rows: ChatMessage[],
-  runId: string,
-  assistantName: string,
-  text: string
-): ChatMessage[] {
-  const content = text.trim();
-  if (!content) return rows;
-  const last = rows[rows.length - 1];
-  if (last?.role === "assistant" && last.text.trim() === content) return rows;
-  return [
-    ...rows,
-    {
-      id: `local-assistant-${runId || Date.now()}`,
-      role: "assistant",
-      displayRole: assistantName || "Assistant",
-      text: content,
-      markdown: true,
-    },
-  ];
-}
 
 export function ChatPage({ client, api, toast, providerStatus, identity, navigate }: AppPageProps) {
   const queryClient = useQueryClient();
   const reducedMotion = !!useReducedMotion();
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const messagesRef = useRef<HTMLDivElement | null>(null);
   const runAbortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const noEventTimerRef = useRef<number | null>(null);
@@ -107,7 +87,6 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
   const [railDrawerOpen, setRailDrawerOpen] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState(loadStoredSessionId());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [messagesLoading, setMessagesLoading] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [uploads, setUploads] = useState<UploadFile[]>([]);
   const [uploadRows, setUploadRows] = useState<UploadProgressRow[]>([]);
@@ -126,13 +105,19 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
   const [selectedTools, setSelectedTools] = useState<string[]>(loadToolAllowlistPreference());
   const [deleteConfirm, setDeleteConfirm] = useState<ConfirmDeleteState>(null);
   const [setupCard, setSetupCard] = useState<SetupCard | null>(null);
-  const [workflowNudgeDismissedFor, setWorkflowNudgeDismissedFor] = useState("");
+  const [composerFocusKey, setComposerFocusKey] = useState(0);
 
   const sessionTitle = useMemo(() => {
     const hit = sessions.find((x) => x.id === selectedSessionId);
     return hit?.title || "Chat";
   }, [selectedSessionId, sessions]);
   const selectedToolSet = useMemo(() => new Set(selectedTools), [selectedTools]);
+  const artifactRefreshSignal = `${selectedSessionId}:${toolActivity[0]?.id || ""}:${messages.at(-1)?.id || ""}`;
+  const workflowArtifactState = useChatWorkflowArtifact(
+    client,
+    selectedSessionId,
+    artifactRefreshSignal
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -147,19 +132,6 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
   useEffect(() => {
     saveStoredSessionId(selectedSessionId);
   }, [selectedSessionId]);
-
-  useEffect(() => {
-    const area = inputRef.current;
-    if (!area) return;
-    area.style.height = "0px";
-    area.style.height = `${Math.min(area.scrollHeight, 180)}px`;
-  }, [prompt]);
-
-  useEffect(() => {
-    const host = messagesRef.current;
-    if (!host) return;
-    host.scrollTop = host.scrollHeight;
-  }, [messages, streamingText, showThinking]);
 
   const refreshSessions = useCallback(async () => {
     const rows = await loadSessions(client, api);
@@ -250,12 +222,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
       setMessages([]);
       return;
     }
-    setMessagesLoading(true);
-    try {
-      await loadMessagesForSession(selectedSessionId);
-    } finally {
-      if (mountedRef.current) setMessagesLoading(false);
-    }
+    await loadMessagesForSession(selectedSessionId);
   }, [loadMessagesForSession, selectedSessionId]);
 
   const resetToolTracking = useCallback(() => {
@@ -609,11 +576,12 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
     ]);
   }, []);
 
-  const sendPrompt = useCallback(async () => {
+  const sendPrompt = useCallback(async (promptOverride?: string) => {
     if (sending) return;
 
-    const promptRaw = prompt.trim();
-    const attached = [...uploads];
+    const hasPromptOverride = typeof promptOverride === "string";
+    const promptRaw = String(hasPromptOverride ? promptOverride : prompt).trim();
+    const attached = hasPromptOverride ? [] : [...uploads];
     const resolvedPrompt =
       promptRaw || (attached.length ? "Please analyze the attached file(s)." : "");
     if (!resolvedPrompt) return;
@@ -1084,6 +1052,21 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
     upsertPermissionRequest,
   ]);
 
+  const prepareWorkflowRevision = useCallback((value: string) => {
+    setPrompt(value);
+    setComposerFocusKey((current) => current + 1);
+  }, []);
+  const { actionBusy: workflowActionBusy, handleAction: handleWorkflowArtifactAction } =
+    useWorkflowArtifactActions({
+      client,
+      artifact: workflowArtifactState.artifact,
+      refresh: workflowArtifactState.refresh,
+      sendPrompt,
+      sending,
+      prepareRevision: prepareWorkflowRevision,
+      toast,
+    });
+
   useEffect(() => {
     void refreshSessions();
     void refreshAvailableTools();
@@ -1223,23 +1206,9 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
     upsertPermissionRequest,
   ]);
 
-  const attachedCount = uploads.length;
-  const messagePaneEmpty = !messagesLoading && !messages.length && !showThinking && !streamingText;
-  const workflowNudgePrompt = prompt.trim();
-  const showWorkflowNudge =
-    !sending &&
-    workflowNudgePrompt.length > 0 &&
-    workflowNudgePrompt !== workflowNudgeDismissedFor &&
-    /\b(workflow|workflows)\b/i.test(workflowNudgePrompt);
-  const openWorkflowPlannerFromPrompt = () => {
-    seedWorkflowPlanner({
-      prompt: workflowNudgePrompt,
-      plan_source: "control_panel_chat",
-      session_id: selectedSessionId || "",
-    });
-    setWorkflowNudgeDismissedFor(workflowNudgePrompt);
-    navigate("planner");
-  };
+  const latestWorkflowTool = toolActivity.find((entry) =>
+    /workflow[_\s.-]?plan|automation/i.test(entry.tool)
+  );
 
   const railSections = (
     <>
@@ -1709,6 +1678,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
             streamingText={streamingText}
             showThinking={showThinking}
             thinkingText="Thinking"
+            autoFocusKey={composerFocusKey}
             attachments={uploads.map((u) => ({ path: u.path, name: u.path, size: u.size }))}
             onOpenAttachment={(index) => {
               const file = uploads[index];
@@ -1719,30 +1689,29 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
             onAttach={() => fileInputRef.current?.click()}
             attachDisabled={sending}
             statusTitle={sending && !showThinking && !streamingText ? "Sending…" : ""}
-            composerAccessory={
-              showWorkflowNudge ? (
-                <div className="chat-planner-nudge" role="status">
-                  <button
-                    type="button"
-                    className="chat-planner-nudge-action"
-                    onClick={openWorkflowPlannerFromPrompt}
-                  >
-                    <Icon name="workflow" />
-                    Open workflow planner
-                  </button>
-                  <span className="chat-planner-nudge-hint">for this message</span>
-                  <button
-                    type="button"
-                    aria-label="Dismiss workflow suggestion"
-                    className="chat-planner-nudge-dismiss"
-                    title="Dismiss"
-                    onClick={() => setWorkflowNudgeDismissedFor(workflowNudgePrompt)}
-                  >
-                    <Icon name="x" />
+            transcriptAccessory={
+              workflowArtifactState.artifact ? (
+                <WorkflowArtifactCard
+                  artifact={workflowArtifactState.artifact}
+                  actionBusy={workflowActionBusy}
+                  toolStatus={
+                    latestWorkflowTool
+                      ? `${latestWorkflowTool.tool}: ${latestWorkflowTool.status}`
+                      : ""
+                  }
+                  onAction={(action) => void handleWorkflowArtifactAction(action)}
+                />
+              ) : workflowArtifactState.error ? (
+                <div className="chat-workflow-load-error" role="alert">
+                  <Icon name="triangle-alert" />
+                  <span>Workflow artifact unavailable.</span>
+                  <button type="button" onClick={() => void workflowArtifactState.refresh()}>
+                    Retry
                   </button>
                 </div>
               ) : null
             }
+            transcriptAccessoryKey={workflowArtifactState.artifact?.sessionId || ""}
           />
 
           <input

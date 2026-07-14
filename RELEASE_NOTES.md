@@ -2,6 +2,92 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.10 (2026-07-14)
+
+Tandem 0.6.10 turns Control Panel chat into a first-party product-authoring
+surface. A user can describe an automation or multi-workflow process in normal
+language, let the selected model plan it with Tandem's native tools, inspect a
+durable workflow artifact directly in the conversation, revise it over several
+turns, and materialize a disabled draft when it is ready. The authoring path
+uses the signed-in user's existing Tandem identity, keeps external connection
+credentials behind their normal provider boundaries, and applies the same
+validation, permission, and confirmation policies as the rest of the product.
+
+### Model-First, Authenticated Product Authoring
+
+Product-authoring prompts now reach the selected model instead of stopping in
+a repeated "did you mean" setup loop. Tandem distinguishes authoring,
+explanation, inspection, and consequential control intent, then exposes the
+appropriate first-party capabilities while leaving the model enough context to
+ask useful questions only when information is genuinely missing.
+
+The Control Panel session is the authentication boundary for these first-party
+tools. Tandem derives tenant and actor identity from the trusted dispatch
+session, ignores model-supplied identity fields, and records the verified
+author on persisted changes. Users are not asked to provide a Tandem API key
+inside Tandem chat. External MCP servers and services remain separate: they use
+the user's or organization's principal-scoped connection, and their credentials
+are never placed in the prompt or exposed to the model.
+
+### Durable Authoring And Operator Tools
+
+Chat can now drive the workflow planner lifecycle end to end: start and read a
+plan, revise it, preview and validate it, inspect available capabilities, and
+materialize it. It can also inspect and manage Automation V2 drafts, perform
+authorized automation controls, and inspect orchestrations. Validation returns
+structured assumptions, blockers, warnings, connection requirements, and
+approval requirements instead of treating every tool response as success.
+
+Planner sessions, revisions, chat/run provenance, and artifact links are
+durable. Follow-up requests such as "revise it" resolve to an explicitly active
+artifact when one is available, and ambiguous conversations do not silently
+edit an arbitrary plan. Materialization is draft-first and disabled by default;
+publishing, enabling, and other consequential controls remain permission- and
+confirmation-gated.
+
+The run path is designed for interruption. Prompt submission, planning,
+revision, materialization, and automation mutations use durable idempotency so
+retrying after cancellation or reconnect does not create duplicate drafts or
+replay stale state. Conflicting revisions are rejected, cancellation stops the
+active planner work, and the chat transcript retains the authoritative link
+between the request, tool activity, persisted artifact, and acting user.
+
+### Inline Workflow Artifacts
+
+Created and revised workflows now appear as durable artifacts in the chat
+transcript rather than requiring a navigation detour. Each artifact summarizes
+the trigger, nodes, named transitions, outputs, approvals, execution
+constraints, assumptions, required connections, and validation state. Parallel
+branches are presented as concurrent work, so workflows with several nodes
+running at once are not misrepresented as a sequential chain.
+
+Users can validate, request another revision in chat, duplicate or create a
+draft, and open the exact linked artifact and current revision in the full
+workflow planner. Policy-controlled actions use the shared confirmation flow.
+Revisions update the artifact in place while preserving the earlier
+conversation, and streaming tool events show running, completed, failed,
+canceled, and approval-wait states without remounting the artifact. Stable
+layout and retained transcript position remove the flashing and viewport jumps
+that made earlier updates difficult to follow, including on narrow viewports
+and keyboard or screen-reader paths.
+
+### Product-Authoring Acceptance Gate
+
+A dedicated acceptance suite protects the conversation-to-artifact contract.
+It covers vague, partial, and detailed requests; scheduled and parallel
+workflows; follow-up revisions and active-artifact references; explain-only
+versus create intent; validation, connection, overlap, and provider failures;
+publish and enable confirmations; permission denial; cancellation, retry, and
+reconnect; and attempts to disclose credentials or cross tenant boundaries.
+
+The gate checks authoritative outcomes as well as assistant wording: selected
+tools and policy decisions, persisted plans and automations, revision
+continuity, audit actors, draft-first defaults, tenant isolation, parallel plan
+structure, idempotent replay, and the absence of unauthorized side effects. It
+also fails when chat intercepts a valid authoring prompt before model execution,
+claims success without a corresponding persisted artifact, or asks for an
+unnecessary internal Tandem credential.
+
 ## v0.6.9 (2026-07-12)
 
 Tandem 0.6.9 delivers the long-running workflow orchestration layer end to
