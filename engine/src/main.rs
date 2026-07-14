@@ -698,8 +698,22 @@ enum MemoryCommand {
     },
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let worker = std::thread::Builder::new()
+        .name("tandem-engine-main".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(run_main())
+        })?;
+    worker
+        .join()
+        .map_err(|_| anyhow::anyhow!("tandem-engine main thread panicked"))?
+}
+
+async fn run_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -712,12 +726,12 @@ async fn main() -> anyhow::Result<()> {
             let config_file = tempfile::NamedTempFile::new()?;
             let global_config_file = tempfile::NamedTempFile::new()?;
             std::env::set_var("TANDEM_GLOBAL_CONFIG", global_config_file.path());
-            initialize_runtime(
+            Box::pin(initialize_runtime(
                 state.clone(),
                 state_dir.clone(),
                 None,
                 Some(config_file.path().to_path_buf()),
-            )
+            ))
             .await?;
             let report = tandem_server::acme_demo::live::reset_and_run(&state).await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -857,12 +871,12 @@ async fn main() -> anyhow::Result<()> {
             let init_overrides = overrides.clone();
 
             tokio::spawn(async move {
-                if let Err(err) = initialize_runtime(
+                if let Err(err) = Box::pin(initialize_runtime(
                     init_state.clone(),
                     init_state_dir,
                     init_overrides,
                     init_config_path,
-                )
+                ))
                 .await
                 {
                     let err_text = err.to_string();

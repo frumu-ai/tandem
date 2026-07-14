@@ -55,7 +55,7 @@ pub(super) async fn run_pack_builder_tool(
     let dispatch_context = state.tool_dispatch_context(
         tandem_tools::ToolDispatchSource::new("pack_builder"),
         TenantContext::local_implicit(),
-        Vec::new(),
+        vec!["pack_builder".to_string()],
     );
     let result = state
         .tool_dispatcher

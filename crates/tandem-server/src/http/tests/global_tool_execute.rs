@@ -140,3 +140,32 @@ async fn tool_execute_without_matching_server_policy_is_denied_and_receipted() {
                 == Some("denied")
     }));
 }
+
+#[tokio::test]
+async fn tool_execute_client_scope_cannot_grant_server_permission() {
+    let state = test_state().await;
+    state
+        .tools
+        .register_tool(
+            "echo_global_execute_args".to_string(),
+            std::sync::Arc::new(EchoGlobalExecuteArgsTool),
+        )
+        .await;
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/tool/execute")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "tool": "echo_global_execute_args",
+                "scopeAllowlist": ["echo_global_execute_args"],
+                "args": { "value": "must-not-run" }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}

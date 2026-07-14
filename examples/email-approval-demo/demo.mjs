@@ -342,6 +342,19 @@ async function main() {
   await mkdir(workspaceDir, { recursive: true });
   await mkdir(stateDir, { recursive: true });
   await copyFile(seedPath, path.join(workspaceDir, "email.json"));
+  await writeFile(path.join(stateDir, "permissions.json"), JSON.stringify({
+    schema_version: 1,
+    requests: {},
+    rules: [DRAFT_TOOL, SEND_TOOL].map((tool, index) => ({
+      id: `email-demo-dispatch-${index + 1}`,
+      permission: tool,
+      pattern: tool,
+      action: "allow",
+      createdBy: "email-approval-demo",
+      provenance: "demo_explicit_dispatch_policy",
+    })),
+    decisions: [],
+  }, null, 2));
 
   if (!options.skipBuild) {
     console.log("Building tandem-engine...");

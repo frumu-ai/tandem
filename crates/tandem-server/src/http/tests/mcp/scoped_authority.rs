@@ -189,15 +189,16 @@ async fn mcp_bridge_derives_phase_authority_from_dispatch_context() {
         tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
         "assertion-dispatch-phase-tool",
     );
-    let context = tandem_tools::ToolDispatchContext::for_tenant("test", tenant.clone())
-        .with_source(
+    let context = state
+        .tool_dispatch_context(
             tandem_tools::ToolDispatchSource::new("engine_loop")
                 .session("session-dispatch")
                 .message("message-dispatch")
                 .run("run-dispatch")
                 .node("node-dispatch"),
+            tenant.clone(),
+            vec!["mcp.notion.alice_search".to_string()],
         )
-        .with_scope_allowlist(vec!["mcp.notion.alice_search".to_string()])
         .with_verified_tenant_context(verified);
 
     let result = state
@@ -271,11 +272,21 @@ async fn mcp_bridge_denies_empty_dispatch_context_authority() {
         tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
         "assertion-dispatch-empty-phase-tool",
     );
-    let context = tandem_tools::ToolDispatchContext::for_tenant("test", tenant.clone())
-        .with_source(
+    state
+        .permissions
+        .add_rule(
+            "mcp.notion.alice_search",
+            "mcp.notion.alice_search",
+            tandem_core::PermissionAction::Allow,
+        )
+        .await;
+    let context = state
+        .tool_dispatch_context(
             tandem_tools::ToolDispatchSource::new("engine_loop")
                 .session("session-empty")
                 .message("message-empty"),
+            tenant.clone(),
+            Vec::new(),
         )
         .with_verified_tenant_context(verified);
 

@@ -506,6 +506,31 @@ impl AppState {
             .with_scope_allowlist(scope_allowlist)
             .with_policy(Arc::new(AppStateToolDispatchPolicy {
                 state: self.clone(),
+                trust_server_scope: true,
+            }))
+            .with_ledger(Arc::new(AppStateToolDispatchLedger {
+                event_bus: self.event_bus.clone(),
+                runtime_events_path: self.runtime_events_path.clone(),
+            }))
+    }
+
+    pub fn untrusted_tool_dispatch_context(
+        &self,
+        source: ToolDispatchSource,
+        tenant_context: TenantContext,
+        scope_allowlist: Vec<String>,
+    ) -> ToolDispatchContext {
+        let source = if source.has_identity_key() {
+            source
+        } else {
+            source.request(uuid::Uuid::new_v4().to_string())
+        };
+        ToolDispatchContext::for_tenant(source.kind.clone(), tenant_context)
+            .with_source(source)
+            .with_scope_allowlist(scope_allowlist)
+            .with_policy(Arc::new(AppStateToolDispatchPolicy {
+                state: self.clone(),
+                trust_server_scope: false,
             }))
             .with_ledger(Arc::new(AppStateToolDispatchLedger {
                 event_bus: self.event_bus.clone(),
@@ -526,6 +551,7 @@ impl AppState {
             )
             .with_policy(Arc::new(AppStateToolDispatchPolicy {
                 state: self.clone(),
+                trust_server_scope: false,
             }))
             .with_ledger(Arc::new(AppStateToolDispatchLedger {
                 event_bus: runtime.event_bus.clone(),

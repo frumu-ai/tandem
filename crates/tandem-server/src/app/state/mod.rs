@@ -331,6 +331,7 @@ struct AppStateToolDispatchLedger {
 #[derive(Clone)]
 struct AppStateToolDispatchPolicy {
     state: AppState,
+    trust_server_scope: bool,
 }
 
 #[async_trait::async_trait]
@@ -375,6 +376,15 @@ impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
         }
         if let Some(policy_decision_id) = decision.policy_decision_id {
             return Ok(ToolDispatchDecision::allow_with_id(policy_decision_id));
+        }
+        if self.trust_server_scope && !context.scope_allowlist.is_empty() {
+            let allowed_patterns = normalize_allowed_tools(context.scope_allowlist.clone());
+            if tandem_core::any_policy_matches(&allowed_patterns, &dispatch_tool) {
+                return Ok(ToolDispatchDecision::allow_with_id(format!(
+                    "server_dispatch_scope:{}",
+                    context.source.kind
+                )));
+            }
         }
         let Some(runtime) = self.state.runtime.get() else {
             return Ok(ToolDispatchDecision::deny(
