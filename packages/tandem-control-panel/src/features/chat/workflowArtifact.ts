@@ -160,10 +160,14 @@ function scheduleLabel(value: unknown): string {
 
 function artifactLink(
   links: WorkflowPlannerArtifactLink[] | undefined,
-  kind: string
+  kind: string,
+  revision?: number
 ): WorkflowPlannerArtifactLink | undefined {
   return [...(links ?? [])]
-    .filter((link) => clean(link.kind) === kind)
+    .filter(
+      (link) =>
+        clean(link.kind) === kind && (revision == null || link.revision === revision)
+    )
     .sort((left, right) => right.linked_at_ms - left.linked_at_ms)[0];
 }
 
@@ -204,7 +208,11 @@ export function toChatWorkflowArtifact(
   const requiredCapabilities = labelsFrom(review?.required_capabilities);
   const requestedCapabilities = labelsFrom(review?.requested_capabilities);
   const mcpServers = unique((plan?.allowed_mcp_servers ?? plan?.allowedMcpServers ?? []).map(String));
-  const automation = artifactLink(session.artifact_links, "automation");
+  const automation = artifactLink(
+    session.artifact_links,
+    "automation",
+    draft?.plan_revision
+  );
   const planner = artifactLink(session.artifact_links, "planner_session");
   const lifecycle = session.published_at_ms
     ? "published"

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { TandemClient, WorkflowPlannerSessionRecord } from "@frumu/tandem-client";
+import type {
+  TandemClient,
+  WorkflowPlannerSessionListItem,
+  WorkflowPlannerSessionRecord,
+} from "@frumu/tandem-client";
 import { toChatWorkflowArtifact, type ChatWorkflowArtifact } from "./workflowArtifact";
 
 type ChatWorkflowArtifactState = {
@@ -15,6 +19,23 @@ const EMPTY_STATE: ChatWorkflowArtifactState = {
   loading: false,
   error: "",
 };
+
+function selectActiveSession(
+  sessions: WorkflowPlannerSessionListItem[]
+): WorkflowPlannerSessionListItem | undefined {
+  const latestReference = sessions.reduce<number | undefined>((latest, session) => {
+    const referencedAt = session.last_referenced_at_ms;
+    if (referencedAt == null) return latest;
+    return latest == null ? referencedAt : Math.max(latest, referencedAt);
+  }, undefined);
+  if (latestReference != null) {
+    const referenced = sessions.filter(
+      (session) => session.last_referenced_at_ms === latestReference
+    );
+    if (referenced.length === 1) return referenced[0];
+  }
+  return [...sessions].sort((left, right) => right.updated_at_ms - left.updated_at_ms)[0];
+}
 
 export function useChatWorkflowArtifact(
   client: TandemClient,
@@ -36,11 +57,7 @@ export function useChatWorkflowArtifact(
       const listed = await client.workflowPlannerSessions.list({
         linkedChatSessionId: sessionId,
       });
-      const latest = [...(listed.sessions ?? [])].sort(
-        (left, right) =>
-          (right.last_referenced_at_ms ?? right.updated_at_ms) -
-          (left.last_referenced_at_ms ?? left.updated_at_ms)
-      )[0];
+      const latest = selectActiveSession(listed.sessions ?? []);
       if (!latest) {
         if (requestId === requestRef.current) setState(EMPTY_STATE);
         return null;

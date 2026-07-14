@@ -100,6 +100,17 @@ test("linked workflow artifacts render parallel stages and conversational action
     {
       sessions: [
         {
+          session_id: "wfplan-edited-but-not-active",
+          linked_chat_session_id: "artifact-chat",
+          title: "Edited background draft",
+          project_slug: "chat-authoring",
+          workspace_root: "/workspace",
+          current_plan_id: "plan-background",
+          plan_revision: 1,
+          created_at_ms: 20,
+          updated_at_ms: 100,
+        },
+        {
           session_id: "wfplan-artifact",
           linked_chat_session_id: "artifact-chat",
           title: "Support triage",
@@ -137,6 +148,14 @@ test("linked workflow artifacts render parallel stages and conversational action
             resource_url: "/#/planner?session_id=wfplan-artifact",
             revision: 3,
             linked_at_ms: 30,
+          },
+          {
+            link_id: "stale-automation-link",
+            kind: "automation",
+            resource_id: "automation-from-revision-2",
+            resource_url: "/#/automations?automation_id=automation-from-revision-2",
+            revision: 2,
+            linked_at_ms: 29,
           },
         ],
         planning: {
@@ -219,6 +238,9 @@ test("linked workflow artifacts render parallel stages and conversational action
   await expect(
     artifact.getByText("Confirm the destination channel before publishing.")
   ).toBeVisible();
+  await expect(artifact.getByRole("button", { name: "Create draft" })).toBeVisible();
+  await expect(artifact.getByRole("button", { name: "Publish" })).toHaveCount(0);
+  await expect(artifact.getByRole("button", { name: "Enable" })).toHaveCount(0);
 
   const viewport = page.viewportSize();
   const box = await artifact.boundingBox();
