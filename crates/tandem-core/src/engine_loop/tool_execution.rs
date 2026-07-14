@@ -1,8 +1,23 @@
 use super::*;
+use std::sync::Arc;
 use tandem_tools::{
-    ToolDispatchContext, ToolDispatchLedger, ToolDispatchLedgerEvent, ToolDispatchPolicyOutcome,
-    ToolDispatchSource, ToolDispatchStatus,
+    ToolDispatchContext, ToolDispatchDecision, ToolDispatchLedger, ToolDispatchLedgerEvent,
+    ToolDispatchPolicy, ToolDispatchPolicyContext, ToolDispatchPolicyOutcome,
+    ToolDispatchReceiptPhase, ToolDispatchSource, ToolDispatchStatus,
 };
+
+#[derive(Debug, Default)]
+struct EnginePreauthorizedDispatchPolicy;
+
+#[async_trait::async_trait]
+impl ToolDispatchPolicy for EnginePreauthorizedDispatchPolicy {
+    async fn evaluate(
+        &self,
+        _context: ToolDispatchPolicyContext,
+    ) -> anyhow::Result<ToolDispatchDecision> {
+        Ok(ToolDispatchDecision::allow_with_id("engine_preflight"))
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct EngineToolDispatchLedger {
@@ -21,6 +36,47 @@ impl ToolDispatchLedger for EngineToolDispatchLedger {
 }
 
 impl EngineLoop {
+    pub(super) async fn record_tool_preflight_denial(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        tool: &str,
+        reason: &str,
+        policy_decision_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        let session = self.storage.get_session(session_id).await;
+        let tenant_context = session
+            .map(|session| session.tenant_context)
+            .unwrap_or_else(TenantContext::local_implicit);
+        let scope_allowlist = self
+            .session_allowed_tools
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default();
+        self.tool_dispatch_ledger
+            .read()
+            .await
+            .record(ToolDispatchLedgerEvent {
+                dispatch_id: Some(format!("tool-preflight-{}", uuid::Uuid::new_v4().simple())),
+                tool: tool.to_string(),
+                canonical_tool: Some(tool.to_string()),
+                tenant_context,
+                source: ToolDispatchSource::new("engine_preflight")
+                    .session(session_id)
+                    .message(message_id),
+                scope_allowlist,
+                policy_outcome: ToolDispatchPolicyOutcome::Denied,
+                receipt_phase: ToolDispatchReceiptPhase::PolicyDecision,
+                policy_decision_id,
+                payload_digest: None,
+                status: ToolDispatchStatus::Blocked,
+                error: Some(reason.to_string()),
+            })
+            .await
+    }
+
     pub(super) async fn execute_tool_with_timeout(
         &self,
         session_id: &str,
@@ -52,6 +108,7 @@ impl EngineLoop {
                     .message(message_id),
             )
             .with_scope_allowlist(scope_allowlist)
+            .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy))
             .with_ledger(tool_dispatch_ledger);
         if let Some(verified_tenant_context) = verified_tenant_context {
             dispatch_context =
@@ -86,6 +143,7 @@ impl EngineLoop {
                         source: timeout_dispatch_context.source.clone(),
                         scope_allowlist: timeout_dispatch_context.scope_allowlist.clone(),
                         policy_outcome: ToolDispatchPolicyOutcome::Allowed,
+                        receipt_phase: ToolDispatchReceiptPhase::ExecutionFailed,
                         policy_decision_id: None,
                         payload_digest: Some(timeout_payload_digest),
                         status: ToolDispatchStatus::Failed,

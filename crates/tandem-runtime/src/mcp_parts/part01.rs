@@ -20,6 +20,10 @@ const MCP_AUTH_REPROBE_COOLDOWN_MS: u64 = 15_000;
 const MCP_SECRET_PLACEHOLDER: &str = "";
 const MCP_HTTP_RESPONSE_MAX_BYTES: usize = 2 * 1024 * 1024;
 
+fn new_mcp_connection_generation() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpToolCacheEntry {
     pub tool_name: String,
@@ -315,6 +319,7 @@ impl McpRegistry {
                 && effective_headers(row)
                     == combine_headers(&persisted_headers, &secret_header_values)
         });
+        let identity_changed = existing.is_some() && !preserve_cache;
         let existing_tool_cache = if preserve_cache {
             existing
                 .as_ref()
@@ -360,6 +365,9 @@ impl McpRegistry {
         };
         servers.insert(normalized_name.clone(), server);
         drop(servers);
+        if identity_changed {
+            self.remove_connections_for_server(&normalized_name).await;
+        }
         self.upsert_compatibility_connection_for_server(&normalized_name, current_tenant)
             .await;
         self.persist_state().await;
@@ -733,8 +741,14 @@ impl McpRegistry {
         let Some(server) = servers.get_mut(name) else {
             return false;
         };
+        if server.auth_kind == normalized {
+            return true;
+        }
         server.auth_kind = normalized;
         drop(servers);
+        self.remove_connections_for_server(name).await;
+        self.upsert_compatibility_connection_for_server(name, &local_tenant_context())
+            .await;
         self.persist_state().await;
         true
     }
@@ -1000,6 +1014,11 @@ impl McpRegistry {
         };
         if !server.enabled {
             return Err(format!("MCP server '{server_name}' is disabled"));
+        }
+        if !mcp_tool_is_allowed(&server, tool_name) {
+            return Err(format!(
+                "ToolDenied {{ reason: McpAllowedTools }}: MCP tool `{server_name}.{tool_name}` is not allowed by the connector execution policy."
+            ));
         }
         let mismatched_headers =
             mismatched_store_secret_headers(&server.secret_headers, current_tenant);
@@ -1586,7 +1605,7 @@ fn tenant_scoped_principal_id(tenant_context: &TenantContext) -> String {
     )
 }
 
-const MCP_REGISTRY_STATE_SCHEMA_VERSION: u32 = 2;
+const MCP_REGISTRY_STATE_SCHEMA_VERSION: u32 = 3;
 
 fn default_mcp_registry_state_schema_version() -> u32 {
     MCP_REGISTRY_STATE_SCHEMA_VERSION

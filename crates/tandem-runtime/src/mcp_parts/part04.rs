@@ -101,6 +101,8 @@ pub struct McpUpstreamAccount {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpConnection {
     pub connection_id: String,
+    #[serde(default = "new_mcp_connection_generation")]
+    pub connection_generation: String,
     pub server_id: String,
     pub tenant_context: TenantContext,
     pub owner: McpPrincipalRef,
@@ -154,6 +156,7 @@ impl McpConnection {
         let credential_ref = compatibility_credential_ref(server_id, server);
         Self {
             connection_id: mcp_connection_id(server_id, &tenant_context, &owner),
+            connection_generation: new_mcp_connection_generation(),
             server_id: server_id.trim().to_string(),
             tenant_context,
             owner,
@@ -186,6 +189,7 @@ impl McpConnection {
         let is_local = tenant_context.is_local_implicit();
         Self {
             connection_id: mcp_connection_id(server_id, &tenant_context, &owner),
+            connection_generation: new_mcp_connection_generation(),
             server_id: server_id.trim().to_string(),
             tenant_context,
             owner,
@@ -409,6 +413,7 @@ impl McpRegistry {
             connection_id.clone(),
             McpConnection {
                 connection_id,
+                connection_generation: new_mcp_connection_generation(),
                 server_id: server_id.trim().to_string(),
                 tenant_context: current_tenant.clone(),
                 owner,
@@ -461,6 +466,7 @@ impl McpRegistry {
             connection_id.clone(),
             McpConnection {
                 connection_id,
+                connection_generation: new_mcp_connection_generation(),
                 server_id: server_id.trim().to_string(),
                 tenant_context: current_tenant.clone(),
                 owner,

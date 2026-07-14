@@ -54,18 +54,18 @@ pub(super) async fn auth_gate(
     }
     let runtime_auth_mode = resolve_memory_context_runtime_auth_mode();
     if path == "/incident-monitor/intake/report" {
-        if !runtime_auth_mode_requires_transport_token(runtime_auth_mode)
-            && !attach_enterprise_request_context_for_mode(&state, &mut request, runtime_auth_mode)
-                .await
-        {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(ErrorEnvelope::new(
-                    "Unauthorized: tenant context denied",
-                    ErrorCode::TenantContextDenied,
-                )),
+        if !runtime_auth_mode_requires_transport_token(runtime_auth_mode) {
+            match attach_enterprise_request_context_for_mode(
+                &state,
+                &mut request,
+                runtime_auth_mode,
             )
-                .into_response();
+            .await
+            {
+                Ok(true) => {}
+                Ok(false) => return tenant_context_denied_response(),
+                Err(error) => return denial_audit_failure_response(&error),
+            }
         }
         if !runtime_auth_mode_requires_transport_token(runtime_auth_mode) {
             return next.run(request).await;
@@ -88,15 +88,11 @@ pub(super) async fn auth_gate(
             .into_response();
     }
 
-    if !attach_enterprise_request_context_for_mode(&state, &mut request, runtime_auth_mode).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(ErrorEnvelope::new(
-                "Unauthorized: tenant context denied",
-                ErrorCode::TenantContextDenied,
-            )),
-        )
-            .into_response();
+    match attach_enterprise_request_context_for_mode(&state, &mut request, runtime_auth_mode).await
+    {
+        Ok(true) => {}
+        Ok(false) => return tenant_context_denied_response(),
+        Err(error) => return denial_audit_failure_response(&error),
     }
 
     // Per-tenant inbound rate limiting (TAN2-11). Enforced only once the tenant
@@ -129,7 +125,7 @@ async fn attach_enterprise_request_context_for_mode(
     state: &AppState,
     request: &mut Request,
     mode: RuntimeAuthMode,
-) -> bool {
+) -> Result<bool, String> {
     let headers = request.headers();
     let resolved = match resolve_enterprise_request_context_for_mode_with_denial(
         headers,
@@ -143,9 +139,9 @@ async fn attach_enterprise_request_context_for_mode(
                 denial.reason.as_str()
             );
             denial
-                .append_protected_audit_event_best_effort(state, mode, headers)
-                .await;
-            return false;
+                .append_required_audit_event(state, mode, headers)
+                .await?;
+            return Ok(false);
         }
     };
 
@@ -156,8 +152,8 @@ async fn attach_enterprise_request_context_for_mode(
             resolved.tenant_context.org_id,
             resolved.request_principal.source
         );
-        append_authorization_denial_audit_event(state, &resolved).await;
-        return false;
+        append_authorization_denial_audit_event(state, &resolved).await?;
+        return Ok(false);
     }
 
     if let Some(mut verified_tenant_context) = resolved.verified_tenant_context {
@@ -171,7 +167,29 @@ async fn attach_enterprise_request_context_for_mode(
     }
     request.extensions_mut().insert(resolved.tenant_context);
     request.extensions_mut().insert(resolved.request_principal);
-    true
+    Ok(true)
+}
+
+fn tenant_context_denied_response() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorEnvelope::new(
+            "Unauthorized: tenant context denied",
+            ErrorCode::TenantContextDenied,
+        )),
+    )
+        .into_response()
+}
+
+fn denial_audit_failure_response(error: &str) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "error": format!("request remained denied, but its required denial receipt could not be written: {error}"),
+            "code": "AUDIT_PERSISTENCE_FAILED",
+        })),
+    )
+        .into_response()
 }
 
 async fn enrich_verified_context_with_org_unit_grants(
@@ -534,13 +552,13 @@ impl TenantContextIngressDenial {
         }
     }
 
-    async fn append_protected_audit_event_best_effort(
+    async fn append_required_audit_event(
         &self,
         state: &AppState,
         mode: RuntimeAuthMode,
         headers: &HeaderMap,
-    ) {
-        crate::audit::append_protected_audit_event_best_effort(
+    ) -> Result<(), String> {
+        crate::audit::append_protected_audit_event(
             state,
             self.event_type(),
             &self.tenant_context,
@@ -559,7 +577,9 @@ impl TenantContextIngressDenial {
                 "deployment_claim": self.deployment_claim,
             }),
         )
-        .await;
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
     }
 }
 fn preview_context_assertion_for_audit(
@@ -580,8 +600,8 @@ fn preview_context_assertion_for_audit(
 async fn append_authorization_denial_audit_event(
     state: &AppState,
     resolved: &ResolvedEnterpriseRequestContext,
-) {
-    crate::audit::append_protected_audit_event_best_effort(
+) -> Result<(), String> {
+    crate::audit::append_protected_audit_event(
         state,
         "authority.cross_tenant_denied",
         &resolved.tenant_context,
@@ -599,7 +619,9 @@ async fn append_authorization_denial_audit_event(
             "tenant_context": resolved.tenant_context,
         }),
     )
-    .await;
+    .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 fn resolve_enterprise_request_context_for_mode(

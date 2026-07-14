@@ -386,30 +386,52 @@ mod issue_fix_handoff_tests {
 }
 async fn call_merge_pull_request(
     state: &AppState,
+    tenant_context: &tandem_types::TenantContext,
     server_name: &str,
     tool_name: &str,
     owner: &str,
     repo: &str,
     pull_number: u64,
 ) -> Result<tandem_types::ToolResult, StatusCode> {
-    let preferred = json!({
-        "owner": owner,
-        "repo": repo,
-        "pull_number": pull_number,
-        "merge_method": "squash",
-    });
-    let fallback = json!({
-        "owner": owner,
-        "repo": repo,
-        "number": pull_number,
-    });
-    let first = state.mcp.call_tool(server_name, tool_name, preferred).await;
+    let preferred = with_coder_mcp_phase_authority(
+        json!({
+            "owner": owner,
+            "repo": repo,
+            "pull_number": pull_number,
+            "merge_method": "squash",
+        }),
+        server_name,
+        tool_name,
+        "coder_merge_submit",
+    );
+    let fallback = with_coder_mcp_phase_authority(
+        json!({
+            "owner": owner,
+            "repo": repo,
+            "number": pull_number,
+        }),
+        server_name,
+        tool_name,
+        "coder_merge_submit",
+    );
+    let first = crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_audit(
+        state,
+        server_name,
+        tool_name,
+        preferred,
+        tenant_context,
+    )
+    .await;
     match first {
         Ok(result) => Ok(result),
-        Err(_) => state
-            .mcp
-            .call_tool(server_name, tool_name, fallback)
-            .await
-            .map_err(|_| StatusCode::BAD_GATEWAY),
+        Err(_) => crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_audit(
+            state,
+            server_name,
+            tool_name,
+            fallback,
+            tenant_context,
+        )
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY),
     }
 }

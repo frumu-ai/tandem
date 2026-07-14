@@ -444,7 +444,7 @@ async fn dispatch_decision(
                 None,
                 "discord",
             );
-            crate::http::channel_interaction_audit::append_cross_tenant_denial(
+            if let Err(error) = crate::http::channel_interaction_audit::append_cross_tenant_denial(
                 &state,
                 "discord",
                 user_id,
@@ -452,7 +452,12 @@ async fn dispatch_decision(
                 channel_tenant,
                 &tenant_context,
             )
-            .await;
+            .await
+            {
+                return reject_forbidden(&format!(
+                    "channel denied; required denial receipt persistence failed: {error}"
+                ));
+            }
             return reject_forbidden("channel not bound to this run's tenant");
         }
     }

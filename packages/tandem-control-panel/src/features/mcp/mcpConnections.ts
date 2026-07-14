@@ -10,6 +10,7 @@ export type McpConnectionClass =
 
 export type McpConnectionSummary = {
   connectionId: string;
+  connectionGeneration: string;
   server: string;
   connectionClass: McpConnectionClass;
   connected: boolean;
@@ -85,6 +86,7 @@ export function normalizeMcpConnectionSummary(
   const tenantContext = safeObject(record.tenant_context || record.tenantContext);
   return {
     connectionId,
+    connectionGeneration: safeString(record.connection_generation || record.connectionGeneration),
     server,
     connectionClass: normalizeConnectionClass(record.connection_class || record.connectionClass),
     connected: !!record.connected,
@@ -270,6 +272,7 @@ export function mcpConnectionGrantFor(connection: McpConnectionSummary): StudioM
   return {
     server: connection.server,
     connection_id: connection.connectionId,
+    connection_generation: connection.connectionGeneration,
   };
 }
 
@@ -277,7 +280,16 @@ export function mcpConnectionGrantKey(grant: StudioMcpConnectionGrant) {
   return JSON.stringify({
     server: safeString(grant.server),
     connection_id: safeString(grant.connection_id),
+    connection_generation: safeString(grant.connection_generation),
     run_as: grant.run_as || null,
+  });
+}
+
+export function mcpConnectionGrantIdentityKey(grant: StudioMcpConnectionGrant) {
+  return JSON.stringify({
+    server: safeString(grant.server).toLowerCase(),
+    connection_id: safeString(grant.connection_id),
+    connection_generation: safeString(grant.connection_generation),
   });
 }
 
@@ -291,10 +303,14 @@ export function normalizeMcpConnectionGrants(raw: unknown): StudioMcpConnectionG
     const server = safeString(record.server || record.server_name || record.serverName);
     if (!server) continue;
     const connectionId = safeString(record.connection_id || record.connectionId);
+    const connectionGeneration = safeString(
+      record.connection_generation || record.connectionGeneration
+    );
     const runAs = record.run_as ?? record.runAs;
     const grant: StudioMcpConnectionGrant = {
       server,
       ...(connectionId ? { connection_id: connectionId } : {}),
+      ...(connectionGeneration ? { connection_generation: connectionGeneration } : {}),
       ...(runAs && typeof runAs === "object" ? { run_as: JSON.parse(JSON.stringify(runAs)) } : {}),
     };
     const key = mcpConnectionGrantKey(grant);

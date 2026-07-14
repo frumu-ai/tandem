@@ -93,13 +93,15 @@ export function normalizeMcpConnectionGrants(raw: unknown): StudioMcpConnectionG
     const server = safeString(record.server || record.server_name || record.serverName);
     if (!server) continue;
     const connectionId = safeString(record.connection_id || record.connectionId);
+    const connectionGeneration = safeString(
+      record.connection_generation || record.connectionGeneration
+    );
     const runAs = record.run_as ?? record.runAs;
     const grant: StudioMcpConnectionGrant = {
       server,
       ...(connectionId ? { connection_id: connectionId } : {}),
-      ...(runAs && typeof runAs === "object"
-        ? { run_as: JSON.parse(JSON.stringify(runAs)) }
-        : {}),
+      ...(connectionGeneration ? { connection_generation: connectionGeneration } : {}),
+      ...(runAs && typeof runAs === "object" ? { run_as: JSON.parse(JSON.stringify(runAs)) } : {}),
     };
     const key = JSON.stringify(grant);
     if (seen.has(key)) continue;

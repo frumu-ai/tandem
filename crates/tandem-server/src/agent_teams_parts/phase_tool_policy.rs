@@ -2,14 +2,19 @@ async fn evaluate_automation_phase_tool_policy(
     state: &AppState,
     ctx: &ToolPolicyContext,
     tool: &str,
-) -> Option<ToolPolicyDecision> {
-    let (run_id, mapped_node_id) = state
+) -> anyhow::Result<Option<ToolPolicyDecision>> {
+    let Some((run_id, mapped_node_id)) = state
         .automation_v2_session_run_and_node(&ctx.session_id)
-        .await?;
+        .await
+    else {
+        return Ok(None);
+    };
     if !state.is_ready() {
-        return None;
+        return Ok(None);
     }
-    let run = state.get_automation_v2_run(&run_id).await?;
+    let Some(run) = state.get_automation_v2_run(&run_id).await else {
+        return Ok(None);
+    };
     let allowed_tools = state
         .engine_loop
         .get_session_allowed_tools(&ctx.session_id)
@@ -19,7 +24,7 @@ async fn evaluate_automation_phase_tool_policy(
         .map(|name| normalize_tool_name(name))
         .collect::<Vec<_>>();
     if !allowed_patterns.is_empty() && any_policy_matches(&allowed_patterns, tool) {
-        return None;
+        return Ok(None);
     }
 
     let node_id = mapped_node_id.or_else(|| phase_policy_single_active_node_id(&run));
@@ -50,7 +55,7 @@ async fn evaluate_automation_phase_tool_policy(
         empty_allowlist,
         &reason,
     )
-    .await;
+    .await?;
 
     if state.is_ready() {
         state.event_bus.publish(EngineEvent::new(
@@ -71,11 +76,11 @@ async fn evaluate_automation_phase_tool_policy(
         ));
     }
 
-    Some(ToolPolicyDecision {
+    Ok(Some(ToolPolicyDecision {
         allowed: false,
         reason: Some(reason),
-        policy_decision_id: decision_id,
-    })
+        policy_decision_id: Some(decision_id),
+    }))
 }
 
 async fn session_allowlist_would_deny_non_automation_tool(
@@ -160,7 +165,7 @@ async fn record_automation_phase_tool_policy_decision(
     allowed_tools: &[String],
     empty_allowlist: bool,
     reason: &str,
-) -> Option<String> {
+) -> anyhow::Result<String> {
     let decision_id = format!("policy_decision_{}", Uuid::new_v4().simple());
     let metadata = json!({
         "phase_tool_authority": {
@@ -202,15 +207,9 @@ async fn record_automation_phase_tool_policy_decision(
         created_at_ms: crate::now_ms(),
         metadata: metadata.clone(),
     };
-    let recorded = match state.record_policy_decision(record).await {
-        Ok(record) => Some(record.decision_id),
-        Err(error) => {
-            tracing::warn!("failed to record workflow phase tool policy decision: {error:?}");
-            None
-        }
-    };
+    let recorded = state.record_policy_decision(record).await?.decision_id;
 
-    crate::audit::append_protected_audit_event_best_effort(
+    crate::audit::append_protected_audit_event(
         state,
         "automation.phase_tool.denied",
         &run.tenant_context,
@@ -232,7 +231,7 @@ async fn record_automation_phase_tool_policy_decision(
                 .and_then(tandem_types::GovernanceRequesterContext::from_verified_context),
         }),
     )
-    .await;
+    .await?;
 
-    recorded
+    Ok(recorded)
 }

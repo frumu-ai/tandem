@@ -914,8 +914,14 @@ mod tests {
             "__project_id": "hidden-project"
         });
         assert!(!is_channel_tool_context(&args));
-        assert_eq!(memory_session_id(&args).as_deref(), Some("explicit-session"));
-        assert_eq!(memory_project_id(&args).as_deref(), Some("explicit-project"));
+        assert_eq!(
+            memory_session_id(&args).as_deref(),
+            Some("explicit-session")
+        );
+        assert_eq!(
+            memory_project_id(&args).as_deref(),
+            Some("explicit-project")
+        );
     }
 
     #[tokio::test]
@@ -991,7 +997,10 @@ mod tests {
         // Another user's subject is hidden.
         assert!(!channel_subject_allows(Some("channel:discord:user-99"), me));
         // No caller subject (non-channel/local) sees everything.
-        assert!(channel_subject_allows(Some("channel:discord:user-99"), None));
+        assert!(channel_subject_allows(
+            Some("channel:discord:user-99"),
+            None
+        ));
         assert!(channel_subject_allows(None, None));
     }
 
@@ -1325,11 +1334,9 @@ mod tests {
         )
         .await
         .expect("store chunk");
-        let manager = MemoryManager::new_with_store(
-            db,
-            tandem_memory::embeddings::EmbeddingService::new(),
-        )
-        .expect("portable manager");
+        let manager =
+            MemoryManager::new_with_store(db, tandem_memory::embeddings::EmbeddingService::new())
+                .expect("portable manager");
 
         let deleted = delete_local_memory_chunk(
             &manager,
@@ -1675,23 +1682,26 @@ mod tests {
 
     #[tokio::test]
     async fn registry_resolves_default_api_namespaced_tool() {
-        let registry = ToolRegistry::new();
-        let result = registry
-            .execute("default_api:read", json!({"path":"Cargo.toml"}))
+        let dispatcher = GovernedToolDispatcher::new(ToolRegistry::new());
+        let result = dispatcher
+            .dispatch_local("default_api:read", json!({"path":"Cargo.toml"}))
             .await
-            .expect("registry execute should return ToolResult");
+            .expect("dispatcher should return ToolResult");
         assert!(!result.output.starts_with("Unknown tool:"));
     }
 
     #[tokio::test]
     async fn batch_resolves_default_api_namespaced_tool() {
-        let tool = BatchTool;
-        let result = tool
-            .execute(json!({
-                "tool_calls":[
-                    {"tool":"default_api:read","args":{"path":"Cargo.toml"}}
-                ]
-            }))
+        let dispatcher = GovernedToolDispatcher::new(ToolRegistry::new());
+        let result = dispatcher
+            .dispatch_local(
+                "batch",
+                json!({
+                    "tool_calls":[
+                        {"tool":"default_api:read","args":{"path":"Cargo.toml"}}
+                    ]
+                }),
+            )
             .await
             .expect("batch should return ToolResult");
         assert!(!result.output.contains("Unknown tool: default_api:read"));
@@ -1699,13 +1709,16 @@ mod tests {
 
     #[tokio::test]
     async fn batch_prefers_name_when_tool_is_default_api_wrapper() {
-        let tool = BatchTool;
-        let result = tool
-            .execute(json!({
-                "tool_calls":[
-                    {"tool":"default_api","name":"read","args":{"path":"Cargo.toml"}}
-                ]
-            }))
+        let dispatcher = GovernedToolDispatcher::new(ToolRegistry::new());
+        let result = dispatcher
+            .dispatch_local(
+                "batch",
+                json!({
+                    "tool_calls":[
+                        {"tool":"default_api","name":"read","args":{"path":"Cargo.toml"}}
+                    ]
+                }),
+            )
             .await
             .expect("batch should return ToolResult");
         assert!(!result.output.contains("Unknown tool: default_api"));
@@ -1713,17 +1726,20 @@ mod tests {
 
     #[tokio::test]
     async fn batch_resolves_nested_function_name_for_wrapper_tool() {
-        let tool = BatchTool;
-        let result = tool
-            .execute(json!({
-                "tool_calls":[
-                    {
-                        "tool":"default_api",
-                        "function":{"name":"read"},
-                        "args":{"path":"Cargo.toml"}
-                    }
-                ]
-            }))
+        let dispatcher = GovernedToolDispatcher::new(ToolRegistry::new());
+        let result = dispatcher
+            .dispatch_local(
+                "batch",
+                json!({
+                    "tool_calls":[
+                        {
+                            "tool":"default_api",
+                            "function":{"name":"read"},
+                            "args":{"path":"Cargo.toml"}
+                        }
+                    ]
+                }),
+            )
             .await
             .expect("batch should return ToolResult");
         assert!(!result.output.contains("Unknown tool: default_api"));
@@ -1731,13 +1747,16 @@ mod tests {
 
     #[tokio::test]
     async fn batch_drops_wrapper_calls_without_resolvable_name() {
-        let tool = BatchTool;
-        let result = tool
-            .execute(json!({
-                "tool_calls":[
-                    {"tool":"default_api","args":{"path":"Cargo.toml"}}
-                ]
-            }))
+        let dispatcher = GovernedToolDispatcher::new(ToolRegistry::new());
+        let result = dispatcher
+            .dispatch_local(
+                "batch",
+                json!({
+                    "tool_calls":[
+                        {"tool":"default_api","args":{"path":"Cargo.toml"}}
+                    ]
+                }),
+            )
             .await
             .expect("batch should return ToolResult");
         assert_eq!(result.metadata["count"], json!(0));
@@ -1745,9 +1764,9 @@ mod tests {
 
     #[tokio::test]
     async fn batch_returns_per_call_errors_without_aborting() {
-        let tool = BatchTool;
-        let result = tool
-            .execute(json!({
+        let dispatcher = GovernedToolDispatcher::new(ToolRegistry::new());
+        let result = dispatcher
+            .dispatch_local("batch", json!({
                 "tool_calls":[
                     {"tool":"read","args":{"path":"Cargo.toml"}},
                     {"tool":"TaskList","args":{}},

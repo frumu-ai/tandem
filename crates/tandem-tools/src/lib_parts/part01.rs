@@ -378,19 +378,13 @@ impl ToolRegistry {
         sorted
     }
 
-    pub(crate) async fn resolve_schema(&self, name: &str) -> Option<ToolSchema> {
+    async fn resolve_schema(&self, name: &str) -> Option<ToolSchema> {
         let tools = self.tools.read().await;
         resolve_registered_tool(&tools, name).map(|tool| tool.schema())
     }
 
-    #[allow(dead_code)]
-    pub(crate) async fn execute(&self, name: &str, args: Value) -> anyhow::Result<ToolResult> {
-        self.execute_for_tenant(name, args, TenantContext::local_implicit())
-            .await
-    }
-
-    #[allow(dead_code)]
-    pub(crate) async fn execute_for_tenant(
+    #[cfg(test)]
+    async fn execute_for_tenant(
         &self,
         name: &str,
         args: Value,
@@ -410,35 +404,7 @@ impl ToolRegistry {
         tool.execute_for_tenant(args, tenant_context).await
     }
 
-    #[allow(dead_code)]
-    pub(crate) async fn execute_with_cancel(
-        &self,
-        name: &str,
-        args: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        self.execute_with_cancel_and_progress(name, args, cancel, None)
-            .await
-    }
-
-    pub(crate) async fn execute_with_cancel_and_progress(
-        &self,
-        name: &str,
-        args: Value,
-        cancel: CancellationToken,
-        progress: Option<SharedToolProgressSink>,
-    ) -> anyhow::Result<ToolResult> {
-        self.execute_with_cancel_and_progress_for_tenant(
-            name,
-            args,
-            TenantContext::local_implicit(),
-            cancel,
-            progress,
-        )
-        .await
-    }
-
-    pub(crate) async fn execute_with_cancel_and_progress_for_tenant(
+    async fn execute_with_cancel_and_progress_for_tenant(
         &self,
         name: &str,
         args: Value,

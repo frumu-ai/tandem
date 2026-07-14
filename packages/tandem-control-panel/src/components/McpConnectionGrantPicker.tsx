@@ -149,7 +149,7 @@ export function McpConnectionGrantPicker({
       {missingGrants.length ? (
         <div className="grid gap-2 border-t border-slate-800 pt-2">
           <div className="tcp-text-caption uppercase tracking-wide text-amber-200">
-            Saved grants not currently visible
+            Revoked or invalid connector grants
           </div>
           {missingGrants.map((grant) => (
             <div

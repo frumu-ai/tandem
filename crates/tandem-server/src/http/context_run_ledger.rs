@@ -107,7 +107,7 @@ pub(super) async fn context_run_governance_evidence_export(
             automation_run.as_ref(),
             crate::now_ms(),
         ) {
-            crate::audit::append_protected_audit_event_best_effort(
+            if let Err(error) = crate::audit::append_protected_audit_event(
                 &state,
                 "audit.export.denied",
                 &tenant_context,
@@ -119,7 +119,16 @@ pub(super) async fn context_run_governance_evidence_export(
                     "reason": "missing read authority for included data class",
                 }),
             )
-            .await;
+            .await
+            {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("export remained denied, but its required denial receipt could not be written: {error}"),
+                        "code": "AUDIT_PERSISTENCE_FAILED",
+                    })),
+                ));
+            }
             return Err((
                 StatusCode::FORBIDDEN,
                 Json(json!({

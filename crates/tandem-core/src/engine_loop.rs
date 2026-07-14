@@ -637,6 +637,14 @@ impl EngineLoop {
                 None,
                 Some(&surfaced_reason),
             );
+            self.record_tool_preflight_denial(
+                session_id,
+                message_id,
+                &tool,
+                &surfaced_reason,
+                None,
+            )
+            .await?;
             return Ok(Some(surfaced_reason));
         }
 
@@ -652,6 +660,8 @@ impl EngineLoop {
                     None,
                     Some(&message),
                 );
+                self.record_tool_preflight_denial(session_id, message_id, &tool, &message, None)
+                    .await?;
                 return Ok(Some(message));
             }
         };
@@ -704,11 +714,19 @@ impl EngineLoop {
                     None,
                     Some(&reason),
                 );
-                record.policy_decision_id = policy_decision_id;
+                record.policy_decision_id = policy_decision_id.clone();
                 self.event_bus.publish(tool_effect_ledger_event(
                     record,
                     tool_effect_tenant_context.as_ref(),
                 ));
+                self.record_tool_preflight_denial(
+                    session_id,
+                    message_id,
+                    &tool,
+                    &reason,
+                    policy_decision_id,
+                )
+                .await?;
                 if write_required {
                     return Err(anyhow::anyhow!(reason));
                 }
@@ -740,6 +758,8 @@ impl EngineLoop {
                     None,
                     Some(&blocked_output),
                 );
+                self.record_tool_preflight_denial(session_id, message_id, &tool, &reason, None)
+                    .await?;
                 return Ok(Some(blocked_output));
             }
         }
@@ -779,6 +799,8 @@ impl EngineLoop {
                 None,
                 Some(&violation),
             );
+            self.record_tool_preflight_denial(session_id, message_id, &tool, &violation, None)
+                .await?;
             return Ok(Some(violation));
         }
         if let Some(violation) = self
@@ -807,6 +829,8 @@ impl EngineLoop {
                 None,
                 Some(&violation),
             );
+            self.record_tool_preflight_denial(session_id, message_id, &tool, &violation, None)
+                .await?;
             return Ok(Some(violation));
         }
         let rule = self
@@ -825,6 +849,8 @@ impl EngineLoop {
                 None,
                 Some(&reason),
             );
+            self.record_tool_preflight_denial(session_id, message_id, &tool, &reason, None)
+                .await?;
             return Ok(Some(reason));
         }
 
@@ -869,6 +895,8 @@ impl EngineLoop {
                         None,
                         Some(&reason),
                     );
+                    self.record_tool_preflight_denial(session_id, message_id, &tool, &reason, None)
+                        .await?;
                     if write_required {
                         return Err(anyhow::anyhow!(reason));
                     }
@@ -986,6 +1014,14 @@ impl EngineLoop {
                         None,
                         Some(&timeout_reason),
                     );
+                    self.record_tool_preflight_denial(
+                        session_id,
+                        message_id,
+                        &tool,
+                        &timeout_reason,
+                        None,
+                    )
+                    .await?;
                     if write_required {
                         return Err(anyhow::anyhow!(timeout_reason));
                     }
@@ -1019,6 +1055,14 @@ impl EngineLoop {
                         None,
                         Some(&denied_reason),
                     );
+                    self.record_tool_preflight_denial(
+                        session_id,
+                        message_id,
+                        &tool,
+                        &denied_reason,
+                        None,
+                    )
+                    .await?;
                     if write_required {
                         return Err(anyhow::anyhow!(denied_reason));
                     }

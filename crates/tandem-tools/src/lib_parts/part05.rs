@@ -87,100 +87,11 @@ impl Tool for BatchTool {
 
     async fn execute_with_progress(
         &self,
-        args: Value,
-        cancel: CancellationToken,
-        progress: Option<SharedToolProgressSink>,
+        _args: Value,
+        _cancel: CancellationToken,
+        _progress: Option<SharedToolProgressSink>,
     ) -> anyhow::Result<ToolResult> {
-        let calls = args["tool_calls"].as_array().cloned().unwrap_or_default();
-        let registry = ToolRegistry::new();
-        let mut outputs = Vec::new();
-        for call in calls.iter().take(20) {
-            if cancel.is_cancelled() {
-                break;
-            }
-            if let Some(reason) = call.get("_blocked").and_then(|value| value.as_str()) {
-                let tool =
-                    resolve_batch_call_tool_name(call).unwrap_or_else(|| "unknown".to_string());
-                outputs.push(json!({
-                    "tool": tool,
-                    "status": "skipped",
-                    "output": "",
-                    "error": reason,
-                    "metadata": {}
-                }));
-                continue;
-            }
-            let Some(tool) = resolve_batch_call_tool_name(call) else {
-                continue;
-            };
-            if tool.is_empty() || tool == "batch" {
-                continue;
-            }
-            let call_args = call.get("args").cloned().unwrap_or_else(|| json!({}));
-            let mut result = match registry
-                .execute_with_cancel_and_progress(
-                    &tool,
-                    call_args.clone(),
-                    cancel.clone(),
-                    progress.clone(),
-                )
-                .await
-            {
-                Ok(result) => result,
-                Err(err) => {
-                    outputs.push(json!({
-                        "tool": tool,
-                        "status": "error",
-                        "output": "",
-                        "error": err.to_string(),
-                        "metadata": {}
-                    }));
-                    continue;
-                }
-            };
-            if result.output.starts_with("Unknown tool:") {
-                if let Some(fallback_name) = call
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty() && *s != tool)
-                {
-                    result = match registry
-                        .execute_with_cancel_and_progress(
-                            fallback_name,
-                            call_args,
-                            cancel.clone(),
-                            progress.clone(),
-                        )
-                        .await
-                    {
-                        Ok(result) => result,
-                        Err(err) => {
-                            outputs.push(json!({
-                                "tool": tool,
-                                "status": "error",
-                                "output": "",
-                                "error": err.to_string(),
-                                "metadata": {}
-                            }));
-                            continue;
-                        }
-                    };
-                }
-            }
-            outputs.push(json!({
-                "tool": tool,
-                "status": "ok",
-                "output": result.output,
-                "error": null,
-                "metadata": result.metadata
-            }));
-        }
-        let count = outputs.len();
-        Ok(ToolResult {
-            output: serde_json::to_string_pretty(&outputs).unwrap_or_default(),
-            metadata: json!({"count": count}),
-        })
+        anyhow::bail!("batch execution must enter through GovernedToolDispatcher")
     }
 }
 

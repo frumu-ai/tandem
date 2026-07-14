@@ -18,6 +18,7 @@ export type StudioPromptSections = {
 export type StudioMcpConnectionGrant = {
   server: string;
   connection_id?: string;
+  connection_generation?: string;
   run_as?: unknown;
 };
 

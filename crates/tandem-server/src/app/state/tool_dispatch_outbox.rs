@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::{json, Map, Value};
 use tandem_tools::{
     ToolDispatchLedgerEvent, ToolDispatchPreSendEvent, ToolDispatchPreSendReceipt,
-    ToolDispatchStatus,
+    ToolDispatchReceiptPhase, ToolDispatchStatus,
 };
 use tandem_types::ToolRiskTier;
 
@@ -13,8 +13,9 @@ use crate::stateful_runtime::reliability::{
 };
 use crate::stateful_runtime::{
     load_stateful_reliability, stateful_reliability_path_from_runtime_events_path,
-    upsert_stateful_outbox, StatefulOutboxRecord, StatefulOutboxStatus,
-    StatefulReliabilityStoreFile, StatefulRuntimeScope, STATEFUL_RUNTIME_SCHEMA_VERSION,
+    upsert_stateful_outbox, upsert_stateful_tool_effect, StatefulOutboxRecord,
+    StatefulOutboxStatus, StatefulReliabilityStoreFile, StatefulRuntimeScope,
+    StatefulToolEffectRecord, StatefulToolEffectStatus, STATEFUL_RUNTIME_SCHEMA_VERSION,
 };
 use crate::util::time::now_ms;
 
@@ -135,6 +136,9 @@ pub(crate) async fn complete_pre_send_outbox(
     runtime_events_path: &Path,
     event: &ToolDispatchLedgerEvent,
 ) -> anyhow::Result<()> {
+    if !event.receipt_phase.is_terminal() {
+        return Ok(());
+    }
     let Some(dispatch_id) = event.dispatch_id.as_deref() else {
         return Ok(());
     };
@@ -165,6 +169,109 @@ pub(crate) async fn complete_pre_send_outbox(
     merge_completion_metadata(&mut row.metadata, event);
     upsert_stateful_outbox(&reliability_path, row).await?;
     Ok(())
+}
+
+pub(crate) async fn persist_dispatch_receipt(
+    runtime_events_path: &Path,
+    event: &ToolDispatchLedgerEvent,
+) -> anyhow::Result<()> {
+    let now = now_ms();
+    let operation = event
+        .canonical_tool
+        .clone()
+        .unwrap_or_else(|| event.tool.clone());
+    let dispatch_id = event.dispatch_id.clone().unwrap_or_else(|| {
+        crate::sha256_hex(&[
+            &event.tool,
+            &event.source.kind,
+            event.payload_digest.as_deref().unwrap_or_default(),
+        ])
+    });
+    let status = match event.receipt_phase {
+        ToolDispatchReceiptPhase::ExecutionStarted => StatefulToolEffectStatus::Pending,
+        ToolDispatchReceiptPhase::PolicyDecision
+            if event.policy_outcome == tandem_tools::ToolDispatchPolicyOutcome::Denied =>
+        {
+            StatefulToolEffectStatus::Failed
+        }
+        ToolDispatchReceiptPhase::PolicyDecision => StatefulToolEffectStatus::Succeeded,
+        ToolDispatchReceiptPhase::ExecutionCompleted => StatefulToolEffectStatus::Succeeded,
+        ToolDispatchReceiptPhase::ExecutionFailed => StatefulToolEffectStatus::Failed,
+    };
+    let terminal_status = match event.status {
+        ToolDispatchStatus::Succeeded => StatefulToolEffectStatus::Succeeded,
+        ToolDispatchStatus::Failed | ToolDispatchStatus::Blocked => {
+            StatefulToolEffectStatus::Failed
+        }
+    };
+    let status = if event.receipt_phase.is_terminal() {
+        terminal_status
+    } else {
+        status
+    };
+    let receipt_payload = json!({
+        "dispatch_id": dispatch_id,
+        "tool": event.tool,
+        "canonical_tool": event.canonical_tool,
+        "source": event.source,
+        "policy_outcome": event.policy_outcome,
+        "receipt_phase": event.receipt_phase,
+        "policy_decision_id": event.policy_decision_id,
+        "status": event.status,
+        "error": event.error,
+    });
+    let receipt_payload_string = receipt_payload.to_string();
+    let audit_hash = crate::sha256_hex(&[
+        &dispatch_id,
+        &operation,
+        &receipt_payload_string,
+        event.payload_digest.as_deref().unwrap_or_default(),
+    ]);
+    let record = StatefulToolEffectRecord {
+        schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
+        effect_id: format!(
+            "tool-dispatch-{dispatch_id}-{}",
+            event.receipt_phase.as_str()
+        ),
+        outbox_id: None,
+        action_id: None,
+        run_id: event.source.run_id.clone(),
+        scope: StatefulRuntimeScope::from_tenant_context(event.tenant_context.clone()),
+        status,
+        operation,
+        source_kind: Some(event.source.kind.clone()),
+        source_id: Some(dispatch_id.clone()),
+        node_id: event.source.node_id.clone(),
+        provider: provider_from_tool(event.canonical_tool.as_deref().unwrap_or(&event.tool)),
+        tool: Some(event.tool.clone()),
+        target: None,
+        external_resource: None,
+        policy_decision_id: event.policy_decision_id.clone(),
+        context_assertion_id: None,
+        input_digest: event.payload_digest.clone(),
+        output_digest: None,
+        receipt_payload_digest: Some(crate::sha256_hex(&[&receipt_payload_string])),
+        receipt_payload_redacted: Some(receipt_payload),
+        receipt_pointer: Some(format!(
+            "tool-dispatch://{dispatch_id}/{}",
+            event.receipt_phase.as_str()
+        )),
+        redaction_tier: "safe_ui".to_string(),
+        audit_hash,
+        error: event.error.clone(),
+        compensation_id: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+        metadata: Some(json!({
+            "receipt_source": "central_tool_dispatcher",
+            "receipt_phase": event.receipt_phase,
+            "scope_allowlist": event.scope_allowlist,
+        })),
+    };
+    let reliability_path = stateful_reliability_path_from_runtime_events_path(runtime_events_path);
+    upsert_stateful_tool_effect(&reliability_path, record)
+        .await
+        .map(|_| ())
 }
 
 fn is_outbox_gate_denial(event: &ToolDispatchLedgerEvent) -> bool {
@@ -366,6 +473,7 @@ mod tests {
                 .node("node-1"),
             scope_allowlist: vec!["mcp.github.create_issue".to_string()],
             policy_outcome: ToolDispatchPolicyOutcome::Allowed,
+            receipt_phase: ToolDispatchReceiptPhase::ExecutionCompleted,
             policy_decision_id: Some("policy-1".to_string()),
             payload_digest: Some("sha256:payload".to_string()),
             status: ToolDispatchStatus::Succeeded,
@@ -387,6 +495,7 @@ mod tests {
                 .node("node-1"),
             scope_allowlist: vec!["mcp.github.create_issue".to_string()],
             policy_outcome: ToolDispatchPolicyOutcome::Allowed,
+            receipt_phase: ToolDispatchReceiptPhase::ExecutionFailed,
             policy_decision_id: Some("policy-1".to_string()),
             payload_digest: Some("sha256:payload".to_string()),
             status: ToolDispatchStatus::Blocked,
@@ -398,9 +507,75 @@ mod tests {
 
     fn blocked_policy_event(dispatch_id: String, tenant: TenantContext) -> ToolDispatchLedgerEvent {
         let mut event = completion_event(dispatch_id, tenant);
+        event.receipt_phase = ToolDispatchReceiptPhase::PolicyDecision;
         event.status = ToolDispatchStatus::Blocked;
         event.error = Some("ToolDenied { reason: PolicyDenied }".to_string());
         event
+    }
+
+    fn blocked_execution_event(
+        dispatch_id: String,
+        tenant: TenantContext,
+    ) -> ToolDispatchLedgerEvent {
+        let mut event = completion_event(dispatch_id, tenant);
+        event.receipt_phase = ToolDispatchReceiptPhase::ExecutionFailed;
+        event.status = ToolDispatchStatus::Blocked;
+        event.error = Some("execution blocked after pre-send reservation".to_string());
+        event
+    }
+
+    #[tokio::test]
+    async fn dispatch_receipts_persist_allow_deny_and_execution_outcomes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime_events_path = dir.path().join("events.json");
+        let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
+        let succeeded = completion_event("dispatch-allowed".to_string(), tenant.clone());
+        let mut allowed_policy = succeeded.clone();
+        allowed_policy.receipt_phase = ToolDispatchReceiptPhase::PolicyDecision;
+        let mut started = succeeded.clone();
+        started.receipt_phase = ToolDispatchReceiptPhase::ExecutionStarted;
+        let mut denied = blocked_policy_event("dispatch-denied".to_string(), tenant);
+        denied.policy_outcome = ToolDispatchPolicyOutcome::Denied;
+
+        persist_dispatch_receipt(&runtime_events_path, &allowed_policy)
+            .await
+            .expect("persist allowed policy receipt");
+        persist_dispatch_receipt(&runtime_events_path, &started)
+            .await
+            .expect("persist execution-started receipt");
+        persist_dispatch_receipt(&runtime_events_path, &succeeded)
+            .await
+            .expect("persist allowed execution receipt");
+        persist_dispatch_receipt(&runtime_events_path, &denied)
+            .await
+            .expect("persist denial receipt");
+
+        let reliability_path =
+            stateful_reliability_path_from_runtime_events_path(&runtime_events_path);
+        let store = load_stateful_reliability(&reliability_path);
+        assert_eq!(store.tool_effects.len(), 4);
+        assert!(store.tool_effects.iter().any(|receipt| {
+            receipt.effect_id == "tool-dispatch-dispatch-allowed-execution_completed"
+                && receipt.status == StatefulToolEffectStatus::Succeeded
+        }));
+        assert!(store.tool_effects.iter().any(|receipt| {
+            receipt.effect_id == "tool-dispatch-dispatch-allowed-policy_decision"
+                && receipt.status == StatefulToolEffectStatus::Succeeded
+        }));
+        assert!(store.tool_effects.iter().any(|receipt| {
+            receipt.effect_id == "tool-dispatch-dispatch-allowed-execution_started"
+                && receipt.status == StatefulToolEffectStatus::Pending
+        }));
+        assert!(store.tool_effects.iter().any(|receipt| {
+            receipt.effect_id == "tool-dispatch-dispatch-denied-policy_decision"
+                && receipt.status == StatefulToolEffectStatus::Failed
+                && receipt
+                    .receipt_payload_redacted
+                    .as_ref()
+                    .and_then(|payload| payload.get("policy_outcome"))
+                    .and_then(Value::as_str)
+                    == Some("denied")
+        }));
     }
 
     #[tokio::test]
@@ -461,6 +636,7 @@ mod tests {
                     .node("node-1"),
                 scope_allowlist: vec!["mcp.github.create_issue".to_string()],
                 policy_outcome: ToolDispatchPolicyOutcome::Allowed,
+                receipt_phase: ToolDispatchReceiptPhase::ExecutionCompleted,
                 policy_decision_id: Some("policy-1".to_string()),
                 payload_digest: Some("sha256:payload".to_string()),
                 status: ToolDispatchStatus::Succeeded,
@@ -647,7 +823,7 @@ mod tests {
             .expect("receipt");
         complete_pre_send_outbox(
             &runtime_events_path,
-            &blocked_policy_event(receipt.idempotency_key, tenant),
+            &blocked_execution_event(receipt.idempotency_key, tenant),
         )
         .await
         .expect("complete blocked");
@@ -673,7 +849,7 @@ mod tests {
             .expect("receipt");
         complete_pre_send_outbox(
             &runtime_events_path,
-            &blocked_policy_event(receipt.idempotency_key.clone(), tenant),
+            &blocked_execution_event(receipt.idempotency_key.clone(), tenant),
         )
         .await
         .expect("complete blocked");
@@ -711,7 +887,7 @@ mod tests {
         .expect("complete sent");
         complete_pre_send_outbox(
             &runtime_events_path,
-            &blocked_policy_event(receipt.idempotency_key, tenant),
+            &blocked_execution_event(receipt.idempotency_key, tenant),
         )
         .await
         .expect("ignore later blocked event");

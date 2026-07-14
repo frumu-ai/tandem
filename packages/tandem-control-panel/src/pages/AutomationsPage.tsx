@@ -584,10 +584,14 @@ function normalizeMcpConnectionGrants(raw: any): Array<Record<string, any>> {
     const server = String(row.server || row.server_name || row.serverName || "").trim();
     if (!server) continue;
     const connectionId = String(row.connection_id || row.connectionId || "").trim();
+    const connectionGeneration = String(
+      row.connection_generation || row.connectionGeneration || ""
+    ).trim();
     const runAs = row.run_as ?? row.runAs;
     const grant: Record<string, any> = {
       server,
       ...(connectionId ? { connection_id: connectionId } : {}),
+      ...(connectionGeneration ? { connection_generation: connectionGeneration } : {}),
       ...(runAs && typeof runAs === "object" ? { run_as: cloneJsonValue(runAs) } : {}),
     };
     const key = JSON.stringify(grant);
@@ -801,7 +805,9 @@ function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | nul
           ).trim(),
           objective: String(node?.objective || "").trim(),
           agentId: String(node?.agent_id || node?.agentId || "").trim(),
-          dependsOn: dependsOnSource.map((entry: any) => String(entry || "").trim()).filter(Boolean),
+          dependsOn: dependsOnSource
+            .map((entry: any) => String(entry || "").trim())
+            .filter(Boolean),
           inputRefs: inputRefsSource
             .map((ref: any) => ({
               fromStepId: String(ref?.from_step_id || ref?.fromStepId || "").trim(),
@@ -814,10 +820,7 @@ function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | nul
           ).trim(),
           approvalOverride,
           approvalCondition,
-          wait:
-            node?.wait && typeof node.wait === "object"
-              ? cloneJsonValue(node.wait)
-              : null,
+          wait: node?.wait && typeof node.wait === "object" ? cloneJsonValue(node.wait) : null,
           ...workflowNodeToolAccessDraft(node),
           ...(() => {
             const agent = agentsById.get(String(node?.agent_id || node?.agentId || "").trim()) as

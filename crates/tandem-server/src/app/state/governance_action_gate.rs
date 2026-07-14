@@ -29,7 +29,97 @@ pub(crate) enum ActionGateApprovalState {
     Denied,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EgressDlpApprovalReceipt {
+    pub(crate) approval_id: String,
+    pub(crate) expires_at_ms: u64,
+    pub(crate) state: ActionGateApprovalState,
+}
+
 impl AppState {
+    pub(crate) async fn consume_egress_dlp_approval(
+        &self,
+        action_hash: &str,
+        tool: &str,
+        tenant_context: &tandem_types::TenantContext,
+    ) -> anyhow::Result<Option<EgressDlpApprovalReceipt>> {
+        let now = now_ms();
+        let (receipt, consumed) = {
+            let mut guard = self.automation_governance.write().await;
+            let approval_id = guard
+                .approvals
+                .values()
+                .filter(|request| {
+                    request.context.get("policy_id").and_then(Value::as_str)
+                        == Some("egress_dlp_preflight")
+                        && request.context.get("action_hash").and_then(Value::as_str)
+                            == Some(action_hash)
+                        && request.context.get("tool").and_then(Value::as_str) == Some(tool)
+                        && approval_receipt_matches_tenant(request, tenant_context)
+                })
+                .max_by_key(|request| request.created_at_ms)
+                .map(|request| request.approval_id.clone());
+            let Some(approval_id) = approval_id else {
+                return Ok(None);
+            };
+            let (state, expires_at_ms) = {
+                let request = guard
+                    .approvals
+                    .get_mut(&approval_id)
+                    .ok_or_else(|| anyhow::anyhow!("egress DLP approval request disappeared"))?;
+                let state = match request.status {
+                    GovernanceApprovalStatus::Pending => ActionGateApprovalState::Pending,
+                    GovernanceApprovalStatus::Denied | GovernanceApprovalStatus::Expired => {
+                        ActionGateApprovalState::Denied
+                    }
+                    GovernanceApprovalStatus::Approved => {
+                        if now >= request.expires_at_ms
+                            || request
+                                .context
+                                .pointer("/egress_dlp/consumed_at_ms")
+                                .is_some()
+                        {
+                            ActionGateApprovalState::Denied
+                        } else {
+                            request.context["egress_dlp"] = json!({ "consumed_at_ms": now });
+                            request.updated_at_ms = now;
+                            ActionGateApprovalState::ApprovedAndConsumed
+                        }
+                    }
+                };
+                (state, request.expires_at_ms)
+            };
+            if state == ActionGateApprovalState::ApprovedAndConsumed {
+                guard.updated_at_ms = now;
+            }
+            (
+                EgressDlpApprovalReceipt {
+                    approval_id,
+                    expires_at_ms,
+                    state,
+                },
+                state == ActionGateApprovalState::ApprovedAndConsumed,
+            )
+        };
+
+        if consumed {
+            self.persist_automation_governance().await?;
+            append_protected_audit_event(
+                self,
+                "automation.governance.egress_approval.consumed",
+                tenant_context,
+                tenant_context.actor_id.clone(),
+                json!({
+                    "approvalID": receipt.approval_id,
+                    "actionHash": action_hash,
+                    "tool": tool,
+                }),
+            )
+            .await?;
+        }
+        Ok(Some(receipt))
+    }
+
     pub(crate) async fn consume_action_gate_approval(
         &self,
         approval_id: &str,

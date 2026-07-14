@@ -28,6 +28,30 @@ pub enum ToolDispatchPolicyOutcome {
     Denied,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolDispatchReceiptPhase {
+    PolicyDecision,
+    ExecutionStarted,
+    ExecutionCompleted,
+    ExecutionFailed,
+}
+
+impl ToolDispatchReceiptPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PolicyDecision => "policy_decision",
+            Self::ExecutionStarted => "execution_started",
+            Self::ExecutionCompleted => "execution_completed",
+            Self::ExecutionFailed => "execution_failed",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::ExecutionCompleted | Self::ExecutionFailed)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolDispatchSource {
     pub kind: String,
@@ -150,6 +174,10 @@ pub trait ToolDispatchPolicy: Send + Sync {
         &self,
         context: ToolDispatchPolicyContext,
     ) -> anyhow::Result<ToolDispatchDecision>;
+
+    fn is_allow_all(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Default)]
@@ -162,6 +190,29 @@ impl ToolDispatchPolicy for AllowAllToolDispatchPolicy {
         _context: ToolDispatchPolicyContext,
     ) -> anyhow::Result<ToolDispatchDecision> {
         Ok(ToolDispatchDecision::allow())
+    }
+
+    fn is_allow_all(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DenyAllToolDispatchPolicy;
+
+#[async_trait]
+impl ToolDispatchPolicy for DenyAllToolDispatchPolicy {
+    async fn evaluate(
+        &self,
+        context: ToolDispatchPolicyContext,
+    ) -> anyhow::Result<ToolDispatchDecision> {
+        Ok(ToolDispatchDecision::deny(format!(
+            "no dispatch policy matched tool `{}`",
+            context
+                .canonical_tool
+                .as_deref()
+                .unwrap_or(&context.requested_tool)
+        )))
     }
 }
 
@@ -176,6 +227,7 @@ pub struct ToolDispatchLedgerEvent {
     pub source: ToolDispatchSource,
     pub scope_allowlist: Vec<String>,
     pub policy_outcome: ToolDispatchPolicyOutcome,
+    pub receipt_phase: ToolDispatchReceiptPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_decision_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -222,6 +274,10 @@ pub trait ToolDispatchLedger: Send + Sync {
     }
 
     async fn record(&self, event: ToolDispatchLedgerEvent) -> anyhow::Result<()>;
+
+    fn is_noop(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Default)]
@@ -231,6 +287,10 @@ pub struct NoopToolDispatchLedger;
 impl ToolDispatchLedger for NoopToolDispatchLedger {
     async fn record(&self, _event: ToolDispatchLedgerEvent) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    fn is_noop(&self) -> bool {
+        true
     }
 }
 
@@ -255,7 +315,7 @@ impl ToolDispatchContext {
             verified_tenant_context: None,
             source: ToolDispatchSource::new(source),
             scope_allowlist: Vec::new(),
-            policy: Arc::new(AllowAllToolDispatchPolicy),
+            policy: Arc::new(DenyAllToolDispatchPolicy),
             ledger: Arc::new(NoopToolDispatchLedger),
         }
     }
@@ -287,6 +347,16 @@ impl ToolDispatchContext {
         self.ledger = ledger;
         self
     }
+
+    pub fn assert_server_governed(&self) -> anyhow::Result<()> {
+        if self.policy.is_allow_all() {
+            anyhow::bail!("server tool dispatch cannot use an allow-all policy");
+        }
+        if self.ledger.is_noop() {
+            anyhow::bail!("server tool dispatch cannot use a no-op ledger");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -297,10 +367,6 @@ pub struct GovernedToolDispatcher {
 impl GovernedToolDispatcher {
     pub fn new(registry: ToolRegistry) -> Self {
         Self { registry }
-    }
-
-    pub fn registry(&self) -> &ToolRegistry {
-        &self.registry
     }
 
     pub async fn dispatch(
@@ -328,8 +394,12 @@ impl GovernedToolDispatcher {
     }
 
     pub async fn dispatch_local(&self, name: &str, args: Value) -> anyhow::Result<ToolResult> {
-        self.dispatch(name, args, ToolDispatchContext::local("local"))
-            .await
+        self.dispatch(
+            name,
+            args,
+            ToolDispatchContext::local("local").with_policy(Arc::new(AllowAllToolDispatchPolicy)),
+        )
+        .await
     }
 
     pub async fn dispatch_identity_for(
@@ -372,6 +442,7 @@ impl GovernedToolDispatcher {
                 payload_digest: Some(payload_digest.as_str()),
                 context: &context,
                 decision: &decision,
+                receipt_phase: ToolDispatchReceiptPhase::PolicyDecision,
                 status: ToolDispatchStatus::Blocked,
                 error: Some(reason.clone()),
             })
@@ -397,6 +468,7 @@ impl GovernedToolDispatcher {
                 payload_digest: Some(payload_digest.as_str()),
                 context: &context,
                 decision: &decision,
+                receipt_phase: ToolDispatchReceiptPhase::PolicyDecision,
                 status: ToolDispatchStatus::Blocked,
                 error: Some(reason.clone()),
             })
@@ -426,6 +498,7 @@ impl GovernedToolDispatcher {
                     payload_digest: Some(payload_digest.as_str()),
                     context: &context,
                     decision: &decision,
+                    receipt_phase: ToolDispatchReceiptPhase::PolicyDecision,
                     status: ToolDispatchStatus::Blocked,
                     error: Some(reason.clone()),
                 })
@@ -446,12 +519,26 @@ impl GovernedToolDispatcher {
                 payload_digest: Some(payload_digest.as_str()),
                 context: &context,
                 decision: &decision,
+                receipt_phase: ToolDispatchReceiptPhase::PolicyDecision,
                 status: ToolDispatchStatus::Blocked,
                 error: Some(reason.clone()),
             })
             .await?;
             return Err(anyhow!("ToolDenied {{ reason: Policy }}: {reason}"));
         }
+
+        self.record(ToolDispatchRecordInput {
+            name,
+            canonical_tool: canonical_tool.clone(),
+            dispatch_id: Some(dispatch_id.as_str()),
+            payload_digest: Some(payload_digest.as_str()),
+            context: &context,
+            decision: &decision,
+            receipt_phase: ToolDispatchReceiptPhase::PolicyDecision,
+            status: ToolDispatchStatus::Succeeded,
+            error: None,
+        })
+        .await?;
 
         let pre_send_receipt = match context
             .ledger
@@ -483,6 +570,7 @@ impl GovernedToolDispatcher {
                     payload_digest: Some(payload_digest.as_str()),
                     context: &context,
                     decision: &decision,
+                    receipt_phase: ToolDispatchReceiptPhase::ExecutionFailed,
                     status: ToolDispatchStatus::Blocked,
                     error: Some(reason.clone()),
                 })
@@ -491,16 +579,33 @@ impl GovernedToolDispatcher {
             }
         };
 
-        let result = self
-            .registry
-            .execute_with_cancel_and_progress_for_tenant(
-                name,
-                args,
-                context.tenant_context.clone(),
-                cancel,
-                progress,
-            )
-            .await;
+        self.record(ToolDispatchRecordInput {
+            name,
+            canonical_tool: canonical_tool.clone(),
+            dispatch_id: Some(dispatch_id.as_str()),
+            payload_digest: Some(payload_digest.as_str()),
+            context: &context,
+            decision: &decision,
+            receipt_phase: ToolDispatchReceiptPhase::ExecutionStarted,
+            status: ToolDispatchStatus::Succeeded,
+            error: None,
+        })
+        .await?;
+
+        let result = if canonical_tool.as_deref() == Some("batch") || name == "batch" {
+            self.execute_governed_batch(args, context.clone(), cancel, progress)
+                .await
+        } else {
+            self.registry
+                .execute_with_cancel_and_progress_for_tenant(
+                    name,
+                    args,
+                    context.tenant_context.clone(),
+                    cancel,
+                    progress,
+                )
+                .await
+        };
         match result {
             Ok(mut result) => {
                 let auth_blocked = mcp_auth_required_blocked(&result.metadata);
@@ -525,6 +630,11 @@ impl GovernedToolDispatcher {
                     payload_digest: Some(payload_digest.as_str()),
                     context: &context,
                     decision: &decision,
+                    receipt_phase: if unsent_reason.is_some() {
+                        ToolDispatchReceiptPhase::ExecutionFailed
+                    } else {
+                        ToolDispatchReceiptPhase::ExecutionCompleted
+                    },
                     status: if unsent_reason.is_some() {
                         ToolDispatchStatus::Blocked
                     } else {
@@ -544,6 +654,7 @@ impl GovernedToolDispatcher {
                     payload_digest: Some(payload_digest.as_str()),
                     context: &context,
                     decision: &decision,
+                    receipt_phase: ToolDispatchReceiptPhase::ExecutionFailed,
                     status: ToolDispatchStatus::Failed,
                     error: Some(error.clone()),
                 })
@@ -565,12 +676,75 @@ impl GovernedToolDispatcher {
                 source: record.context.source.clone(),
                 scope_allowlist: record.context.scope_allowlist.clone(),
                 policy_outcome: record.decision.outcome.clone(),
+                receipt_phase: record.receipt_phase,
                 policy_decision_id: record.decision.policy_decision_id.clone(),
                 payload_digest: record.payload_digest.map(str::to_string),
                 status: record.status,
                 error: record.error,
             })
             .await
+    }
+
+    async fn execute_governed_batch(
+        &self,
+        args: Value,
+        context: ToolDispatchContext,
+        cancel: CancellationToken,
+        progress: Option<SharedToolProgressSink>,
+    ) -> anyhow::Result<ToolResult> {
+        let calls = args["tool_calls"].as_array().cloned().unwrap_or_default();
+        let mut outputs = Vec::new();
+        for call in calls.iter().take(20) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            if let Some(reason) = call.get("_blocked").and_then(Value::as_str) {
+                let tool = crate::resolve_batch_call_tool_name(call)
+                    .unwrap_or_else(|| "unknown".to_string());
+                outputs.push(json!({
+                    "tool": tool,
+                    "status": "skipped",
+                    "output": "",
+                    "error": reason,
+                    "metadata": {}
+                }));
+                continue;
+            }
+            let Some(tool) = crate::resolve_batch_call_tool_name(call)
+                .filter(|tool| !tool.is_empty() && tool != "batch")
+            else {
+                continue;
+            };
+            let call_args = call.get("args").cloned().unwrap_or_else(|| json!({}));
+            let result = Box::pin(self.dispatch_with_cancel_and_progress(
+                &tool,
+                call_args,
+                context.clone(),
+                cancel.clone(),
+                progress.clone(),
+            ))
+            .await;
+            match result {
+                Ok(result) => outputs.push(json!({
+                    "tool": tool,
+                    "status": "ok",
+                    "output": result.output,
+                    "error": null,
+                    "metadata": result.metadata
+                })),
+                Err(error) => outputs.push(json!({
+                    "tool": tool,
+                    "status": "error",
+                    "output": "",
+                    "error": error.to_string(),
+                    "metadata": {}
+                })),
+            }
+        }
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&outputs).unwrap_or_default(),
+            metadata: json!({ "count": outputs.len() }),
+        })
     }
 }
 
@@ -581,6 +755,7 @@ struct ToolDispatchRecordInput<'a> {
     payload_digest: Option<&'a str>,
     context: &'a ToolDispatchContext,
     decision: &'a ToolDispatchDecision,
+    receipt_phase: ToolDispatchReceiptPhase,
     status: ToolDispatchStatus,
     error: Option<String>,
 }
@@ -1068,6 +1243,51 @@ mod tests {
         GovernedToolDispatcher::new(registry)
     }
 
+    fn allowing_context(source: &str) -> ToolDispatchContext {
+        ToolDispatchContext::local(source)
+            .with_policy(Arc::new(StaticPolicy(ToolDispatchDecision::allow())))
+    }
+
+    #[tokio::test]
+    async fn dispatcher_denies_by_default_and_records_the_decision() {
+        let dispatcher = dispatcher_with_echo().await;
+        let ledger = Arc::new(RecordingLedger::default());
+        let context = ToolDispatchContext::for_tenant(
+            "server_test",
+            TenantContext::explicit("org-a", "workspace-a", None),
+        )
+        .with_ledger(ledger.clone());
+
+        let err = dispatcher
+            .dispatch("echo_test", json!({"value": 1}), context)
+            .await
+            .expect_err("a missing policy must deny by default");
+
+        assert!(err.to_string().contains("no dispatch policy matched"));
+        let events = ledger.events.lock().expect("ledger lock");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, ToolDispatchStatus::Blocked);
+        assert_eq!(events[0].policy_outcome, ToolDispatchPolicyOutcome::Denied);
+    }
+
+    #[test]
+    fn server_governance_guard_rejects_allow_all_or_noop_ledger() {
+        let tenant = TenantContext::explicit("org-a", "workspace-a", None);
+        let real_ledger = Arc::new(RecordingLedger::default());
+        assert!(ToolDispatchContext::for_tenant("server", tenant.clone())
+            .with_ledger(real_ledger.clone())
+            .assert_server_governed()
+            .is_ok());
+        assert!(ToolDispatchContext::for_tenant("server", tenant.clone())
+            .with_policy(Arc::new(AllowAllToolDispatchPolicy))
+            .with_ledger(real_ledger)
+            .assert_server_governed()
+            .is_err());
+        assert!(ToolDispatchContext::for_tenant("server", tenant)
+            .assert_server_governed()
+            .is_err());
+    }
+
     #[tokio::test]
     async fn dispatcher_denies_scope_allowlist_before_execution() {
         let dispatcher = dispatcher_with_echo().await;
@@ -1124,9 +1344,22 @@ mod tests {
             .expect("policy-approved tool should run");
         assert_eq!(result.metadata["ok"], true);
         let events = ledger.events.lock().expect("ledger lock");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].status, ToolDispatchStatus::Succeeded);
-        assert_eq!(events[0].policy_decision_id.as_deref(), Some("approval-1"));
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events[0].receipt_phase,
+            ToolDispatchReceiptPhase::PolicyDecision
+        );
+        assert_eq!(
+            events[1].receipt_phase,
+            ToolDispatchReceiptPhase::ExecutionStarted
+        );
+        assert_eq!(
+            events[2].receipt_phase,
+            ToolDispatchReceiptPhase::ExecutionCompleted
+        );
+        assert!(events
+            .iter()
+            .all(|event| event.policy_decision_id.as_deref() == Some("approval-1")));
     }
 
     #[tokio::test]
@@ -1146,7 +1379,7 @@ mod tests {
             })),
             ..RecordingLedger::default()
         });
-        let context = ToolDispatchContext::local("test").with_ledger(ledger.clone());
+        let context = allowing_context("test").with_ledger(ledger.clone());
 
         let result = dispatcher
             .dispatch(
@@ -1166,9 +1399,14 @@ mod tests {
         assert!(result.metadata.get("stateful_outbox").is_none());
 
         let events = ledger.events.lock().expect("ledger lock");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].status, ToolDispatchStatus::Blocked);
-        assert!(events[0]
+        assert_eq!(events.len(), 3);
+        let terminal = events.last().expect("terminal receipt");
+        assert_eq!(
+            terminal.receipt_phase,
+            ToolDispatchReceiptPhase::ExecutionFailed
+        );
+        assert_eq!(terminal.status, ToolDispatchStatus::Blocked);
+        assert!(terminal
             .error
             .as_deref()
             .is_some_and(|error| error.contains("MCP authorization required")));
@@ -1184,7 +1422,7 @@ mod tests {
             })),
             ..RecordingLedger::default()
         });
-        let context = ToolDispatchContext::local("test").with_ledger(ledger.clone());
+        let context = allowing_context("test").with_ledger(ledger.clone());
 
         let result = dispatcher
             .dispatch(
@@ -1198,23 +1436,40 @@ mod tests {
         assert!(result.metadata.get("stateful_outbox").is_none());
 
         let events = ledger.events.lock().expect("ledger lock");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].status, ToolDispatchStatus::Blocked);
-        assert!(events[0]
+        assert_eq!(events.len(), 3);
+        let terminal = events.last().expect("terminal receipt");
+        assert_eq!(
+            terminal.receipt_phase,
+            ToolDispatchReceiptPhase::ExecutionFailed
+        );
+        assert_eq!(terminal.status, ToolDispatchStatus::Blocked);
+        assert!(terminal
             .error
             .as_deref()
             .is_some_and(|error| error.contains("Unknown tool")));
     }
 
     #[tokio::test]
-    async fn dispatcher_returns_error_when_ledger_record_fails_after_tool_success() {
+    async fn dispatcher_fails_closed_when_required_allow_receipt_fails() {
+        let dispatcher = dispatcher_with_echo().await;
+        let context = allowing_context("test").with_ledger(Arc::new(FailingRecordLedger));
+
+        let err = dispatcher
+            .dispatch("echo_test", json!({"value": 1}), context)
+            .await
+            .expect_err("record failure should fail closed");
+        assert!(err.to_string().contains("ledger record failed"));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_returns_error_when_required_denial_receipt_fails() {
         let dispatcher = dispatcher_with_echo().await;
         let context = ToolDispatchContext::local("test").with_ledger(Arc::new(FailingRecordLedger));
 
         let err = dispatcher
             .dispatch("echo_test", json!({"value": 1}), context)
             .await
-            .expect_err("record failure should fail closed");
+            .expect_err("a denial without its required receipt must fail closed");
         assert!(err.to_string().contains("ledger record failed"));
     }
 
@@ -1229,7 +1484,7 @@ mod tests {
             .await;
         let dispatcher = GovernedToolDispatcher::new(registry);
         let ledger = Arc::new(RecordingLedger::default());
-        let context = ToolDispatchContext::local("test").with_ledger(ledger.clone());
+        let context = allowing_context("test").with_ledger(ledger.clone());
 
         dispatcher
             .dispatch(
@@ -1249,7 +1504,7 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_injects_trusted_phase_tool_authority() {
         let dispatcher = dispatcher_with_echo().await;
-        let context = ToolDispatchContext::local("test")
+        let context = allowing_context("test")
             .with_source(
                 ToolDispatchSource::new("engine_loop")
                     .session("session-phase")
@@ -1299,6 +1554,91 @@ mod tests {
                 .and_then(Value::as_str),
             Some("tool_dispatch_context")
         );
+    }
+
+    #[tokio::test]
+    async fn batch_subcalls_reenter_policy_and_ledger() {
+        let dispatcher = dispatcher_with_echo().await;
+        let ledger = Arc::new(RecordingLedger::default());
+        let context = allowing_context("batch_test")
+            .with_scope_allowlist(vec!["batch".to_string(), "echo_test".to_string()])
+            .with_ledger(ledger.clone());
+
+        let result = dispatcher
+            .dispatch(
+                "batch",
+                json!({
+                    "tool_calls": [
+                        { "tool": "echo_test", "args": { "value": 7 } }
+                    ]
+                }),
+                context,
+            )
+            .await
+            .expect("governed batch dispatch");
+
+        let outputs: Vec<Value> = serde_json::from_str(&result.output).expect("batch output");
+        assert_eq!(outputs[0]["status"], "ok");
+        let events = ledger.events.lock().expect("ledger lock");
+        assert_eq!(
+            events.len(),
+            6,
+            "each inner call and the batch wrapper receive three lifecycle receipts"
+        );
+        for tool in ["echo_test", "batch"] {
+            assert!(events.iter().any(|event| {
+                event.tool == tool
+                    && event.receipt_phase == ToolDispatchReceiptPhase::PolicyDecision
+            }));
+            assert!(events.iter().any(|event| {
+                event.tool == tool
+                    && event.receipt_phase == ToolDispatchReceiptPhase::ExecutionStarted
+            }));
+            assert!(events.iter().any(|event| {
+                event.tool == tool
+                    && event.receipt_phase == ToolDispatchReceiptPhase::ExecutionCompleted
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_batch_denies_out_of_scope_subcalls_without_stopping_allowed_calls() {
+        let dispatcher = dispatcher_with_echo().await;
+        let ledger = Arc::new(RecordingLedger::default());
+        let context = allowing_context("mixed_batch_test")
+            .with_scope_allowlist(vec!["batch".to_string(), "echo_test".to_string()])
+            .with_ledger(ledger.clone());
+
+        let result = dispatcher
+            .dispatch(
+                "batch",
+                json!({
+                    "tool_calls": [
+                        { "tool": "read", "args": { "path": "Cargo.toml" } },
+                        { "tool": "echo_test", "args": { "value": 9 } }
+                    ]
+                }),
+                context,
+            )
+            .await
+            .expect("mixed batch dispatch");
+
+        let outputs: Vec<Value> = serde_json::from_str(&result.output).expect("batch output");
+        assert_eq!(outputs[0]["status"], "error");
+        assert!(outputs[0]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("ScopeAllowlist"));
+        assert_eq!(outputs[1]["status"], "ok");
+        let events = ledger.events.lock().expect("ledger lock");
+        assert!(events.iter().any(|event| {
+            event.tool == "read"
+                && event.status == ToolDispatchStatus::Blocked
+                && event.policy_outcome == ToolDispatchPolicyOutcome::Denied
+        }));
+        assert!(events.iter().any(|event| {
+            event.tool == "echo_test" && event.status == ToolDispatchStatus::Succeeded
+        }));
     }
 
     #[tokio::test]

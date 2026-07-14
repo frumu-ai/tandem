@@ -23,6 +23,8 @@ import { EmptyState, PageCard } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
 import {
+  mcpConnectionGrantFor,
+  mcpConnectionGrantIdentityKey,
   normalizeMcpInventoryServerRows,
   normalizeMcpConnectionsFromInventory,
   type McpConnectionSummary,
@@ -734,6 +736,20 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
       if (!safeString(workingDraft.name)) throw new Error("Workflow name is required.");
       if (!workingDraft.agents.length) throw new Error("Add at least one agent.");
       if (!workingDraft.nodes.length) throw new Error("Add at least one stage.");
+      const activeMcpGrantKeys = new Set(
+        mcpConnectionRows.map((connection) =>
+          mcpConnectionGrantIdentityKey(mcpConnectionGrantFor(connection))
+        )
+      );
+      const invalidMcpGrant = [
+        ...workingDraft.agents.flatMap((agent) => agent.mcpAllowedConnections || []),
+        ...workingDraft.nodes.flatMap((node) => node.mcpAllowedConnections || []),
+      ].find((grant) => !activeMcpGrantKeys.has(mcpConnectionGrantIdentityKey(grant)));
+      if (invalidMcpGrant) {
+        throw new Error(
+          `Remove the revoked or invalid MCP connection grant for ${invalidMcpGrant.server} before saving.`
+        );
+      }
       const preflight = preflightDraft(workingDraft, templateMap);
       if (preflight.errors.length) throw new Error(preflight.errors[0]);
       const modelMissingAgents = workingDraft.agents
@@ -1191,7 +1207,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                     <Icon
                       name={templatesOpen ? "chevron-down" : "chevron-right"}
                       className="text-slate-400"
-                     />
+                    />
                     <div className="min-w-0">
                       <div className="text-sm font-semibold text-slate-100">Starter Templates</div>
                       <div className="text-xs text-slate-400">
@@ -1236,7 +1252,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                     <Icon
                       name={savedWorkflowsOpen ? "chevron-down" : "chevron-right"}
                       className="text-slate-400"
-                     />
+                    />
                     <div className="min-w-0">
                       <div className="text-sm font-semibold text-slate-100">
                         Saved Studio Workflows

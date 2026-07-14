@@ -565,14 +565,23 @@ async fn evaluate_fintech_strict_tool_policy(
             "reason": "call-site protected-action approval/policy verification is not implemented"
         },
     });
-    crate::audit::append_protected_audit_event_best_effort(
+    if let Err(error) = crate::audit::append_protected_audit_event(
         state,
         "fintech.protected_action.denied",
         &run.tenant_context,
         run.tenant_context.actor_id.clone(),
         audit_payload,
     )
-    .await;
+    .await
+    {
+        return Some(ToolPolicyDecision {
+            allowed: false,
+            reason: Some(format!(
+                "tool denied because its required fintech denial receipt could not be written: {error}"
+            )),
+            policy_decision_id: None,
+        });
+    }
 
     let effect = if matches!(
         decision.classification,
@@ -881,7 +890,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                                 "timestampMs": crate::now_ms(),
                             }),
                         ));
-                        crate::audit::append_protected_audit_event_best_effort(
+                        crate::audit::append_protected_audit_event(
                             &state,
                             "tool.execution.denied",
                             &strict.tenant_context,
@@ -893,7 +902,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                                 "reason": reason,
                             }),
                         )
-                        .await;
+                        .await?;
                         return Ok(ToolPolicyDecision {
                             allowed: false,
                             reason: Some(reason),
@@ -902,7 +911,8 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                     }
                 }
             }
-            if let Some(decision) = evaluate_automation_phase_tool_policy(&state, &ctx, &tool).await
+            if let Some(decision) =
+                evaluate_automation_phase_tool_policy(&state, &ctx, &tool).await?
             {
                 return Ok(decision);
             }

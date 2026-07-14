@@ -47,6 +47,19 @@ async fn channel_runtime_config_filters_partial_channel_entries() {
     assert!(runtime.slack.is_none());
 }
 
+#[tokio::test]
+async fn server_context_installs_deny_capable_policy_and_real_ledger() {
+    let state = crate::test_support::test_state().await;
+    state
+        .tool_dispatch_context(
+            tandem_tools::ToolDispatchSource::new("server_feature_guard"),
+            TenantContext::local_implicit(),
+            Vec::new(),
+        )
+        .assert_server_governed()
+        .expect("every server feature composition must install real governance");
+}
+
 #[allow(dead_code)]
 pub(crate) struct AutomationNodeBuilder {
     node: AutomationFlowNode,

@@ -42,7 +42,11 @@ use tandem_server::{
 };
 #[cfg(feature = "browser")]
 use tandem_server::{install_browser_sidecar, BrowserSidecarInstallResult, BrowserSubsystem};
-use tandem_tools::{GovernedToolDispatcher, ToolRegistry};
+use tandem_tools::{
+    GovernedToolDispatcher, ToolDispatchDecision, ToolDispatchLedger, ToolDispatchLedgerEvent,
+    ToolDispatchPolicy, ToolDispatchPolicyContext, ToolRegistry,
+};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
@@ -63,6 +67,59 @@ const SUPPORTED_PROVIDER_IDS: [&str; 12] = [
     "copilot",
     "cohere",
 ];
+
+#[derive(Clone)]
+struct CliPermissionDispatchPolicy {
+    permissions: PermissionManager,
+}
+
+#[async_trait::async_trait]
+impl ToolDispatchPolicy for CliPermissionDispatchPolicy {
+    async fn evaluate(
+        &self,
+        context: ToolDispatchPolicyContext,
+    ) -> anyhow::Result<ToolDispatchDecision> {
+        let tool = context
+            .canonical_tool
+            .as_deref()
+            .unwrap_or(&context.requested_tool);
+        Ok(match self.permissions.evaluate_tool(tool).await {
+            PermissionAction::Allow => ToolDispatchDecision::allow_with_id("cli_permission_rule"),
+            PermissionAction::Ask => ToolDispatchDecision::deny(format!(
+                "CLI tool `{tool}` requires approval; non-interactive CLI dispatch fails closed"
+            )),
+            PermissionAction::Deny => ToolDispatchDecision::deny(format!(
+                "CLI tool `{tool}` is denied by permission rule"
+            )),
+        })
+    }
+}
+
+#[derive(Clone)]
+struct CliJsonlDispatchLedger {
+    path: PathBuf,
+    write_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[async_trait::async_trait]
+impl ToolDispatchLedger for CliJsonlDispatchLedger {
+    async fn record(&self, event: ToolDispatchLedgerEvent) -> anyhow::Result<()> {
+        let _guard = self.write_lock.lock().await;
+        if let Some(parent) = self.path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .await?;
+        file.write_all(serde_json::to_string(&event)?.as_bytes())
+            .await?;
+        file.write_all(b"\n").await?;
+        file.flush().await?;
+        Ok(())
+    }
+}
 
 const ENGINE_CLI_EXAMPLES: &str = r#"Examples:
   tandem-engine serve --hostname 127.0.0.1 --port 39731
@@ -960,7 +1017,14 @@ async fn main() -> anyhow::Result<()> {
                 .dispatch(
                     &tool,
                     args,
-                    tandem_tools::ToolDispatchContext::local("engine_cli"),
+                    tandem_tools::ToolDispatchContext::local("engine_cli")
+                        .with_policy(Arc::new(CliPermissionDispatchPolicy {
+                            permissions: state.permissions.clone(),
+                        }))
+                        .with_ledger(Arc::new(CliJsonlDispatchLedger {
+                            path: state_dir.join("tool-dispatch-receipts.jsonl"),
+                            write_lock: Arc::new(tokio::sync::Mutex::new(())),
+                        })),
                 )
                 .await?;
             let output = serde_json::json!({

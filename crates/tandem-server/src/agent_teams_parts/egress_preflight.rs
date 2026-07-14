@@ -55,6 +55,22 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
     let mut approval_id = None;
     let mut approval_expires_at_ms = None;
     let mut approval_request_error = None;
+    let mut receipt_state = None;
+
+    if report.requires_approval() && !report.blocks() && state.premium_governance_enabled() {
+        match state
+            .consume_egress_dlp_approval(&report.action_hash, tool, &tenant_context)
+            .await
+        {
+            Ok(Some(receipt)) => {
+                approval_id = Some(receipt.approval_id);
+                approval_expires_at_ms = Some(receipt.expires_at_ms);
+                receipt_state = Some(receipt.state);
+            }
+            Ok(None) => {}
+            Err(error) => approval_request_error = Some(error.to_string()),
+        }
+    }
 
     let (effect, reason_code, reason) = if report.has_class(DataClass::Credential) {
         (
@@ -68,9 +84,30 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
             "egress_payload_inspection_truncated",
             "outbound payload exceeded the DLP inspection limit and was blocked fail-closed",
         )
+    } else if receipt_state
+        == Some(
+            crate::app::state::governance_action_gate::ActionGateApprovalState::ApprovedAndConsumed,
+        )
+    {
+        (
+            PolicyDecisionEffect::Allow,
+            "egress_approval_receipt_consumed",
+            "matching outbound action approval was consumed exactly once",
+        )
+    } else if receipt_state
+        == Some(crate::app::state::governance_action_gate::ActionGateApprovalState::Denied)
+    {
+        (
+            PolicyDecisionEffect::Deny,
+            "egress_approval_receipt_denied_or_consumed",
+            "matching outbound action approval was denied, expired, or already consumed",
+        )
     } else {
         let approval_expires_at = now_ms.saturating_add(tandem_types::DEFAULT_APPROVAL_TTL_MS);
-        if state.premium_governance_enabled() {
+        if approval_id.is_none()
+            && approval_request_error.is_none()
+            && state.premium_governance_enabled()
+        {
             let requested_by = crate::automation_v2::governance::GovernanceActorRef::agent(
                 actor_id.clone(),
                 "egress_dlp_preflight",
@@ -139,12 +176,12 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
     )
     .await;
 
-    let event_type = if matches!(effect, PolicyDecisionEffect::Deny) {
-        "egress.preflight.denied"
-    } else {
-        "egress.preflight.approval_required"
+    let event_type = match effect {
+        PolicyDecisionEffect::Allow => "egress.preflight.approved_receipt_consumed",
+        PolicyDecisionEffect::Deny => "egress.preflight.denied",
+        PolicyDecisionEffect::ApprovalRequired => "egress.preflight.approval_required",
     };
-    crate::audit::append_protected_audit_event_best_effort(
+    if let Err(error) = crate::audit::append_protected_audit_event(
         state,
         event_type,
         &tenant_context,
@@ -169,7 +206,16 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
             "inspection_truncated": report.inspection_truncated,
         }),
     )
-    .await;
+    .await
+    {
+        return Some(ToolPolicyDecision {
+            allowed: false,
+            reason: Some(format!(
+                "tool `{tool}` denied because its required egress audit receipt could not be written: {error}"
+            )),
+            policy_decision_id,
+        });
+    }
 
     if state.is_ready() {
         state.event_bus.publish(EngineEvent::new(
@@ -190,20 +236,22 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
         ));
     }
 
-    let surfaced_reason = if matches!(effect, PolicyDecisionEffect::Deny) {
-        format!("tool `{tool}` blocked by egress DLP preflight: {reason}")
-    } else {
-        format!(
+    let surfaced_reason = match effect {
+        PolicyDecisionEffect::Allow => None,
+        PolicyDecisionEffect::Deny => Some(format!(
+            "tool `{tool}` blocked by egress DLP preflight: {reason}"
+        )),
+        PolicyDecisionEffect::ApprovalRequired => Some(format!(
             "tool `{tool}` paused by egress DLP preflight: {reason}{}",
             approval_id
                 .as_deref()
                 .map(|id| format!(" (approval `{id}`)"))
                 .unwrap_or_default()
-        )
+        )),
     };
     Some(ToolPolicyDecision {
-        allowed: false,
-        reason: Some(surfaced_reason),
+        allowed: matches!(effect, PolicyDecisionEffect::Allow),
+        reason: surfaced_reason,
         policy_decision_id,
     })
 }

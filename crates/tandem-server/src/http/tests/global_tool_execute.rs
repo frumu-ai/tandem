@@ -27,6 +27,17 @@ impl tandem_tools::Tool for EchoGlobalExecuteArgsTool {
 async fn tool_execute_scope_allowlist_is_injected_as_trusted_phase_authority() {
     let state = test_state().await;
     state
+        .runtime
+        .get()
+        .expect("runtime")
+        .permissions
+        .add_rule(
+            "echo_global_execute_args".to_string(),
+            "echo_global_execute_args".to_string(),
+            tandem_core::PermissionAction::Allow,
+        )
+        .await;
+    state
         .tools
         .register_tool(
             "echo_global_execute_args".to_string(),
@@ -86,4 +97,46 @@ async fn tool_execute_scope_allowlist_is_injected_as_trusted_phase_authority() {
             .and_then(serde_json::Value::as_str),
         Some("tool_dispatch_context")
     );
+}
+
+#[tokio::test]
+async fn tool_execute_without_matching_server_policy_is_denied_and_receipted() {
+    let state = test_state().await;
+    state
+        .tools
+        .register_tool(
+            "echo_global_execute_args".to_string(),
+            std::sync::Arc::new(EchoGlobalExecuteArgsTool),
+        )
+        .await;
+    let app = app_router(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/tool/execute")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "tool": "echo_global_execute_args",
+                "args": { "value": "must-not-run" }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let reliability_path =
+        crate::stateful_runtime::stateful_reliability_path_from_runtime_events_path(
+            &state.runtime_events_path,
+        );
+    let receipts = crate::stateful_runtime::load_stateful_reliability(&reliability_path);
+    assert!(receipts.tool_effects.iter().any(|receipt| {
+        receipt.tool.as_deref() == Some("echo_global_execute_args")
+            && receipt
+                .receipt_payload_redacted
+                .as_ref()
+                .and_then(|payload| payload.get("policy_outcome"))
+                .and_then(serde_json::Value::as_str)
+                == Some("denied")
+    }));
 }

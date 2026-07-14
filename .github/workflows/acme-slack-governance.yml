@@ -30,7 +30,9 @@ jobs:
           shared-key: acme-slack-governance
 
       - name: Run ACME governance tests
-        run: cargo test --locked -p tandem-server --features acme-demo acme_slack_demo --lib
+        run: |
+          cargo test --locked -p tandem-server --features acme-demo acme_slack_demo --lib
+          cargo test --locked -p tandem-server --features acme-demo server_context_installs_deny_capable_policy_and_real_ledger --lib
 
       - name: Run persistent proof twice
         shell: bash

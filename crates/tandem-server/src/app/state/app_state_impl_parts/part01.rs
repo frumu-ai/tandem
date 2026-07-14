@@ -212,7 +212,8 @@ async fn validate_incident_monitor_monitored_projects(
 impl AppState {
     pub(crate) async fn memory_store(
         &self,
-    ) -> Result<std::sync::Arc<dyn tandem_memory::MemoryStore>, tandem_memory::MemoryStoreError> {
+    ) -> Result<std::sync::Arc<dyn tandem_memory::MemoryStore>, tandem_memory::MemoryStoreError>
+    {
         if let Some(parent) = self.memory_db_path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
@@ -503,6 +504,9 @@ impl AppState {
         ToolDispatchContext::for_tenant(source.kind.clone(), tenant_context)
             .with_source(source)
             .with_scope_allowlist(scope_allowlist)
+            .with_policy(Arc::new(AppStateToolDispatchPolicy {
+                state: self.clone(),
+            }))
             .with_ledger(Arc::new(AppStateToolDispatchLedger {
                 event_bus: self.event_bus.clone(),
                 runtime_events_path: self.runtime_events_path.clone(),
@@ -515,6 +519,19 @@ impl AppState {
         if hosted_governance_required {
             self.validate_hosted_governance_readiness().await?;
         }
+        ToolDispatchContext::for_tenant("server_startup_guard", TenantContext::local_implicit())
+            .with_source(
+                ToolDispatchSource::new("server_startup_guard")
+                    .request(uuid::Uuid::new_v4().to_string()),
+            )
+            .with_policy(Arc::new(AppStateToolDispatchPolicy {
+                state: self.clone(),
+            }))
+            .with_ledger(Arc::new(AppStateToolDispatchLedger {
+                event_bus: runtime.event_bus.clone(),
+                runtime_events_path: self.runtime_events_path.clone(),
+            }))
+            .assert_server_governed()?;
         runtime
             .engine_loop
             .set_tool_dispatch_ledger(Arc::new(AppStateToolDispatchLedger {

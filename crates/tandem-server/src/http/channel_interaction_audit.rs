@@ -10,9 +10,9 @@ pub(crate) async fn append_cross_tenant_denial(
     run_id: &str,
     channel_tenant: TenantContext,
     run_tenant: &TenantContext,
-) {
+) -> anyhow::Result<()> {
     let actor = format!("channel:{channel}:{user_id}");
-    crate::audit::append_protected_audit_event_best_effort(
+    crate::audit::append_protected_audit_event(
         state,
         "channel.interaction.cross_tenant_denied",
         &channel_tenant,
@@ -26,5 +26,6 @@ pub(crate) async fn append_cross_tenant_denial(
             "reason": "channel not bound to this run's tenant",
         }),
     )
-    .await;
+    .await
+    .map(|_| ())
 }
