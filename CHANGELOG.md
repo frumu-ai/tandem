@@ -53,6 +53,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of exposing raw Automation V2 creation through draft management, and
   prevented disabled-draft authoring from probing external MCP integrations
   unless live integration inspection is explicitly requested.
+- Added live, tenant-scoped planner progress to the automation wizard, including
+  the current phase, selected provider and model, elapsed time, and received
+  response size. Long planning runs no longer appear stalled, while prompts,
+  reasoning text, and response content remain outside progress events.
+- Made planner output more resilient by treating every referenced upstream
+  input as a scheduling dependency before graph validation. Invalid fallback
+  drafts now show their diagnostic in the Review step and clearly block the
+  Create action instead of looking like a completed workflow.
+- Made workflow-plan application compensate safely when its required protected
+  audit write fails: Tandem removes the provisional automation and governance
+  record, releases the idempotency reservation, and returns a retryable result
+  that accurately reports that the operation was not applied.
+- Recovered valid protected audit chains written by older concurrent appenders
+  that could concatenate multiple complete JSON objects on one JSONL line,
+  while continuing to reject malformed or truncated audit data.
 - Made prompt submission, workflow planning, revision, materialization, and
   automation mutations idempotent and retry-safe, including recovery from
   cancellation and reconnect without duplicate drafts or stale successful

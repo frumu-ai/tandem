@@ -76,6 +76,30 @@ Stable layout and retained transcript position remove the flashing and viewport
 jumps that made earlier updates difficult to follow, including on narrow
 viewports and keyboard or screen-reader paths.
 
+### Automation Wizard Reliability And Live Progress
+
+Long-running workflow generation now reports live progress in the automation
+wizard. The progress panel identifies whether Tandem is dispatching, waiting,
+receiving a response, retrying, or validating the plan, and shows the selected
+provider and model, elapsed time, and received response size. These events are
+tenant-scoped and deliberately exclude prompts, reasoning text, and response
+content, so users can see that planning is active without exposing model data.
+
+Planner normalization now turns every upstream `input_ref` into an explicit
+scheduling dependency before validating the workflow graph. This repairs a
+common model-output mismatch that previously produced a fallback scaffold even
+when the intended workflow was otherwise valid. When planning still fails, the
+Review step presents the concrete diagnostic, states that no automation was
+created, and visibly blocks the Create action until the plan is repaired.
+
+Creating an automation from an approved plan is now retry-safe across protected
+audit failures. If the mandatory audit record cannot be persisted, Tandem rolls
+back the provisional automation and governance record and releases the
+idempotency reservation before returning a retryable error that explicitly says
+the operation was not applied. The audit reader also recovers valid chains from
+legacy files where concurrent appenders placed multiple complete JSON objects
+on one physical line, while malformed or truncated records still fail closed.
+
 ### Product-Authoring Acceptance Gate
 
 A dedicated acceptance suite protects the conversation-to-artifact contract.
