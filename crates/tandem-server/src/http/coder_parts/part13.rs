@@ -21,6 +21,7 @@ fn with_coder_mcp_phase_authority(
 async fn call_create_pull_request(
     state: &AppState,
     tenant_context: &tandem_types::TenantContext,
+    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
     server_name: &str,
     tool_name: &str,
     owner: &str,
@@ -59,22 +60,24 @@ async fn call_create_pull_request(
         tool_name,
         "coder_pr_submit",
     );
-    let first = crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_audit(
+    let first = crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_verified_context(
         state,
         server_name,
         tool_name,
         preferred,
         tenant_context,
+        verified_tenant_context,
     )
     .await;
     match first {
         Ok(result) => Ok(result),
-        Err(_) => crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_audit(
+        Err(_) => crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_verified_context(
             state,
             server_name,
             tool_name,
             fallback,
             tenant_context,
+            verified_tenant_context,
         )
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY),

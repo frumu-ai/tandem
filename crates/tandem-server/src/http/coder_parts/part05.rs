@@ -1056,6 +1056,7 @@ pub(super) async fn coder_issue_fix_pr_draft_create(
 pub(super) async fn coder_issue_fix_pr_submit(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<axum::extract::Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
     Json(input): Json<CoderIssueFixPrSubmitInput>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -1221,6 +1222,7 @@ pub(super) async fn coder_issue_fix_pr_submit(
         let result = match call_create_pull_request(
             &state,
             &tenant_context,
+            verified_tenant_context.as_ref().map(|value| &value.0),
             &server_name,
             &tool_name,
             owner,
@@ -1619,6 +1621,7 @@ pub(super) async fn coder_issue_fix_pr_submit(
 pub(super) async fn coder_merge_submit(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<axum::extract::Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
     Json(input): Json<CoderMergeSubmitInput>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -1717,6 +1720,7 @@ pub(super) async fn coder_merge_submit(
         let result = call_merge_pull_request(
             &state,
             &tenant_context,
+            verified_tenant_context.as_ref().map(|value| &value.0),
             &server_name,
             &tool_name,
             owner,
