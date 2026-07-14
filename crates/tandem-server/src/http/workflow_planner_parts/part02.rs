@@ -861,6 +861,7 @@ pub(super) async fn workflow_planner_session_start(
         plan_source: input
             .plan_source
             .or_else(|| Some(session.plan_source.clone())),
+        progress_id: input.progress_id,
         allowed_mcp_servers: if input.allowed_mcp_servers.is_empty() {
             session.allowed_mcp_servers.clone()
         } else {

@@ -272,7 +272,10 @@ describe("Workflow planning SDK coverage", () => {
     }) as typeof fetch;
 
     try {
-      const preview = await client.workflowPlans.preview({ prompt: "Create a release checklist" });
+      const preview = await client.workflowPlans.preview({
+        prompt: "Create a release checklist",
+        progressId: "wizard-preview-1",
+      });
       const applied = await client.workflowPlans.apply({
         planId: preview.plan.plan_id,
         idempotencyKey: "wizard-plan-1",
@@ -285,6 +288,7 @@ describe("Workflow planning SDK coverage", () => {
       expect(importedPreview.import_validation).toEqual({ compatible: true });
       expect(imported.summary).toEqual({ plan_id: "plan-1" });
       expect(calls[0]?.url).toContain("/workflow-plans/preview");
+      expect(JSON.parse(calls[0]?.body || "{}").progress_id).toBe("wizard-preview-1");
       expect(calls[1]?.url).toContain("/workflow-plans/apply");
       expect(JSON.parse(calls[1]?.body || "{}").idempotency_key).toBe("wizard-plan-1");
       expect(calls[2]?.url).toContain("/workflow-plans/import/preview");
@@ -626,6 +630,7 @@ describe("Workflow planner session SDK coverage", () => {
         prompt: "Create a planner session",
         workspace_root: "/workspace/repos/demo",
         plan_source: "coding_task_planning",
+        progress_id: "wizard-session-1",
       });
       const messaged = await client.workflowPlannerSessions.message("wfplan-session-1", {
         message: "Revise the plan",
@@ -656,6 +661,10 @@ describe("Workflow planner session SDK coverage", () => {
       expect(String(calls.find((call) => call.url.includes("/start-async"))?.body || "")).toContain(
         "Create a planner session"
       );
+      expect(
+        JSON.parse(calls.find((call) => call.url.includes("/start-async"))?.body || "{}")
+          .progress_id
+      ).toBe("wizard-session-1");
       expect(
         String(calls.find((call) => call.url.includes("/message-async"))?.body || "")
       ).toContain("Revise the plan");

@@ -2947,6 +2947,8 @@ class WorkflowPlans {
     schedule?: JsonObject;
     planSource?: string;
     plan_source?: string;
+    progressId?: string;
+    progress_id?: string;
     allowedMcpServers?: string[];
     allowed_mcp_servers?: string[];
     workspaceRoot?: string;
@@ -2960,6 +2962,7 @@ class WorkflowPlans {
         prompt: options.prompt,
         schedule: options.schedule,
         plan_source: options.plan_source ?? options.planSource,
+        progress_id: options.progress_id ?? options.progressId,
         allowed_mcp_servers: options.allowed_mcp_servers ?? options.allowedMcpServers,
         workspace_root: options.workspace_root ?? options.workspaceRoot,
         operator_preferences: options.operator_preferences ?? options.operatorPreferences,
@@ -2998,6 +3001,8 @@ class WorkflowPlans {
     schedule?: JsonObject;
     planSource?: string;
     plan_source?: string;
+    progressId?: string;
+    progress_id?: string;
     allowedMcpServers?: string[];
     allowed_mcp_servers?: string[];
     workspaceRoot?: string;
@@ -3365,6 +3370,8 @@ class WorkflowPlannerSessions {
       schedule?: JsonObject;
       planSource?: string;
       plan_source?: string;
+      progressId?: string;
+      progress_id?: string;
       allowedMcpServers?: string[];
       allowed_mcp_servers?: string[];
       workspaceRoot?: string;
@@ -3382,6 +3389,7 @@ class WorkflowPlannerSessions {
           prompt: options.prompt,
           schedule: options.schedule,
           plan_source: options.plan_source ?? options.planSource,
+          progress_id: options.progress_id ?? options.progressId,
           allowed_mcp_servers: options.allowed_mcp_servers ?? options.allowedMcpServers,
           workspace_root: options.workspace_root ?? options.workspaceRoot,
           operator_preferences: options.operator_preferences ?? options.operatorPreferences,

@@ -38,6 +38,8 @@ pub struct PlannerBuildRequest<M> {
     pub plan_id: String,
     pub planner_version: String,
     pub plan_source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_id: Option<String>,
     pub prompt: String,
     pub normalized_prompt: String,
     pub title: String,
@@ -75,6 +77,7 @@ where
         plan_id,
         planner_version,
         plan_source,
+        progress_id: None,
         prompt: prompt.trim().to_string(),
         normalized_prompt,
         title,
@@ -323,6 +326,7 @@ where
         request.normalized_prompt.as_str(),
         request.explicit_schedule.as_ref(),
         request.plan_source.as_str(),
+        request.progress_id.as_deref(),
         resolved_workspace_root.as_str(),
         &request.allowed_mcp_servers,
         request.operator_preferences.as_ref(),
@@ -1042,6 +1046,7 @@ async fn try_llm_build_workflow_plan<M, H>(
     normalized_prompt: &str,
     explicit_schedule: Option<&AutomationV2Schedule<M>>,
     plan_source: &str,
+    progress_id: Option<&str>,
     workspace_root: &str,
     allowed_mcp_servers: &[String],
     operator_preferences: Option<&Value>,
@@ -1069,12 +1074,26 @@ where
                 &capability_summary,
                 decomposition_profile,
             ),
-            run_key: format!("workflow-plan-build:{plan_source}"),
+            run_key: workflow_plan_build_run_key(plan_source, progress_id),
             timeout_ms: config.timeout_ms,
             override_env: config.override_env.clone(),
         },
     )
     .await
+}
+
+fn workflow_plan_build_run_key(plan_source: &str, progress_id: Option<&str>) -> String {
+    let correlation = progress_id
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 160
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+        .unwrap_or(plan_source);
+    format!("workflow-plan-build:{correlation}")
 }
 
 fn build_llm_workflow_creation_prompt<M: serde::Serialize>(

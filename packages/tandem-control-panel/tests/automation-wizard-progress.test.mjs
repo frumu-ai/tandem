@@ -16,6 +16,9 @@ test("automation wizard shows content-free live planner progress", () => {
 
   assert.match(wizard, /useEngineStream/);
   assert.match(wizard, /workflow_planner\.progress/);
+  assert.match(wizard, /createPlannerProgressID/);
+  assert.match(wizard, /progress_id: progressID/);
+  assert.match(wizard, /workflow-plan-build:\$\{plannerProgressIDRef\.current\}/);
   assert.match(wizard, /responseChars/);
   assert.match(wizard, /elapsedSeconds/);
   assert.match(wizard, /The model is working on the plan/);

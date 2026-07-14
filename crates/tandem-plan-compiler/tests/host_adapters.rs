@@ -244,6 +244,7 @@ async fn host_adapters_support_build_plan_clarify_flow() {
         plan_id: "plan_1".to_string(),
         planner_version: "test_planner_v1".to_string(),
         plan_source: "test".to_string(),
+        progress_id: Some("wizard-request-123".to_string()),
         prompt: "Build a workflow.".to_string(),
         normalized_prompt: "Build a workflow.".to_string(),
         title: "Example".to_string(),
@@ -278,6 +279,7 @@ async fn host_adapters_support_build_plan_clarify_flow() {
     let invocation = &host.invocations.lock().unwrap()[0];
     assert_eq!(invocation.model.provider_id, test_model_spec().provider_id);
     assert_eq!(invocation.model.model_id, test_model_spec().model_id);
+    assert_eq!(invocation.run_key, "workflow-plan-build:wizard-request-123");
 }
 
 #[tokio::test]

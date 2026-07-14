@@ -3,6 +3,7 @@ export class ApiError extends Error {
   code: string;
   retryable: boolean;
   transient: boolean;
+  details: Record<string, unknown> | null;
 
   constructor(
     message: string,
@@ -11,6 +12,7 @@ export class ApiError extends Error {
       code?: string;
       retryable?: boolean;
       transient?: boolean;
+      details?: Record<string, unknown> | null;
     } = {}
   ) {
     super(message);
@@ -19,6 +21,7 @@ export class ApiError extends Error {
     this.code = options.code ?? "API_ERROR";
     this.retryable = options.retryable ?? false;
     this.transient = options.transient ?? false;
+    this.details = options.details ?? null;
   }
 }
 
@@ -89,9 +92,15 @@ export async function api(path: string, init: RequestInit = {}) {
       });
     }
     let message = text || `${path} failed (${res.status})`;
+    let details: Record<string, unknown> | null = null;
     try {
       const parsed = text ? JSON.parse(text) : null;
-      if (parsed?.error) message = parsed.error;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        details = parsed as Record<string, unknown>;
+        if (typeof details.error === "string" && details.error.trim()) {
+          message = details.error;
+        }
+      }
     } catch {
       if (looksLikeHtmlDocument(text)) {
         message = `${path} failed (${res.status})`;
@@ -99,9 +108,13 @@ export async function api(path: string, init: RequestInit = {}) {
     }
     throw new ApiError(message, {
       status: res.status,
-      code: "API_ERROR",
-      retryable: false,
+      code:
+        typeof details?.code === "string" && details.code.trim()
+          ? details.code
+          : "API_ERROR",
+      retryable: details?.retryable === true,
       transient: false,
+      details,
     });
   }
 

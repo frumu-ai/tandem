@@ -82,8 +82,9 @@ Long-running workflow generation now reports live progress in the automation
 wizard. The progress panel identifies whether Tandem is dispatching, waiting,
 receiving a response, retrying, or validating the plan, and shows the selected
 provider and model, elapsed time, and received response size. These events are
-tenant-scoped and deliberately exclude prompts, reasoning text, and response
-content, so users can see that planning is active without exposing model data.
+tenant- and request-scoped so concurrent tabs cannot consume one another's
+progress, and deliberately exclude prompts, reasoning text, and response
+content so users can see that planning is active without exposing model data.
 
 Planner normalization now turns every upstream `input_ref` into an explicit
 scheduling dependency before validating the workflow graph. This repairs a

@@ -447,9 +447,28 @@ pub(super) async fn workflow_plan_apply(
                 })),
             ));
         }
-        return Err(super::protected_audit_error_response(anyhow::anyhow!(
-            "workflow plan materialization audit failed ({audit_error:?}); rollback error: {rollback_error:?}; idempotency release error: {release_error:?}"
-        )));
+        let operation_applied = rollback_error.is_some();
+        tracing::error!(
+            automation_id = %stored.automation_id,
+            error = ?audit_error,
+            rollback_error = ?rollback_error,
+            idempotency_release_error = ?release_error,
+            operation_applied,
+            "workflow plan materialization compensation was incomplete after protected audit failure"
+        );
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": if operation_applied {
+                    "The operation was applied, but its required audit record could not be persisted and rollback did not complete"
+                } else {
+                    "Automation creation was rolled back after its required audit record failed, but retry state could not be released"
+                },
+                "code": "PROTECTED_AUDIT_PERSISTENCE_FAILED",
+                "retryable": release_error.is_none(),
+                "operationApplied": operation_applied,
+            })),
+        ));
     }
     if let Some(plan_id) = plan_id.as_deref() {
         if let Some(mut draft) = state.get_workflow_plan_draft(plan_id).await {

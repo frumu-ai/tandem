@@ -220,6 +220,12 @@ function automationApplyIdempotencyKey(
   return `automation-wizard:${planID}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
+function createPlannerProgressID() {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return `automation-wizard-${uuid}`;
+  return `automation-wizard-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function describePlannerFallback(diagnostics: any) {
   const reason = safeString(diagnostics?.fallback_reason || diagnostics?.fallbackReason);
   if (!reason) return "";
@@ -584,6 +590,7 @@ export function CreateWizard({
   const queryClient = useQueryClient();
   const wizardRootRef = useRef<HTMLDivElement | null>(null);
   const importAutomationFileRef = useRef<HTMLInputElement | null>(null);
+  const plannerProgressIDRef = useRef<string>("");
   const [step, setStep] = useState<WizardStep>(1);
   const [planSource, setPlanSource] = useState<string>("automations_page");
   const [routerMatches, setRouterMatches] = useState<
@@ -745,11 +752,14 @@ export function CreateWizard({
         throw new Error(
           "This control panel build is missing workflow planner client support. Rebuild the control panel against the local tandem client package."
         );
+      const progressID = createPlannerProgressID();
+      plannerProgressIDRef.current = progressID;
       return (
         (await client.workflowPlans.chatStart({
           prompt: wizard.goal,
           schedule: toSchedulePayload(wizard),
           plan_source: planSource,
+          progress_id: progressID,
           allowed_mcp_servers: wizard.selectedMcpServers,
           workspace_root: wizard.workspaceRoot,
           operator_preferences: buildOperatorPreferences(wizard),
@@ -852,7 +862,9 @@ export function CreateWizard({
         const properties = payload?.properties || {};
         const runID = String(properties.runID || "").trim();
         const expectedRunID = compileMutation.isPending
-          ? `workflow-plan-build:${planSource}`
+          ? plannerProgressIDRef.current
+            ? `workflow-plan-build:${plannerProgressIDRef.current}`
+            : ""
           : planningMessageMutation.isPending && planPreview?.plan_id
             ? `workflow-plan-revision:${String(planPreview.plan_id).trim()}`
             : "";
@@ -1126,9 +1138,10 @@ export function CreateWizard({
     },
     onError: async (error) => {
       const message = error instanceof Error ? error.message : String(error);
+      const errorCode = String((error as any)?.code || "").trim();
+      const operationApplied = (error as any)?.details?.operationApplied === true;
       const auditOutcomeUncertain =
-        message.includes("PROTECTED_AUDIT_PERSISTENCE_FAILED") &&
-        message.toLowerCase().includes("operation was applied");
+        errorCode === "PROTECTED_AUDIT_PERSISTENCE_FAILED" && operationApplied;
       const displayedMessage = auditOutcomeUncertain
         ? "The automation was saved, but its required audit record failed. Tandem opened the Library so you can verify it. Do not click Create again while audit storage is unhealthy."
         : message;

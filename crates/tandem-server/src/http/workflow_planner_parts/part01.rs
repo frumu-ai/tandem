@@ -27,6 +27,8 @@ pub(super) struct WorkflowPlanPreviewRequest {
     #[serde(default)]
     pub plan_source: Option<String>,
     #[serde(default)]
+    pub progress_id: Option<String>,
+    #[serde(default)]
     pub allowed_mcp_servers: Vec<String>,
     #[serde(default)]
     pub workspace_root: Option<String>,
@@ -122,6 +124,8 @@ pub(super) struct WorkflowPlanChatStartRequest {
     pub schedule: Option<Value>,
     #[serde(default)]
     pub plan_source: Option<String>,
+    #[serde(default)]
+    pub progress_id: Option<String>,
     #[serde(default)]
     pub allowed_mcp_servers: Vec<String>,
     #[serde(default)]
@@ -356,6 +360,8 @@ pub(super) struct WorkflowPlannerSessionStartRequest {
     pub schedule: Option<Value>,
     #[serde(default)]
     pub plan_source: Option<String>,
+    #[serde(default)]
+    pub progress_id: Option<String>,
     #[serde(default)]
     pub allowed_mcp_servers: Vec<String>,
     #[serde(default)]
@@ -958,6 +964,7 @@ pub(super) async fn workflow_plan_preview(
         prompt,
         input.schedule.as_ref(),
         input.plan_source.as_deref().unwrap_or("unknown"),
+        input.progress_id.as_deref(),
         input.allowed_mcp_servers,
         input.workspace_root.as_deref(),
         input.operator_preferences,
@@ -1063,6 +1070,7 @@ pub(super) async fn workflow_plan_chat_start(
         prompt,
         input.schedule.as_ref(),
         input.plan_source.as_deref().unwrap_or("unknown"),
+        input.progress_id.as_deref(),
         input.allowed_mcp_servers,
         input.workspace_root.as_deref(),
         input.operator_preferences,

@@ -155,6 +155,7 @@ async fn curated_api_supports_json_build_and_revision_flow() {
         plan_id: "plan_api".to_string(),
         planner_version: "test_planner_v1".to_string(),
         plan_source: "test".to_string(),
+        progress_id: None,
         prompt: "Build a workflow.".to_string(),
         normalized_prompt: "build a workflow".to_string(),
         title: "Example".to_string(),

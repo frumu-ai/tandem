@@ -375,6 +375,7 @@ pub(crate) async fn build_workflow_plan(
     prompt: &str,
     explicit_schedule: Option<&Value>,
     plan_source: &str,
+    progress_id: Option<&str>,
     allowed_mcp_servers: Vec<String>,
     workspace_root: Option<&str>,
     operator_preferences: Option<Value>,
@@ -392,7 +393,7 @@ pub(crate) async fn build_workflow_plan(
     let planner_version = "v1".to_string();
 
     let host = WorkflowPlannerHost::new(state, tenant_context, verified_tenant_context);
-    let request = prepare_build_request(
+    let mut request = prepare_build_request(
         plan_id,
         planner_version,
         plan_source.to_string(),
@@ -404,6 +405,10 @@ pub(crate) async fn build_workflow_plan(
         workspace_root,
         operator_preferences,
     );
+    request.progress_id = progress_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 
     let mut result = compiler_api::build_workflow_plan_with_planner(
         &host,
