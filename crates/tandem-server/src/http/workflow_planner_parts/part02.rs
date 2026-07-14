@@ -450,12 +450,22 @@ pub(super) async fn workflow_planner_session_list(
     Extension(tenant_context): Extension<tandem_types::TenantContext>,
     Query(query): Query<WorkflowPlannerSessionListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let linked_chat_session_id = query
+        .linked_chat_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let sessions = state
         .list_workflow_planner_sessions(query.project_slug.as_deref())
         .await
         .into_iter()
         .filter(|session| {
             ensure_workflow_planner_session_tenant(session, &tenant_context).is_ok()
+        })
+        .filter(|session| {
+            linked_chat_session_id.is_none_or(|chat_session_id| {
+                session.linked_chat_session_id.as_deref() == Some(chat_session_id)
+            })
         })
         .collect::<Vec<_>>();
     let items = sessions
@@ -783,6 +793,13 @@ pub(super) async fn workflow_planner_session_duplicate(
         .map(str::to_string)
         .unwrap_or_else(|| format!("Copy of {}", source.title));
     next.source_kind = workflow_planner_session_fork_source_kind(&source.source_kind);
+    next.linked_chat_session_id = None;
+    next.linked_chat_run_id = None;
+    next.last_referenced_at_ms = None;
+    next.artifact_links.clear();
+    next.operation = None;
+    next.published_at_ms = None;
+    next.published_tasks.clear();
     next.created_at_ms = now;
     next.updated_at_ms = now;
     if let Some(draft) = source.draft.as_ref() {
@@ -800,6 +817,7 @@ pub(super) async fn workflow_planner_session_duplicate(
         next.draft = Some(duplicated);
     }
     if let Some(planning) = next.planning.as_mut() {
+        planning.linked_channel_session_id = None;
         normalize_workflow_planning_record(planning, next.current_plan_id.as_deref(), now);
     }
     let stored = state

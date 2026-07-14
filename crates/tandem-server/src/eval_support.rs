@@ -162,3 +162,38 @@ pub async fn enrich_verified_context_with_inbound_cross_tenant_grants(
     )
     .await;
 }
+
+/// Evaluate the durable artifact selection used by product-authoring chat prompts.
+/// This keeps acceptance tests on the production tenant and active-reference logic.
+pub async fn product_authoring_artifact_context(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    chat_session_id: &str,
+) -> Value {
+    crate::http::operator_tools_context::operator_artifact_context(
+        state,
+        tenant_context,
+        chat_session_id,
+    )
+    .await
+}
+
+/// Seed a planner-session fixture through the same persistence path used by chat tools.
+pub async fn put_product_authoring_planner_session_fixture(
+    state: &AppState,
+    fixture: Value,
+) -> anyhow::Result<()> {
+    let session = serde_json::from_value::<
+        crate::http::workflow_planner::WorkflowPlannerSessionRecord,
+    >(fixture)?;
+    state.put_workflow_planner_session(session).await?;
+    Ok(())
+}
+
+/// Return the canonical user-facing failure category attached to a chat run.
+pub fn product_authoring_failure_category(
+    status: &str,
+    error: Option<&str>,
+) -> Option<&'static str> {
+    crate::http::session_run_idempotency::failure_category(status, error)
+}

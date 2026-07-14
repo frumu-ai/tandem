@@ -975,13 +975,26 @@ async fn workflow_planner_sessions_support_crud_and_duplication() {
         .and_then(Value::as_str)
         .expect("session id")
         .to_string();
+    let mut linked_session = state
+        .get_workflow_planner_session(&session_id)
+        .await
+        .expect("created planner session");
+    linked_session.linked_chat_session_id = Some("chat-crud".to_string());
+    linked_session.linked_chat_run_id = Some("run-crud".to_string());
+    linked_session.last_referenced_at_ms = Some(42);
+    state
+        .put_workflow_planner_session(linked_session)
+        .await
+        .expect("link planner session to chat");
 
     let list_resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/workflow-plans/sessions?project_slug=planner-crud")
+                .uri(
+                    "/workflow-plans/sessions?project_slug=planner-crud&linked_chat_session_id=chat-crud",
+                )
                 .body(Body::empty())
                 .expect("list request"),
         )
@@ -1004,6 +1017,55 @@ async fn workflow_planner_sessions_support_crud_and_duplication() {
         .is_some_and(|rows| rows
             .iter()
             .any(|row| { row.get("source_kind").and_then(Value::as_str) == Some("planner") })));
+    let listed_session = list_payload
+        .get("sessions")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .expect("linked session list item");
+    assert_eq!(
+        listed_session
+            .get("linked_chat_session_id")
+            .and_then(Value::as_str),
+        Some("chat-crud")
+    );
+    assert_eq!(
+        listed_session
+            .get("linked_chat_run_id")
+            .and_then(Value::as_str),
+        Some("run-crud")
+    );
+    assert_eq!(
+        listed_session
+            .get("last_referenced_at_ms")
+            .and_then(Value::as_u64),
+        Some(42)
+    );
+    assert_eq!(
+        listed_session.get("plan_revision").and_then(Value::as_u64),
+        Some(1)
+    );
+
+    let unrelated_list_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/workflow-plans/sessions?linked_chat_session_id=another-chat")
+                .body(Body::empty())
+                .expect("unrelated linked list request"),
+        )
+        .await
+        .expect("unrelated linked list response");
+    assert_eq!(unrelated_list_resp.status(), StatusCode::OK);
+    let unrelated_list_body = to_bytes(unrelated_list_resp.into_body(), usize::MAX)
+        .await
+        .expect("unrelated linked list body");
+    let unrelated_list_payload: Value =
+        serde_json::from_slice(&unrelated_list_body).expect("unrelated linked list json");
+    assert_eq!(
+        unrelated_list_payload.get("count").and_then(Value::as_u64),
+        Some(0)
+    );
 
     let patch_resp = app
         .clone()
@@ -1186,6 +1248,18 @@ async fn workflow_planner_sessions_support_crud_and_duplication() {
             .and_then(Value::as_str),
         Some("forked_planner")
     );
+    let duplicated_session = duplicate_payload
+        .get("session")
+        .expect("duplicated session payload");
+    assert!(duplicated_session.get("linked_chat_session_id").is_none());
+    assert!(duplicated_session.get("linked_chat_run_id").is_none());
+    assert!(duplicated_session.get("last_referenced_at_ms").is_none());
+    assert!(duplicated_session
+        .get("artifact_links")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty));
+    assert!(duplicated_session.get("operation").is_none());
+    assert!(duplicated_session.get("published_at_ms").is_none());
 }
 
 #[tokio::test]

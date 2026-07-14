@@ -5,6 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.10] - 2026-07-14
+
+### Added
+
+- Added first-party product authoring to Control Panel chat. Users can ask
+  Tandem to create, inspect, validate, revise, preview, and materialize workflow
+  plans; inspect or manage Automation V2 drafts; inspect orchestrations; and
+  check available product capabilities without configuring a Tandem API key.
+- Added a durable operator run contract for chat authoring. Planner sessions,
+  revisions, materialized drafts, chat/run provenance, and artifact links are
+  persisted so a later message can continue work on the active artifact.
+- Added inline workflow artifacts to the chat transcript. The artifact presents
+  triggers, nodes, transitions, genuinely parallel branches, outputs,
+  approvals, assumptions, connection requirements, validation blockers, and
+  draft or published state without exposing the underlying JSON contract.
+- Added artifact actions for validation, conversational revision, duplication,
+  draft creation, and opening the exact artifact revision in the full canvas.
+  Unsupported publish and enable controls stay outside the chat tool surface.
+- Added agentic product-authoring acceptance coverage for vague and detailed
+  requests, parallel and scheduled workflows, follow-up revisions, validation
+  and provider failures, permissions and confirmations, internal identity and
+  external credentials, cancellation/retry/reconnect, tenant isolation, and
+  prompt-injection attempts.
+
+### Changed
+
+- Product-authoring requests now continue to the selected model instead of
+  being trapped in repeated setup clarification. Tandem routes authoring,
+  explanation, and control intents to the appropriate first-party capability
+  while preserving normal conversation for ambiguous requests.
+- First-party authoring tools now use the authenticated Control Panel session
+  and verified Tandem principal. External services still require their own
+  principal-scoped connection, but chat no longer asks users for an internal
+  Tandem API key that the product already possesses through the session.
+- Workflow materialization remains draft-first and disabled by default.
+  Validation, required connections, permissions, and approval boundaries are
+  returned as structured outcomes before supported consequential actions can
+  proceed.
+- Inline artifacts update in place as revisions and tool events arrive while
+  preserving transcript history, scroll position, and stable layout on desktop
+  and narrow viewports.
+
+### Fixed
+
+- Made prompt submission, workflow planning, revision, materialization, and
+  automation mutations idempotent and retry-safe, including recovery from
+  cancellation and reconnect without duplicate drafts or stale successful
+  responses.
+- Removed graph remount and repeated auto-layout behavior from streamed chat
+  artifact updates, preventing flashing, viewport jumps, and false sequential
+  presentation of parallel work.
+
+### Security
+
+- Bound every first-party operator action to the trusted dispatch session,
+  tenant, and verified actor; caller-supplied identity cannot replace the
+  authenticated principal, and cross-tenant resources remain indistinguishable
+  from missing resources.
+- Kept secrets and transport credentials out of prompts, tool arguments,
+  results, and audit payloads while retaining explicit authorization and human
+  confirmation for publish, enable, and other consequential controls.
+
 ## [0.6.9] - 2026-07-12
 
 ### Added

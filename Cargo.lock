@@ -8181,6 +8181,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tower",
  "uuid",
 ]
 

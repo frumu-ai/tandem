@@ -2068,8 +2068,25 @@ export interface WorkflowPlannerSessionOperationRecord {
   [key: string]: unknown;
 }
 
+export interface WorkflowPlannerArtifactLink {
+  link_id: string;
+  kind: string;
+  resource_id: string;
+  resource_url: string;
+  revision?: number;
+  chat_run_id?: string;
+  tool_name?: string;
+  tool_call_id?: string;
+  idempotency_key?: string;
+  linked_at_ms: number;
+}
+
 export interface WorkflowPlannerSessionRecord {
   session_id: string;
+  linked_chat_session_id?: string;
+  linked_chat_run_id?: string;
+  last_referenced_at_ms?: number;
+  artifact_links?: WorkflowPlannerArtifactLink[];
   project_slug: string;
   title: string;
   workspace_root: string;
@@ -2097,10 +2114,15 @@ export interface WorkflowPlannerSessionRecord {
 
 export interface WorkflowPlannerSessionListItem {
   session_id: string;
+  linked_chat_session_id?: string;
+  linked_chat_run_id?: string;
+  last_referenced_at_ms?: number;
   title: string;
   project_slug: string;
   workspace_root: string;
   current_plan_id?: string;
+  plan_revision?: number;
+  published_at_ms?: number;
   created_at_ms: number;
   updated_at_ms: number;
   goal?: string | null;

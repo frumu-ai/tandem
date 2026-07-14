@@ -50,6 +50,8 @@ type ChatInterfacePanelProps = {
   onAttach?: () => void;
   attachDisabled?: boolean;
   composerAccessory?: ReactNode;
+  transcriptAccessory?: ReactNode;
+  transcriptAccessoryKey?: string;
   className?: string;
 };
 
@@ -81,13 +83,17 @@ export function ChatInterfacePanel({
   onAttach,
   attachDisabled = false,
   composerAccessory,
+  transcriptAccessory,
+  transcriptAccessoryKey = "",
   className = "",
 }: ChatInterfacePanelProps) {
   const reducedMotion = !!useReducedMotion();
   const panelRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const transcriptAccessoryRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
+  const anchoredAccessoryKeyRef = useRef("");
 
   const isNearBottom = (element: HTMLDivElement) => {
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -100,6 +106,18 @@ export function ChatInterfacePanel({
     if (!stickToBottomRef.current) return;
     host.scrollTop = host.scrollHeight;
   }, [messages, streamingText, showThinking]);
+
+  useEffect(() => {
+    const host = messagesRef.current;
+    const accessory = transcriptAccessoryRef.current;
+    if (!host || !accessory || !transcriptAccessoryKey) return;
+    if (anchoredAccessoryKeyRef.current === transcriptAccessoryKey) return;
+    anchoredAccessoryKeyRef.current = transcriptAccessoryKey;
+    if (!stickToBottomRef.current) return;
+    const hostTop = host.getBoundingClientRect().top;
+    const accessoryTop = accessory.getBoundingClientRect().top;
+    host.scrollTop = Math.max(0, host.scrollTop + accessoryTop - hostTop - 8);
+  }, [transcriptAccessoryKey]);
 
   useEffect(() => {
     const area = inputRef.current;
@@ -232,6 +250,11 @@ export function ChatInterfacePanel({
             ) : null}
             {streamingText ? <pre className="chat-msg-pre">{streamingText}</pre> : null}
           </article>
+        ) : null}
+        {transcriptAccessory ? (
+          <div ref={transcriptAccessoryRef} className="chat-transcript-accessory">
+            {transcriptAccessory}
+          </div>
         ) : null}
       </div>
 

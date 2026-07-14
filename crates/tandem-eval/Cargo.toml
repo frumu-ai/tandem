@@ -24,6 +24,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
+tower = { version = "0.5", features = ["util"] }
 uuid = { version = "1", features = ["v4"] }
 tandem-incident-monitor = { path = "../tandem-incident-monitor", version = "0.6.9" }
 tandem-core = { path = "../tandem-core", version = "0.6.9" }
@@ -46,3 +47,7 @@ path = "src/bin/eval_runner.rs"
 [[bin]]
 name = "incident-monitor-fixture"
 path = "src/bin/incident_monitor_fixture.rs"
+
+[[bin]]
+name = "agentic-authoring-acceptance"
+path = "src/bin/agentic_authoring_acceptance.rs"
