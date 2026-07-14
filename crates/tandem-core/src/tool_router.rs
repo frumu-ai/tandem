@@ -132,7 +132,11 @@ pub(crate) fn product_authoring_execution_scope(
     intent: ToolIntent,
     all_tools: &[ToolSchema],
 ) -> Vec<String> {
-    let mut scope = request_allowlist.iter().cloned().collect::<HashSet<_>>();
+    let mut scope = request_allowlist
+        .iter()
+        .filter(|tool| intent != ToolIntent::ProductAuthoring || !is_mcp_tool_or_discovery(tool))
+        .cloned()
+        .collect::<HashSet<_>>();
     if is_product_authoring_intent(intent) && is_connector_only_allowlist(request_allowlist) {
         scope.extend(
             all_tools
@@ -562,7 +566,33 @@ fn is_live_integration_inspection_request(input: &str) -> bool {
         input,
         &["inspect", "discover", "test", "list", "check", "show"],
     );
-    integration_subject && inspection_action
+    (integration_subject && inspection_action) || has_singular_integration_inspection_clause(input)
+}
+
+fn has_singular_integration_inspection_clause(input: &str) -> bool {
+    for action in ["inspect", "discover", "test", "list", "check", "show"] {
+        let needle = format!("{action} ");
+        for (action_index, _) in input.match_indices(&needle) {
+            if action_index > 0 && input.as_bytes()[action_index - 1].is_ascii_alphanumeric() {
+                continue;
+            }
+            let after_action = &input[action_index + needle.len()..];
+            let Some(subject_index) = after_action.find("integration") else {
+                continue;
+            };
+            if subject_index > 64 {
+                continue;
+            }
+            let between = &after_action[..subject_index];
+            if !contains_any(
+                between,
+                &[" and ", " then ", " but ", " to ", ".", ",", ";", "?", "!"],
+            ) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn has_repository_workflow_signal(input: &str) -> bool {
@@ -862,14 +892,12 @@ mod tests {
             &allowlist,
             ToolIntent::ProductAuthoring,
         ));
-        assert_eq!(
-            product_authoring_execution_scope(&allowlist, ToolIntent::ProductAuthoring, &[planner],),
-            vec![
-                "mcp_list".to_string(),
-                "mcp_list_catalog".to_string(),
-                "mcp_request_capability".to_string(),
-            ]
-        );
+        assert!(product_authoring_execution_scope(
+            &allowlist,
+            ToolIntent::ProductAuthoring,
+            &[planner],
+        )
+        .is_empty());
     }
 
     #[test]
@@ -901,12 +929,21 @@ mod tests {
 
         let scope =
             product_authoring_execution_scope(&allowlist, ToolIntent::ProductAuthoring, &tools);
-        assert!(scope.contains(&"mcp.slack.*".to_string()));
+        assert!(!scope.contains(&"mcp.slack.*".to_string()));
         assert!(scope.contains(&"workflow_plan_start".to_string()));
         assert!(scope.contains(&"workflow_plan_materialize".to_string()));
         assert!(!scope.contains(&"orchestration_publish".to_string()));
         assert!(!scope.contains(&"mcp.slack.post_message".to_string()));
         assert!(!scope.contains(&"read".to_string()));
+
+        let mixed_scope = product_authoring_execution_scope(
+            &allowlist,
+            ToolIntent::ProductAuthoringWithMcp,
+            &tools,
+        );
+        assert!(mixed_scope.contains(&"mcp.slack.*".to_string()));
+        assert!(mixed_scope.contains(&"workflow_plan_start".to_string()));
+        assert!(mixed_scope.contains(&"workflow_plan_materialize".to_string()));
 
         assert!(product_authoring_execution_scope(
             &HashSet::new(),
@@ -978,7 +1015,19 @@ mod tests {
             ToolIntent::ProductAuthoringWithMcp
         );
         assert_eq!(
+            classify_intent("Create a workflow and check the Slack integration"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create a workflow and test the Slack integration"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
             classify_intent("Create an automation but do not use MCP"),
+            ToolIntent::ProductAuthoring
+        );
+        assert_eq!(
+            classify_intent("Create a workflow that checks integration status every hour"),
             ToolIntent::ProductAuthoring
         );
     }
