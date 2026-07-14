@@ -536,10 +536,7 @@ impl EngineLoop {
                 }
                 if request_tool_allowlist_is_explicit {
                     tool_schemas.retain(|schema| {
-                        let tool = normalize_tool_name(&schema.name);
-                        request_tool_allowlist
-                            .iter()
-                            .any(|pattern| tool_name_matches_policy(pattern, &tool))
+                        tool_survives_explicit_allowlist(schema, &request_tool_allowlist, intent)
                     });
                 }
                 if intent == ToolIntent::ProductAuthoring {

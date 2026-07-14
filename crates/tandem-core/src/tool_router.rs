@@ -79,6 +79,18 @@ pub(crate) fn is_mcp_tool_or_discovery(tool_name: &str) -> bool {
         )
 }
 
+pub(crate) fn tool_survives_explicit_allowlist(
+    schema: &ToolSchema,
+    request_allowlist: &HashSet<String>,
+    intent: ToolIntent,
+) -> bool {
+    let normalized = normalize_tool_name(&schema.name);
+    request_allowlist
+        .iter()
+        .any(|pattern| tool_name_matches_policy(pattern, &normalized))
+        || (intent == ToolIntent::ProductAuthoring && is_product_authoring_tool(schema))
+}
+
 pub fn classify_intent(input: &str) -> ToolIntent {
     let lower = input.trim().to_ascii_lowercase();
     if lower.is_empty() {
@@ -376,15 +388,7 @@ fn tool_matches_intent(intent: ToolIntent, schema: &ToolSchema) -> bool {
         ToolIntent::MemoryOps => {
             tool_schema_matches_profile(schema, ToolCapabilityProfile::MemoryOperation)
         }
-        ToolIntent::ProductAuthoring => {
-            tool_schema_matches_profile(schema, ToolCapabilityProfile::ProductControl)
-                && matches!(
-                    tool_schema_risk_tier(schema),
-                    ToolRiskTier::ReadDiscover
-                        | ToolRiskTier::InternalWrite
-                        | ToolRiskTier::ExternalDraft
-                )
-        }
+        ToolIntent::ProductAuthoring => is_product_authoring_tool(schema),
         ToolIntent::ProductControl => {
             tool_schema_matches_profile(schema, ToolCapabilityProfile::ProductControl)
         }
@@ -392,6 +396,14 @@ fn tool_matches_intent(intent: ToolIntent, schema: &ToolSchema) -> bool {
             is_mcp_tool_or_discovery(&name) || matches!(name.as_str(), "read" | "grep" | "search")
         }
     }
+}
+
+fn is_product_authoring_tool(schema: &ToolSchema) -> bool {
+    tool_schema_matches_profile(schema, ToolCapabilityProfile::ProductControl)
+        && matches!(
+            tool_schema_risk_tier(schema),
+            ToolRiskTier::ReadDiscover | ToolRiskTier::InternalWrite | ToolRiskTier::ExternalDraft
+        )
 }
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
@@ -711,6 +723,28 @@ mod tests {
         assert!(!names.contains(&"mcp_list_catalog".to_string()));
         assert!(!names.contains(&"mcp_request_capability".to_string()));
         assert!(!names.contains(&"orchestration_publish".to_string()));
+    }
+
+    #[test]
+    fn connector_only_allowlist_preserves_intrinsic_product_authoring_tools() {
+        let allowlist = HashSet::from(["mcp.slack.*".to_string()]);
+        let planner = product_schema(
+            "workflow_plan_start",
+            tandem_types::ToolEffect::Write,
+            ToolRiskTier::InternalWrite,
+        );
+        let unrelated = schema("read");
+
+        assert!(tool_survives_explicit_allowlist(
+            &planner,
+            &allowlist,
+            ToolIntent::ProductAuthoring,
+        ));
+        assert!(!tool_survives_explicit_allowlist(
+            &unrelated,
+            &allowlist,
+            ToolIntent::ProductAuthoring,
+        ));
     }
 
     #[test]
