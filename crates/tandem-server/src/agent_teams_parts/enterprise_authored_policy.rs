@@ -4,8 +4,8 @@ async fn evaluate_enterprise_authored_tool_policy(
     tool: &str,
 ) -> anyhow::Result<Option<ToolPolicyDecision>> {
     use tandem_enterprise_contract::{
-        AccessPermission, EnterprisePolicyEffect, EnterprisePolicyInput, EnterprisePolicyResolver,
-        EnterprisePolicyRuleState,
+        enterprise_scope_ids_match, AccessPermission, EnterprisePolicyEffect,
+        EnterprisePolicyInput, EnterprisePolicyResolver, EnterprisePolicyRuleState,
     };
 
     let Some(tenant_context) = ctx.tenant_context.clone() else {
@@ -21,9 +21,19 @@ async fn evaluate_enterprise_authored_tool_policy(
         .filter(|rule| {
             rule.state == EnterprisePolicyRuleState::Published
                 && rule.tenant_context.as_ref().is_none_or(|tenant| {
-                    tenant.org_id == tenant_context.org_id
-                        && tenant.workspace_id == tenant_context.workspace_id
-                        && tenant.deployment_id == tenant_context.deployment_id
+                    enterprise_scope_ids_match(&tenant.org_id, &tenant_context.org_id)
+                        && enterprise_scope_ids_match(
+                            &tenant.workspace_id,
+                            &tenant_context.workspace_id,
+                        )
+                        && match (
+                            tenant.deployment_id.as_deref(),
+                            tenant_context.deployment_id.as_deref(),
+                        ) {
+                            (Some(left), Some(right)) => enterprise_scope_ids_match(left, right),
+                            (None, None) => true,
+                            _ => false,
+                        }
                 })
         })
         .cloned()
@@ -271,6 +281,54 @@ mod enterprise_authored_policy_tests {
         PredicateOperator, PredicateValueType,
     };
     use tandem_types::DataClass;
+
+    #[tokio::test]
+    async fn authored_tool_policy_normalizes_tenant_ids_before_prefiltering() {
+        let state = crate::test_support::test_state().await;
+        let stored_tenant = TenantContext::explicit_user_workspace(
+            " Org-A ",
+            " WORKSPACE-A ",
+            Some(" Deployment-A ".to_string()),
+            "admin-a",
+        );
+        let runtime_tenant = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "admin-a",
+        );
+        let deny = EnterprisePolicyRule::new(
+            "normalized-tenant-deny",
+            "normalized-tenant-policy",
+            EnterprisePolicyScopeLevel::Tenant,
+            EnterprisePolicyEffect::Deny,
+        )
+        .with_tenant_context(stored_tenant)
+        .with_tool_patterns(vec!["mcp.files.delete".to_string()]);
+        state
+            .enterprise
+            .policy_rules
+            .write()
+            .await
+            .insert(deny.rule_id.clone(), deny);
+
+        let decision = evaluate_enterprise_authored_tool_policy(
+            &state,
+            &ToolPolicyContext {
+                session_id: "session-normalized-tenant".to_string(),
+                message_id: "message-normalized-tenant".to_string(),
+                tenant_context: Some(runtime_tenant),
+                verified_tenant_context: None,
+                tool: "mcp.files.delete".to_string(),
+                args: json!({"path":"/sensitive"}),
+            },
+            "mcp.files.delete",
+        )
+        .await
+        .expect("normalized tenant evaluation")
+        .expect("matching authored deny");
+        assert!(!decision.allowed);
+    }
 
     #[tokio::test]
     async fn authored_parameter_policy_matches_preview_and_records_runtime_decisions() {
