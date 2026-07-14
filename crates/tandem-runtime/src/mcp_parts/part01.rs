@@ -852,6 +852,8 @@ impl McpRegistry {
         drop(servers);
         self.upsert_compatibility_connection_for_server(name, current_tenant)
             .await;
+        self.rotate_connection_generation_for_tenant(name, current_tenant)
+            .await;
         self.persist_state().await;
         Ok(true)
     }
@@ -928,6 +930,8 @@ impl McpRegistry {
         drop(servers);
         self.upsert_compatibility_connection_for_server(name, current_tenant)
             .await;
+        self.rotate_connection_generation_for_tenant(name, current_tenant)
+            .await;
         self.persist_state().await;
         Ok(true)
     }
@@ -954,6 +958,9 @@ impl McpRegistry {
             )
             .map_err(|error| error.to_string())?;
         }
+        self.rotate_connection_generations_for_oauth_provider(provider_id, current_tenant)
+            .await;
+        self.persist_state().await;
         Ok(())
     }
 

@@ -1359,7 +1359,7 @@ async fn execute_action(
                     .run(run_id)
                     .node(action_row.action_id.clone()),
                 tenant_context.clone(),
-                vec![tool_name.clone()],
+                workflow_tool_dispatch_scope(&tool_name, &payload),
             );
             let result = Box::pin(state.tool_dispatcher.dispatch(
                 &tool_name,
@@ -1406,7 +1406,7 @@ async fn execute_action(
                     .run(run_id)
                     .node(action_row.action_id.clone()),
                 tenant_context.clone(),
-                vec![tool_name.clone()],
+                workflow_tool_dispatch_scope(&tool_name, &payload),
             );
             let result = Box::pin(state.tool_dispatcher.dispatch(
                 &tool_name,
@@ -1495,6 +1495,27 @@ enum WorkflowExternalActionExecution {
         capability_id: String,
         tool_name: String,
     },
+}
+
+fn workflow_tool_dispatch_scope(tool_name: &str, payload: &Value) -> Vec<String> {
+    let mut scope = vec![tool_name.to_string()];
+    if tool_name.trim().eq_ignore_ascii_case("batch") {
+        for call in payload["tool_calls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(20)
+        {
+            let Some(subcall_tool) = tandem_tools::resolve_batch_call_tool_name(call) else {
+                continue;
+            };
+            if !subcall_tool.is_empty() && subcall_tool != "batch" && !scope.contains(&subcall_tool)
+            {
+                scope.push(subcall_tool);
+            }
+        }
+    }
+    scope
 }
 
 async fn record_workflow_external_action(

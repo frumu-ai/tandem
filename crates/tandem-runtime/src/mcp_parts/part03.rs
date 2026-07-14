@@ -1224,6 +1224,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn credential_replacement_rotates_connection_generation() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        registry
+            .add("reauth".to_string(), "https://example.com/mcp".to_string())
+            .await;
+
+        registry
+            .set_bearer_token("reauth", "first-token")
+            .await
+            .expect("set first bearer token");
+        let bearer_first = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "reauth")
+            .expect("bearer connection");
+        registry
+            .set_bearer_token("reauth", "replacement-token")
+            .await
+            .expect("replace bearer token");
+        let bearer_replaced = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "reauth")
+            .expect("replaced bearer connection");
+        assert_ne!(
+            bearer_first.connection_generation,
+            bearer_replaced.connection_generation
+        );
+
+        registry
+            .set_oauth_refresh_config(
+                "reauth",
+                "oauth-provider".to_string(),
+                "https://example.com/token".to_string(),
+                "client-one".to_string(),
+                Some("secret-one".to_string()),
+            )
+            .await
+            .expect("set oauth config");
+        let oauth_first = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "reauth")
+            .expect("oauth connection");
+        registry
+            .set_oauth_refresh_config(
+                "reauth",
+                "oauth-provider".to_string(),
+                "https://example.com/token".to_string(),
+                "client-two".to_string(),
+                Some("secret-two".to_string()),
+            )
+            .await
+            .expect("replace oauth config");
+        let oauth_replaced = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "reauth")
+            .expect("replaced oauth connection");
+        assert_ne!(
+            oauth_first.connection_generation,
+            oauth_replaced.connection_generation
+        );
+
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
     async fn legacy_connection_generation_is_migrated_once_and_stays_stable() {
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file.clone());

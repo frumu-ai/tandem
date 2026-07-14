@@ -319,6 +319,7 @@ impl McpRegistry {
         let credential_ref = compatibility_credential_ref(server_id, &server);
         let mut connections = self.connections.write().await;
         if let Some(existing) = connections.get_mut(&connection_id) {
+            existing.connection_generation = new_mcp_connection_generation();
             existing.enabled = server.enabled;
             if current_tenant.is_local_implicit() {
                 existing.credential_ref = credential_ref;
@@ -397,6 +398,7 @@ impl McpRegistry {
         };
         let mut connections = self.connections.write().await;
         if let Some(existing) = connections.get_mut(&connection_id) {
+            existing.connection_generation = new_mcp_connection_generation();
             existing.enabled = server.enabled;
             existing
                 .secret_headers
@@ -487,6 +489,43 @@ impl McpRegistry {
                 updated_at_ms: now,
             },
         );
+    }
+
+    async fn rotate_connection_generation_for_tenant(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+    ) {
+        let owner = McpPrincipalRef::from_tenant_context(current_tenant);
+        let connection_id = mcp_connection_id(server_id, current_tenant, &owner);
+        if let Some(connection) = self.connections.write().await.get_mut(&connection_id) {
+            connection.connection_generation = new_mcp_connection_generation();
+            connection.updated_at_ms = now_ms();
+        }
+    }
+
+    async fn rotate_connection_generations_for_oauth_provider(
+        &self,
+        provider_id: &str,
+        current_tenant: &TenantContext,
+    ) {
+        let now = now_ms();
+        for connection in self
+            .connections
+            .write()
+            .await
+            .values_mut()
+            .filter(|connection| {
+                connection.tenant_context == *current_tenant
+                    && connection
+                        .oauth
+                        .as_ref()
+                        .is_some_and(|oauth| oauth.provider_id == provider_id)
+            })
+        {
+            connection.connection_generation = new_mcp_connection_generation();
+            connection.updated_at_ms = now;
+        }
     }
 
     async fn oauth_config_for_tenant(

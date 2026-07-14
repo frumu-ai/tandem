@@ -808,7 +808,7 @@ fn non_empty_batch_str(value: Option<&Value>) -> Option<&str> {
     trimmed_non_empty_str(value)
 }
 
-fn resolve_batch_call_tool_name(call: &Value) -> Option<String> {
+pub fn resolve_batch_call_tool_name(call: &Value) -> Option<String> {
     let tool = non_empty_batch_str(call.get("tool"))
         .or_else(|| {
             call.get("tool")

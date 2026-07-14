@@ -403,6 +403,57 @@ async fn workflows_list_validate_and_manual_run() {
 }
 
 #[tokio::test]
+async fn workflow_batch_scope_includes_governed_subcall_tools() {
+    let state = workflow_test_state().await;
+    let state_dir = state
+        .workflow_runs_path
+        .parent()
+        .expect("state dir")
+        .to_path_buf();
+    std::fs::write(
+        state_dir
+            .join("builtin_workflows")
+            .join("workflows")
+            .join("batch_feature.yaml"),
+        r#"
+workflow:
+  id: batch_feature
+  name: Batch Feature
+  steps:
+    - action: tool:batch
+      with:
+        tool_calls:
+          - tool: workflow_test.executor
+            args:
+              stage: batch
+"#,
+    )
+    .expect("write batch workflow");
+    state.reload_workflows().await.expect("reload workflows");
+    let executor_calls = register_recording_tool(&state, "workflow_test.executor").await;
+    let workflow = state
+        .get_workflow("batch_feature")
+        .await
+        .expect("batch workflow");
+
+    let run = crate::execute_workflow(
+        &state,
+        &workflow,
+        tandem_types::TenantContext::local_implicit(),
+        Some("manual".to_string()),
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("execute batch workflow");
+
+    assert_eq!(run.status, tandem_workflows::WorkflowRunStatus::Completed);
+    wait_for_call_count(&executor_calls, 1).await;
+    assert_eq!(executor_calls.lock().await.len(), 1);
+}
+
+#[tokio::test]
 async fn workflow_dispatch_executes_hooks_and_dedupes() {
     Box::pin(async {
         let state = workflow_test_state().await;
