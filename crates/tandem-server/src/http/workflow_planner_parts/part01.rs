@@ -48,6 +48,10 @@ pub(super) struct WorkflowPlanApplyRequest {
     pub pack_builder_export: Option<WorkflowPlanPackBuilderExportRequest>,
     #[serde(default)]
     pub overlap_decision: Option<String>,
+    #[serde(default)]
+    pub materialize_as_draft: bool,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +103,7 @@ pub(super) struct WorkflowPlanPackDownloadQuery {
     pub path: String,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub(super) struct WorkflowPlanPackBuilderExportRequest {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -151,6 +155,25 @@ pub struct WorkflowPlannerSessionOperationRecord {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowPlannerArtifactLink {
+    pub link_id: String,
+    pub kind: String,
+    pub resource_id: String,
+    pub resource_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    pub linked_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WorkflowPlannerSessionPlanningRecord {
     #[serde(default)]
@@ -194,6 +217,16 @@ pub struct WorkflowPlannerSessionPlanningRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowPlannerSessionRecord {
     pub session_id: String,
+    #[serde(default)]
+    pub tenant_context: tandem_types::TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_chat_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_chat_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_referenced_at_ms: Option<u64>,
+    #[serde(default)]
+    pub artifact_links: Vec<WorkflowPlannerArtifactLink>,
     pub project_slug: String,
     pub title: String,
     pub workspace_root: String,

@@ -535,6 +535,10 @@ impl AppState {
             let name = tool.schema().name;
             self.tools.register_tool(name, tool).await;
         }
+        for tool in crate::http::operator_tools::operator_tools(self.clone()) {
+            let name = tool.schema().name;
+            self.tools.register_tool(name, tool).await;
+        }
         self.tools
             .register_tool(
                 "mcp_list".to_string(),

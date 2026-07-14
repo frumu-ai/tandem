@@ -1106,6 +1106,13 @@ impl EngineLoop {
             "message.part.updated",
             json!({"part": invoke_part}),
         ));
+        if let (Some(args), Some(tool_call_id)) = (args.as_object_mut(), invoke_part_id.as_deref())
+        {
+            args.insert(
+                "__tool_call_id".to_string(),
+                Value::String(tool_call_id.to_string()),
+            );
+        }
         let args_for_side_events = args.clone();
         let mutation_checkpoint = prepare_mutation_checkpoint(&tool, &args_for_side_events);
         let progress_sink: SharedToolProgressSink = std::sync::Arc::new(EngineToolProgressSink {

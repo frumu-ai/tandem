@@ -593,6 +593,13 @@ fn tool_execution_args(mut args: Value, context: &ToolDispatchContext) -> Value 
         object.remove("__phaseToolAuthority");
         object.remove("__workflow_phase");
         object.remove("__workflowPhase");
+        object.remove("__dispatch_session_id");
+        if let Some(session_id) = context.source.session_id.as_deref() {
+            object.insert(
+                "__dispatch_session_id".to_string(),
+                Value::String(session_id.to_string()),
+            );
+        }
         if let Some(verified) = context.verified_tenant_context.as_ref() {
             object
                 .entry("__verified_tenant_context")

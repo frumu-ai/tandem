@@ -232,7 +232,7 @@ pub fn should_escalate_auto_tools(
 }
 
 pub fn select_tool_subset(
-    available: Vec<ToolSchema>,
+    mut available: Vec<ToolSchema>,
     intent: ToolIntent,
     request_allowlist: &HashSet<String>,
     expanded: bool,
@@ -250,6 +250,16 @@ pub fn select_tool_subset(
         intent,
         ToolIntent::ProductAuthoring | ToolIntent::ProductControl
     );
+    if product_intent {
+        available.sort_by_key(|schema| {
+            let name = normalize_tool_name(&schema.name);
+            let explicitly_allowed = !request_allowlist.is_empty()
+                && request_allowlist
+                    .iter()
+                    .any(|pattern| tool_name_matches_policy(pattern, &name));
+            (!explicitly_allowed, product_tool_priority(&name, intent))
+        });
+    }
 
     for schema in available {
         let norm = normalize_tool_name(&schema.name);
@@ -278,6 +288,41 @@ pub fn select_tool_subset(
     }
 
     selected
+}
+
+fn product_tool_priority(name: &str, intent: ToolIntent) -> u8 {
+    if intent == ToolIntent::ProductControl {
+        return if matches!(
+            name,
+            "automation_control"
+                | "orchestration_publish"
+                | "goal_start"
+                | "goal_cancel"
+                | "wait_resolve"
+        ) {
+            0
+        } else if name.ends_with("_inspect")
+            || name.ends_with("_read")
+            || name.ends_with("_validate")
+            || name == "goal_get"
+            || name == "workflow_plan_capabilities"
+        {
+            1
+        } else {
+            2
+        };
+    }
+    if name.starts_with("workflow_plan_")
+        || matches!(
+            name,
+            "automation_inspect" | "automation_manage_draft" | "automation_control"
+        )
+        || matches!(name, "orchestration_inspect" | "orchestration_create_draft")
+    {
+        0
+    } else {
+        1
+    }
 }
 
 pub fn default_mode_name() -> &'static str {
@@ -384,6 +429,7 @@ fn is_product_authoring_request(input: &str) -> bool {
             "edit",
             "duplicate",
             "validate",
+            "materialize",
             "inspect",
             "show",
             "list",
@@ -393,7 +439,8 @@ fn is_product_authoring_request(input: &str) -> bool {
             "what workflow",
         ],
     );
-    action && has_product_resource_signal(input)
+    let pronoun_follow_up = contains_any(input, &["revise it", "revise this", "revise that"]);
+    action && (has_product_resource_signal(input) || pronoun_follow_up)
 }
 
 fn has_repository_workflow_signal(input: &str) -> bool {
@@ -504,6 +551,11 @@ mod tests {
         );
         assert_eq!(
             classify_intent("Add an approval step to this workflow"),
+            ToolIntent::ProductAuthoring
+        );
+        assert_eq!(classify_intent("Revise it"), ToolIntent::ProductAuthoring);
+        assert_eq!(
+            classify_intent("Materialize that workflow as a draft"),
             ToolIntent::ProductAuthoring
         );
     }
@@ -619,6 +671,56 @@ mod tests {
         );
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].name, "orchestration_publish");
+    }
+
+    #[test]
+    fn product_control_prioritizes_publish_before_the_tool_cap() {
+        let mut available = (0..12)
+            .map(|index| {
+                product_schema(
+                    &format!("workflow_plan_read_{index}"),
+                    tandem_types::ToolEffect::Read,
+                    ToolRiskTier::ReadDiscover,
+                )
+            })
+            .collect::<Vec<_>>();
+        available.push(product_schema(
+            "orchestration_publish",
+            tandem_types::ToolEffect::Write,
+            ToolRiskTier::ConsequentialWrite,
+        ));
+        let selected = select_tool_subset(
+            available,
+            ToolIntent::ProductControl,
+            &HashSet::new(),
+            false,
+        );
+        assert!(selected
+            .iter()
+            .any(|schema| schema.name == "orchestration_publish"));
+    }
+
+    #[test]
+    fn explicit_integration_allowlist_survives_the_product_tool_cap() {
+        let mut available = (0..12)
+            .map(|index| {
+                product_schema(
+                    &format!("workflow_plan_read_{index}"),
+                    tandem_types::ToolEffect::Read,
+                    ToolRiskTier::ReadDiscover,
+                )
+            })
+            .collect::<Vec<_>>();
+        available.push(schema("mcp.slack.post_message"));
+        let selected = select_tool_subset(
+            available,
+            ToolIntent::ProductAuthoring,
+            &HashSet::from(["mcp.slack.*".to_string()]),
+            false,
+        );
+        assert!(selected
+            .iter()
+            .any(|schema| schema.name == "mcp.slack.post_message"));
     }
 
     #[test]

@@ -387,6 +387,11 @@ pub(super) async fn workflow_learning_candidate_spawn_revision(
     );
     let session = crate::http::workflow_planner::WorkflowPlannerSessionRecord {
         session_id: format!("wfplan-session-{}", Uuid::new_v4()),
+        tenant_context: automation.tenant_context(),
+        linked_chat_session_id: None,
+        linked_chat_run_id: None,
+        last_referenced_at_ms: None,
+        artifact_links: Vec::new(),
         project_slug: candidate.project_id.clone(),
         title: input.title.unwrap_or_else(|| {
             workflow_learning_candidate_title(

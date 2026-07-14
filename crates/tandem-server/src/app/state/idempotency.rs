@@ -217,6 +217,38 @@ impl AppState {
         Ok(Some(updated))
     }
 
+    pub(crate) async fn release_reserved_idempotency_key(
+        &self,
+        tenant_context: &TenantContext,
+        operation: &str,
+        key: &str,
+        request_fingerprint: &str,
+    ) -> anyhow::Result<bool> {
+        let operation = normalized_non_empty(operation, "idempotency operation")?;
+        let key = normalized_non_empty(key, "idempotency key")?;
+        let request_fingerprint =
+            normalized_non_empty(request_fingerprint, "idempotency fingerprint")?;
+        let record_id = idempotency_record_id(tenant_context, &operation, &key);
+        let _guard = self.idempotency_persistence.lock().await;
+        let mut records = self.idempotency_keys.write().await;
+        let releasable = records
+            .get(&record_id)
+            .map(|record| {
+                record.tenant_matches(tenant_context)
+                    && record.status == IdempotencyKeyStatus::Reserved
+                    && record.request_fingerprint == request_fingerprint
+            })
+            .unwrap_or(false);
+        if !releasable {
+            return Ok(false);
+        }
+        records.remove(&record_id);
+        let snapshot = records.clone();
+        drop(records);
+        self.persist_idempotency_keys_locked(snapshot).await?;
+        Ok(true)
+    }
+
     pub(crate) async fn get_idempotency_key(
         &self,
         tenant_context: &TenantContext,
@@ -519,6 +551,45 @@ mod tests {
             .await
             .expect("stored conflict");
         assert_eq!(record.status, IdempotencyKeyStatus::Conflicted);
+        let _ = tokio::fs::remove_file(&state.idempotency_keys_path).await;
+    }
+
+    #[tokio::test]
+    async fn reserved_key_can_be_released_only_by_its_fingerprint() {
+        let state = temp_state();
+        let tenant_a = tenant("org-a", "workspace-a");
+        state
+            .reserve_idempotency_key(input(
+                tenant_a.clone(),
+                "session.prompt_async",
+                "prompt-1",
+                "fingerprint-a",
+            ))
+            .await
+            .expect("reserve key");
+
+        assert!(!state
+            .release_reserved_idempotency_key(
+                &tenant_a,
+                "session.prompt_async",
+                "prompt-1",
+                "fingerprint-b",
+            )
+            .await
+            .expect("reject unrelated release"));
+        assert!(state
+            .release_reserved_idempotency_key(
+                &tenant_a,
+                "session.prompt_async",
+                "prompt-1",
+                "fingerprint-a",
+            )
+            .await
+            .expect("release reservation"));
+        assert!(state
+            .get_idempotency_key(&tenant_a, "session.prompt_async", "prompt-1")
+            .await
+            .is_none());
         let _ = tokio::fs::remove_file(&state.idempotency_keys_path).await;
     }
 }

@@ -14,6 +14,7 @@ pub(super) const DEFAULT_PROMPT_HOOK_CONTEXT_BUDGET_CHARS: usize = 6_000;
 pub(super) const MIN_PROMPT_HOOK_CONTEXT_BUDGET_CHARS: usize = 512;
 pub(super) const SOURCE_IDENTITY: &str = "identity";
 pub(super) const SOURCE_MEMORY_SCOPE: &str = "memoryScope";
+pub(super) const SOURCE_PRODUCT_OPERATOR: &str = "productOperator";
 pub(super) const SOURCE_KB_GROUNDING: &str = "kbGrounding";
 pub(super) const SOURCE_DOCS: &str = "docs";
 pub(super) const SOURCE_GLOBAL_MEMORY: &str = "globalMemory";
@@ -724,6 +725,33 @@ impl PromptContextHook for ServerPromptContextHook {
             }
             if Self::should_skip_memory_injection(&query) {
                 return Ok(PromptContextHookResult::new(messages, budget.finish()));
+            }
+            if matches!(
+                tandem_core::tool_router::classify_intent(&query),
+                tandem_core::tool_router::ToolIntent::ProductAuthoring
+                    | tandem_core::tool_router::ToolIntent::ProductControl
+            ) {
+                let tenant_context = session
+                    .as_ref()
+                    .map(|session| session.tenant_context.clone())
+                    .unwrap_or_else(TenantContext::local_implicit);
+                let artifacts = crate::http::operator_tools_context::operator_artifact_context(
+                    &this.state,
+                    &tenant_context,
+                    &ctx.session_id,
+                )
+                .await;
+                budget.push_system_message(
+                    &mut messages,
+                    SOURCE_PRODUCT_OPERATOR,
+                    prompt_context_blocks::build_product_operator_block(
+                        &ctx.session_id,
+                        &run_id,
+                        &artifacts,
+                    ),
+                    1,
+                    true,
+                );
             }
             if let Some(policy) = this
                 .state

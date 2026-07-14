@@ -26,10 +26,26 @@ fn allows_any(allowed_tools: Option<&[String]>, names: &[&str]) -> bool {
         .any(|candidate| allowed.iter().any(|t| canonical_tool_name(t) == candidate))
 }
 
-const FIRST_PARTY_PRODUCT_READ_TOOLS: &[&str] =
-    &["orchestration_validate", "goal_get", "wait_inspect"];
-const FIRST_PARTY_PRODUCT_DRAFT_TOOLS: &[&str] = &["orchestration_create_draft"];
+const FIRST_PARTY_PRODUCT_READ_TOOLS: &[&str] = &[
+    "workflow_plan_read",
+    "workflow_plan_preview",
+    "workflow_plan_validate",
+    "workflow_plan_capabilities",
+    "automation_inspect",
+    "orchestration_inspect",
+    "orchestration_validate",
+    "goal_get",
+    "wait_inspect",
+];
+const FIRST_PARTY_PRODUCT_DRAFT_TOOLS: &[&str] = &[
+    "workflow_plan_start",
+    "workflow_plan_revise",
+    "workflow_plan_materialize",
+    "automation_manage_draft",
+    "orchestration_create_draft",
+];
 const FIRST_PARTY_PRODUCT_CONSEQUENTIAL_TOOLS: &[&str] = &[
+    "automation_control",
     "orchestration_publish",
     "goal_start",
     "goal_cancel",
@@ -264,10 +280,24 @@ mod tests {
     #[test]
     fn product_drafts_are_allowed_but_consequential_controls_ask() {
         let rules = default_tui_permission_rules();
-        assert!(rules.iter().any(|rule| {
-            rule.permission == "orchestration_create_draft" && rule.action == "allow"
-        }));
-        for permission in ["orchestration_publish", "goal_start", "goal_cancel"] {
+        for permission in [
+            "orchestration_create_draft",
+            "workflow_plan_start",
+            "workflow_plan_revise",
+            "workflow_plan_materialize",
+            "automation_manage_draft",
+        ] {
+            assert!(rules
+                .iter()
+                .any(|rule| rule.permission == permission && rule.action == "allow"));
+        }
+        for permission in [
+            "orchestration_publish",
+            "goal_start",
+            "goal_cancel",
+            "automation_control",
+            "wait_resolve",
+        ] {
             assert!(rules
                 .iter()
                 .any(|rule| rule.permission == permission && rule.action == "ask"));

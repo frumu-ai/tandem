@@ -1,6 +1,25 @@
 use tandem_types::EngineEvent;
 use tandem_workflows::plan_package::WorkflowPlanDraftReviewRecord;
 
+fn workflow_planner_session_scope_error(session_id: &str) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": "planner session not found",
+            "code": "WORKFLOW_PLAN_SESSION_NOT_FOUND",
+            "session_id": session_id,
+        })),
+    )
+}
+
+fn ensure_workflow_planner_session_tenant(
+    session: &WorkflowPlannerSessionRecord,
+    tenant_context: &tandem_types::TenantContext,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    super::ensure_same_tenant(tenant_context, &session.tenant_context)
+        .map_err(|_| workflow_planner_session_scope_error(&session.session_id))
+}
+
 pub(super) fn workflow_plan_mutation_actor_id(
     tenant_context: &tandem_types::TenantContext,
     verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,

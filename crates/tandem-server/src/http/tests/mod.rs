@@ -30,6 +30,7 @@ pub(super) mod memory;
 pub(super) mod mission_builder;
 pub(super) mod missions;
 pub(super) mod observability_metrics;
+pub(super) mod operator_tools;
 pub(super) mod optimizations;
 pub(super) mod orchestration_goal_plan_execute_verify_proof;
 pub(super) mod orchestration_goals;

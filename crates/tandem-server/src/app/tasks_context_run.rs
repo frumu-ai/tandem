@@ -77,6 +77,7 @@ pub(super) fn session_context_run_event_input(
                     "runID": event.properties.get("runID").cloned().unwrap_or(Value::Null),
                     "status": status,
                     "error": event.properties.get("error").cloned().unwrap_or(Value::Null),
+                    "failureCategory": event.properties.get("failureCategory").cloned().unwrap_or(Value::Null),
                     "tenantContext": event_tenant_context_value(event),
                     "why_next_step": format!("session run finished with status `{status}`"),
                     "step_status": if matches!(status, "completed") { "done" } else if matches!(status, "cancelled") { "blocked" } else { "failed" },

@@ -6,4 +6,5 @@ use session_background::{
 
 include!("workflow_planner_parts/part01.rs");
 include!("workflow_planner_parts/part03.rs");
+include!("workflow_planner_parts/part04.rs");
 include!("workflow_planner_parts/part02.rs");

@@ -590,6 +590,21 @@ pub(super) async fn prompt_async(
     let linked_context_run_id = super::context_runs::ensure_session_context_run(&state, &session)
         .await
         .map_err(|_| persistence_error("Failed to create linked context run"))?;
+    let prompt_submission = super::session_run_idempotency::reserve_prompt_submission(
+        &state,
+        &session.tenant_context,
+        &id,
+        &headers,
+        &req,
+    )
+    .await?;
+    if let Some(super::session_run_idempotency::PromptSubmissionDecision::Replay(payload)) =
+        prompt_submission.as_ref()
+    {
+        return Ok(super::session_run_idempotency::prompt_replay_response(
+            payload.clone(),
+        ));
+    }
 
     let active_run = match state
         .run_registry
@@ -604,6 +619,17 @@ pub(super) async fn prompt_async(
     {
         Ok(run) => run,
         Err(active) => {
+            if let Some(super::session_run_idempotency::PromptSubmissionDecision::Reserved(
+                reservation,
+            )) = prompt_submission.as_ref()
+            {
+                super::session_run_idempotency::release_prompt_submission(
+                    &state,
+                    &session.tenant_context,
+                    reservation,
+                )
+                .await?;
+            }
             let payload = conflict_payload(&session_id, &active);
             publish_tenant_event(
                 &state,
@@ -652,6 +678,23 @@ pub(super) async fn prompt_async(
         client_id,
         session.tenant_context.clone(),
     );
+
+    if let Some(super::session_run_idempotency::PromptSubmissionDecision::Reserved(reservation)) =
+        prompt_submission
+    {
+        if let Err(error) = super::session_run_idempotency::complete_prompt_submission(
+            &state,
+            &session.tenant_context,
+            &reservation,
+            &id,
+            &run_id,
+            &linked_context_run_id,
+        )
+        .await
+        {
+            return Err(error);
+        }
+    }
 
     if query.r#return.as_deref() == Some("run") {
         let mut response = (
@@ -1172,6 +1215,8 @@ pub(super) async fn execute_run(
         .run_registry
         .finish_if_match(&session_id, &run_id)
         .await;
+    let failure_category =
+        super::session_run_idempotency::failure_category(status, error_msg.as_deref());
     publish_tenant_event(
         &state,
         &tenant_context,
@@ -1182,6 +1227,7 @@ pub(super) async fn execute_run(
             "finishedAtMs": crate::now_ms(),
             "status": status,
             "error": error_msg,
+            "failureCategory": failure_category,
         }),
     );
 

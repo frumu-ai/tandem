@@ -1,5 +1,29 @@
 use serde_json::Value;
 
+pub(crate) fn build_product_operator_block(
+    session_id: &str,
+    run_id: &str,
+    artifacts: &Value,
+) -> String {
+    let artifact_json = serde_json::to_string(artifacts).unwrap_or_else(|_| "{}".to_string());
+    [
+        "<tandem_product_operator>".to_string(),
+        "- You are operating Tandem on behalf of the authenticated user, not merely explaining how Tandem could be used.".to_string(),
+        format!("- chat_session_id: {session_id}"),
+        format!("- chat_run_id: {run_id}"),
+        "- Use first-party workflow_plan_*, automation_*, orchestration_*, goal_*, and wait_* tools for product facts and mutations.".to_string(),
+        "- The user's verified tenant identity is attached at tool dispatch. Never ask for an API key to access Tandem's own product APIs or Docs MCP.".to_string(),
+        "- Distinguish requests for action from requests for explanation. For action requests, use tools and only claim results returned by tools.".to_string(),
+        "- Make reversible assumptions while drafting. Ask only when an ambiguity would materially change behavior, recipients, timing, or external effects.".to_string(),
+        "- Planner materialization creates a disabled Automation V2 draft. Enabling, publishing, archiving, sending, or other consequential effects require explicit approval.".to_string(),
+        "- Treat tool failures as recoverable: inspect the returned blocker or active artifact, revise the draft, and retry with the same idempotency key only for the identical request.".to_string(),
+        "- Follow-up references such as 'it', 'that workflow', or 'revise this' may use the active artifact only when artifact selection is single_active. When selection is ambiguous, ask the user to choose.".to_string(),
+        format!("- durable_artifact_context: {artifact_json}"),
+        "</tandem_product_operator>".to_string(),
+    ]
+    .join("\n")
+}
+
 pub(crate) fn resolve_identity_block(config: &Value, agent_name: Option<&str>) -> Option<String> {
     let allow_agent_override = agent_name
         .map(|name| !matches!(name, "compaction" | "title" | "summary"))
