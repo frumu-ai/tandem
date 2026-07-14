@@ -666,3 +666,98 @@ async fn enterprise_policy_templates_instantiate_bounded_overrides_as_drafts() {
             && rule.get("template_version").and_then(Value::as_u64) == Some(1)
     }));
 }
+
+#[tokio::test]
+async fn enterprise_policy_template_instance_ids_are_unique_within_a_tenant() {
+    let state = test_state().await;
+    let app = build_router_with_extensions(state.clone(), &[apply_routes]);
+    let request_body = |template: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/enterprise/policy-templates/{template}/instantiate"
+            ))
+            .header("x-tandem-org-id", "acme")
+            .header("x-tandem-workspace-id", "engineering")
+            .header("x-tandem-actor-id", "admin-user")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "instance_id": "shared-template-instance",
+                    "version": 1,
+                    "overrides": []
+                })
+                .to_string(),
+            ))
+            .expect("request")
+    };
+
+    let response = app
+        .clone()
+        .oneshot(request_body("coding-agent"))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let original_rules = state.enterprise.policy_rules.read().await.clone();
+
+    let response = app
+        .oneshot(request_body("finance-agent"))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(*state.enterprise.policy_rules.read().await, original_rules);
+}
+
+#[tokio::test]
+async fn enterprise_policy_template_transitions_require_template_ownership() {
+    let state = test_state().await;
+    let app = build_router_with_extensions(state.clone(), &[apply_routes]);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/enterprise/policy-templates/finance-agent/instantiate")
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "engineering")
+                .header("x-tandem-actor-id", "admin-user")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "instance_id": "finance-owned-instance",
+                        "version": 1,
+                        "overrides": []
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let original_rules = state.enterprise.policy_rules.read().await.clone();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/enterprise/policy-templates/coding-agent/upgrade")
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "engineering")
+                .header("x-tandem-actor-id", "admin-user")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "instance_id": "finance-owned-instance",
+                        "version": 1,
+                        "overrides": []
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(*state.enterprise.policy_rules.read().await, original_rules);
+}

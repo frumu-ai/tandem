@@ -49,3 +49,13 @@ export function buildTemplatePredicateOverrides(ruleId, conditionId, operand) {
   if (!rule || !condition) return [];
   return [{ rule_id: rule, predicate_operands: { [condition]: operand } }];
 }
+
+/**
+ * @template {{ policy_id: string, state?: string }} T
+ * @param {T[]} rules
+ * @param {string} policyId
+ * @returns {T[]}
+ */
+export function activePolicyRulesForSupersede(rules, policyId) {
+  return rules.filter((rule) => rule.policy_id === policyId && rule.state === "published");
+}

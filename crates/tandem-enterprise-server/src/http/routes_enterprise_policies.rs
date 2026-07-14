@@ -413,16 +413,19 @@ async fn instantiate_policy_template(
             now_ms(),
         )
         .map_err(template_validation_error)?;
-    let previous = state.enterprise.policy_rules.read().await.clone();
+    let previous;
     {
         let mut registry = state.enterprise.policy_rules.write().await;
-        if instantiation
+        if registry.values().any(|rule| {
+            rule.policy_id == request.instance_id && tenant_matches(rule, &tenant_context)
+        }) || instantiation
             .rules
             .iter()
             .any(|rule| registry.contains_key(&rule.rule_id))
         {
             return Err(conflict("ENTERPRISE_POLICY_TEMPLATE_INSTANCE_EXISTS"));
         }
+        previous = registry.clone();
         for rule in &instantiation.rules {
             registry.insert(rule.rule_id.clone(), rule.clone());
         }
@@ -507,33 +510,6 @@ async fn transition_policy_template(
 ) -> EnterpriseResult<TemplateInstantiationResponse> {
     let template = starter_policy_template(template_id, request.version)
         .ok_or_else(|| not_found("ENTERPRISE_POLICY_TEMPLATE_VERSION_NOT_FOUND"))?;
-    let current_version = state
-        .enterprise
-        .policy_rules
-        .read()
-        .await
-        .values()
-        .filter(|rule| {
-            rule.policy_id == request.instance_id
-                && tenant_matches(rule, tenant_context)
-                && rule.state != EnterprisePolicyRuleState::Superseded
-        })
-        .filter_map(|rule| rule.template_version)
-        .max()
-        .ok_or_else(|| not_found("ENTERPRISE_POLICY_TEMPLATE_INSTANCE_NOT_FOUND"))?;
-    match transition {
-        TemplateTransition::Upgrade if template.version <= current_version => {
-            return Err(conflict(
-                "ENTERPRISE_POLICY_TEMPLATE_UPGRADE_VERSION_REQUIRED",
-            ));
-        }
-        TemplateTransition::Rollback if template.version >= current_version => {
-            return Err(conflict(
-                "ENTERPRISE_POLICY_TEMPLATE_ROLLBACK_VERSION_REQUIRED",
-            ));
-        }
-        _ => {}
-    }
     let revision = now_ms();
     let mut instantiation = template
         .instantiate(
@@ -550,11 +526,38 @@ async fn transition_policy_template(
             rule.rule_id, template.version
         );
     }
-    let previous = state.enterprise.policy_rules.read().await.clone();
+    let current_version;
+    let previous;
     {
         let mut registry = state.enterprise.policy_rules.write().await;
+        current_version = registry
+            .values()
+            .filter(|rule| {
+                rule.policy_id == request.instance_id
+                    && rule.template_id.as_deref() == Some(template_id)
+                    && tenant_matches(rule, tenant_context)
+                    && rule.state != EnterprisePolicyRuleState::Superseded
+            })
+            .filter_map(|rule| rule.template_version)
+            .max()
+            .ok_or_else(|| not_found("ENTERPRISE_POLICY_TEMPLATE_INSTANCE_NOT_FOUND"))?;
+        match transition {
+            TemplateTransition::Upgrade if template.version <= current_version => {
+                return Err(conflict(
+                    "ENTERPRISE_POLICY_TEMPLATE_UPGRADE_VERSION_REQUIRED",
+                ));
+            }
+            TemplateTransition::Rollback if template.version >= current_version => {
+                return Err(conflict(
+                    "ENTERPRISE_POLICY_TEMPLATE_ROLLBACK_VERSION_REQUIRED",
+                ));
+            }
+            _ => {}
+        }
+        previous = registry.clone();
         for rule in registry.values_mut().filter(|rule| {
             rule.policy_id == request.instance_id
+                && rule.template_id.as_deref() == Some(template_id)
                 && tenant_matches(rule, tenant_context)
                 && rule.state != EnterprisePolicyRuleState::Superseded
         }) {

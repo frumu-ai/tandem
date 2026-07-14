@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  activePolicyRulesForSupersede,
   buildPolicyPreviewArguments,
   buildTemplatePredicateOverrides,
   parsePolicyOperand,
@@ -29,4 +30,15 @@ test("template authoring emits bounded condition overrides without copying rule 
     ]
   );
   assert.deepEqual(buildTemplatePredicateOverrides("", "approval-threshold", "5000.00"), []);
+});
+
+test("policy supersede only carries forward published rules", () => {
+  const rules = [
+    { rule_id: "current", policy_id: "payments", state: "published" },
+    { rule_id: "historical", policy_id: "payments", state: "superseded" },
+    { rule_id: "disabled", policy_id: "payments", state: "disabled" },
+    { rule_id: "other", policy_id: "repositories", state: "published" },
+  ];
+
+  assert.deepEqual(activePolicyRulesForSupersede(rules, "payments"), [rules[0]]);
 });

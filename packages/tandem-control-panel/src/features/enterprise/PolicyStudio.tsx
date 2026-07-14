@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Badge, EmptyState, PanelCard, Toolbar } from "../../ui/index.tsx";
 import { Field } from "../../pages/enterprise-admin/shared.tsx";
 import {
+  activePolicyRulesForSupersede,
   buildPolicyPreviewArguments,
   buildTemplatePredicateOverrides,
   parsePolicyOperand,
@@ -611,7 +612,7 @@ export function PolicyStudio({ tenant }: { tenant?: EnterpriseTenantContext }) {
               className="tcp-btn"
               disabled={busy || !selectedRule || selectedRule.state !== "published"}
               onClick={() => {
-                const policyRules = rules.filter((rule) => rule.policy_id === draft.policyId);
+                const policyRules = activePolicyRulesForSupersede(rules, draft.policyId);
                 const nextVersion = Math.max(...policyRules.map((rule) => rule.version), 0) + 1;
                 supersedePolicy.mutate({
                   policyId: draft.policyId,
