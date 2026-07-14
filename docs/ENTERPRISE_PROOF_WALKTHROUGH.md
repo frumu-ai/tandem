@@ -44,7 +44,7 @@ integration.
 - **Stateful orchestration:** The stateful runtime includes durable waits, tenant-scoped leases, pinned definition hashes, governed handoffs, deterministic event and effect-record identities, outbox and dead-letter records, compensation handling, and SQLite/PostgreSQL storage backends. This does not make every upstream provider effect idempotent.
 - **Enterprise ingestion reference:** The Google Drive enterprise path demonstrates source-bound read-only credentials, fail-closed admission, high-risk quarantine/review, and tenant-scoped source-object lifecycle records. Other planned enterprise ingestion providers are not implemented.
 - **Memory isolation and storage:** Memory retrieval applies tenant/resource/data-class/grant boundaries, supports encrypted storage modes, and has SQLite and PostgreSQL/pgvector backends.
-- **Strict ingress boundary:** Hosted/enterprise-required HTTP modes require transport authentication and signed tenant context. This is not the same as a deployed private enterprise sidecar.
+- **Route-aware strict ingress boundary:** Hosted/enterprise-required HTTP modes require transport authentication and signed tenant context on non-public engine/API routes. Public OAuth callbacks, automation webhooks, and Slack event ingress bypass that global gate and rely on route-specific OAuth-state or webhook-signature controls. Neither boundary is the same as a deployed private enterprise sidecar.
 
 ## Demo Script For Platform Engineering
 
