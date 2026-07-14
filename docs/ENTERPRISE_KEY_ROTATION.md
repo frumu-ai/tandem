@@ -1,13 +1,22 @@
 # Enterprise Signing Key Rotation
 
-Operator reference for the hosted Tandem signing keys and the public verifier
-keyrings that runtime and ACA load (EAA-04 / TAN-29).
+Document status: verifier contract plus target hosted operating procedure.
+
+Implementation review: 2026-07-14 against `origin/main` at `801559fd`.
+
+Operator reference for the intended hosted Tandem signing-key model and the
+public verifier keyrings that runtime and ACA load (EAA-04 / TAN-29). The
+keyring verification contract is implemented. The repository does not contain a
+general hosted KMS signing service or an automated key-distribution/rotation
+control plane, so the KMS custody and rotation steps below are required target
+operations rather than a repository-proven deployed guarantee.
 
 ## Trust model
 
-- **Private key material never leaves the hosted control plane / KMS.** Tandem
-  signs context assertions, approval receipts, delegation projections, and
-  cross-tenant grants with private keys held in Google KMS (or an equivalent).
+- **Target hosted boundary: private key material never leaves the hosted control
+  plane / KMS.** Hosted signing of context assertions, approval receipts,
+  delegation projections, and cross-tenant grants should use private keys held
+  in Google KMS or an equivalent customer-managed signer.
 - **Runtime and ACA receive only public verifier keyrings.** A keyring is a
   `kid -> public key` map where every entry is scoped by purpose, organization,
   deployment, audience, resource scope, status, and validity window.
@@ -19,21 +28,35 @@ keyrings that runtime and ACA load (EAA-04 / TAN-29).
   `approval_receipt`), and a key scoped to one org/deployment/audience/resource
   prefix cannot verify outside that scope.
 
+Current repository behavior is narrower:
+
+- The shared contract implements purpose- and scope-bound Ed25519 verifier
+  keyrings, active/retired/revoked status, validity windows, and fail-closed key
+  lookup.
+- Runtime context-assertion public keys are loaded from environment variables or
+  files.
+- The enterprise cross-tenant grant issuance route currently loads its private
+  Ed25519 signing key from an environment variable or file. That compatibility
+  path is not KMS custody and must not be presented as the target hosted design.
+- Approval-receipt and other signing-lane types/verifiers exist, but source
+  presence alone does not prove that a production control plane issues every
+  token type through KMS.
+
 ## Keyring entry schema
 
 Each `kid` maps to:
 
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `purpose` | yes | Lane the key may verify (`context_assertion`, `approval_receipt`, `delegation_projection`, `cross_tenant_grant`, `a2a_peer_assertion`, `break_glass_admin_assertion`). |
-| `public_key` | yes | Base64 (url-safe or standard) of the 32-byte Ed25519 public key. |
-| `organization_id` | no | Restricts the key to one org. Omit for a global key. |
-| `deployment_id` | no | Restricts the key to one deployment. |
-| `allowed_audiences` | no | Allowlist of token audiences. Empty = unrestricted. |
-| `allowed_resource_scope_prefixes` | no | Token resource scope must start with one prefix. Empty = unrestricted. |
-| `status` | no (default `active`) | `active` verifies; `retired` and `revoked` never verify. |
-| `not_before_ms` / `not_after_ms` | no | Validity window (epoch ms). |
-| `kms_key_reference` | no | Control-plane reference to the KMS key/version holding the **private** key. Metadata only; runtime/ACA never use it. |
+| Field                             | Required              | Meaning                                                                                                                                                                |
+| --------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `purpose`                         | yes                   | Lane the key may verify (`context_assertion`, `approval_receipt`, `delegation_projection`, `cross_tenant_grant`, `a2a_peer_assertion`, `break_glass_admin_assertion`). |
+| `public_key`                      | yes                   | Base64 (url-safe or standard) of the 32-byte Ed25519 public key.                                                                                                       |
+| `organization_id`                 | no                    | Restricts the key to one org. Omit for a global key.                                                                                                                   |
+| `deployment_id`                   | no                    | Restricts the key to one deployment.                                                                                                                                   |
+| `allowed_audiences`               | no                    | Allowlist of token audiences. Empty = unrestricted.                                                                                                                    |
+| `allowed_resource_scope_prefixes` | no                    | Token resource scope must start with one prefix. Empty = unrestricted.                                                                                                 |
+| `status`                          | no (default `active`) | `active` verifies; `retired` and `revoked` never verify.                                                                                                               |
+| `not_before_ms` / `not_after_ms`  | no                    | Validity window (epoch ms).                                                                                                                                            |
+| `kms_key_reference`               | no                    | Control-plane reference to the KMS key/version holding the **private** key. Metadata only; runtime/ACA never use it.                                                   |
 
 ### Distribution form (JSON)
 
@@ -65,7 +88,11 @@ The `kid` is the map key; runtime/ACA load this via `VerifierKeyring::from_json`
 - **revoked** — compromised or explicitly killed; always rejected
   (`verifier_key_revoked`).
 
-## Rotation procedure
+## Target Hosted Rotation Procedure
+
+This procedure must be implemented by the hosted control plane or deployment
+operator. The reviewed repository does not automatically mint KMS versions,
+publish keyrings, reload all verifiers, cut over signers, or attest completion.
 
 1. **Mint** a new private key/version in KMS for the target `purpose` and scope.
 2. **Publish** the new public key into the keyring as a second `active` entry
@@ -77,6 +104,15 @@ The `kid` is the map key; runtime/ACA load this via `VerifierKeyring::from_json`
 5. **Revoke** instead of retire if a key is believed compromised — set
    `status: "revoked"` immediately and rotate as above; revoked keys never
    verify regardless of window.
+
+Before claiming managed rotation, the deployment should additionally prove:
+
+1. Atomic or versioned keyring publication to every runtime/ACA verifier.
+2. Readiness checks that identify stale keyring versions before signer cutover.
+3. Audit events for mint, publish, cutover, retire, revoke, and rollback.
+4. Emergency revocation propagation with a measured maximum delay.
+5. A rollback procedure that does not re-enable compromised keys.
+6. Rotation evidence retained outside the runtime being verified.
 
 ## Scoping guidance
 

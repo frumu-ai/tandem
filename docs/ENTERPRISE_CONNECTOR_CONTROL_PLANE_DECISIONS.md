@@ -1,5 +1,13 @@
 # Connector OAuth & Control-Plane Ownership Decisions
 
+Document status: architecture decision record with partial implementation.
+
+Implementation review: 2026-07-14 against `origin/main` at `801559fd`.
+Statements labeled “Decision” describe the required hosted architecture. They
+are not evidence that the private hosted control plane, KMS resolver, identity
+lifecycle, or telemetry service is deployed. Current repository implementation
+status is stated explicitly under each decision where relevant.
+
 Design decision record for connector control-plane ownership (EAA-13 / TAN-38).
 Resolves the open decisions that gate enabling additional live connectors so
 subsequent connector implementation issues (EAA-15 / TAN-40 and beyond) can be
@@ -14,6 +22,11 @@ references and enforces what the control plane asserts.
 
 **Decision: the shared contract defines the types, the hosted control plane is
 the source of truth, and the runtime enforces.**
+
+Implementation status: the shared types, verified-context admin gates, runtime
+registries, and access evaluation exist. A complete hosted identity lifecycle
+and private control-plane provisioning service are not established by this
+repository.
 
 - Role/grant types — `OrganizationUnit`, `OrganizationUnitMembership`,
   `OrganizationUnitAccessGrant`, `PrincipalRef`, `ScopedGrant` — live in
@@ -56,6 +69,10 @@ bearer tokens.**
 with optional per-source-binding narrowing via `source_bound_resource`. Not per
 deployment.**
 
+Implementation status: the reference types, tenant validation, credential class,
+and optional source binding are implemented. Hosted credential issuance and
+rotation remain control-plane responsibilities.
+
 - Deployments are ephemeral runtimes; binding credentials to them would break on
   redeploy and fragment rotation. Tenancy (org/workspace) is the durable
   boundary, and `ConnectorCredentialRef` is already keyed by
@@ -86,6 +103,10 @@ opt-in, off by default, and content-free.**
 memory store; _raw provider content_ is transient and never persisted as a
 second copy; derived chunks live in the memory store scoped by source binding,
 resource ref, and data class.**
+
+Implementation status: the Google Drive reference ingestion path implements
+this lifecycle. It must be re-verified for each additional connector rather than
+inferred from the architecture decision.
 
 - `SourceObjectLifecycleRecord` (tandem-memory DB) tracks per-tenant lifecycle
   (active / quarantined / tombstoned / deleted / rescoped) keyed by tenant

@@ -1,5 +1,11 @@
 # Enterprise Connector ACL Policy
 
+Document status: implemented admission-policy contract.
+
+Implementation review: 2026-07-14 against `origin/main` at `801559fd`.
+The policy is implemented in the reviewed repository; a deployment must still
+verify that every enabled ingestion route uses the shared admission decision.
+
 Operator reference for how Tandem decides whether connector-sourced data may be
 ingested and indexed (EAA-14 / TAN-39).
 
@@ -9,12 +15,12 @@ Connectors pull data from external providers whose native access-control lists
 (ACLs) vary in fidelity. Tandem classifies each provider into one of three ACL
 sync modes (`provider_acl_sync_mode`, in `tandem-enterprise-contract`):
 
-| Mode | Meaning | Ingestion requirement |
-| --- | --- | --- |
-| `synced` | Provider exposes reliable per-object ACLs that Tandem syncs and enforces. | Indexing may proceed on provider ACLs (still subject to review/data-class gating). |
-| `admin_labeled` | Provider ACLs are absent/incomplete/unsafe to rely on. | The source binding must carry an explicit admin label, and access is governed by admin-created access grants. |
-| `operator_managed` | First-party, admin-curated source (e.g. manual uploads) — no external provider ACL. | No admin label needed; access is governed by the binding's resource scope, data class, and grants. |
-| `unsupported` | Provider is unknown / not yet classified. | Ingestion is denied (fail closed). |
+| Mode               | Meaning                                                                             | Ingestion requirement                                                                                         |
+| ------------------ | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `synced`           | Provider exposes reliable per-object ACLs that Tandem syncs and enforces.           | Indexing may proceed on provider ACLs (still subject to review/data-class gating).                            |
+| `admin_labeled`    | Provider ACLs are absent/incomplete/unsafe to rely on.                              | The source binding must carry an explicit admin label, and access is governed by admin-created access grants. |
+| `operator_managed` | First-party, admin-curated source (e.g. manual uploads) — no external provider ACL. | No admin label needed; access is governed by the binding's resource scope, data class, and grants.            |
+| `unsupported`      | Provider is unknown / not yet classified.                                           | Ingestion is denied (fail closed).                                                                            |
 
 Only providers with proven, reliable ACL fidelity are classified `synced`. No
 provider has that classification today. **Google Drive is `admin_labeled`** (its
@@ -54,8 +60,9 @@ for any data class.
 
 ## Admission decision
 
-`evaluate_ingestion_admission(binding, connector, acl_mode)` is the single
-fail-closed decision every connector ingestion path routes through. In order:
+`evaluate_ingestion_admission(binding, connector, acl_mode, review_acknowledged)`
+is the single fail-closed decision every connector ingestion path routes
+through. In order:
 
 1. **Deny** if the binding/connector identity or tenant mismatch, the connector
    is not active, the binding is disabled/quarantined, or indexing is disabled.

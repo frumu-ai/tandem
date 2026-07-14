@@ -1,5 +1,12 @@
 # Enterprise Connector Expansion Plan
 
+Document status: roadmap; Google Drive is implemented, listed expansion
+connectors are not.
+
+Implementation review: 2026-07-14 against `origin/main` at `801559fd`.
+An MCP connection to a provider is not evidence that its enterprise ingestion
+connector, ACL classification, lifecycle tracking, or quarantine path exists.
+
 Plan for the next ingestion connectors after Google Drive (EAA-15 / TAN-40).
 
 Google Drive is the reference connector: it exercised source bindings,

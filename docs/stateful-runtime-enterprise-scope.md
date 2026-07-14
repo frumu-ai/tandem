@@ -1,5 +1,12 @@
 # Stateful Runtime Enterprise Scope
 
+Document status: implemented stateful-runtime scope and storage contract.
+
+Implementation review: 2026-07-14 against `origin/main` at `801559fd`.
+This document describes repository behavior, not proof that a particular
+deployment uses PostgreSQL, has completed migration verification, or has made
+the runtime a non-bypassable system of record.
+
 Tandem stateful workflow runs must persist enough scope metadata for every
 replay, resume, wait, webhook, and audit read to be evaluated under the same
 tenant and governance boundary that created the run.
@@ -22,9 +29,14 @@ tenant and governance boundary that created the run.
 ## Automation And Knowledge Boundaries
 
 Automation and workflow run adapters preserve existing `TenantContext` values
-instead of deriving scope from process-global state. Future memory, knowledge,
-connector, and webhook integrations should enrich `StatefulRuntimeScope` rather
-than adding parallel ad hoc fields to each subsystem.
+instead of deriving scope from process-global state. Current automation,
+webhook, orchestration, and goal-runtime paths reuse or project the stateful
+scope rather than treating process-global state as authority. Memory, knowledge,
+and connector subsystems have their own tenant/resource contracts, and the
+stateful enterprise summary resolves relevant grants and source bindings. Any
+integration that invokes those subsystems during resume or replay must project
+the saved `StatefulRuntimeScope` rather than derive fresh, wider authority or add
+parallel ad hoc scope fields.
 
 The canonical stateful runtime run list and detail endpoints expose a top-level
 `enterprise_scope` summary beside each `run`. The summary keeps the durable scope
@@ -46,9 +58,11 @@ memory policy defaults change after the run was first scheduled.
 
 Stateful automation adapters derive a `sha256:` snapshot hash from the persisted
 `automation_snapshot` and preserve a matching definition version on the
-canonical run record. This lets future resume and replay paths compare the
-definition that originally started a run against the current mutable workflow
-definition before reclaiming leases, applying migrations, or executing effects.
+canonical run record. Published orchestration references require pinned
+definition hashes. Governed handoff validation compares the immutable downstream
+automation snapshot with the pinned hash and fails closed when a target workflow
+is stale, requiring revalidation and republication. This is current enforcement,
+not only metadata reserved for a future replay path.
 
 Automation V2 lifecycle boundaries are projected into the authoritative
 stateful runtime event log. The projection uses deterministic event IDs based
@@ -59,6 +73,39 @@ claim metadata, a stable checkpoint digest, and the workflow definition
 version/hash. Raw node outputs stay out of these snapshots; consumers that need
 full payloads should follow the referenced Automation V2 run or future
 payload-pointer APIs under the same tenant boundary.
+
+## Authoritative Storage Backends
+
+The transactional orchestration store is authoritative for stateful runs,
+events, snapshots, waits, goals, handoffs, outbox effects, dead letters,
+compensations, and tool effects after initialization. SQLite is the default
+local backend. Builds with PostgreSQL support may select it with
+`TANDEM_STORAGE_BACKEND=postgres` and `TANDEM_STORAGE_POSTGRES_URL`; invalid
+selection or a missing URL fails startup rather than falling back silently.
+
+The PostgreSQL backend uses a backend-specific schema and advisory engine lock.
+SQLite and PostgreSQL share backend-conformance scenarios for the core store
+contract. An offline, verified storage-transfer path supports backend migration
+and records transfer state; operators must complete and verify the transfer
+before starting against the target backend. Backend support does not by itself
+prove backup, restore, replication, failover, or hosted operational maturity.
+
+The memory store has its own independent SQLite/PostgreSQL selection and
+migration procedure. Stateful storage configuration must not be assumed to move
+memory records automatically.
+
+## Reliability And Effect Records
+
+External actions are projected into durable outbox and tool-effect records with
+stable identities. Failures can produce tenant-scoped dead-letter records and
+compensation records; retry and compensation execution preserve the governing
+scope. Retention and cleanup are snapshot-aware so required recovery state is
+not treated as disposable event history.
+
+These records provide runtime recovery and evidence primitives. They are not a
+claim that every external provider offers an idempotent API, that every action
+has a valid compensation, or that all business effects are automatically
+reversible.
 
 ## Durable Waits
 
