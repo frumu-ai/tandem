@@ -691,6 +691,37 @@ async fn approved_egress_receipt_authorizes_exactly_one_retry() {
         .is_some());
 }
 
+#[tokio::test]
+async fn consumed_egress_approval_fails_closed_when_policy_receipt_write_fails() {
+    let mut state = test_state().await;
+    if !state.premium_governance_enabled() {
+        return;
+    }
+    let ctx = egress_test_context("Customer account ACME-42 renewal is ready.");
+    approve_egress_test_request(&state, &ctx).await;
+    let blocked_path = state
+        .policy_decisions_path
+        .parent()
+        .expect("policy decision parent")
+        .join("policy-decisions-blocked-dir");
+    tokio::fs::create_dir_all(&blocked_path)
+        .await
+        .expect("create blocked policy decision path");
+    state.policy_decisions_path = blocked_path;
+
+    let retry =
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(&state, &ctx, "mcp.email.send")
+            .await
+            .expect("approved retry is evaluated");
+
+    assert!(!retry.allowed);
+    assert!(retry.policy_decision_id.is_none());
+    assert!(retry
+        .reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("durable policy decision receipt")));
+}
+
 async fn approve_egress_test_request(
     state: &AppState,
     ctx: &tandem_core::ToolPolicyContext,

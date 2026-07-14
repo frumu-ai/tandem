@@ -46,21 +46,7 @@ async fn call_create_pull_request(
         tool_name,
         "coder_pr_submit",
     );
-    let fallback = with_coder_mcp_phase_authority(
-        json!({
-            "owner": owner,
-            "repo": repo,
-            "title": title,
-            "body": body,
-            "base": base_branch,
-            "head": head_branch,
-            "draft": true,
-        }),
-        server_name,
-        tool_name,
-        "coder_pr_submit",
-    );
-    let first = crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_verified_context(
+    crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_verified_context(
         state,
         server_name,
         tool_name,
@@ -68,18 +54,6 @@ async fn call_create_pull_request(
         tenant_context,
         verified_tenant_context,
     )
-    .await;
-    match first {
-        Ok(result) => Ok(result),
-        Err(_) => crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_verified_context(
-            state,
-            server_name,
-            tool_name,
-            fallback,
-            tenant_context,
-            verified_tenant_context,
-        )
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY),
-    }
+    .await
+    .map_err(|_| StatusCode::BAD_GATEWAY)
 }

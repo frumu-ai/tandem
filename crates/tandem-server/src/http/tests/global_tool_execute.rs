@@ -169,3 +169,42 @@ async fn tool_execute_client_scope_cannot_grant_server_permission() {
     let resp = app.oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
+
+#[tokio::test]
+async fn trusted_server_scope_cannot_override_explicit_deny() {
+    let state = test_state().await;
+    state
+        .runtime
+        .get()
+        .expect("runtime")
+        .permissions
+        .add_rule(
+            "echo_global_execute_args",
+            "echo_global_execute_args",
+            tandem_core::PermissionAction::Deny,
+        )
+        .await;
+    state
+        .tools
+        .register_tool(
+            "echo_global_execute_args".to_string(),
+            std::sync::Arc::new(EchoGlobalExecuteArgsTool),
+        )
+        .await;
+    let context = state.tool_dispatch_context(
+        tandem_tools::ToolDispatchSource::new("trusted_test"),
+        tandem_types::TenantContext::local_implicit(),
+        vec!["echo_global_execute_args".to_string()],
+    );
+
+    let error = state
+        .tool_dispatcher
+        .dispatch(
+            "echo_global_execute_args",
+            serde_json::json!({"value": "must-not-run"}),
+            context,
+        )
+        .await
+        .expect_err("explicit deny must override trusted scope");
+    assert!(error.to_string().contains("denied by permission rule"));
+}

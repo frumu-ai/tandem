@@ -346,6 +346,17 @@ impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
             .canonical_tool
             .clone()
             .unwrap_or_else(|| context.requested_tool.clone());
+        let Some(runtime) = self.state.runtime.get() else {
+            return Ok(ToolDispatchDecision::deny(
+                "server runtime permissions are not initialized",
+            ));
+        };
+        let permission_action = runtime.permissions.evaluate_tool(&dispatch_tool).await;
+        if matches!(permission_action, tandem_core::PermissionAction::Deny) {
+            return Ok(ToolDispatchDecision::deny(format!(
+                "server tool `{dispatch_tool}` is denied by permission rule"
+            )));
+        }
         let hook = crate::agent_teams::ServerToolPolicyHook::new(self.state.clone());
         let decision = hook
             .evaluate_tool(tandem_core::ToolPolicyContext {
@@ -374,33 +385,28 @@ impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
                 policy_decision_id: decision.policy_decision_id,
             });
         }
-        if let Some(policy_decision_id) = decision.policy_decision_id {
-            return Ok(ToolDispatchDecision::allow_with_id(policy_decision_id));
-        }
         if self.trust_server_scope && !context.scope_allowlist.is_empty() {
             let allowed_patterns = normalize_allowed_tools(context.scope_allowlist.clone());
             if tandem_core::any_policy_matches(&allowed_patterns, &dispatch_tool) {
-                return Ok(ToolDispatchDecision::allow_with_id(format!(
-                    "server_dispatch_scope:{}",
-                    context.source.kind
-                )));
+                return Ok(ToolDispatchDecision::allow_with_id(
+                    decision.policy_decision_id.unwrap_or_else(|| {
+                        format!("server_dispatch_scope:{}", context.source.kind)
+                    }),
+                ));
             }
         }
-        let Some(runtime) = self.state.runtime.get() else {
-            return Ok(ToolDispatchDecision::deny(
-                "server runtime permissions are not initialized",
-            ));
-        };
-        Ok(match runtime.permissions.evaluate_tool(&dispatch_tool).await {
+        Ok(match permission_action {
             tandem_core::PermissionAction::Allow => {
-                ToolDispatchDecision::allow_with_id("server_permission_rule")
+                ToolDispatchDecision::allow_with_id(
+                    decision
+                        .policy_decision_id
+                        .unwrap_or_else(|| "server_permission_rule".to_string()),
+                )
             }
             tandem_core::PermissionAction::Ask => ToolDispatchDecision::deny(format!(
                 "server tool `{dispatch_tool}` requires approval and cannot execute without a matching receipt"
             )),
-            tandem_core::PermissionAction::Deny => ToolDispatchDecision::deny(format!(
-                "server tool `{dispatch_tool}` is denied by permission rule"
-            )),
+            tandem_core::PermissionAction::Deny => unreachable!("handled above"),
         })
     }
 }

@@ -176,6 +176,34 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
     )
     .await;
 
+    if matches!(effect, PolicyDecisionEffect::Allow) && policy_decision_id.is_none() {
+        let failure_reason = format!(
+            "tool `{tool}` denied because the consumed egress approval could not be linked to a durable policy decision receipt"
+        );
+        let _ = crate::audit::append_protected_audit_event(
+            state,
+            "egress.preflight.denied",
+            &tenant_context,
+            actor_id,
+            serde_json::json!({
+                "policy_id": EGRESS_DLP_POLICY_ID,
+                "approval_id": approval_id,
+                "session_id": ctx.session_id,
+                "message_id": ctx.message_id,
+                "tool": tool,
+                "action_hash": report.action_hash,
+                "reason": failure_reason,
+                "receipt_write_failed": true,
+            }),
+        )
+        .await;
+        return Some(ToolPolicyDecision {
+            allowed: false,
+            reason: Some(failure_reason),
+            policy_decision_id: None,
+        });
+    }
+
     let event_type = match effect {
         PolicyDecisionEffect::Allow => "egress.preflight.approved_receipt_consumed",
         PolicyDecisionEffect::Deny => "egress.preflight.denied",
