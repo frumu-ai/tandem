@@ -23,6 +23,8 @@ const EMPTY_STATE: ChatWorkflowArtifactState = {
 function selectActiveSession(
   sessions: WorkflowPlannerSessionListItem[]
 ): WorkflowPlannerSessionListItem | undefined {
+  if (sessions.length === 1) return sessions[0];
+
   const latestReference = sessions.reduce<number | undefined>((latest, session) => {
     const referencedAt = session.last_referenced_at_ms;
     if (referencedAt == null) return latest;
@@ -34,7 +36,7 @@ function selectActiveSession(
     );
     if (referenced.length === 1) return referenced[0];
   }
-  return [...sessions].sort((left, right) => right.updated_at_ms - left.updated_at_ms)[0];
+  return undefined;
 }
 
 export function useChatWorkflowArtifact(

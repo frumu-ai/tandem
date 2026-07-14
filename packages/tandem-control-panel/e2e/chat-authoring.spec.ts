@@ -336,3 +336,71 @@ test("failed planner operations remain visible without remounting the artifact",
   await expect(artifact.getByRole("button", { name: "Publish" })).toHaveCount(0);
   await expect(artifact.getByRole("button", { name: "Enable" })).toHaveCount(0);
 });
+
+test("ambiguous linked workflows do not expose actions for an arbitrary draft", async ({
+  page,
+  apiFixture,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("tcp.chat.session", "ambiguous-artifact-chat");
+  });
+  apiFixture.mockResponse(
+    /\/api\/engine\/session(?:\?|$)/,
+    {
+      sessions: [
+        {
+          id: "ambiguous-artifact-chat",
+          title: "Ambiguous artifact chat",
+          source_kind: "chat",
+        },
+      ],
+    },
+    "GET"
+  );
+  apiFixture.mockResponse(
+    /\/api\/engine\/workflow-plans\/sessions\?linked_chat_session_id=ambiguous-artifact-chat/,
+    {
+      sessions: [
+        {
+          session_id: "wfplan-ambiguous-one",
+          linked_chat_session_id: "ambiguous-artifact-chat",
+          title: "First draft",
+          project_slug: "chat-authoring",
+          workspace_root: "/workspace",
+          created_at_ms: 10,
+          updated_at_ms: 40,
+        },
+        {
+          session_id: "wfplan-ambiguous-two",
+          linked_chat_session_id: "ambiguous-artifact-chat",
+          title: "Second draft",
+          project_slug: "chat-authoring",
+          workspace_root: "/workspace",
+          created_at_ms: 20,
+          updated_at_ms: 50,
+        },
+      ],
+      count: 2,
+    },
+    "GET"
+  );
+
+  await page.goto("/#/chat");
+  await waitForRoute(page, "chat");
+  await expect
+    .poll(() =>
+      apiFixture.requests.some((request) =>
+        request.includes(
+          "GET /api/engine/workflow-plans/sessions?linked_chat_session_id=ambiguous-artifact-chat"
+        )
+      )
+    )
+    .toBe(true);
+
+  await expect(page.getByTestId("chat-workflow-artifact")).toHaveCount(0);
+  expect(
+    apiFixture.requests.some((request) =>
+      request.includes("GET /api/engine/workflow-plans/sessions/wfplan-ambiguous-")
+    )
+  ).toBe(false);
+});
