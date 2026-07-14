@@ -166,7 +166,6 @@ enum AgenticAuthoringScenario {
         #[serde(default)]
         parallel_node_ids: Vec<String>,
         assistant_claim: String,
-        claimed_resource_id: String,
     },
     ActiveArtifact {
         tenant_id: String,
@@ -412,7 +411,6 @@ async fn evaluate_case(
             dependencies,
             parallel_node_ids,
             assistant_claim,
-            claimed_resource_id,
         } => {
             evaluate_draft_lifecycle(
                 state,
@@ -426,7 +424,6 @@ async fn evaluate_case(
                 dependencies,
                 parallel_node_ids,
                 assistant_claim,
-                claimed_resource_id,
             )
             .await
         }
@@ -752,14 +749,11 @@ async fn evaluate_draft_lifecycle(
     dependencies: &HashMap<String, Vec<String>>,
     parallel_node_ids: &[String],
     assistant_claim: &str,
-    claimed_resource_id: &str,
 ) -> anyhow::Result<Value> {
     let tenant = eval_tenant(tenant_id, actor_id);
     let verified = verified_context(tenant.clone(), actor_id, Vec::new(), Vec::new());
     let session = save_chat_session(state, tenant.clone(), verified.clone(), "draft").await?;
     let mut automation = test_case_to_spec(test_case);
-    automation.status = AutomationV2Status::Active;
-    automation.creator_id = "model-supplied-actor".to_string();
     automation.execution.max_parallel_agents = Some(max_parallel_agents);
     automation.schedule = schedule_from_expectation(schedule)?;
     for node in &mut automation.flow.nodes {
@@ -767,11 +761,54 @@ async fn evaluate_draft_lifecycle(
             node.depends_on = depends_on.clone();
         }
     }
-    let candidate = serde_json::to_value(&automation)?;
+    let planner_session_id = format!("planner-{}", test_case.id);
+    let plan_id = format!("plan-{}", test_case.id);
+    let steps = automation
+        .flow
+        .nodes
+        .iter()
+        .map(|node| {
+            json!({
+                "step_id": node.node_id,
+                "kind": "task",
+                "objective": node.objective,
+                "depends_on": node.depends_on,
+                "agent_role": node.agent_id,
+                "input_refs": node.input_refs,
+                "output_contract": node.output_contract,
+            })
+        })
+        .collect::<Vec<_>>();
+    let plan = json!({
+        "plan_id": plan_id,
+        "planner_version": "agentic-authoring-eval-v1",
+        "plan_source": "recorded_eval_fixture",
+        "original_prompt": test_case.description,
+        "normalized_prompt": test_case.description,
+        "confidence": "recorded",
+        "title": automation.name,
+        "description": automation.description,
+        "schedule": automation.schedule,
+        "execution_target": "automation_v2",
+        "workspace_root": "/tmp/tandem-agentic-authoring-eval",
+        "steps": steps,
+        "requires_integrations": [],
+        "allowed_mcp_servers": [],
+        "operator_preferences": {
+            "execution_mode": "team",
+            "max_parallel_agents": max_parallel_agents,
+        },
+        "save_options": { "materialize_as_draft": true }
+    });
+    tandem_server::eval_support::put_product_authoring_planner_session_fixture(
+        state,
+        planner_session_fixture_with_plan(&tenant, &session.id, &planner_session_id, 1, 1, plan),
+    )
+    .await?;
     let args = json!({
         "chat_session_id": session.id,
-        "action": "create",
-        "automation": candidate,
+        "planner_session_id": planner_session_id,
+        "expected_revision": 1,
         "idempotency_key": idempotency_key,
         "__verified_tenant_context": verified_context(
             eval_tenant("foreign-draft", "attacker"),
@@ -784,29 +821,30 @@ async fn evaluate_draft_lifecycle(
     let first = state
         .tool_dispatcher
         .dispatch(
-            "automation_manage_draft",
+            "workflow_plan_materialize",
             args.clone(),
             dispatch_context(
                 state,
                 &tenant,
                 &verified,
                 &session.id,
-                "automation_manage_draft",
-                "draft-create",
+                "workflow_plan_materialize",
+                "draft-materialize",
             ),
         )
         .await?;
-    let dispatch_event = next_dispatch_event(&mut events, "automation_manage_draft").await?;
+    let dispatch_event = next_dispatch_event(&mut events, "workflow_plan_materialize").await?;
+    let materialized_id = first
+        .metadata
+        .pointer("/resource/id")
+        .and_then(Value::as_str)
+        .context("materialization returned no automation id")?
+        .to_string();
     let stored = state
-        .get_automation_v2(claimed_resource_id)
+        .get_automation_v2(&materialized_id)
         .await
         .context("tool claimed success without a persisted automation")?;
-    validate_authoritative_claim(
-        assistant_claim,
-        claimed_resource_id,
-        &first.metadata,
-        Some(&stored),
-    )?;
+    validate_authoritative_claim(assistant_claim, &first.metadata, Some(&stored))?;
     if automation_status_name(&stored.status) != expected_status {
         bail!(
             "draft status expected {expected_status}, got {}",
@@ -828,42 +866,42 @@ async fn evaluate_draft_lifecycle(
     let replay = state
         .tool_dispatcher
         .dispatch(
-            "automation_manage_draft",
+            "workflow_plan_materialize",
             args.clone(),
             dispatch_context(
                 state,
                 &tenant,
                 &verified,
                 &session.id,
-                "automation_manage_draft",
-                "draft-replay",
+                "workflow_plan_materialize",
+                "materialize-replay",
             ),
         )
         .await?;
-    if replay.metadata.pointer("/resource/id") != Some(&json!(claimed_resource_id)) {
+    if replay.metadata.pointer("/resource/id") != Some(&json!(materialized_id)) {
         bail!("idempotent replay did not return the original resource");
     }
     let mut conflicting = args;
-    conflicting["automation"]["name"] = json!("Conflicting retry payload");
+    conflicting["overlap_decision"] = json!("new");
     let conflict = state
         .tool_dispatcher
         .dispatch(
-            "automation_manage_draft",
+            "workflow_plan_materialize",
             conflicting,
             dispatch_context(
                 state,
                 &tenant,
                 &verified,
                 &session.id,
-                "automation_manage_draft",
-                "draft-conflict",
+                "workflow_plan_materialize",
+                "materialize-conflict",
             ),
         )
         .await
         .expect_err("same idempotency key with a different request must fail");
     if !conflict
         .to_string()
-        .contains("bound to a different request")
+        .contains("different workflow apply request")
     {
         bail!("idempotency conflict returned an unexpected error: {conflict}");
     }
@@ -871,14 +909,14 @@ async fn evaluate_draft_lifecycle(
         .list_automations_v2()
         .await
         .into_iter()
-        .filter(|row| row.automation_id == claimed_resource_id)
+        .filter(|row| row.automation_id == materialized_id)
         .count();
     if persisted_count != 1 {
         bail!("idempotent retries persisted {persisted_count} matching automations");
     }
     assert_dispatch_identity(&dispatch_event, &session.id, tenant_id, "succeeded")?;
     Ok(json!({
-        "resource_id": claimed_resource_id,
+        "resource_id": materialized_id,
         "status": expected_status,
         "trusted_actor": actor_id,
         "schedule": schedule,
@@ -1170,7 +1208,6 @@ fn assert_parallel_group(
 
 fn validate_authoritative_claim(
     assistant_claim: &str,
-    claimed_resource_id: &str,
     tool_outcome: &Value,
     persisted: Option<&AutomationV2Spec>,
 ) -> anyhow::Result<()> {
@@ -1180,11 +1217,12 @@ fn validate_authoritative_claim(
     if tool_outcome.get("ok") != Some(&Value::Bool(true)) {
         bail!("assistant claimed success without a successful tool outcome");
     }
-    if tool_outcome.pointer("/resource/id") != Some(&json!(claimed_resource_id)) {
-        bail!("assistant claim does not match the authoritative tool resource");
-    }
+    let authoritative_id = tool_outcome
+        .pointer("/resource/id")
+        .and_then(Value::as_str)
+        .context("successful tool outcome has no authoritative resource id")?;
     let persisted = persisted.context("assistant claimed success without a persisted artifact")?;
-    if persisted.automation_id != claimed_resource_id {
+    if persisted.automation_id != authoritative_id {
         bail!("persisted artifact does not match the claimed resource");
     }
     Ok(())
@@ -1247,6 +1285,29 @@ fn planner_session_fixture(
         "allowed_mcp_servers": [],
         "save_options": { "materialize_as_draft": true }
     });
+    planner_session_fixture_with_plan(
+        tenant,
+        chat_session_id,
+        planner_session_id,
+        revision,
+        last_referenced_at_ms,
+        plan,
+    )
+}
+
+fn planner_session_fixture_with_plan(
+    tenant: &TenantContext,
+    chat_session_id: &str,
+    planner_session_id: &str,
+    revision: u32,
+    last_referenced_at_ms: u64,
+    plan: Value,
+) -> Value {
+    let plan_id = plan
+        .get("plan_id")
+        .and_then(Value::as_str)
+        .expect("planner fixture plan_id")
+        .to_string();
     json!({
         "session_id": planner_session_id,
         "tenant_context": tenant,

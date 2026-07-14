@@ -392,7 +392,7 @@ async fn operator_tools_reject_model_supplied_chat_session_substitution() {
 }
 
 #[tokio::test]
-async fn automation_draft_create_cannot_overwrite_a_foreign_tenant_id() {
+async fn automation_draft_rejects_raw_creation_before_dispatch() {
     let state = test_state().await;
     let foreign_tenant =
         TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "actor-b");
@@ -413,8 +413,10 @@ async fn automation_draft_create_cannot_overwrite_a_foreign_tenant_id() {
             TenantContext::local_implicit(),
         )
         .await
-        .expect_err("global automation ID collision must fail");
-    assert!(error.to_string().contains("automation already exists"));
+        .expect_err("raw draft creation must fail");
+    assert!(error
+        .to_string()
+        .contains("use workflow_plan_start and workflow_plan_materialize"));
     let stored = state
         .get_automation_v2("shared-automation-id")
         .await

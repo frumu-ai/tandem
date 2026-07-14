@@ -80,6 +80,10 @@ pub fn classify_intent(input: &str) -> ToolIntent {
         return ToolIntent::ProductControl;
     }
 
+    if is_live_integration_inspection_request(&lower) {
+        return ToolIntent::McpExplicit;
+    }
+
     if is_product_authoring_request(&lower) {
         return ToolIntent::ProductAuthoring;
     }
@@ -263,6 +267,9 @@ pub fn select_tool_subset(
 
     for schema in available {
         let norm = normalize_tool_name(&schema.name);
+        if intent == ToolIntent::ProductAuthoring && norm.starts_with("mcp.") {
+            continue;
+        }
         let explicitly_allowed = !request_allowlist.is_empty()
             && request_allowlist
                 .iter()
@@ -443,6 +450,37 @@ fn is_product_authoring_request(input: &str) -> bool {
     action && (has_product_resource_signal(input) || pronoun_follow_up)
 }
 
+fn is_live_integration_inspection_request(input: &str) -> bool {
+    if contains_any(
+        input,
+        &[
+            "do not use mcp",
+            "don't use mcp",
+            "without mcp",
+            "no mcp",
+            "do not use composio",
+            "don't use composio",
+            "without composio",
+        ],
+    ) {
+        return false;
+    }
+    contains_any(
+        input,
+        &[
+            "inspect the live integration",
+            "inspect live integration",
+            "inspect the integration tools",
+            "inspect integration tools",
+            "discover integration tools",
+            "test the live integration",
+            "test live integration",
+            "list mcp tools",
+            "inspect mcp tools",
+        ],
+    )
+}
+
 fn has_repository_workflow_signal(input: &str) -> bool {
     contains_any(
         input,
@@ -621,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn product_authoring_keeps_safe_first_party_tools_with_external_allowlist() {
+    fn product_authoring_excludes_external_tools_even_with_an_allowlist() {
         let mut allowlist = HashSet::new();
         allowlist.insert("mcp.slack.*".to_string());
         let selected = select_tool_subset(
@@ -653,8 +691,20 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"orchestration_create_draft".to_string()));
         assert!(names.contains(&"orchestration_validate".to_string()));
-        assert!(names.contains(&"mcp.slack.post_message".to_string()));
+        assert!(!names.contains(&"mcp.slack.post_message".to_string()));
         assert!(!names.contains(&"orchestration_publish".to_string()));
+    }
+
+    #[test]
+    fn explicit_live_integration_inspection_uses_mcp_tools() {
+        assert_eq!(
+            classify_intent("Inspect the live integration tools for Slack"),
+            ToolIntent::McpExplicit
+        );
+        assert_eq!(
+            classify_intent("Create an automation but do not use MCP"),
+            ToolIntent::ProductAuthoring
+        );
     }
 
     #[test]
@@ -701,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_integration_allowlist_survives_the_product_tool_cap() {
+    fn external_allowlist_does_not_displace_product_tools_at_the_cap() {
         let mut available = (0..12)
             .map(|index| {
                 product_schema(
@@ -718,7 +768,8 @@ mod tests {
             &HashSet::from(["mcp.slack.*".to_string()]),
             false,
         );
-        assert!(selected
+        assert_eq!(selected.len(), 12);
+        assert!(!selected
             .iter()
             .any(|schema| schema.name == "mcp.slack.post_message"));
     }

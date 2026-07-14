@@ -542,6 +542,10 @@ impl EngineLoop {
                             .any(|pattern| tool_name_matches_policy(pattern, &tool))
                     });
                 }
+                if intent == ToolIntent::ProductAuthoring {
+                    tool_schemas
+                        .retain(|schema| !normalize_tool_name(&schema.name).starts_with("mcp."));
+                }
                 let prewrite_gate = evaluate_prewrite_gate(
                     requested_write_required,
                     &requested_prewrite_requirements,

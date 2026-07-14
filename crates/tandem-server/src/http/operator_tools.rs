@@ -1056,6 +1056,11 @@ async fn automation_draft(
 ) -> anyhow::Result<Value> {
     let (actor, _) = mutation_actor(args, tenant, chat_session)?;
     let action = required_str(args, "action")?;
+    if action == "create" {
+        bail!(
+            "raw automation creation is not supported; use workflow_plan_start and workflow_plan_materialize"
+        );
+    }
     let key = required_str(args, "idempotency_key")?;
     let fingerprint = operator_args_fingerprint(args, action);
     if let Some(replay) = replay_idempotent(
@@ -1091,20 +1096,6 @@ async fn automation_draft(
                 .unwrap_or_else(|| format!("Copy of {}", source.name));
             source.created_at_ms = crate::now_ms();
             source
-        }
-        "create" => {
-            let value = args
-                .get("automation")
-                .context("automation is required for create")?;
-            let candidate = serde_json::from_value::<crate::AutomationV2Spec>(value.clone())?;
-            if state
-                .get_automation_v2(&candidate.automation_id)
-                .await
-                .is_some()
-            {
-                bail!("automation already exists; inspect and revise it or choose a new automation_id");
-            }
-            candidate
         }
         "revise" => {
             let supplied = args
