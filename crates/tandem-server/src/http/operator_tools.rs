@@ -77,7 +77,7 @@ impl OperatorToolKind {
     fn description(self) -> &'static str {
         match self {
             Self::WorkflowStart => {
-                "Start a durable, tenant-scoped workflow-planner session from this authenticated chat"
+                "Required first step for creating a new workflow or automation from natural language; starts a durable tenant-scoped planner session from this authenticated chat"
             }
             Self::WorkflowRead => {
                 "Read the active or explicitly selected workflow-planner session and its durable links"
@@ -98,7 +98,7 @@ impl OperatorToolKind {
                 "Search or inspect tenant-visible Automation V2 definitions and recent runs"
             }
             Self::AutomationDraft => {
-                "Validate, duplicate, or replace a disabled Automation V2 draft"
+                "Validate, duplicate, or replace an existing disabled Automation V2 draft; for new natural-language creation use workflow_plan_start instead"
             }
             Self::AutomationControl => {
                 "Disable or archive an Automation V2 definition with explicit approval"
@@ -201,7 +201,7 @@ impl Tool for OperatorTool {
             OperatorToolKind::AutomationDraft => (
                 json!({
                     "chat_session_id": { "type": "string" },
-                    "action": { "type": "string", "enum": ["create", "validate", "duplicate", "revise"] },
+                    "action": { "type": "string", "enum": ["validate", "duplicate", "revise"] },
                     "automation_id": { "type": "string" },
                     "new_automation_id": { "type": "string" },
                     "name": { "type": "string" },

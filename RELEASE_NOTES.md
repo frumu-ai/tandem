@@ -21,6 +21,12 @@ explanation, inspection, and consequential control intent, then exposes the
 appropriate first-party capabilities while leaving the model enough context to
 ask useful questions only when information is genuinely missing.
 
+New natural-language workflow and automation requests always begin in the
+workflow planner rather than asking the model to synthesize a raw Automation
+V2 definition. Disabled-draft authoring records external integrations as
+requirements or blockers without discovering or executing MCP connector tools;
+live integration inspection happens only when the user explicitly requests it.
+
 The Control Panel session is the authentication boundary for these first-party
 tools. Tandem derives tenant and actor identity from the trusted dispatch
 session, ignores model-supplied identity fields, and records the verified

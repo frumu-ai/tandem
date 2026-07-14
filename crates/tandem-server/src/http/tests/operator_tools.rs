@@ -175,6 +175,28 @@ async fn operator_tool_catalog_separates_reads_drafts_and_consequential_controls
         control.security.risk_tier,
         Some(ToolRiskTier::ConsequentialWrite)
     );
+
+    let workflow_start = schemas
+        .iter()
+        .find(|schema| schema.name == "workflow_plan_start")
+        .unwrap();
+    assert!(workflow_start
+        .description
+        .contains("Required first step for creating a new workflow"));
+
+    let automation_draft = schemas
+        .iter()
+        .find(|schema| schema.name == "automation_manage_draft")
+        .unwrap();
+    assert!(automation_draft
+        .description
+        .contains("for new natural-language creation use workflow_plan_start"));
+    let actions = automation_draft.input_schema["properties"]["action"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(!actions
+        .iter()
+        .any(|action| action.as_str() == Some("create")));
 }
 
 #[tokio::test]

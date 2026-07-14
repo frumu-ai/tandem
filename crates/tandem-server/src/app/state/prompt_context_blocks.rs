@@ -12,6 +12,8 @@ pub(crate) fn build_product_operator_block(
         format!("- chat_session_id: {session_id}"),
         format!("- chat_run_id: {run_id}"),
         "- Use first-party workflow_plan_*, automation_*, orchestration_*, goal_*, and wait_* tools for product facts and mutations.".to_string(),
+        "- For a new workflow or automation described in natural language, call workflow_plan_start first. Do not call automation_manage_draft with action=create or synthesize a raw Automation V2 definition.".to_string(),
+        "- While authoring a disabled draft, represent external integrations as requirements or blockers. Do not discover or execute external MCP tools unless the user explicitly asks to inspect a live integration.".to_string(),
         "- The user's verified tenant identity is attached at tool dispatch. Never ask for an API key to access Tandem's own product APIs or Docs MCP.".to_string(),
         "- Distinguish requests for action from requests for explanation. For action requests, use tools and only claim results returned by tools.".to_string(),
         "- Make reversible assumptions while drafting. Ask only when an ambiguity would materially change behavior, recipients, timing, or external effects.".to_string(),
@@ -22,6 +24,20 @@ pub(crate) fn build_product_operator_block(
         "</tandem_product_operator>".to_string(),
     ]
     .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn product_operator_routes_natural_language_creation_through_the_planner() {
+        let block = build_product_operator_block("chat-1", "run-1", &serde_json::json!({}));
+
+        assert!(block.contains("call workflow_plan_start first"));
+        assert!(block.contains("Do not call automation_manage_draft with action=create"));
+        assert!(block.contains("Do not discover or execute external MCP tools"));
+    }
 }
 
 pub(crate) fn resolve_identity_block(config: &Value, agent_name: Option<&str>) -> Option<String> {
