@@ -1478,6 +1478,7 @@ include!("app_state_impl_parts/part06.rs");
 include!("app_state_impl_parts/part07.rs");
 include!("app_state_impl_parts/part08.rs");
 include!("app_state_impl_parts/part09.rs");
+include!("app_state_impl_parts/part18.rs");
 
 // NOTE: submodule declarations must live in this module-root file (`mod X;` path
 // resolution is relative to the declaring file), so they stay here rather than in
