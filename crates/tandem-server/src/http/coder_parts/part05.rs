@@ -413,7 +413,7 @@ fn map_namespaced_to_raw_tool(
 async fn resolve_github_create_pr_tool(
     state: &AppState,
     preferred_server: Option<&str>,
-) -> Result<(String, String), StatusCode> {
+) -> Result<(String, String, Value), StatusCode> {
     let mut server_candidates = if let Some(server_name) = preferred_server
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -466,7 +466,12 @@ async fn resolve_github_create_pr_tool(
             continue;
         };
         let raw_tool = map_namespaced_to_raw_tool(&server_tools, &namespaced)?;
-        return Ok((server_name, raw_tool));
+        let input_schema = server_tools
+            .iter()
+            .find(|row| row.tool_name == raw_tool)
+            .map(|row| row.input_schema.clone())
+            .unwrap_or(Value::Null);
+        return Ok((server_name, raw_tool, input_schema));
     }
     Err(StatusCode::CONFLICT)
 }
@@ -474,7 +479,7 @@ async fn resolve_github_create_pr_tool(
 async fn resolve_github_merge_pr_tool(
     state: &AppState,
     preferred_server: Option<&str>,
-) -> Result<(String, String), StatusCode> {
+) -> Result<(String, String, Value), StatusCode> {
     let mut server_candidates = if let Some(server_name) = preferred_server
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -527,7 +532,12 @@ async fn resolve_github_merge_pr_tool(
             continue;
         };
         let raw_tool = map_namespaced_to_raw_tool(&server_tools, &namespaced)?;
-        return Ok((server_name, raw_tool));
+        let input_schema = server_tools
+            .iter()
+            .find(|row| row.tool_name == raw_tool)
+            .map(|row| row.input_schema.clone())
+            .unwrap_or(Value::Null);
+        return Ok((server_name, raw_tool, input_schema));
     }
     Err(StatusCode::CONFLICT)
 }
@@ -1217,7 +1227,7 @@ pub(super) async fn coder_issue_fix_pr_submit(
                 }),
             );
         }
-        let (server_name, tool_name) =
+        let (server_name, tool_name, input_schema) =
             resolve_github_create_pr_tool(&state, input.mcp_server.as_deref()).await?;
         let result = match call_create_pull_request(
             &state,
@@ -1225,6 +1235,7 @@ pub(super) async fn coder_issue_fix_pr_submit(
             verified_tenant_context.as_ref().map(|value| &value.0),
             &server_name,
             &tool_name,
+            &input_schema,
             owner,
             repo_name,
             title,
@@ -1715,7 +1726,7 @@ pub(super) async fn coder_merge_submit(
     });
     let mut external_action = Value::Null;
     if !dry_run {
-        let (server_name, tool_name) =
+        let (server_name, tool_name, input_schema) =
             resolve_github_merge_pr_tool(&state, input.mcp_server.as_deref()).await?;
         let result = call_merge_pull_request(
             &state,
@@ -1723,6 +1734,7 @@ pub(super) async fn coder_merge_submit(
             verified_tenant_context.as_ref().map(|value| &value.0),
             &server_name,
             &tool_name,
+            &input_schema,
             owner,
             repo_name,
             github_ref.number,

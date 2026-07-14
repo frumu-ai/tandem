@@ -24,6 +24,7 @@ async fn call_create_pull_request(
     verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
     server_name: &str,
     tool_name: &str,
+    input_schema: &Value,
     owner: &str,
     repo: &str,
     title: &str,
@@ -31,29 +32,49 @@ async fn call_create_pull_request(
     base_branch: &str,
     head_branch: &str,
 ) -> Result<tandem_types::ToolResult, StatusCode> {
-    let preferred = with_coder_mcp_phase_authority(
-        json!({
-            "method": "create",
-            "owner": owner,
-            "repo": repo,
-            "title": title,
-            "body": body,
-            "base": base_branch,
-            "head": head_branch,
-            "draft": true,
-        }),
-        server_name,
-        tool_name,
-        "coder_pr_submit",
+    let args = github_create_pull_request_args(
+        input_schema,
+        owner,
+        repo,
+        title,
+        body,
+        base_branch,
+        head_branch,
     );
+    let args = with_coder_mcp_phase_authority(args, server_name, tool_name, "coder_pr_submit");
     crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_verified_context(
         state,
         server_name,
         tool_name,
-        preferred,
+        args,
         tenant_context,
         verified_tenant_context,
     )
     .await
     .map_err(|_| StatusCode::BAD_GATEWAY)
+}
+
+fn github_create_pull_request_args(
+    input_schema: &Value,
+    owner: &str,
+    repo: &str,
+    title: &str,
+    body: &str,
+    base_branch: &str,
+    head_branch: &str,
+) -> Value {
+    let mut args = json!({
+        "owner": owner,
+        "repo": repo,
+        "title": title,
+        "body": body,
+        "base": base_branch,
+        "head": head_branch,
+        "draft": true,
+    });
+    let properties = input_schema.get("properties").and_then(Value::as_object);
+    if properties.is_none_or(|fields| fields.is_empty() || fields.contains_key("method")) {
+        args["method"] = json!("create");
+    }
+    args
 }
