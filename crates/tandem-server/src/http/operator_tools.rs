@@ -77,7 +77,7 @@ impl OperatorToolKind {
     fn description(self) -> &'static str {
         match self {
             Self::WorkflowStart => {
-                "Start a durable, tenant-scoped workflow-planner session from this authenticated chat"
+                "Required first step for creating a new workflow or automation from natural language; starts a durable tenant-scoped planner session from this authenticated chat"
             }
             Self::WorkflowRead => {
                 "Read the active or explicitly selected workflow-planner session and its durable links"
@@ -98,7 +98,7 @@ impl OperatorToolKind {
                 "Search or inspect tenant-visible Automation V2 definitions and recent runs"
             }
             Self::AutomationDraft => {
-                "Validate, duplicate, or replace a disabled Automation V2 draft"
+                "Validate, duplicate, or replace an existing disabled Automation V2 draft; for new natural-language creation use workflow_plan_start instead"
             }
             Self::AutomationControl => {
                 "Disable or archive an Automation V2 definition with explicit approval"
@@ -201,7 +201,7 @@ impl Tool for OperatorTool {
             OperatorToolKind::AutomationDraft => (
                 json!({
                     "chat_session_id": { "type": "string" },
-                    "action": { "type": "string", "enum": ["create", "validate", "duplicate", "revise"] },
+                    "action": { "type": "string", "enum": ["validate", "duplicate", "revise"] },
                     "automation_id": { "type": "string" },
                     "new_automation_id": { "type": "string" },
                     "name": { "type": "string" },
@@ -1056,6 +1056,11 @@ async fn automation_draft(
 ) -> anyhow::Result<Value> {
     let (actor, _) = mutation_actor(args, tenant, chat_session)?;
     let action = required_str(args, "action")?;
+    if action == "create" {
+        bail!(
+            "raw automation creation is not supported; use workflow_plan_start and workflow_plan_materialize"
+        );
+    }
     let key = required_str(args, "idempotency_key")?;
     let fingerprint = operator_args_fingerprint(args, action);
     if let Some(replay) = replay_idempotent(
@@ -1091,20 +1096,6 @@ async fn automation_draft(
                 .unwrap_or_else(|| format!("Copy of {}", source.name));
             source.created_at_ms = crate::now_ms();
             source
-        }
-        "create" => {
-            let value = args
-                .get("automation")
-                .context("automation is required for create")?;
-            let candidate = serde_json::from_value::<crate::AutomationV2Spec>(value.clone())?;
-            if state
-                .get_automation_v2(&candidate.automation_id)
-                .await
-                .is_some()
-            {
-                bail!("automation already exists; inspect and revise it or choose a new automation_id");
-            }
-            candidate
         }
         "revise" => {
             let supplied = args

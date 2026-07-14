@@ -257,7 +257,7 @@ test_cases:
       output_format: "json"
 
   - id: "agentic_authoring_008"
-    description: "Scheduled multi-branch automation is persisted as one idempotent disabled draft"
+    description: "Scheduled multi-branch plan materializes as one idempotent disabled draft"
     priority: 3
     enabled: true
     tags: ["draft_first", "idempotency", "retry_reconnect", "authoritative_outcomes", "audit_actor", "parallelism", "scheduling"]
@@ -304,7 +304,6 @@ test_cases:
             assemble: ["classify", "summarize", "risk_check"]
           parallel_node_ids: ["classify", "summarize", "risk_check"]
           assistant_claim: "Created the disabled Daily support triage draft."
-          claimed_resource_id: "eval-agentic_authoring_008"
     expected_output:
       artifact_status: "completed"
       required_validators: ["persisted_draft", "idempotency", "tenant_scope", "audit_actor"]

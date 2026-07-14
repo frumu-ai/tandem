@@ -175,6 +175,28 @@ async fn operator_tool_catalog_separates_reads_drafts_and_consequential_controls
         control.security.risk_tier,
         Some(ToolRiskTier::ConsequentialWrite)
     );
+
+    let workflow_start = schemas
+        .iter()
+        .find(|schema| schema.name == "workflow_plan_start")
+        .unwrap();
+    assert!(workflow_start
+        .description
+        .contains("Required first step for creating a new workflow"));
+
+    let automation_draft = schemas
+        .iter()
+        .find(|schema| schema.name == "automation_manage_draft")
+        .unwrap();
+    assert!(automation_draft
+        .description
+        .contains("for new natural-language creation use workflow_plan_start"));
+    let actions = automation_draft.input_schema["properties"]["action"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(!actions
+        .iter()
+        .any(|action| action.as_str() == Some("create")));
 }
 
 #[tokio::test]
@@ -370,7 +392,7 @@ async fn operator_tools_reject_model_supplied_chat_session_substitution() {
 }
 
 #[tokio::test]
-async fn automation_draft_create_cannot_overwrite_a_foreign_tenant_id() {
+async fn automation_draft_rejects_raw_creation_before_dispatch() {
     let state = test_state().await;
     let foreign_tenant =
         TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "actor-b");
@@ -391,8 +413,10 @@ async fn automation_draft_create_cannot_overwrite_a_foreign_tenant_id() {
             TenantContext::local_implicit(),
         )
         .await
-        .expect_err("global automation ID collision must fail");
-    assert!(error.to_string().contains("automation already exists"));
+        .expect_err("raw draft creation must fail");
+    assert!(error
+        .to_string()
+        .contains("use workflow_plan_start and workflow_plan_materialize"));
     let stored = state
         .get_automation_v2("shared-automation-id")
         .await

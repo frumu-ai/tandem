@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Routed new natural-language automation requests through the workflow planner
+  instead of exposing raw Automation V2 creation through draft management, and
+  prevented disabled-draft authoring from probing external MCP integrations
+  unless live integration inspection is explicitly requested.
 - Made prompt submission, workflow planning, revision, materialization, and
   automation mutations idempotent and retry-safe, including recovery from
   cancellation and reconnect without duplicate drafts or stale successful

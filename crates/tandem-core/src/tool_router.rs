@@ -17,6 +17,7 @@ pub enum ToolIntent {
     MemoryOps,
     McpExplicit,
     ProductAuthoring,
+    ProductAuthoringWithMcp,
     ProductControl,
 }
 
@@ -70,6 +71,87 @@ pub fn is_short_simple_prompt(input: &str) -> bool {
     words > 0 && words <= 10
 }
 
+pub(crate) fn is_mcp_tool_or_discovery(tool_name: &str) -> bool {
+    let normalized = normalize_tool_name(tool_name);
+    normalized.starts_with("mcp.")
+        || matches!(
+            normalized.as_str(),
+            "mcp_list" | "mcp_list_catalog" | "mcp_request_capability"
+        )
+}
+
+fn is_product_authoring_intent(intent: ToolIntent) -> bool {
+    matches!(
+        intent,
+        ToolIntent::ProductAuthoring | ToolIntent::ProductAuthoringWithMcp
+    )
+}
+
+fn is_connector_only_allowlist(request_allowlist: &HashSet<String>) -> bool {
+    !request_allowlist.is_empty()
+        && request_allowlist
+            .iter()
+            .all(|tool| is_mcp_tool_or_discovery(tool))
+        && request_allowlist
+            .iter()
+            .any(|tool| normalize_tool_name(tool).starts_with("mcp."))
+}
+
+pub(crate) fn tool_survives_explicit_allowlist(
+    schema: &ToolSchema,
+    request_allowlist: &HashSet<String>,
+    intent: ToolIntent,
+) -> bool {
+    let normalized = normalize_tool_name(&schema.name);
+    request_allowlist
+        .iter()
+        .any(|pattern| tool_name_matches_policy(pattern, &normalized))
+        || (is_product_authoring_intent(intent)
+            && is_connector_only_allowlist(request_allowlist)
+            && is_product_authoring_tool(schema))
+}
+
+pub(crate) fn product_authoring_needs_catalog_fallback(
+    intent: ToolIntent,
+    candidate_tools: &[ToolSchema],
+    all_tools: &[ToolSchema],
+) -> bool {
+    if !is_product_authoring_intent(intent) {
+        return false;
+    }
+    let has_planner_start = |tools: &[ToolSchema]| {
+        tools
+            .iter()
+            .any(|schema| normalize_tool_name(&schema.name) == "workflow_plan_start")
+    };
+    has_planner_start(all_tools) && !has_planner_start(candidate_tools)
+}
+
+pub(crate) fn product_authoring_execution_scope(
+    request_allowlist: &HashSet<String>,
+    intent: ToolIntent,
+    all_tools: &[ToolSchema],
+) -> Vec<String> {
+    let mut scope = request_allowlist
+        .iter()
+        .filter(|tool| intent != ToolIntent::ProductAuthoring || !is_mcp_tool_or_discovery(tool))
+        .cloned()
+        .collect::<HashSet<_>>();
+    if is_product_authoring_intent(intent) && is_connector_only_allowlist(request_allowlist) {
+        scope.extend(
+            all_tools
+                .iter()
+                .filter(|schema| {
+                    is_product_authoring_tool(schema) && !is_mcp_tool_or_discovery(&schema.name)
+                })
+                .map(|schema| normalize_tool_name(&schema.name)),
+        );
+    }
+    let mut scope = scope.into_iter().collect::<Vec<_>>();
+    scope.sort();
+    scope
+}
+
 pub fn classify_intent(input: &str) -> ToolIntent {
     let lower = input.trim().to_ascii_lowercase();
     if lower.is_empty() {
@@ -80,7 +162,15 @@ pub fn classify_intent(input: &str) -> ToolIntent {
         return ToolIntent::ProductControl;
     }
 
-    if is_product_authoring_request(&lower) {
+    let product_authoring = is_product_authoring_request(&lower);
+    let live_integration_inspection = is_live_integration_inspection_request(&lower);
+    if product_authoring && live_integration_inspection {
+        return ToolIntent::ProductAuthoringWithMcp;
+    }
+    if live_integration_inspection {
+        return ToolIntent::McpExplicit;
+    }
+    if product_authoring {
         return ToolIntent::ProductAuthoring;
     }
 
@@ -196,6 +286,7 @@ pub fn should_escalate_auto_tools(
             | ToolIntent::MemoryOps
             | ToolIntent::McpExplicit
             | ToolIntent::ProductAuthoring
+            | ToolIntent::ProductAuthoringWithMcp
             | ToolIntent::ProductControl
     ) {
         return true;
@@ -245,10 +336,15 @@ pub fn select_tool_subset(
 
     let mut selected = Vec::new();
     let mut seen = HashSet::new();
-    let include_mcp = intent == ToolIntent::McpExplicit;
+    let include_mcp = matches!(
+        intent,
+        ToolIntent::McpExplicit | ToolIntent::ProductAuthoringWithMcp
+    );
     let product_intent = matches!(
         intent,
-        ToolIntent::ProductAuthoring | ToolIntent::ProductControl
+        ToolIntent::ProductAuthoring
+            | ToolIntent::ProductAuthoringWithMcp
+            | ToolIntent::ProductControl
     );
     if product_intent {
         available.sort_by_key(|schema| {
@@ -263,17 +359,20 @@ pub fn select_tool_subset(
 
     for schema in available {
         let norm = normalize_tool_name(&schema.name);
+        if intent == ToolIntent::ProductAuthoring && is_mcp_tool_or_discovery(&norm) {
+            continue;
+        }
         let explicitly_allowed = !request_allowlist.is_empty()
             && request_allowlist
                 .iter()
                 .any(|pattern| tool_name_matches_policy(pattern, &norm));
         let intrinsic_product_tool = product_intent
-            && !norm.starts_with("mcp.")
+            && !is_mcp_tool_or_discovery(&norm)
             && tool_schema_matches_profile(&schema, ToolCapabilityProfile::ProductControl);
         if !request_allowlist.is_empty() && !explicitly_allowed && !intrinsic_product_tool {
             continue;
         }
-        if !include_mcp && norm.starts_with("mcp.") && !explicitly_allowed {
+        if !include_mcp && is_mcp_tool_or_discovery(&norm) && !explicitly_allowed {
             continue;
         }
         if !tool_matches_intent(intent, &schema) && !explicitly_allowed {
@@ -360,22 +459,25 @@ fn tool_matches_intent(intent: ToolIntent, schema: &ToolSchema) -> bool {
         ToolIntent::MemoryOps => {
             tool_schema_matches_profile(schema, ToolCapabilityProfile::MemoryOperation)
         }
-        ToolIntent::ProductAuthoring => {
-            tool_schema_matches_profile(schema, ToolCapabilityProfile::ProductControl)
-                && matches!(
-                    tool_schema_risk_tier(schema),
-                    ToolRiskTier::ReadDiscover
-                        | ToolRiskTier::InternalWrite
-                        | ToolRiskTier::ExternalDraft
-                )
+        ToolIntent::ProductAuthoring => is_product_authoring_tool(schema),
+        ToolIntent::ProductAuthoringWithMcp => {
+            is_product_authoring_tool(schema) || is_mcp_tool_or_discovery(&name)
         }
         ToolIntent::ProductControl => {
             tool_schema_matches_profile(schema, ToolCapabilityProfile::ProductControl)
         }
         ToolIntent::McpExplicit => {
-            name.starts_with("mcp.") || matches!(name.as_str(), "read" | "grep" | "search")
+            is_mcp_tool_or_discovery(&name) || matches!(name.as_str(), "read" | "grep" | "search")
         }
     }
+}
+
+fn is_product_authoring_tool(schema: &ToolSchema) -> bool {
+    tool_schema_matches_profile(schema, ToolCapabilityProfile::ProductControl)
+        && matches!(
+            tool_schema_risk_tier(schema),
+            ToolRiskTier::ReadDiscover | ToolRiskTier::InternalWrite | ToolRiskTier::ExternalDraft
+        )
 }
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
@@ -441,6 +543,56 @@ fn is_product_authoring_request(input: &str) -> bool {
     );
     let pronoun_follow_up = contains_any(input, &["revise it", "revise this", "revise that"]);
     action && (has_product_resource_signal(input) || pronoun_follow_up)
+}
+
+fn is_live_integration_inspection_request(input: &str) -> bool {
+    if contains_any(
+        input,
+        &[
+            "do not use mcp",
+            "don't use mcp",
+            "without mcp",
+            "no mcp",
+            "do not use composio",
+            "don't use composio",
+            "without composio",
+        ],
+    ) {
+        return false;
+    }
+    let integration_subject =
+        contains_any(input, &["live integration", "integration tools", "mcp"]);
+    let inspection_action = contains_any(
+        input,
+        &["inspect", "discover", "test", "list", "check", "show"],
+    );
+    (integration_subject && inspection_action) || has_singular_integration_inspection_clause(input)
+}
+
+fn has_singular_integration_inspection_clause(input: &str) -> bool {
+    for action in ["inspect", "discover", "test", "list", "check", "show"] {
+        let needle = format!("{action} ");
+        for (action_index, _) in input.match_indices(&needle) {
+            if action_index > 0 && input.as_bytes()[action_index - 1].is_ascii_alphanumeric() {
+                continue;
+            }
+            let after_action = &input[action_index + needle.len()..];
+            let Some(subject_index) = after_action.find("integration") else {
+                continue;
+            };
+            if subject_index > 64 {
+                continue;
+            }
+            let between = &after_action[..subject_index];
+            if !contains_any(
+                between,
+                &[" and ", " then ", " but ", " to ", ".", ",", ";", "?", "!"],
+            ) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn has_repository_workflow_signal(input: &str) -> bool {
@@ -621,9 +773,12 @@ mod tests {
     }
 
     #[test]
-    fn product_authoring_keeps_safe_first_party_tools_with_external_allowlist() {
+    fn product_authoring_excludes_external_tools_even_with_an_allowlist() {
         let mut allowlist = HashSet::new();
         allowlist.insert("mcp.slack.*".to_string());
+        allowlist.insert("mcp_list".to_string());
+        allowlist.insert("mcp_list_catalog".to_string());
+        allowlist.insert("mcp_request_capability".to_string());
         let selected = select_tool_subset(
             vec![
                 product_schema(
@@ -642,6 +797,9 @@ mod tests {
                     ToolRiskTier::ConsequentialWrite,
                 ),
                 schema("mcp.slack.post_message"),
+                schema("mcp_list"),
+                schema("mcp_list_catalog"),
+                schema("mcp_request_capability"),
             ],
             ToolIntent::ProductAuthoring,
             &allowlist,
@@ -653,8 +811,258 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"orchestration_create_draft".to_string()));
         assert!(names.contains(&"orchestration_validate".to_string()));
-        assert!(names.contains(&"mcp.slack.post_message".to_string()));
+        assert!(!names.contains(&"mcp.slack.post_message".to_string()));
+        assert!(!names.contains(&"mcp_list".to_string()));
+        assert!(!names.contains(&"mcp_list_catalog".to_string()));
+        assert!(!names.contains(&"mcp_request_capability".to_string()));
         assert!(!names.contains(&"orchestration_publish".to_string()));
+    }
+
+    #[test]
+    fn connector_only_allowlist_preserves_intrinsic_product_authoring_tools() {
+        let allowlist = HashSet::from(["mcp.slack.*".to_string()]);
+        let planner = product_schema(
+            "workflow_plan_start",
+            tandem_types::ToolEffect::Write,
+            ToolRiskTier::InternalWrite,
+        );
+        let unrelated = schema("read");
+
+        assert!(tool_survives_explicit_allowlist(
+            &planner,
+            &allowlist,
+            ToolIntent::ProductAuthoring,
+        ));
+        assert!(!tool_survives_explicit_allowlist(
+            &unrelated,
+            &allowlist,
+            ToolIntent::ProductAuthoring,
+        ));
+    }
+
+    #[test]
+    fn narrow_product_allowlist_does_not_grant_other_authoring_tools() {
+        let allowlist = HashSet::from(["workflow_plan_capabilities".to_string()]);
+        let capabilities = product_schema(
+            "workflow_plan_capabilities",
+            tandem_types::ToolEffect::Read,
+            ToolRiskTier::ReadDiscover,
+        );
+        let planner = product_schema(
+            "workflow_plan_start",
+            tandem_types::ToolEffect::Write,
+            ToolRiskTier::InternalWrite,
+        );
+
+        assert!(tool_survives_explicit_allowlist(
+            &capabilities,
+            &allowlist,
+            ToolIntent::ProductAuthoring,
+        ));
+        assert!(!tool_survives_explicit_allowlist(
+            &planner,
+            &allowlist,
+            ToolIntent::ProductAuthoring,
+        ));
+        assert_eq!(
+            product_authoring_execution_scope(
+                &allowlist,
+                ToolIntent::ProductAuthoring,
+                &[capabilities, planner],
+            ),
+            vec!["workflow_plan_capabilities".to_string()]
+        );
+    }
+
+    #[test]
+    fn discovery_only_allowlist_does_not_grant_authoring_tools() {
+        let allowlist = HashSet::from([
+            "mcp_list".to_string(),
+            "mcp_list_catalog".to_string(),
+            "mcp_request_capability".to_string(),
+        ]);
+        let planner = product_schema(
+            "workflow_plan_start",
+            tandem_types::ToolEffect::Write,
+            ToolRiskTier::InternalWrite,
+        );
+
+        assert!(!tool_survives_explicit_allowlist(
+            &planner,
+            &allowlist,
+            ToolIntent::ProductAuthoring,
+        ));
+        assert!(product_authoring_execution_scope(
+            &allowlist,
+            ToolIntent::ProductAuthoring,
+            &[planner],
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn connector_only_allowlist_extends_product_authoring_execution_scope() {
+        let allowlist = HashSet::from(["mcp.slack.*".to_string()]);
+        let tools = vec![
+            product_schema(
+                "workflow_plan_start",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::InternalWrite,
+            ),
+            product_schema(
+                "workflow_plan_materialize",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::InternalWrite,
+            ),
+            product_schema(
+                "orchestration_publish",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::ConsequentialWrite,
+            ),
+            product_schema(
+                "mcp.slack.post_message",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::ExternalDraft,
+            ),
+            schema("read"),
+        ];
+
+        let scope =
+            product_authoring_execution_scope(&allowlist, ToolIntent::ProductAuthoring, &tools);
+        assert!(!scope.contains(&"mcp.slack.*".to_string()));
+        assert!(scope.contains(&"workflow_plan_start".to_string()));
+        assert!(scope.contains(&"workflow_plan_materialize".to_string()));
+        assert!(!scope.contains(&"orchestration_publish".to_string()));
+        assert!(!scope.contains(&"mcp.slack.post_message".to_string()));
+        assert!(!scope.contains(&"read".to_string()));
+
+        let mixed_scope = product_authoring_execution_scope(
+            &allowlist,
+            ToolIntent::ProductAuthoringWithMcp,
+            &tools,
+        );
+        assert!(mixed_scope.contains(&"mcp.slack.*".to_string()));
+        assert!(mixed_scope.contains(&"workflow_plan_start".to_string()));
+        assert!(mixed_scope.contains(&"workflow_plan_materialize".to_string()));
+
+        assert!(product_authoring_execution_scope(
+            &HashSet::new(),
+            ToolIntent::ProductAuthoring,
+            &tools,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn product_authoring_falls_back_when_retrieval_misses_planner_start() {
+        let candidates = vec![product_schema(
+            "automation_manage_draft",
+            tandem_types::ToolEffect::Write,
+            ToolRiskTier::InternalWrite,
+        )];
+        let all_tools = vec![
+            candidates[0].clone(),
+            product_schema(
+                "workflow_plan_start",
+                tandem_types::ToolEffect::Write,
+                ToolRiskTier::InternalWrite,
+            ),
+        ];
+
+        assert!(product_authoring_needs_catalog_fallback(
+            ToolIntent::ProductAuthoring,
+            &candidates,
+            &all_tools,
+        ));
+        assert!(!product_authoring_needs_catalog_fallback(
+            ToolIntent::ProductAuthoring,
+            &all_tools,
+            &all_tools,
+        ));
+        assert!(!product_authoring_needs_catalog_fallback(
+            ToolIntent::Knowledge,
+            &candidates,
+            &all_tools,
+        ));
+    }
+
+    #[test]
+    fn explicit_live_integration_inspection_uses_mcp_tools() {
+        assert_eq!(
+            classify_intent("Inspect the live integration tools for Slack"),
+            ToolIntent::McpExplicit
+        );
+        assert_eq!(
+            classify_intent(
+                "Create a Slack automation and inspect the live integration tools first"
+            ),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create a Slack automation and list the integration tools first"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create an automation and check MCP tools before drafting"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create a Slack automation and inspect the Slack MCP integration"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create a Slack automation and inspect Slack MCP first"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create a workflow and check the Slack integration"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create a workflow and test the Slack integration"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create an automation but do not use MCP"),
+            ToolIntent::ProductAuthoring
+        );
+        assert_eq!(
+            classify_intent("Create a workflow that checks integration status every hour"),
+            ToolIntent::ProductAuthoring
+        );
+    }
+
+    #[test]
+    fn mixed_integration_authoring_offers_planner_and_mcp_tools() {
+        let allowlist = HashSet::from(["mcp.slack.*".to_string()]);
+        let selected = select_tool_subset(
+            vec![
+                product_schema(
+                    "workflow_plan_start",
+                    tandem_types::ToolEffect::Write,
+                    ToolRiskTier::InternalWrite,
+                ),
+                product_schema(
+                    "workflow_plan_materialize",
+                    tandem_types::ToolEffect::Write,
+                    ToolRiskTier::InternalWrite,
+                ),
+                schema("mcp.slack.search_tools"),
+                schema("read"),
+            ],
+            ToolIntent::ProductAuthoringWithMcp,
+            &allowlist,
+            false,
+        );
+        let names = selected
+            .iter()
+            .map(|schema| normalize_tool_name(&schema.name))
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"workflow_plan_start".to_string()));
+        assert!(names.contains(&"workflow_plan_materialize".to_string()));
+        assert!(names.contains(&"mcp.slack.search_tools".to_string()));
+        assert!(!names.contains(&"read".to_string()));
     }
 
     #[test]
@@ -701,7 +1109,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_integration_allowlist_survives_the_product_tool_cap() {
+    fn external_allowlist_does_not_displace_product_tools_at_the_cap() {
         let mut available = (0..12)
             .map(|index| {
                 product_schema(
@@ -718,7 +1126,8 @@ mod tests {
             &HashSet::from(["mcp.slack.*".to_string()]),
             false,
         );
-        assert!(selected
+        assert_eq!(selected.len(), 12);
+        assert!(!selected
             .iter()
             .any(|schema| schema.name == "mcp.slack.post_message"));
     }

@@ -412,6 +412,24 @@ fn concrete_mcp_preflight_blocks_workspace_write_until_attempted() {
 }
 
 #[test]
+fn plain_product_authoring_ignores_stripped_mcp_prewrite_requirements() {
+    let allowlist = HashSet::from([
+        "mcp.slack.send_message".to_string(),
+        "mcp.notion.*".to_string(),
+    ]);
+
+    let (required_tools, required_sources) =
+        mcp_prewrite_requirements_for_intent(&allowlist, ToolIntent::ProductAuthoring);
+    assert!(required_tools.is_empty());
+    assert!(required_sources.is_empty());
+
+    let (required_tools, required_sources) =
+        mcp_prewrite_requirements_for_intent(&allowlist, ToolIntent::ProductAuthoringWithMcp);
+    assert_eq!(required_tools, vec!["mcp.slack.send_message".to_string()]);
+    assert_eq!(required_sources, vec!["mcp.notion.*".to_string()]);
+}
+
+#[test]
 fn required_mcp_gate_stays_pending_until_productive_call_is_counted() {
     let required = vec!["mcp.notion.notion_create_pages".to_string()];
     let mut attempted_counts = HashMap::new();

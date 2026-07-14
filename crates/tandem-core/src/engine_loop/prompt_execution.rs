@@ -106,19 +106,6 @@ impl EngineLoop {
             .map(|tool| normalize_tool_name(&tool))
             .filter(|tool| !tool.trim().is_empty())
             .collect::<HashSet<_>>();
-        let required_mcp_tools_before_write =
-            concrete_mcp_tools_required_before_write(&request_tool_allowlist);
-        let required_mcp_source_wildcards_before_write =
-            mcp_source_wildcards_required_before_write(&request_tool_allowlist);
-        // Propagate per-request tool allowlist to session-level enforcement so
-        // that execution-time checks (and mcp_list scoping) also respect it.
-        if request_tool_allowlist_is_explicit {
-            self.set_session_allowed_tools(
-                &session_id,
-                request_tool_allowlist.iter().cloned().collect(),
-            )
-            .await;
-        }
         let text = req
             .parts
             .iter()
@@ -137,6 +124,19 @@ impl EngineLoop {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let intent = classify_intent(&text);
+        let (required_mcp_tools_before_write, required_mcp_source_wildcards_before_write) =
+            mcp_prewrite_requirements_for_intent(&request_tool_allowlist, intent);
+        // Propagate the request scope into every execution-time check. Product
+        // authoring keeps safe first-party tools when a channel only grants
+        // connector capabilities; connector and publish tools are not added.
+        if request_tool_allowlist_is_explicit {
+            let all_tools = self.tools.list().await;
+            let execution_scope =
+                product_authoring_execution_scope(&request_tool_allowlist, intent, &all_tools);
+            self.set_session_allowed_tools(&session_id, execution_scope)
+                .await;
+        }
         let runtime_attachments = build_runtime_attachments(&provider_id, &request_parts).await;
         self.auto_rename_session_from_user_text(&session_id, &text)
             .await;
@@ -260,7 +260,6 @@ impl EngineLoop {
             let mut email_action_executed = false;
             let mut latest_email_action_note: Option<String> = None;
             let mut email_tools_ever_offered = false;
-            let intent = classify_intent(&text);
             let router_enabled = tool_router_enabled();
             let retrieval_enabled = semantic_tool_retrieval_enabled();
             let retrieval_k = semantic_tool_retrieval_k();
@@ -464,6 +463,14 @@ impl EngineLoop {
                     if candidate_tools.is_empty() && !all_tools.is_empty() {
                         candidate_tools = all_tools.clone();
                         retrieval_fallback_reason = Some("retrieval_empty_result");
+                    } else if product_authoring_needs_catalog_fallback(
+                        intent,
+                        &candidate_tools,
+                        &all_tools,
+                    ) {
+                        candidate_tools = all_tools.clone();
+                        retrieval_fallback_reason =
+                            Some("missing_workflow_planner_for_product_authoring");
                     } else if web_research_requested
                         && has_web_research_tools(&all_tools)
                         && !has_web_research_tools(&candidate_tools)
@@ -536,11 +543,11 @@ impl EngineLoop {
                 }
                 if request_tool_allowlist_is_explicit {
                     tool_schemas.retain(|schema| {
-                        let tool = normalize_tool_name(&schema.name);
-                        request_tool_allowlist
-                            .iter()
-                            .any(|pattern| tool_name_matches_policy(pattern, &tool))
+                        tool_survives_explicit_allowlist(schema, &request_tool_allowlist, intent)
                     });
+                }
+                if intent == ToolIntent::ProductAuthoring {
+                    tool_schemas.retain(|schema| !is_mcp_tool_or_discovery(&schema.name));
                 }
                 let prewrite_gate = evaluate_prewrite_gate(
                     requested_write_required,
@@ -737,7 +744,7 @@ impl EngineLoop {
                     total_available_count: all_tools.len(),
                     mcp_included: tool_schemas
                         .iter()
-                        .any(|schema| normalize_tool_name(&schema.name).starts_with("mcp.")),
+                        .any(|schema| is_mcp_tool_or_discovery(&schema.name)),
                 };
                 self.event_bus.publish(EngineEvent::new(
                     "tool.routing.decision",
