@@ -1,6 +1,14 @@
 import { useMemo, useState } from "react";
-import { AnimatedPage, Badge, DetailDrawer, PageHeader, StaggerGroup, Toolbar } from "../ui/index.tsx";
+import {
+  AnimatedPage,
+  Badge,
+  DetailDrawer,
+  PageHeader,
+  StaggerGroup,
+  Toolbar,
+} from "../ui/index.tsx";
 import { EnterpriseScopeExplorer } from "../features/enterprise/EnterpriseScopeExplorer";
+import { PolicyStudio } from "../features/enterprise/PolicyStudio";
 import {
   useCreateEnterpriseConnector,
   useCreateEnterpriseConnectorCredentialRef,
@@ -32,7 +40,12 @@ import {
   useUpdateEnterpriseSourceBinding,
 } from "../features/enterprise/queries";
 import type { AppPageProps } from "./pageTypes";
-import { GovernanceStatusStrip, compactTenant, errorText, noopStatus } from "./enterprise-admin/shared.tsx";
+import {
+  GovernanceStatusStrip,
+  compactTenant,
+  errorText,
+  noopStatus,
+} from "./enterprise-admin/shared.tsx";
 import {
   ConnectorCredentialRefForm,
   ConnectorForm,
@@ -197,6 +210,8 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
           connectorsPayload={connectors.data}
           sourceBindingsPayload={sourceBindings.data}
         />
+
+        <PolicyStudio tenant={payload?.tenant_context} />
 
         <EnterpriseScopeExplorer
           api={api}

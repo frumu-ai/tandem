@@ -215,6 +215,12 @@ fn policy_decision_input_base(decision: &PolicyDecisionRecord) -> EnterprisePoli
     if let Some(tool) = decision.tool.clone() {
         input = input.with_tool(tool);
     }
+    if let Some(arguments) = ["/tool_arguments", "/arguments", "/tool/arguments"]
+        .iter()
+        .find_map(|pointer| decision.metadata.pointer(pointer).cloned())
+    {
+        input = input.with_arguments(arguments);
+    }
     input
 }
 
@@ -961,6 +967,33 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn persist_enterprise_policy_rules(&self) -> anyhow::Result<()> {
+        let records = {
+            let guard = self.enterprise.policy_rules.read().await;
+            guard
+                .iter()
+                .map(|(rule_id, rule)| {
+                    let tenant_context = rule
+                        .tenant_context
+                        .clone()
+                        .unwrap_or_else(tandem_enterprise_contract::TenantContext::local_implicit);
+                    crate::governance_store::GovernanceStoreFile::PolicyRules.json_record(
+                        rule_id,
+                        rule,
+                        &tenant_context,
+                        rule.org_unit_id.as_deref(),
+                    )
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+        };
+        crate::governance_store::for_state(self)
+            .write_json_records(
+                crate::governance_store::GovernanceStoreFile::PolicyRules,
+                &records,
+            )
+            .await
+    }
+
     pub async fn persist_external_actions(&self) -> anyhow::Result<()> {
         if let Some(parent) = self.external_actions_path.parent() {
             fs::create_dir_all(parent).await?;
@@ -1390,6 +1423,27 @@ impl AppState {
                 )
             }),
         )
+    }
+
+    pub async fn resolve_enterprise_policy_input(
+        &self,
+        input: &EnterprisePolicyInput,
+        now_ms: u64,
+    ) -> anyhow::Result<tandem_enterprise_contract::EffectivePolicySnapshot> {
+        self.load_enterprise_policy_rules_if_needed().await?;
+        let rules = self
+            .enterprise
+            .policy_rules
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(EnterprisePolicyResolver::new(rules).resolve(input, now_ms))
+    }
+
+    pub async fn ensure_enterprise_policy_rules_loaded(&self) -> anyhow::Result<()> {
+        self.load_enterprise_policy_rules_if_needed().await
     }
 
     async fn load_enterprise_policy_rules_if_needed(&self) -> anyhow::Result<()> {

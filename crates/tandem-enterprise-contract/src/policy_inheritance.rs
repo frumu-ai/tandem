@@ -3,8 +3,18 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     canonical_enterprise_scope_id, enterprise_scope_ids_match, AccessPermission, DataClass,
-    ResourceRef, TenantContext,
+    PermissionPredicate, PredicateResult, ResourceRef, TenantContext,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EnterprisePolicyRuleState {
+    Draft,
+    #[default]
+    Published,
+    Disabled,
+    Superseded,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,9 +106,19 @@ pub struct EnterprisePolicyRule {
     pub data_classes: Vec<DataClass>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_patterns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate: Option<PermissionPredicate>,
     pub effect: EnterprisePolicyEffect,
+    #[serde(default)]
+    pub state: EnterprisePolicyRuleState,
     #[serde(default, skip_serializing_if = "is_false")]
     pub overridable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_version: Option<u64>,
     pub reason_code: String,
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,8 +147,13 @@ impl EnterprisePolicyRule {
             permissions: Vec::new(),
             data_classes: Vec::new(),
             tool_patterns: Vec::new(),
+            predicate: None,
             effect,
+            state: EnterprisePolicyRuleState::Published,
             overridable: false,
+            expires_at_ms: None,
+            template_id: None,
+            template_version: None,
             reason_code: format!("policy_{effect_label}"),
             reason: format!("policy resolved to {effect_label}"),
             approval_id: None,
@@ -181,6 +206,21 @@ impl EnterprisePolicyRule {
         self
     }
 
+    pub fn with_predicate(mut self, predicate: PermissionPredicate) -> Self {
+        self.predicate = Some(predicate);
+        self
+    }
+
+    pub fn with_state(mut self, state: EnterprisePolicyRuleState) -> Self {
+        self.state = state;
+        self
+    }
+
+    pub fn with_expiry(mut self, expires_at_ms: u64) -> Self {
+        self.expires_at_ms = Some(expires_at_ms);
+        self
+    }
+
     pub fn with_overridable(mut self, overridable: bool) -> Self {
         self.overridable = overridable;
         self
@@ -217,8 +257,65 @@ impl EnterprisePolicyRule {
         self
     }
 
-    fn matches(&self, input: &EnterprisePolicyInput) -> bool {
-        self.matches_tenant(&input.tenant_context)
+    pub fn validation_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.rule_id.trim().is_empty() {
+            errors.push("rule_id is required".to_string());
+        }
+        if self.policy_id.trim().is_empty() {
+            errors.push("policy_id is required".to_string());
+        }
+        if self.reason_code.trim().is_empty() {
+            errors.push("reason_code is required".to_string());
+        }
+        if self.reason.trim().is_empty() {
+            errors.push("reason is required".to_string());
+        }
+        match self.scope_level {
+            EnterprisePolicyScopeLevel::OrgUnit if self.org_unit_id.is_none() => {
+                errors.push("org_unit scope requires org_unit_id".to_string());
+            }
+            EnterprisePolicyScopeLevel::Resource if self.resource.is_none() => {
+                errors.push("resource scope requires resource".to_string());
+            }
+            EnterprisePolicyScopeLevel::Workflow if self.workflow_id.is_none() => {
+                errors.push("workflow scope requires workflow_id".to_string());
+            }
+            EnterprisePolicyScopeLevel::Phase => {
+                if self.workflow_id.is_none() {
+                    errors.push("phase scope requires workflow_id".to_string());
+                }
+                if self.workflow_phase.is_none() {
+                    errors.push("phase scope requires workflow_phase".to_string());
+                }
+            }
+            _ => {}
+        }
+        if self
+            .tool_patterns
+            .iter()
+            .any(|pattern| pattern.trim().is_empty())
+        {
+            errors.push("tool patterns cannot be empty".to_string());
+        }
+        if self.effect == EnterprisePolicyEffect::ApprovalRequired
+            && self
+                .approval_id
+                .as_deref()
+                .is_none_or(|approval_id| approval_id.trim().is_empty())
+        {
+            errors.push("approval_required rules require approval_id".to_string());
+        }
+        if let Some(predicate) = &self.predicate {
+            errors.extend(predicate.validate());
+        }
+        errors
+    }
+
+    fn matches(&self, input: &EnterprisePolicyInput, now_ms: u64) -> bool {
+        self.state == EnterprisePolicyRuleState::Published
+            && self.expires_at_ms.is_none_or(|expiry| expiry > now_ms)
+            && self.matches_tenant(&input.tenant_context)
             && self.matches_org_unit(input.org_unit_id.as_deref())
             && self.matches_resource(input.resource.as_ref())
             && self.matches_workflow(input.workflow_id.as_deref())
@@ -226,6 +323,7 @@ impl EnterprisePolicyRule {
             && self.matches_permission(input.permission)
             && self.matches_data_class(input.data_class)
             && self.matches_tool(input.tool.as_deref())
+            && self.matches_predicate(&input.arguments)
     }
 
     fn matches_tenant(&self, tenant_context: &TenantContext) -> bool {
@@ -293,6 +391,17 @@ impl EnterprisePolicyRule {
                     .any(|pattern| tool_pattern_matches(pattern, tool))
             })
     }
+
+    fn matches_predicate(&self, arguments: &serde_json::Value) -> bool {
+        let Some(predicate) = &self.predicate else {
+            return true;
+        };
+        match predicate.evaluate(arguments) {
+            PredicateResult::Match => true,
+            PredicateResult::NoMatch => false,
+            PredicateResult::Indeterminate => self.effect == EnterprisePolicyEffect::Deny,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,6 +421,8 @@ pub struct EnterprisePolicyInput {
     pub data_class: Option<DataClass>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub arguments: serde_json::Value,
 }
 
 impl EnterprisePolicyInput {
@@ -325,6 +436,7 @@ impl EnterprisePolicyInput {
             permission: None,
             data_class: None,
             tool: None,
+            arguments: serde_json::Value::Null,
         }
     }
 
@@ -360,6 +472,11 @@ impl EnterprisePolicyInput {
 
     pub fn with_tool(mut self, tool: impl Into<String>) -> Self {
         self.tool = Some(tool.into());
+        self
+    }
+
+    pub fn with_arguments(mut self, arguments: serde_json::Value) -> Self {
+        self.arguments = arguments;
         self
     }
 }
@@ -510,7 +627,7 @@ impl EnterprisePolicyResolver {
         let mut matching = self
             .rules
             .iter()
-            .filter(|rule| rule.matches(input))
+            .filter(|rule| rule.matches(input, now_ms))
             .collect::<Vec<_>>();
         matching.sort_by_key(|rule| {
             (
