@@ -70,6 +70,7 @@ fn planner_contracts_roundtrip_without_server_types() {
         plan_id: "plan_1".to_string(),
         planner_version: "planner_v1".to_string(),
         plan_source: "test".to_string(),
+        progress_id: None,
         prompt: "Build a workflow.".to_string(),
         normalized_prompt: "Build a workflow.".to_string(),
         title: "Example".to_string(),
