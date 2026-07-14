@@ -14,7 +14,9 @@ use tandem_enterprise_contract::{
 };
 use tandem_server::{now_ms, AppState};
 
-use super::routes_enterprise::{require_enterprise_admin, EnterpriseResult};
+use super::routes_enterprise::{
+    enterprise_global_admin_allowed_for_mutation, require_enterprise_admin, EnterpriseResult,
+};
 
 #[derive(Debug, Serialize)]
 struct PolicyRulesResponse {
@@ -124,6 +126,8 @@ async fn list_policy_rules(
     verified: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<PolicyRulesResponse> {
     require_enterprise_admin(&request_principal, verified.as_deref())?;
+    let may_manage_global =
+        enterprise_global_admin_allowed_for_mutation(&request_principal, verified.as_deref());
     ensure_policy_rules_loaded(&state).await?;
     let mut rules = state
         .enterprise
@@ -131,7 +135,7 @@ async fn list_policy_rules(
         .read()
         .await
         .values()
-        .filter(|rule| tenant_matches(rule, &tenant_context))
+        .filter(|rule| admin_scope_matches(rule, &tenant_context, may_manage_global))
         .cloned()
         .collect::<Vec<_>>();
     rules.sort_by(|a, b| {
@@ -195,18 +199,22 @@ async fn update_policy_rule(
     Json(mut replacement): Json<EnterprisePolicyRule>,
 ) -> EnterpriseResult<PolicyMutationResponse> {
     require_enterprise_admin(&request_principal, verified.as_deref())?;
+    let may_manage_global =
+        enterprise_global_admin_allowed_for_mutation(&request_principal, verified.as_deref());
     ensure_policy_rules_loaded(&state).await?;
     let previous = state.enterprise.policy_rules.read().await.clone();
     let existing = previous
         .get(&rule_id)
-        .filter(|rule| tenant_matches(rule, &tenant_context))
+        .filter(|rule| admin_scope_matches(rule, &tenant_context, may_manage_global))
         .cloned()
         .ok_or_else(|| not_found("ENTERPRISE_POLICY_RULE_NOT_FOUND"))?;
     if existing.state != EnterprisePolicyRuleState::Draft {
         return Err(conflict("ENTERPRISE_POLICY_RULE_NOT_EDITABLE"));
     }
     replacement.rule_id = rule_id.clone();
-    replacement.tenant_context = Some(tenant_context.clone());
+    replacement
+        .tenant_context
+        .clone_from(&existing.tenant_context);
     replacement.state = EnterprisePolicyRuleState::Draft;
     replacement.updated_at_ms = now_ms();
     let validation = validate_rule(&replacement, false);
@@ -276,12 +284,15 @@ async fn publish_policy(
     verified: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<PolicyMutationResponse> {
     require_enterprise_admin(&request_principal, verified.as_deref())?;
+    let may_manage_global =
+        enterprise_global_admin_allowed_for_mutation(&request_principal, verified.as_deref());
     ensure_policy_rules_loaded(&state).await?;
     mutate_policy_state(
         &state,
         &tenant_context,
         &request_principal,
         &policy_id,
+        may_manage_global,
         PolicyStateTransition {
             target_state: EnterprisePolicyRuleState::Published,
             action: "published",
@@ -300,12 +311,15 @@ async fn disable_policy(
     verified: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<PolicyMutationResponse> {
     require_enterprise_admin(&request_principal, verified.as_deref())?;
+    let may_manage_global =
+        enterprise_global_admin_allowed_for_mutation(&request_principal, verified.as_deref());
     ensure_policy_rules_loaded(&state).await?;
     mutate_policy_state(
         &state,
         &tenant_context,
         &request_principal,
         &policy_id,
+        may_manage_global,
         PolicyStateTransition {
             target_state: EnterprisePolicyRuleState::Disabled,
             action: "disabled",
@@ -325,10 +339,36 @@ async fn supersede_policy(
     Json(request): Json<SupersedePolicyRequest>,
 ) -> EnterpriseResult<PolicyMutationResponse> {
     require_enterprise_admin(&request_principal, verified.as_deref())?;
+    let may_manage_global =
+        enterprise_global_admin_allowed_for_mutation(&request_principal, verified.as_deref());
     ensure_policy_rules_loaded(&state).await?;
     if request.rules.is_empty() {
         return Err(bad_request("ENTERPRISE_POLICY_REPLACEMENT_REQUIRED"));
     }
+    let target_tenant_context = {
+        let registry = state.enterprise.policy_rules.read().await;
+        let tenant_owned = registry.values().any(|rule| {
+            rule.policy_id == policy_id
+                && rule.tenant_context.as_ref().is_some_and(|rule_tenant| {
+                    rule_tenant.org_id == tenant_context.org_id
+                        && rule_tenant.workspace_id == tenant_context.workspace_id
+                        && rule_tenant.deployment_id == tenant_context.deployment_id
+                })
+                && rule.state != EnterprisePolicyRuleState::Superseded
+        });
+        let enterprise_global = may_manage_global
+            && registry.values().any(|rule| {
+                rule.policy_id == policy_id
+                    && rule.tenant_context.is_none()
+                    && rule.state != EnterprisePolicyRuleState::Superseded
+            });
+        match (tenant_owned, enterprise_global) {
+            (true, false) => Some(tenant_context.clone()),
+            (false, true) => None,
+            (false, false) => return Err(not_found("ENTERPRISE_POLICY_NOT_FOUND")),
+            (true, true) => return Err(conflict("ENTERPRISE_POLICY_SCOPE_AMBIGUOUS")),
+        }
+    };
     let mut replacements = Vec::new();
     let mut replacement_ids = HashSet::new();
     for mut rule in request.rules {
@@ -336,7 +376,7 @@ async fn supersede_policy(
             return Err(conflict("ENTERPRISE_POLICY_RULE_ID_CONFLICT"));
         }
         rule.policy_id = policy_id.clone();
-        rule.tenant_context = Some(tenant_context.clone());
+        rule.tenant_context.clone_from(&target_tenant_context);
         rule.state = EnterprisePolicyRuleState::Published;
         rule.updated_at_ms = now_ms();
         let validation = validate_rule(&rule, true);
@@ -355,10 +395,9 @@ async fn supersede_policy(
             return Err(conflict("ENTERPRISE_POLICY_RULE_ID_CONFLICT"));
         }
         previous = registry.clone();
-        for rule in registry
-            .values_mut()
-            .filter(|rule| rule.policy_id == policy_id && tenant_matches(rule, &tenant_context))
-        {
+        for rule in registry.values_mut().filter(|rule| {
+            rule.policy_id == policy_id && rule.tenant_context == target_tenant_context
+        }) {
             rule.state = EnterprisePolicyRuleState::Superseded;
             rule.updated_at_ms = now_ms();
         }
@@ -608,6 +647,7 @@ async fn mutate_policy_state(
     tenant_context: &TenantContext,
     request_principal: &RequestPrincipal,
     policy_id: &str,
+    may_manage_global: bool,
     transition: PolicyStateTransition,
 ) -> EnterpriseResult<PolicyMutationResponse> {
     let previous = state.enterprise.policy_rules.read().await.clone();
@@ -617,12 +657,23 @@ async fn mutate_policy_state(
         let candidates = registry
             .values()
             .filter(|rule| {
-                policy_state_transition_matches(rule, tenant_context, policy_id, transition)
+                policy_state_transition_matches(
+                    rule,
+                    tenant_context,
+                    policy_id,
+                    may_manage_global,
+                    transition,
+                )
             })
             .cloned()
             .collect::<Vec<_>>();
         if candidates.is_empty() {
             return Err(not_found("ENTERPRISE_POLICY_NOT_FOUND"));
+        }
+        if candidates.iter().any(|rule| rule.tenant_context.is_none())
+            && candidates.iter().any(|rule| rule.tenant_context.is_some())
+        {
+            return Err(conflict("ENTERPRISE_POLICY_SCOPE_AMBIGUOUS"));
         }
         if transition.validate_for_publish {
             for rule in &candidates {
@@ -633,7 +684,13 @@ async fn mutate_policy_state(
             }
         }
         for rule in registry.values_mut().filter(|rule| {
-            policy_state_transition_matches(rule, tenant_context, policy_id, transition)
+            policy_state_transition_matches(
+                rule,
+                tenant_context,
+                policy_id,
+                may_manage_global,
+                transition,
+            )
         }) {
             rule.state = transition.target_state;
             rule.updated_at_ms = now_ms();
@@ -661,10 +718,11 @@ fn policy_state_transition_matches(
     rule: &EnterprisePolicyRule,
     tenant_context: &TenantContext,
     policy_id: &str,
+    may_manage_global: bool,
     transition: PolicyStateTransition,
 ) -> bool {
     rule.policy_id == policy_id
-        && tenant_matches(rule, tenant_context)
+        && admin_scope_matches(rule, tenant_context, may_manage_global)
         && rule.state != EnterprisePolicyRuleState::Superseded
         && (transition.target_state != EnterprisePolicyRuleState::Published
             || rule.state == EnterprisePolicyRuleState::Draft)
@@ -779,6 +837,17 @@ fn tenant_matches(rule: &EnterprisePolicyRule, tenant: &TenantContext) -> bool {
     })
 }
 
+fn admin_scope_matches(
+    rule: &EnterprisePolicyRule,
+    tenant: &TenantContext,
+    may_manage_global: bool,
+) -> bool {
+    match rule.tenant_context.as_ref() {
+        Some(_) => tenant_matches(rule, tenant),
+        None => may_manage_global,
+    }
+}
+
 fn validation_error<T>(
     validation: PolicyValidationResponse,
 ) -> Result<T, (StatusCode, Json<Value>)> {
@@ -817,4 +886,32 @@ fn internal_error(code: &'static str) -> (StatusCode, Json<Value>) {
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({"code":code})),
     )
+}
+
+#[cfg(test)]
+mod admin_scope_tests {
+    use super::*;
+    use tandem_enterprise_contract::{EnterprisePolicyEffect, EnterprisePolicyScopeLevel};
+
+    #[test]
+    fn workspace_admin_scope_excludes_tenantless_enterprise_rules() {
+        let tenant = TenantContext::explicit("acme", "engineering", None);
+        let global = EnterprisePolicyRule::new(
+            "global-rule",
+            "global-policy",
+            EnterprisePolicyScopeLevel::Enterprise,
+            EnterprisePolicyEffect::Deny,
+        );
+        let tenant_rule = EnterprisePolicyRule::new(
+            "tenant-rule",
+            "tenant-policy",
+            EnterprisePolicyScopeLevel::Tenant,
+            EnterprisePolicyEffect::Deny,
+        )
+        .with_tenant_context(tenant.clone());
+
+        assert!(!admin_scope_matches(&global, &tenant, false));
+        assert!(admin_scope_matches(&global, &tenant, true));
+        assert!(admin_scope_matches(&tenant_rule, &tenant, false));
+    }
 }

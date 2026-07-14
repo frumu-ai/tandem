@@ -90,14 +90,94 @@ async fn evaluate_enterprise_authored_tool_policy(
             .expect("tool data classes are non-empty")
     };
     let decision_id = format!("policy_decision_{}", Uuid::new_v4().simple());
-    let effect = PolicyDecisionEffect::from_enterprise_effect(snapshot.effect);
-    let reason = snapshot.reason.clone();
-    let reason_code = snapshot.reason_code.clone();
+    let mut effect = PolicyDecisionEffect::from_enterprise_effect(snapshot.effect);
+    let mut reason = snapshot.reason.clone();
+    let mut reason_code = snapshot.reason_code.clone();
     let policy_id = snapshot
         .decision_source
         .as_ref()
         .map(|source| source.policy_id.clone())
         .unwrap_or_else(|| "enterprise_policy_resolver".to_string());
+    let mut approval_receipt_id = None;
+    let mut approval_state = None;
+    let mut approval_error = None;
+    let mut action_hash = None;
+    let mut approval_consumed = false;
+    let mut approval_run_id = None;
+    let mut approval_automation_id = None;
+    let mut approval_node_id = None;
+    if snapshot.effect == EnterprisePolicyEffect::ApprovalRequired {
+        let hash = fintech_protected_action_hash(tool, &ctx.args);
+        action_hash = Some(hash.clone());
+        if state.premium_governance_enabled() {
+            let links = action_gate_runtime_links(state, &ctx.session_id).await;
+            approval_run_id.clone_from(&links.run_id);
+            approval_automation_id.clone_from(&links.automation_id);
+            approval_node_id.clone_from(&links.node_id);
+            let request = state
+                .request_approval(
+                    crate::automation_v2::governance::GovernanceApprovalRequestType::ElevatedCapability,
+                    crate::automation_v2::governance::GovernanceActorRef::agent(
+                        tenant_context.actor_id.clone(),
+                        "enterprise_authored_policy",
+                    ),
+                    crate::automation_v2::governance::GovernanceResourceRef {
+                        resource_type: "protected_action".to_string(),
+                        id: hash.clone(),
+                    },
+                    format!("Review policy-gated tool action `{tool}`"),
+                    json!({
+                        "action_gate": {
+                            "action_hash": hash,
+                            "session_id": ctx.session_id,
+                            "message_id": ctx.message_id,
+                            "run_id": approval_run_id,
+                            "automation_id": approval_automation_id,
+                            "node_id": approval_node_id,
+                            "tool": tool,
+                            "policy_id": policy_id,
+                            "policy_version_id": snapshot.policy_version_id,
+                            "policy_decision_id": decision_id,
+                            "approval_class": snapshot.approval_id,
+                            "source": "enterprise_authored_policy",
+                        }
+                    }),
+                    Some(crate::now_ms().saturating_add(tandem_types::DEFAULT_APPROVAL_TTL_MS)),
+                    &tenant_context,
+                )
+                .await;
+            match request {
+                Ok(request) => {
+                    approval_receipt_id = Some(request.approval_id.clone());
+                    match state
+                        .consume_action_gate_approval(&request.approval_id, &tenant_context)
+                        .await
+                    {
+                        Ok(
+                            crate::app::state::governance_action_gate::ActionGateApprovalState::ApprovedAndConsumed,
+                        ) => {
+                            approval_state = Some("approved_and_consumed");
+                            approval_consumed = true;
+                            effect = PolicyDecisionEffect::Allow;
+                            reason_code = "matching_approval_receipt".to_string();
+                            reason = "authored policy action approved by matching receipt".to_string();
+                        }
+                        Ok(
+                            crate::app::state::governance_action_gate::ActionGateApprovalState::Pending,
+                        ) => approval_state = Some("pending"),
+                        Ok(
+                            crate::app::state::governance_action_gate::ActionGateApprovalState::Denied,
+                        ) => approval_state = Some("denied_or_expired"),
+                        Err(error) => approval_error = Some(error.to_string()),
+                    }
+                }
+                Err(error) => approval_error = Some(error.to_string()),
+            }
+        } else {
+            approval_error =
+                Some("premium governance approval requests are unavailable".to_string());
+        }
+    }
     let record = PolicyDecisionRecord {
         decision_id: decision_id.clone(),
         tenant_context: tenant_context.clone(),
@@ -108,9 +188,9 @@ async fn evaluate_enterprise_authored_tool_policy(
         actor_id: tenant_context.actor_id.clone(),
         session_id: Some(ctx.session_id.clone()),
         message_id: Some(ctx.message_id.clone()),
-        run_id: None,
-        automation_id: None,
-        node_id: None,
+        run_id: approval_run_id,
+        automation_id: approval_automation_id,
+        node_id: approval_node_id,
         tool: Some(tool.to_string()),
         resource: None,
         data_classes: data_classes.clone(),
@@ -118,15 +198,21 @@ async fn evaluate_enterprise_authored_tool_policy(
         decision: effect,
         reason_code: reason_code.clone(),
         reason: reason.clone(),
-        policy_id: Some(policy_id),
+        policy_id: Some(policy_id.clone()),
         grant_id: None,
-        approval_id: snapshot.approval_id.clone(),
+        approval_id: approval_receipt_id
+            .clone()
+            .or_else(|| snapshot.approval_id.clone()),
         audit_event_id: None,
         created_at_ms: resolved_at_ms,
         metadata: json!({
             "authoring_source": "enterprise_control_panel",
             "predicate_evidence": "redacted",
             "evaluated_data_classes": data_classes,
+            "approval_class": snapshot.approval_id,
+            "approval_state": approval_state,
+            "approval_error": approval_error,
+            "action_hash": action_hash,
         }),
     }
     .with_effective_policy_snapshot(snapshot.clone());
@@ -139,9 +225,11 @@ async fn evaluate_enterprise_authored_tool_policy(
         json!({
             "decision_id": decision_id.clone(),
             "tool": tool,
-            "effect": snapshot.effect,
+            "effect": effect,
+            "policy_effect": snapshot.effect,
             "reason_code": reason_code,
             "policy_version_id": snapshot.policy_version_id,
+            "approval_id": approval_receipt_id,
         }),
     )
     .await?;
@@ -153,13 +241,24 @@ async fn evaluate_enterprise_authored_tool_policy(
             reason: Some(reason),
             policy_decision_id: Some(decision_id),
         }),
-        EnterprisePolicyEffect::ApprovalRequired => Some(ToolPolicyDecision {
-            allowed: false,
-            reason: Some(format!(
-                "{reason}; approval receipt required before execution"
-            )),
-            policy_decision_id: Some(decision_id),
-        }),
+        EnterprisePolicyEffect::ApprovalRequired if approval_consumed => None,
+        EnterprisePolicyEffect::ApprovalRequired => {
+            let receipt = approval_receipt_id
+                .as_deref()
+                .map(|id| format!("; approval `{id}`"))
+                .unwrap_or_default();
+            let error = approval_error
+                .as_deref()
+                .map(|message| format!("; approval error: {message}"))
+                .unwrap_or_default();
+            Some(ToolPolicyDecision {
+                allowed: false,
+                reason: Some(format!(
+                    "{reason}; approval receipt required before execution{receipt}{error}"
+                )),
+                policy_decision_id: Some(decision_id),
+            })
+        }
     })
 }
 
@@ -298,10 +397,17 @@ mod enterprise_authored_policy_tests {
             .await
             .expect("approval decision record");
         assert_eq!(recorded.decision, PolicyDecisionEffect::ApprovalRequired);
-        assert_eq!(
-            recorded.approval_id.as_deref(),
-            Some("finance-large-refund")
-        );
+        if state.premium_governance_enabled() {
+            assert!(recorded
+                .approval_id
+                .as_deref()
+                .is_some_and(|id| id != "finance-large-refund"));
+        } else {
+            assert_eq!(
+                recorded.approval_id.as_deref(),
+                Some("finance-large-refund")
+            );
+        }
         let preview = state
             .resolve_enterprise_policy_input(
                 &EnterprisePolicyInput::new(tenant)
@@ -313,6 +419,105 @@ mod enterprise_authored_policy_tests {
             .expect("policy preview");
         assert_eq!(preview.effect, EnterprisePolicyEffect::ApprovalRequired);
         assert_eq!(preview.approval_id.as_deref(), Some("finance-large-refund"));
+    }
+
+    #[cfg(feature = "premium-governance")]
+    #[tokio::test]
+    async fn authored_approval_resumes_exactly_one_execution() {
+        let state = crate::test_support::test_state().await;
+        let tenant =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "agent-a");
+        let rule = EnterprisePolicyRule::new(
+            "approved-send",
+            "communications-authored",
+            EnterprisePolicyScopeLevel::Tenant,
+            EnterprisePolicyEffect::ApprovalRequired,
+        )
+        .with_tenant_context(tenant.clone())
+        .with_tool_patterns(vec!["mcp.email.send".to_string()])
+        .with_approval_id("external-communications");
+        state
+            .enterprise
+            .policy_rules
+            .write()
+            .await
+            .insert(rule.rule_id.clone(), rule);
+        let context = ToolPolicyContext {
+            session_id: "session-authored-approval".to_string(),
+            message_id: "message-authored-approval".to_string(),
+            tenant_context: Some(tenant.clone()),
+            verified_tenant_context: None,
+            tool: "mcp.email.send".to_string(),
+            args: json!({"to":"customer@example.com","subject":"Hello"}),
+        };
+
+        let pending = evaluate_enterprise_authored_tool_policy(&state, &context, &context.tool)
+            .await
+            .expect("pending evaluation")
+            .expect("approval gate decision");
+        assert!(!pending.allowed);
+        let approvals = state
+            .list_approval_requests_for_tenant(
+                Some(
+                    crate::automation_v2::governance::GovernanceApprovalRequestType::ElevatedCapability,
+                ),
+                None,
+                &tenant,
+            )
+            .await;
+        assert_eq!(approvals.len(), 1);
+        let approval = &approvals[0];
+        assert_eq!(
+            approval
+                .context
+                .pointer("/action_gate/source")
+                .and_then(Value::as_str),
+            Some("enterprise_authored_policy")
+        );
+        assert_eq!(
+            approval
+                .context
+                .pointer("/action_gate/approval_class")
+                .and_then(Value::as_str),
+            Some("external-communications")
+        );
+        state
+            .decide_approval_request(
+                &approval.approval_id,
+                crate::automation_v2::governance::GovernanceActorRef::human(
+                    Some("reviewer-a".to_string()),
+                    "test",
+                ),
+                true,
+                Some("approved in test".to_string()),
+                &tenant,
+            )
+            .await
+            .expect("approve request")
+            .expect("approval exists");
+
+        let first_retry = evaluate_enterprise_authored_tool_policy(&state, &context, &context.tool)
+            .await
+            .expect("approved retry");
+        let second_retry =
+            evaluate_enterprise_authored_tool_policy(&state, &context, &context.tool)
+                .await
+                .expect("consumed retry");
+        assert!(
+            first_retry.is_none(),
+            "approved retry must continue through lower policy guards"
+        );
+        assert!(
+            second_retry.is_some_and(|decision| !decision.allowed),
+            "the same receipt must not authorize a second execution"
+        );
+
+        let decisions = state.list_policy_decisions(&tenant, 20).await;
+        assert!(decisions.iter().any(|decision| {
+            decision.decision == PolicyDecisionEffect::Allow
+                && decision.reason_code == "matching_approval_receipt"
+                && decision.approval_id.as_deref() == Some(approval.approval_id.as_str())
+        }));
     }
 
     #[tokio::test]

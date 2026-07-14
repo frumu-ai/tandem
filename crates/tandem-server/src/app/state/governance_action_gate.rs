@@ -17,9 +17,16 @@ pub(super) fn is_action_gate_context(context: &Value) -> bool {
 }
 
 pub(super) fn same_action_gate_scope(left: &Value, right: &Value) -> bool {
-    ["action_hash", "session_id", "message_id", "run_id"]
-        .into_iter()
-        .all(|field| action_gate_field(left, field) == action_gate_field(right, field))
+    [
+        "action_hash",
+        "session_id",
+        "message_id",
+        "run_id",
+        "policy_id",
+        "policy_version_id",
+    ]
+    .into_iter()
+    .all(|field| action_gate_field(left, field) == action_gate_field(right, field))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
