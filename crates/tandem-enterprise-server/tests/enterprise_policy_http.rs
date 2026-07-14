@@ -10,6 +10,76 @@ use tandem_server::build_router_with_extensions;
 use tandem_server::test_support::test_state;
 
 #[tokio::test]
+async fn enterprise_policy_supersede_rejects_cross_tenant_rule_id_collisions() {
+    use tandem_enterprise_contract::{
+        EnterprisePolicyEffect, EnterprisePolicyRule, EnterprisePolicyRuleState,
+        EnterprisePolicyScopeLevel, TenantContext,
+    };
+
+    let state = test_state().await;
+    let target_tenant =
+        TenantContext::explicit_user_workspace("acme", "finance", None, "admin-user");
+    let other_tenant =
+        TenantContext::explicit_user_workspace("other-org", "ops", None, "other-admin");
+    let target_rule = EnterprisePolicyRule::new(
+        "finance-existing",
+        "finance-policy",
+        EnterprisePolicyScopeLevel::Tenant,
+        EnterprisePolicyEffect::Allow,
+    )
+    .with_tenant_context(target_tenant)
+    .with_tool_patterns(vec!["mcp.payments.create_payment".to_string()]);
+    let other_rule = EnterprisePolicyRule::new(
+        "shared-rule-id",
+        "other-policy",
+        EnterprisePolicyScopeLevel::Tenant,
+        EnterprisePolicyEffect::Deny,
+    )
+    .with_tenant_context(other_tenant.clone())
+    .with_tool_patterns(vec!["mcp.secrets.rotate".to_string()]);
+    {
+        let mut rules = state.enterprise.policy_rules.write().await;
+        rules.insert(target_rule.rule_id.clone(), target_rule);
+        rules.insert(other_rule.rule_id.clone(), other_rule);
+    }
+    let app = build_router_with_extensions(state.clone(), &[apply_routes]);
+    let replacement = json!({
+        "rule_id": "shared-rule-id",
+        "policy_id": "ignored-client-policy",
+        "version": 2,
+        "scope_level": "tenant",
+        "tool_patterns": ["mcp.payments.create_payment"],
+        "effect": "deny",
+        "reason_code": "finance_paused",
+        "reason": "payments are paused",
+        "updated_at_ms": 0
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/enterprise/policies/finance-policy/supersede")
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "finance")
+                .header("x-tandem-actor-id", "admin-user")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"rules":[replacement]}).to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let rules = state.enterprise.policy_rules.read().await;
+    let collision = rules.get("shared-rule-id").expect("other tenant rule");
+    assert_eq!(collision.policy_id, "other-policy");
+    assert_eq!(collision.tenant_context.as_ref(), Some(&other_tenant));
+    assert_eq!(
+        rules.get("finance-existing").map(|rule| rule.state),
+        Some(EnterprisePolicyRuleState::Published)
+    );
+}
+
+#[tokio::test]
 async fn enterprise_policy_authoring_publishes_and_previews_argument_predicates() {
     let state = test_state().await;
     let app = build_router_with_extensions(state.clone(), &[apply_routes]);

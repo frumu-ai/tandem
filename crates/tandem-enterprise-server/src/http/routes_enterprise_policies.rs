@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
@@ -330,7 +330,11 @@ async fn supersede_policy(
         return Err(bad_request("ENTERPRISE_POLICY_REPLACEMENT_REQUIRED"));
     }
     let mut replacements = Vec::new();
+    let mut replacement_ids = HashSet::new();
     for mut rule in request.rules {
+        if !replacement_ids.insert(rule.rule_id.clone()) {
+            return Err(conflict("ENTERPRISE_POLICY_RULE_ID_CONFLICT"));
+        }
         rule.policy_id = policy_id.clone();
         rule.tenant_context = Some(tenant_context.clone());
         rule.state = EnterprisePolicyRuleState::Published;
@@ -341,9 +345,16 @@ async fn supersede_policy(
         }
         replacements.push(rule);
     }
-    let previous = state.enterprise.policy_rules.read().await.clone();
+    let previous;
     {
         let mut registry = state.enterprise.policy_rules.write().await;
+        if replacements
+            .iter()
+            .any(|rule| registry.contains_key(&rule.rule_id))
+        {
+            return Err(conflict("ENTERPRISE_POLICY_RULE_ID_CONFLICT"));
+        }
+        previous = registry.clone();
         for rule in registry
             .values_mut()
             .filter(|rule| rule.policy_id == policy_id && tenant_matches(rule, &tenant_context))
