@@ -36,13 +36,21 @@ pub(crate) fn effective_automation_gate_expiry_policy(
         .clone()
         .unwrap_or_else(default_approval_gate_expiry_policy);
     if policy.expires_after_ms == Some(0) {
-        policy.expires_after_ms = None;
+        tracing::warn!(
+            "approval gate requested a zero expiry; applying the finite fail-closed default"
+        );
+        policy.expires_after_ms = default_approval_gate_expires_after_ms();
     }
     if policy.expires_after_ms.is_none() {
-        return None;
+        policy.expires_after_ms = default_approval_gate_expires_after_ms();
     }
     if policy.on_expiry.is_none() {
         policy.on_expiry = Some(default_approval_gate_expiry_action());
+    }
+    if matches!(policy.on_expiry, Some(AutomationGateExpiryAction::Resume)) {
+        tracing::warn!(
+            "approval gate Resume-on-timeout is enabled explicitly; the action may continue without a human decision"
+        );
     }
     if policy.remind_every_ms == Some(0) {
         policy.remind_every_ms = None;
@@ -90,11 +98,13 @@ fn default_approval_gate_expiry_policy() -> AutomationGateExpiryPolicy {
 }
 
 fn default_approval_gate_expires_after_ms() -> Option<u64> {
-    std::env::var("TANDEM_APPROVAL_GATE_DEFAULT_EXPIRES_AFTER_MS")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .or(Some(DEFAULT_APPROVAL_GATE_EXPIRES_AFTER_MS))
-        .filter(|value| *value > 0)
+    Some(
+        std::env::var("TANDEM_APPROVAL_GATE_DEFAULT_EXPIRES_AFTER_MS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_APPROVAL_GATE_EXPIRES_AFTER_MS),
+    )
 }
 
 fn default_approval_gate_expiry_action() -> AutomationGateExpiryAction {
@@ -850,4 +860,36 @@ fn clear_automation_run_execution_handles(run: &mut AutomationV2RunRecord) {
     run.active_session_ids.clear();
     run.latest_session_id = None;
     run.active_instance_ids.clear();
+}
+
+#[cfg(test)]
+mod expiry_policy_tests {
+    use super::*;
+
+    #[test]
+    fn zero_or_missing_expiry_uses_finite_fail_closed_default() {
+        for expires_after_ms in [Some(0), None] {
+            let gate = AutomationPendingGate {
+                node_id: "approval".to_string(),
+                title: "Approval".to_string(),
+                instructions: None,
+                decisions: vec!["approve".to_string(), "cancel".to_string()],
+                rework_targets: Vec::new(),
+                requested_at_ms: 1_000,
+                upstream_node_ids: Vec::new(),
+                metadata: None,
+                expiry_policy: Some(AutomationGateExpiryPolicy {
+                    expires_after_ms,
+                    on_expiry: None,
+                    escalate_to: None,
+                    remind_every_ms: None,
+                }),
+            };
+
+            let policy = effective_automation_gate_expiry_policy(&gate)
+                .expect("approval gates always receive a finite expiry");
+            assert!(policy.expires_after_ms.is_some_and(|value| value > 0));
+            assert_eq!(policy.on_expiry, Some(AutomationGateExpiryAction::Cancel));
+        }
+    }
 }

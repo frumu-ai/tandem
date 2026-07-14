@@ -239,7 +239,7 @@ async fn workflow_planner_request_capability_approval(
     let dispatch_context = state.tool_dispatch_context(
         tandem_tools::ToolDispatchSource::new("workflow_planner"),
         TenantContext::local_implicit(),
-        Vec::new(),
+        vec!["mcp_request_capability".to_string()],
     );
     match state
         .tool_dispatcher

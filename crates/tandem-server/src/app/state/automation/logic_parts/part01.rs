@@ -429,7 +429,9 @@ async fn automation_knowledge_preflight(
     }
     let task_family = automation_node_knowledge_task_family(node);
     let paths = resolve_shared_paths().ok()?;
-    let manager = MemoryManager::new_runtime(&paths.memory_db_path).await.ok()?;
+    let manager = MemoryManager::new_runtime(&paths.memory_db_path)
+        .await
+        .ok()?;
     let tenant_context = automation.tenant_context();
     let memory_tenant_scope = tandem_memory::types::MemoryTenantScope {
         org_id: tenant_context.org_id.clone(),
@@ -794,9 +796,7 @@ pub(crate) fn automation_add_mcp_list_when_scoped(
         requested_tools.retain(|tool| tool != "mcp_list");
         return requested_tools;
     }
-    if has_selected_mcp_servers
-        && !requested_tools.iter().any(|tool| tool == "mcp_list")
-    {
+    if has_selected_mcp_servers && !requested_tools.iter().any(|tool| tool == "mcp_list") {
         requested_tools.push("mcp_list".to_string());
     }
     requested_tools
@@ -1062,6 +1062,7 @@ async fn sync_automation_allowed_mcp_servers(
     tenant_context: &TenantContext,
 ) -> Value {
     let mcp_servers = state.mcp.list().await;
+    let live_connections = state.mcp.list_connections().await;
     let enabled_server_names = mcp_servers
         .values()
         .filter(|server| server.enabled)
@@ -1100,10 +1101,19 @@ async fn sync_automation_allowed_mcp_servers(
         let server_record = mcp_servers.get(server_name);
         let exists = server_record.is_some();
         let enabled = server_record.is_some_and(|server| server.enabled);
-        let connection_grant =
-            automation_mcp_connection_grant_for_server(server_name, allowed_connections);
-        let preflight_tenant_context =
-            automation_mcp_preflight_tenant_context(tenant_context, connection_grant);
+        let has_saved_connection_grant = allowed_connections
+            .iter()
+            .any(|grant| grant.server.eq_ignore_ascii_case(server_name));
+        let connection_grant = automation_mcp_connection_grant_for_server(
+            server_name,
+            allowed_connections,
+            &live_connections,
+        );
+        let preflight_tenant_context = if has_saved_connection_grant && connection_grant.is_none() {
+            Err("connection_grant_invalidated")
+        } else {
+            automation_mcp_preflight_tenant_context(tenant_context, connection_grant)
+        };
         let connected = if let (true, Ok(preflight_tenant_context)) =
             (enabled, preflight_tenant_context.as_ref())
         {

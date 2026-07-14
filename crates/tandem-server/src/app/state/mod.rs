@@ -31,7 +31,8 @@ use tandem_enterprise_contract::{
 use tandem_memory::types::{MemorySourceAccessTarget, MemoryTier};
 use tandem_orchestrator::MissionState;
 use tandem_tools::{
-    ToolDispatchContext, ToolDispatchLedger, ToolDispatchLedgerEvent, ToolDispatchPreSendEvent,
+    ToolDispatchContext, ToolDispatchDecision, ToolDispatchLedger, ToolDispatchLedgerEvent,
+    ToolDispatchPolicy, ToolDispatchPolicyContext, ToolDispatchPreSendEvent,
     ToolDispatchPreSendReceipt, ToolDispatchSource,
 };
 use tandem_types::{
@@ -327,6 +328,89 @@ struct AppStateToolDispatchLedger {
     runtime_events_path: PathBuf,
 }
 
+#[derive(Clone)]
+struct AppStateToolDispatchPolicy {
+    state: AppState,
+    trust_server_scope: bool,
+}
+
+#[async_trait::async_trait]
+impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
+    async fn evaluate(
+        &self,
+        context: ToolDispatchPolicyContext,
+    ) -> anyhow::Result<ToolDispatchDecision> {
+        use tandem_core::ToolPolicyHook;
+
+        let dispatch_tool = context
+            .canonical_tool
+            .clone()
+            .unwrap_or_else(|| context.requested_tool.clone());
+        let Some(runtime) = self.state.runtime.get() else {
+            return Ok(ToolDispatchDecision::deny(
+                "server runtime permissions are not initialized",
+            ));
+        };
+        let permission_action = runtime.permissions.evaluate_tool(&dispatch_tool).await;
+        if matches!(permission_action, tandem_core::PermissionAction::Deny) {
+            return Ok(ToolDispatchDecision::deny(format!(
+                "server tool `{dispatch_tool}` is denied by permission rule"
+            )));
+        }
+        let hook = crate::agent_teams::ServerToolPolicyHook::new(self.state.clone());
+        let decision = hook
+            .evaluate_tool(tandem_core::ToolPolicyContext {
+                session_id: context
+                    .source
+                    .session_id
+                    .clone()
+                    .or_else(|| context.source.request_id.clone())
+                    .unwrap_or_else(|| "server_dispatch".to_string()),
+                message_id: context
+                    .source
+                    .message_id
+                    .clone()
+                    .or_else(|| context.source.request_id.clone())
+                    .unwrap_or_else(|| "server_dispatch".to_string()),
+                tenant_context: Some(context.tenant_context),
+                verified_tenant_context: context.verified_tenant_context,
+                tool: dispatch_tool.clone(),
+                args: context.args,
+            })
+            .await?;
+        if !decision.allowed {
+            return Ok(ToolDispatchDecision {
+                outcome: tandem_tools::ToolDispatchPolicyOutcome::Denied,
+                reason: decision.reason,
+                policy_decision_id: decision.policy_decision_id,
+            });
+        }
+        if self.trust_server_scope && !context.scope_allowlist.is_empty() {
+            let allowed_patterns = normalize_allowed_tools(context.scope_allowlist.clone());
+            if tandem_core::any_policy_matches(&allowed_patterns, &dispatch_tool) {
+                return Ok(ToolDispatchDecision::allow_with_id(
+                    decision.policy_decision_id.unwrap_or_else(|| {
+                        format!("server_dispatch_scope:{}", context.source.kind)
+                    }),
+                ));
+            }
+        }
+        Ok(match permission_action {
+            tandem_core::PermissionAction::Allow => {
+                ToolDispatchDecision::allow_with_id(
+                    decision
+                        .policy_decision_id
+                        .unwrap_or_else(|| "server_permission_rule".to_string()),
+                )
+            }
+            tandem_core::PermissionAction::Ask => ToolDispatchDecision::deny(format!(
+                "server tool `{dispatch_tool}` requires approval and cannot execute without a matching receipt"
+            )),
+            tandem_core::PermissionAction::Deny => unreachable!("handled above"),
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl ToolDispatchLedger for AppStateToolDispatchLedger {
     async fn prepare_pre_send(
@@ -338,6 +422,7 @@ impl ToolDispatchLedger for AppStateToolDispatchLedger {
 
     async fn record(&self, event: ToolDispatchLedgerEvent) -> anyhow::Result<()> {
         tool_dispatch_outbox::complete_pre_send_outbox(&self.runtime_events_path, &event).await?;
+        tool_dispatch_outbox::persist_dispatch_receipt(&self.runtime_events_path, &event).await?;
         self.event_bus.publish(EngineEvent::new(
             "tool.dispatch.recorded",
             serde_json::to_value(event).unwrap_or(Value::Null),

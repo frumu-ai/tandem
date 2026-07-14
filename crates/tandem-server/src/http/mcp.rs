@@ -966,7 +966,7 @@ async fn start_mcp_oauth_session(
         .oauth
         .insert_mcp_session(session_id.clone(), session.clone())
         .await;
-    publish_mcp_oauth_event(state, "mcp.connection.oauth_started", &session, None).await;
+    publish_mcp_oauth_event(state, "mcp.connection.oauth_started", &session, None).await?;
     let _ = state
         .mcp
         .record_auth_challenge_for_tenant(name, tenant_context, challenge.clone(), None)
@@ -1002,7 +1002,7 @@ async fn publish_mcp_oauth_event(
     event: &str,
     session: &McpOAuthSessionRecord,
     reason: Option<&str>,
-) {
+) -> Result<(), String> {
     let payload = json!({
         "server_name": session.server_name,
         "serverName": session.server_name,
@@ -1019,14 +1019,16 @@ async fn publish_mcp_oauth_event(
         .event_bus
         .publish(EngineEvent::new(event, payload.clone()));
     let actor_id = session.tenant_context.actor_id.clone();
-    crate::audit::append_protected_audit_event_best_effort(
+    crate::audit::append_protected_audit_event(
         state,
         event,
         &session.tenant_context,
         actor_id,
         payload,
     )
-    .await;
+    .await
+    .map(|_| ())
+    .map_err(|error| format!("required MCP OAuth lifecycle receipt could not be written: {error}"))
 }
 
 fn mcp_tenant_event_payload(
@@ -1126,7 +1128,7 @@ async fn finish_mcp_oauth_callback(
                 &session,
                 Some("tenant_context_mismatch"),
             )
-            .await;
+            .await?;
             return Err("mcp oauth callback tenant context did not match session".to_string());
         }
     }
@@ -1137,7 +1139,7 @@ async fn finish_mcp_oauth_callback(
             &session,
             Some("session_already_completed"),
         )
-        .await;
+        .await?;
         return Err("mcp oauth session already completed".to_string());
     }
     if session.expires_at_ms <= crate::now_ms() {
@@ -1147,7 +1149,7 @@ async fn finish_mcp_oauth_callback(
             &session,
             Some("session_expired"),
         )
-        .await;
+        .await?;
         return Err("mcp oauth session expired before callback completed".to_string());
     }
 
@@ -1177,7 +1179,7 @@ async fn finish_mcp_oauth_callback(
             &session,
             Some("provider_error"),
         )
-        .await;
+        .await?;
         return Err(detail);
     }
 
@@ -1307,7 +1309,7 @@ async fn finish_mcp_oauth_callback(
             return Err(error);
         }
     }
-    publish_mcp_oauth_event(&state, "mcp.connection.oauth_completed", &session, None).await;
+    publish_mcp_oauth_event(&state, "mcp.connection.oauth_completed", &session, None).await?;
 
     state
         .oauth

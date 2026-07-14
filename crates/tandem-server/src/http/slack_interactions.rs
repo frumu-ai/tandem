@@ -343,7 +343,7 @@ pub(crate) async fn slack_interactions(
                 None,
                 "slack",
             );
-            crate::http::channel_interaction_audit::append_cross_tenant_denial(
+            if let Err(error) = crate::http::channel_interaction_audit::append_cross_tenant_denial(
                 &state,
                 "slack",
                 &approval_identity,
@@ -351,7 +351,12 @@ pub(crate) async fn slack_interactions(
                 channel_tenant,
                 &tenant_context,
             )
-            .await;
+            .await
+            {
+                return reject_forbidden(&format!(
+                    "channel denied; required denial receipt persistence failed: {error}"
+                ));
+            }
             return reject_forbidden("channel not bound to this run's tenant");
         }
     }

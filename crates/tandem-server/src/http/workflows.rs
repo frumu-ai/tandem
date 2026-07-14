@@ -148,7 +148,7 @@ pub(super) async fn workflows_run(
     Path(WorkflowRunPath { id }): Path<WorkflowRunPath>,
 ) -> Result<Json<Value>, StatusCode> {
     let workflow = state.get_workflow(&id).await.ok_or(StatusCode::NOT_FOUND)?;
-    let run = execute_workflow(
+    let run = Box::pin(execute_workflow(
         &state,
         &workflow,
         tenant_context,
@@ -156,7 +156,7 @@ pub(super) async fn workflows_run(
         None,
         None,
         false,
-    )
+    ))
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(json!({ "run": run })))

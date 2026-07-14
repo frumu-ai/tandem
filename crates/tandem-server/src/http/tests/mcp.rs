@@ -907,7 +907,12 @@ async fn mcp_list_redacts_execute_tools_without_strict_grant() {
         .dispatch(
             "mcp_list",
             json!({}),
-            tandem_tools::ToolDispatchContext::for_tenant("test", tenant_context)
+            state
+                .tool_dispatch_context(
+                    tandem_tools::ToolDispatchSource::new("test"),
+                    tenant_context,
+                    vec!["mcp_list".to_string()],
+                )
                 .with_verified_tenant_context(verified_context),
         )
         .await

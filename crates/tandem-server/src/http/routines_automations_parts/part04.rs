@@ -617,7 +617,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             "AUTOMATION_V2_GATE_REQUIRES_HUMAN",
             "Approval gate decisions require a verified human approver",
         )
-        .await;
+        .await?;
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -746,7 +746,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             "AUTOMATION_V2_GATE_EXPIRED",
             detail,
         )
-        .await;
+        .await?;
         return Err((
             StatusCode::CONFLICT,
             Json(json!({
@@ -768,7 +768,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
         verified_tenant_context.as_ref(),
         now_ms,
     ) {
-        audit_gate_decision_denial(&state, &current, Some(&gate), &decider, code, detail).await;
+        audit_gate_decision_denial(&state, &current, Some(&gate), &decider, code, detail).await?;
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -825,7 +825,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             &decider,
             &denial,
         )
-        .await;
+        .await?;
         audit_gate_decision_denial(
             &state,
             &updated,
@@ -834,7 +834,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             denial.code,
             &denial.detail,
         )
-        .await;
+        .await?;
         return Err((
             StatusCode::CONFLICT,
             Json(json!({
@@ -1176,7 +1176,7 @@ async fn record_transition_guard_policy_decision(
     gate: &crate::AutomationPendingGate,
     actor: &crate::automation_v2::governance::GovernanceActorRef,
     denial: &crate::app::state::AutomationGateTransitionGuardDenial,
-) {
+) -> Result<(), (StatusCode, Json<Value>)> {
     let decision = tandem_types::PolicyDecisionRecord {
         decision_id: format!("policy_decision_{}", uuid::Uuid::new_v4().simple()),
         tenant_context: run.tenant_context.clone(),
@@ -1205,9 +1205,11 @@ async fn record_transition_guard_policy_decision(
         created_at_ms: crate::now_ms(),
         metadata: denial.metadata.clone(),
     };
-    if let Err(error) = state.record_policy_decision(decision).await {
-        tracing::warn!("failed to record transition guard policy decision: {error:?}");
-    }
+    state
+        .record_policy_decision(decision)
+        .await
+        .map(|_| ())
+        .map_err(|error| denial_receipt_error("transition guard policy decision", error))
 }
 
 async fn audit_gate_decision_denial(
@@ -1217,8 +1219,8 @@ async fn audit_gate_decision_denial(
     actor: &crate::automation_v2::governance::GovernanceActorRef,
     code: &str,
     detail: &str,
-) {
-    crate::audit::append_protected_audit_event_best_effort(
+) -> Result<(), (StatusCode, Json<Value>)> {
+    crate::audit::append_protected_audit_event(
         state,
         "automation.governance.gate_decision_denied",
         &run.tenant_context,
@@ -1238,7 +1240,19 @@ async fn audit_gate_decision_denial(
             "actor": actor,
         }),
     )
-    .await;
+    .await
+    .map(|_| ())
+    .map_err(|error| denial_receipt_error("approval gate denial", error))
+}
+
+fn denial_receipt_error(receipt: &str, error: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "error": format!("operation remained denied, but its required {receipt} receipt could not be written: {error}"),
+            "code": "AUDIT_PERSISTENCE_FAILED",
+        })),
+    )
 }
 
 fn spawn_channel_approval_decision_update(

@@ -41,6 +41,8 @@ pub struct AutomationMcpConnectionGrant {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_generation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_as: Option<AutomationMcpRunAs>,
 }
 
@@ -53,14 +55,16 @@ impl AutomationMcpConnectionGrant {
         Some(Self {
             server,
             connection_id: normalize_optional_string(self.connection_id),
+            connection_generation: normalize_optional_string(self.connection_generation),
             run_as: self.run_as.map(AutomationMcpRunAs::normalized),
         })
     }
 
-    fn sort_key(&self) -> (String, String, String) {
+    fn sort_key(&self) -> (String, String, String, String) {
         (
             self.server.to_ascii_lowercase(),
             self.connection_id.clone().unwrap_or_default(),
+            self.connection_generation.clone().unwrap_or_default(),
             self.run_as
                 .as_ref()
                 .map(AutomationMcpRunAs::sort_key)
@@ -157,6 +161,7 @@ mod tests {
             allowed_connections: vec![AutomationMcpConnectionGrant {
                 server: " linear ".to_string(),
                 connection_id: Some(" conn-1 ".to_string()),
+                connection_generation: Some(" generation-1 ".to_string()),
                 run_as: Some(AutomationMcpRunAs::SharedConnection {
                     grant_id: " shared-1 ".to_string(),
                 }),
@@ -172,6 +177,12 @@ mod tests {
         assert_eq!(
             policy.allowed_connections[0].connection_id.as_deref(),
             Some("conn-1")
+        );
+        assert_eq!(
+            policy.allowed_connections[0]
+                .connection_generation
+                .as_deref(),
+            Some("generation-1")
         );
     }
 }

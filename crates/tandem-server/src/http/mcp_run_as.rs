@@ -172,7 +172,7 @@ async fn call_mcp_tool_for_tenant_with_trusted_context(
             &run_as,
             phase_preflight.as_ref(),
         )
-        .await;
+        .await?;
     }
 
     append_mcp_tool_execution_audit_event(
@@ -194,7 +194,7 @@ async fn call_mcp_tool_for_tenant_with_trusted_context(
         phase_preflight.as_ref(),
         &result,
     )
-    .await;
+    .await?;
     result.map(|mut result| {
         let run_as_payload = run_as.audit_payload();
         if let Some(metadata) = result.metadata.as_object_mut() {
@@ -238,13 +238,13 @@ async fn append_mcp_secret_tenant_mismatch_audit_event(
     tool_name: &str,
     run_as: &McpRunAsResolution,
     phase_preflight: Option<&McpPhaseToolAuthorityPreflight>,
-) {
+) -> Result<(), String> {
     let Some(denial) = state
         .mcp
         .secret_tenant_mismatch_audit(server_name, tool_name, &run_as.effective_tenant_context)
         .await
     else {
-        return;
+        return Ok(());
     };
     let resource = mcp_tool_resource_ref(&denial.tenant_context, server_name, tool_name);
     let decision_id = record_mcp_secret_scope_decision(
@@ -257,7 +257,7 @@ async fn append_mcp_secret_tenant_mismatch_audit_event(
         phase_preflight,
     )
     .await;
-    crate::audit::append_protected_audit_event_best_effort(
+    crate::audit::append_protected_audit_event(
         state,
         "mcp.secret_tenant_mismatch",
         &denial.tenant_context,
@@ -276,7 +276,11 @@ async fn append_mcp_secret_tenant_mismatch_audit_event(
             "secret_material_redacted": true,
         }),
     )
-    .await;
+    .await
+    .map(|_| ())
+    .map_err(|error| {
+        format!("required MCP secret-scope denial receipt could not be written: {error}")
+    })
 }
 
 async fn resolve_mcp_run_as(
@@ -303,7 +307,7 @@ async fn resolve_mcp_run_as(
                 None,
                 &reason,
             )
-            .await;
+            .await?;
             return Err(format!(
                     "ToolDenied {{ reason: McpRunAsPolicy }}: blocked MCP tool `{server_name}.{tool_name}` because {reason}."
                 ));
@@ -328,7 +332,7 @@ async fn resolve_mcp_run_as(
                 Some(&expected_connection_id),
                 &reason,
             )
-            .await;
+            .await?;
             return Err(format!(
                 "ToolDenied {{ reason: McpRunAsPolicy }}: blocked MCP tool `{server_name}.{tool_name}` because {reason}."
             ));
@@ -353,7 +357,7 @@ async fn resolve_mcp_run_as(
                 Some(&expected_connection_id),
                 reason,
             )
-            .await;
+            .await?;
             return Err(format!(
                 "ToolDenied {{ reason: McpRunAsPolicy }}: blocked MCP tool `{server_name}.{tool_name}` because {reason}."
             ));
@@ -376,7 +380,7 @@ async fn resolve_mcp_run_as(
                 Some(&expected_connection_id),
                 reason,
             )
-            .await;
+            .await?;
             return Err(format!(
                 "ToolDenied {{ reason: McpRunAsPolicy }}: blocked MCP tool `{server_name}.{tool_name}` because {reason}."
             ));
@@ -568,7 +572,7 @@ async fn enforce_mcp_context_assertion_preflight(
             None,
             None,
         )
-        .await;
+        .await?;
         return Err(format!(
             "ToolDenied {{ reason: ContextAssertion }}: blocked MCP tool `{server_name}.{tool_name}` because a verified tenant context assertion is required."
         ));
@@ -603,7 +607,7 @@ async fn enforce_mcp_context_assertion_preflight(
             Some(strict_context),
             None,
         )
-        .await;
+        .await?;
         return Err(format!(
             "ToolDenied {{ reason: ContextAssertion }}: blocked MCP tool `{server_name}.{tool_name}` because the verified tenant context does not match the effective tenant."
         ));
@@ -649,7 +653,7 @@ async fn enforce_mcp_context_assertion_preflight(
             Some(strict_context),
             evaluation.grant_id.as_deref(),
         )
-        .await;
+        .await?;
         return Err(format!(
             "ToolDenied {{ reason: ContextAssertion }}: blocked MCP tool `{server_name}.{tool_name}` because context assertion evaluation returned `{}`.",
             evaluation.reason
@@ -670,7 +674,7 @@ async fn enforce_mcp_context_assertion_preflight(
             Some(strict_context),
             record.grant_id.as_deref(),
         )
-        .await;
+        .await?;
         return Err(format!(
             "ToolDenied {{ reason: ContextAssertion }}: blocked MCP tool `{server_name}.{tool_name}` because enterprise policy resolved to `{:?}`: {}.",
             record.decision, record.reason
@@ -746,7 +750,7 @@ async fn enforce_mcp_phase_tool_authority(
             &resource,
             &preflight,
         )
-        .await;
+        .await?;
         return Err(format!(
             "ToolDenied {{ reason: PhaseToolAuthority }}: blocked MCP tool `{server_name}.{tool_name}` because {}.",
             preflight.reason
@@ -845,7 +849,7 @@ async fn enforce_mcp_phase_tool_authority(
             &resource,
             &preflight,
         )
-        .await;
+        .await?;
         return Err(format!(
             "ToolDenied {{ reason: PhaseToolAuthority }}: blocked MCP tool `{server_name}.{tool_name}` because {}.",
             preflight.reason
@@ -1181,12 +1185,12 @@ async fn append_mcp_context_assertion_denial_audit_event(
     reason: &str,
     strict_context: Option<&StrictTenantContext>,
     grant_id: Option<&str>,
-) {
+) -> Result<(), String> {
     let actor_id = strict_context
         .and_then(|context| context.principal.tenant_actor_id.clone())
         .or_else(|| tenant_context.actor_id.clone())
         .or_else(|| strict_context.map(|context| context.principal.id.clone()));
-    crate::audit::append_protected_audit_event_best_effort(
+    crate::audit::append_protected_audit_event(
         state,
         "mcp.context_assertion_denied",
         tenant_context,
@@ -1203,7 +1207,9 @@ async fn append_mcp_context_assertion_denial_audit_event(
             "created_at_ms": now_ms(),
         }),
     )
-    .await;
+    .await
+    .map(|_| ())
+    .map_err(|error| format!("required MCP context denial receipt could not be written: {error}"))
 }
 
 async fn append_mcp_phase_tool_authority_denial_audit_event(
@@ -1212,8 +1218,8 @@ async fn append_mcp_phase_tool_authority_denial_audit_event(
     run_as: &McpRunAsResolution,
     resource: &ResourceRef,
     preflight: &McpPhaseToolAuthorityPreflight,
-) {
-    crate::audit::append_protected_audit_event_best_effort(
+) -> Result<(), String> {
+    crate::audit::append_protected_audit_event(
         state,
         "mcp.phase_tool.denied",
         tenant_context,
@@ -1236,7 +1242,9 @@ async fn append_mcp_phase_tool_authority_denial_audit_event(
             "created_at_ms": now_ms(),
         }),
     )
-    .await;
+    .await
+    .map(|_| ())
+    .map_err(|error| format!("required MCP phase denial receipt could not be written: {error}"))
 }
 
 async fn append_mcp_run_as_denial_audit_event(
@@ -1248,8 +1256,8 @@ async fn append_mcp_run_as_denial_audit_event(
     requested_connection_id: Option<&str>,
     expected_connection_id: Option<&str>,
     reason: &str,
-) {
-    crate::audit::append_protected_audit_event_best_effort(
+) -> Result<(), String> {
+    crate::audit::append_protected_audit_event(
         state,
         "mcp.run_as_denied",
         effective_tenant_context,
@@ -1265,7 +1273,9 @@ async fn append_mcp_run_as_denial_audit_event(
             "created_at_ms": now_ms(),
         }),
     )
-    .await;
+    .await
+    .map(|_| ())
+    .map_err(|error| format!("required MCP run-as denial receipt could not be written: {error}"))
 }
 
 async fn append_mcp_tool_execution_audit_event(
@@ -1310,7 +1320,7 @@ async fn record_mcp_tool_effect_receipt(
     context_preflight: Option<&McpContextAssertionPreflight>,
     phase_preflight: Option<&McpPhaseToolAuthorityPreflight>,
     result: &Result<ToolResult, String>,
-) {
+) -> Result<(), String> {
     let now_ms = now_ms();
     let operation = mcp_tool_policy_name(server_name, tool_name);
     let receipt_payload = mcp_tool_receipt_payload(
@@ -1393,14 +1403,14 @@ async fn record_mcp_tool_effect_receipt(
     };
     let reliability_path =
         stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
-    if let Err(error) = upsert_stateful_tool_effect(&reliability_path, record).await {
-        tracing::warn!(
-            "failed to record MCP tool effect receipt for {}.{}: {}",
-            server_name,
-            tool_name,
-            error
-        );
-    }
+    upsert_stateful_tool_effect(&reliability_path, record)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "required MCP tool effect receipt for {server_name}.{tool_name} could not be written: {error}"
+            )
+        })
 }
 
 fn mcp_tool_receipt_payload(

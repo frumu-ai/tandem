@@ -776,6 +776,11 @@ mod tests {
                         == Some("succeeded")
                     && event
                         .properties
+                        .get("receipt_phase")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("execution_completed")
+                    && event
+                        .properties
                         .pointer("/source/session_id")
                         .and_then(serde_json::Value::as_str)
                         == Some(session_id.as_str())

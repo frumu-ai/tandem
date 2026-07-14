@@ -397,7 +397,10 @@ async fn action_gate_denial_executes_zero_times() {
     state
         .decide_approval_request(
             &approval.approval_id,
-            GovernanceActorRef::human(Some("reviewer-1".to_string()), "test"),
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("reviewer-1".to_string()),
+                "test",
+            ),
             false,
             Some("denied in test".to_string()),
             &tenant(),
@@ -419,7 +422,10 @@ async fn action_gate_approval_resumes_exactly_one_execution() {
     state
         .decide_approval_request(
             &approval.approval_id,
-            GovernanceActorRef::human(Some("reviewer-1".to_string()), "test"),
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("reviewer-1".to_string()),
+                "test",
+            ),
             true,
             Some("approved in test".to_string()),
             &tenant(),
@@ -607,6 +613,240 @@ async fn egress_preflight_creates_safe_customer_data_approval_request() {
     assert!(audit.contains("\"event_type\":\"egress.preflight.approval_required\""));
     assert!(audit.contains(&decision_id));
     assert!(audit.contains(&approval_id));
+}
+
+#[tokio::test]
+async fn approved_egress_receipt_authorizes_exactly_one_retry() {
+    use tandem_core::ToolPolicyContext;
+
+    let state = test_state().await;
+    if !state.premium_governance_enabled() {
+        return;
+    }
+    let ctx = ToolPolicyContext {
+        session_id: "session-egress-once".to_string(),
+        message_id: "message-egress-once".to_string(),
+        tenant_context: Some(tenant()),
+        verified_tenant_context: None,
+        tool: "mcp.email.send".to_string(),
+        args: json!({
+            "to": "alice.customer@example.com",
+            "subject": "Renewal follow-up",
+            "body": "Customer account ACME-42 renewal is ready."
+        }),
+    };
+
+    let pending =
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(&state, &ctx, "mcp.email.send")
+            .await
+            .expect("egress action enters approval");
+    assert!(!pending.allowed);
+    let approval_id = state
+        .get_policy_decision(
+            pending
+                .policy_decision_id
+                .as_deref()
+                .expect("policy decision id"),
+        )
+        .await
+        .and_then(|decision| decision.approval_id)
+        .expect("approval id");
+    state
+        .decide_approval_request(
+            &approval_id,
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("reviewer-1".to_string()),
+                "test",
+            ),
+            true,
+            Some("approved in test".to_string()),
+            &tenant(),
+        )
+        .await
+        .expect("approve egress request")
+        .expect("approval exists");
+
+    let first_retry =
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(&state, &ctx, "mcp.email.send")
+            .await
+            .expect("approved retry is evaluated");
+    let second_retry =
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(&state, &ctx, "mcp.email.send")
+            .await
+            .expect("consumed retry is evaluated");
+
+    assert_eq!(
+        usize::from(first_retry.allowed) + usize::from(second_retry.allowed),
+        1,
+        "an approved egress receipt must authorize exactly one execution"
+    );
+    let consumed = state
+        .get_governance_approval_request(&approval_id)
+        .await
+        .expect("consumed approval remains durable");
+    assert!(consumed
+        .context
+        .pointer("/egress_dlp/consumed_at_ms")
+        .and_then(Value::as_u64)
+        .is_some());
+}
+
+#[tokio::test]
+async fn consumed_egress_approval_fails_closed_when_policy_receipt_write_fails() {
+    let mut state = test_state().await;
+    if !state.premium_governance_enabled() {
+        return;
+    }
+    let ctx = egress_test_context("Customer account ACME-42 renewal is ready.");
+    approve_egress_test_request(&state, &ctx).await;
+    let blocked_path = state
+        .policy_decisions_path
+        .parent()
+        .expect("policy decision parent")
+        .join("policy-decisions-blocked-dir");
+    tokio::fs::create_dir_all(&blocked_path)
+        .await
+        .expect("create blocked policy decision path");
+    state.policy_decisions_path = blocked_path;
+
+    let retry =
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(&state, &ctx, "mcp.email.send")
+            .await
+            .expect("approved retry is evaluated");
+
+    assert!(!retry.allowed);
+    assert!(retry.policy_decision_id.is_none());
+    assert!(retry
+        .reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("durable policy decision receipt")));
+}
+
+async fn approve_egress_test_request(
+    state: &AppState,
+    ctx: &tandem_core::ToolPolicyContext,
+) -> String {
+    let pending =
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(state, ctx, "mcp.email.send")
+            .await
+            .expect("egress action enters approval");
+    let approval_id = state
+        .get_policy_decision(
+            pending
+                .policy_decision_id
+                .as_deref()
+                .expect("policy decision id"),
+        )
+        .await
+        .and_then(|decision| decision.approval_id)
+        .expect("approval id");
+    state
+        .decide_approval_request(
+            &approval_id,
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("reviewer-1".to_string()),
+                "test",
+            ),
+            true,
+            Some("approved in test".to_string()),
+            &tenant(),
+        )
+        .await
+        .expect("approve egress request")
+        .expect("approval exists");
+    approval_id
+}
+
+fn egress_test_context(body: &str) -> tandem_core::ToolPolicyContext {
+    tandem_core::ToolPolicyContext {
+        session_id: "session-egress-binding".to_string(),
+        message_id: "message-egress-binding".to_string(),
+        tenant_context: Some(tenant()),
+        verified_tenant_context: None,
+        tool: "mcp.email.send".to_string(),
+        args: json!({
+            "to": "alice.customer@example.com",
+            "subject": "Renewal follow-up",
+            "body": body,
+        }),
+    }
+}
+
+#[tokio::test]
+async fn egress_approval_is_bound_to_exact_arguments() {
+    let state = test_state().await;
+    if !state.premium_governance_enabled() {
+        return;
+    }
+    let approved_ctx = egress_test_context("Customer account ACME-42 renewal is ready.");
+    approve_egress_test_request(&state, &approved_ctx).await;
+    let mutated_ctx = egress_test_context("Send customer account ACME-99 instead.");
+
+    let mutated = crate::agent_teams::evaluate_egress_preflight_tool_policy(
+        &state,
+        &mutated_ctx,
+        "mcp.email.send",
+    )
+    .await
+    .expect("mutated action evaluated");
+    let exact = crate::agent_teams::evaluate_egress_preflight_tool_policy(
+        &state,
+        &approved_ctx,
+        "mcp.email.send",
+    )
+    .await
+    .expect("exact action evaluated");
+
+    assert!(!mutated.allowed, "changed arguments require a new approval");
+    assert!(exact.allowed, "the exact approved action may execute once");
+}
+
+#[tokio::test]
+async fn expired_egress_approval_fails_closed() {
+    let state = test_state().await;
+    if !state.premium_governance_enabled() {
+        return;
+    }
+    let ctx = egress_test_context("Customer account ACME-42 renewal is ready.");
+    let approval_id = approve_egress_test_request(&state, &ctx).await;
+    state
+        .automation_governance
+        .write()
+        .await
+        .approvals
+        .get_mut(&approval_id)
+        .expect("approval")
+        .expires_at_ms = 0;
+
+    let retry =
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(&state, &ctx, "mcp.email.send")
+            .await
+            .expect("expired action evaluated");
+    assert!(!retry.allowed);
+}
+
+#[tokio::test]
+async fn concurrent_egress_retries_consume_one_receipt_atomically() {
+    let state = test_state().await;
+    if !state.premium_governance_enabled() {
+        return;
+    }
+    let ctx = egress_test_context("Customer account ACME-42 renewal is ready.");
+    approve_egress_test_request(&state, &ctx).await;
+
+    let (first, second) = tokio::join!(
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(&state, &ctx, "mcp.email.send"),
+        crate::agent_teams::evaluate_egress_preflight_tool_policy(&state, &ctx, "mcp.email.send")
+    );
+    let allowed = [first, second]
+        .into_iter()
+        .flatten()
+        .filter(|decision| decision.allowed)
+        .count();
+    assert_eq!(
+        allowed, 1,
+        "only one concurrent retry may consume the receipt"
+    );
 }
 
 #[tokio::test]

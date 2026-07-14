@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  mcpConnectionGrantIdentityKey,
   mcpConnectionOwnerLabel,
   normalizeMcpConnectionGrants,
   normalizeMcpConnectionsFromInventory,
@@ -15,6 +16,7 @@ test("normalizes tenant-scoped MCP connections from server inventory", () => {
       connections: [
         {
           connection_id: "github:alice",
+          connection_generation: "generation-a",
           server_id: "github",
           connection_class: "user_owned",
           connected: true,
@@ -55,6 +57,7 @@ test("normalizes tenant-scoped MCP connections from server inventory", () => {
   assert.equal(rows.length, 2);
   assert.equal(rows[0].server, "github");
   assert.equal(rows[0].connectionId, "github:alice");
+  assert.equal(rows[0].connectionGeneration, "generation-a");
   assert.equal(mcpConnectionOwnerLabel(rows[0]), "alice@example.com");
   assert.deepEqual(rows[0].toolCache, ["mcp.github.list_issues"]);
   assert.equal(rows[1].connectionClass, "shared_read_write");
@@ -65,15 +68,47 @@ test("normalizes tenant-scoped MCP connections from server inventory", () => {
   );
 });
 
-test("deduplicates MCP connection grants by server, connection, and run_as", () => {
+test("deduplicates MCP connection grants by immutable identity and run_as", () => {
   const grants = normalizeMcpConnectionGrants([
-    { server: "github", connection_id: "github:alice" },
-    { server: "github", connectionId: "github:alice" },
+    {
+      server: "github",
+      connection_id: "github:alice",
+      connection_generation: "generation-a",
+    },
+    {
+      server: "github",
+      connectionId: "github:alice",
+      connectionGeneration: "generation-a",
+    },
+    {
+      server: "github",
+      connection_id: "github:alice",
+      connection_generation: "generation-b",
+    },
     { server_name: "slack", connection_id: "slack:shared", run_as: { mode: "delegated" } },
   ]);
 
   assert.deepEqual(grants, [
-    { server: "github", connection_id: "github:alice" },
+    {
+      server: "github",
+      connection_id: "github:alice",
+      connection_generation: "generation-a",
+    },
+    {
+      server: "github",
+      connection_id: "github:alice",
+      connection_generation: "generation-b",
+    },
     { server: "slack", connection_id: "slack:shared", run_as: { mode: "delegated" } },
   ]);
+  assert.equal(
+    mcpConnectionGrantIdentityKey({
+      server: "GitHub",
+      connection_id: "github:alice",
+      connection_generation: "generation-a",
+      run_as: { mode: "delegated" },
+    }),
+    mcpConnectionGrantIdentityKey(grants[0]),
+    "run_as does not change immutable connector identity"
+  );
 });

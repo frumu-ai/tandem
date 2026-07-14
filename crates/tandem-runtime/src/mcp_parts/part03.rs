@@ -1046,7 +1046,7 @@ mod tests {
         );
 
         let persisted = std::fs::read_to_string(&file).expect("read migrated state");
-        assert!(persisted.contains("\"schema_version\": 2"));
+        assert!(persisted.contains("\"schema_version\": 3"));
         assert!(persisted.contains("\"connections\""));
         assert!(!persisted.contains("Bearer "));
         let _ = std::fs::remove_file(file);
@@ -1070,7 +1070,7 @@ mod tests {
             .await;
 
         let persisted = std::fs::read_to_string(&file).expect("read persisted state");
-        assert!(persisted.contains("\"schema_version\": 2"));
+        assert!(persisted.contains("\"schema_version\": 3"));
         assert!(persisted.contains("\"connections\""));
         assert!(
             !persisted.contains("super-secret-token"),
@@ -1114,6 +1114,315 @@ mod tests {
             .await
             .expect_err("server does not exist");
         assert!(err.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn direct_tool_call_enforces_connector_allowed_tools_before_network_dispatch() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let mut server = test_mcp_server("restricted");
+        server.allowed_tools = Some(vec!["read_record".to_string()]);
+        registry
+            .servers
+            .write()
+            .await
+            .insert(server.name.clone(), server);
+
+        let err = registry
+            .call_tool_for_tenant(
+                "restricted",
+                "delete_record",
+                json!({}),
+                &TenantContext::explicit("org-a", "workspace-a", None),
+            )
+            .await
+            .expect_err("direct calls outside allowed_tools must fail closed");
+
+        assert!(err.contains("ToolDenied { reason: McpAllowedTools }"));
+        assert!(err.contains("restricted.delete_record"));
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn connector_removal_and_identity_change_rotate_connection_generation() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let tenant = TenantContext::local_implicit();
+        registry
+            .add_or_update_with_secret_refs(
+                "rotating".to_string(),
+                "https://example.com/first".to_string(),
+                HashMap::new(),
+                HashMap::new(),
+                &tenant,
+                true,
+            )
+            .await;
+        let first = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "rotating")
+            .expect("first connection");
+
+        registry
+            .add_or_update_with_secret_refs(
+                "rotating".to_string(),
+                "https://example.com/second".to_string(),
+                HashMap::new(),
+                HashMap::new(),
+                &tenant,
+                true,
+            )
+            .await;
+        let changed = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "rotating")
+            .expect("identity-changed connection");
+        assert_ne!(first.connection_generation, changed.connection_generation);
+
+        assert!(
+            registry
+                .set_auth_kind("rotating", "oauth".to_string())
+                .await
+        );
+        let auth_changed = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "rotating")
+            .expect("auth-changed connection");
+        assert_ne!(
+            changed.connection_generation,
+            auth_changed.connection_generation
+        );
+
+        assert!(registry.remove("rotating").await);
+        registry
+            .add_or_update_with_secret_refs(
+                "rotating".to_string(),
+                "https://example.com/second".to_string(),
+                HashMap::new(),
+                HashMap::new(),
+                &tenant,
+                true,
+            )
+            .await;
+        let readded = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "rotating")
+            .expect("re-added connection");
+        assert_ne!(
+            auth_changed.connection_generation,
+            readded.connection_generation
+        );
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn credential_replacement_rotates_connection_generation() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        registry
+            .add("reauth".to_string(), "https://example.com/mcp".to_string())
+            .await;
+
+        registry
+            .set_bearer_token("reauth", "first-token")
+            .await
+            .expect("set first bearer token");
+        let bearer_first = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "reauth")
+            .expect("bearer connection");
+        registry
+            .set_bearer_token("reauth", "replacement-token")
+            .await
+            .expect("replace bearer token");
+        let bearer_replaced = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "reauth")
+            .expect("replaced bearer connection");
+        assert_ne!(
+            bearer_first.connection_generation,
+            bearer_replaced.connection_generation
+        );
+
+        registry
+            .set_oauth_refresh_config(
+                "reauth",
+                "oauth-provider".to_string(),
+                "https://example.com/token".to_string(),
+                "client-one".to_string(),
+                Some("secret-one".to_string()),
+            )
+            .await
+            .expect("set oauth config");
+        let oauth_first = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "reauth")
+            .expect("oauth connection");
+        registry
+            .set_oauth_refresh_config(
+                "reauth",
+                "oauth-provider".to_string(),
+                "https://example.com/token".to_string(),
+                "client-two".to_string(),
+                Some("secret-two".to_string()),
+            )
+            .await
+            .expect("replace oauth config");
+        let oauth_replaced = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == "reauth")
+            .expect("replaced oauth connection");
+        assert_ne!(
+            oauth_first.connection_generation,
+            oauth_replaced.connection_generation
+        );
+
+        let explicit_tenant =
+            TenantContext::explicit("org-a", "workspace-a", Some("user-a".to_string()));
+        registry
+            .set_oauth_refresh_config_for_tenant(
+                "reauth",
+                "oauth-provider".to_string(),
+                "https://example.com/token".to_string(),
+                "tenant-client-one".to_string(),
+                Some("tenant-secret-one".to_string()),
+                &explicit_tenant,
+            )
+            .await
+            .expect("set tenant oauth config");
+        let tenant_oauth_first = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.tenant_context == explicit_tenant)
+            .expect("tenant oauth connection");
+        registry
+            .set_oauth_refresh_config_for_tenant(
+                "reauth",
+                "oauth-provider".to_string(),
+                "https://example.com/token".to_string(),
+                "tenant-client-two".to_string(),
+                Some("tenant-secret-two".to_string()),
+                &explicit_tenant,
+            )
+            .await
+            .expect("replace tenant oauth config");
+        let tenant_oauth_replaced = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.tenant_context == explicit_tenant)
+            .expect("replaced tenant oauth connection");
+        assert_ne!(
+            tenant_oauth_first.connection_generation,
+            tenant_oauth_replaced.connection_generation
+        );
+
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn local_runtime_refresh_preserves_connection_generation() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let tenant = TenantContext::local_implicit();
+        registry
+            .add(
+                "stable-refresh".to_string(),
+                "https://example.com/mcp".to_string(),
+            )
+            .await;
+        let before = registry
+            .connection_for_tenant("stable-refresh", &tenant)
+            .await
+            .expect("local connection");
+
+        registry
+            .set_runtime_state_for_current_tenant(
+                "stable-refresh",
+                &tenant,
+                McpRuntimeState::disconnected(Some("temporary".to_string()), None),
+            )
+            .await;
+        let after = registry
+            .connection_for_tenant("stable-refresh", &tenant)
+            .await
+            .expect("refreshed local connection");
+
+        assert_eq!(before.connection_generation, after.connection_generation);
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn legacy_connection_generation_is_migrated_once_and_stays_stable() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        registry
+            .add("legacy".to_string(), "https://example.com/mcp".to_string())
+            .await;
+        drop(registry);
+
+        let mut persisted: Value = serde_json::from_str(
+            &std::fs::read_to_string(&file).expect("read persisted MCP state"),
+        )
+        .expect("parse persisted MCP state");
+        persisted["schema_version"] = json!(2);
+        for connection in persisted["connections"]
+            .as_object_mut()
+            .expect("connection map")
+            .values_mut()
+        {
+            connection
+                .as_object_mut()
+                .expect("connection object")
+                .remove("connection_generation");
+        }
+        std::fs::write(
+            &file,
+            serde_json::to_vec_pretty(&persisted).expect("serialize legacy state"),
+        )
+        .expect("write legacy state");
+
+        let first_load = McpRegistry::new_with_state_file(file.clone());
+        let migrated_generation = first_load
+            .list_connections()
+            .await
+            .into_values()
+            .next()
+            .expect("migrated connection")
+            .connection_generation;
+        drop(first_load);
+        let second_load = McpRegistry::new_with_state_file(file.clone());
+        let reloaded_generation = second_load
+            .list_connections()
+            .await
+            .into_values()
+            .next()
+            .expect("reloaded connection")
+            .connection_generation;
+
+        assert_eq!(migrated_generation, reloaded_generation);
+        let rewritten: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read migrated MCP state"))
+                .expect("parse migrated MCP state");
+        assert_eq!(rewritten["schema_version"], json!(3));
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]

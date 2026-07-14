@@ -1,8 +1,17 @@
 use super::*;
 
-#[tokio::test]
-async fn pack_builder_preview_external_goal_prefers_mcp_and_generates_mcp_actions() {
-    let state = test_state().await;
+async fn register_pack_builder_tool(state: &AppState) {
+    state
+        .runtime
+        .get()
+        .expect("runtime")
+        .permissions
+        .add_rule(
+            "pack_builder",
+            "pack_builder",
+            tandem_core::PermissionAction::Allow,
+        )
+        .await;
     state
         .tools
         .register_tool(
@@ -10,6 +19,12 @@ async fn pack_builder_preview_external_goal_prefers_mcp_and_generates_mcp_action
             Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
         )
         .await;
+}
+
+#[tokio::test]
+async fn pack_builder_preview_external_goal_prefers_mcp_and_generates_mcp_actions() {
+    let state = test_state().await;
+    register_pack_builder_tool(&state).await;
     let app = app_router(state);
     let req = Request::builder()
         .method("POST")
@@ -66,13 +81,7 @@ async fn pack_builder_preview_external_goal_prefers_mcp_and_generates_mcp_action
 #[tokio::test]
 async fn pack_builder_preview_builtin_only_path_does_not_require_connector_selection() {
     let state = test_state().await;
-    state
-        .tools
-        .register_tool(
-            "pack_builder".to_string(),
-            Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
-        )
-        .await;
+    register_pack_builder_tool(&state).await;
     let app = app_router(state);
     let req = Request::builder()
         .method("POST")
@@ -113,13 +122,7 @@ async fn pack_builder_preview_builtin_only_path_does_not_require_connector_selec
 #[tokio::test]
 async fn pack_builder_preview_auto_applies_when_safe() {
     let state = test_state().await;
-    state
-        .tools
-        .register_tool(
-            "pack_builder".to_string(),
-            Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
-        )
-        .await;
+    register_pack_builder_tool(&state).await;
     let app = app_router(state);
     let req = Request::builder()
         .method("POST")
@@ -161,13 +164,7 @@ async fn pack_builder_preview_auto_applies_when_safe() {
 #[tokio::test]
 async fn pack_builder_confirmation_goal_applies_last_session_plan() {
     let state = test_state().await;
-    state
-        .tools
-        .register_tool(
-            "pack_builder".to_string(),
-            Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
-        )
-        .await;
+    register_pack_builder_tool(&state).await;
     let app = app_router(state);
     let session_id = "session-confirm-flow";
 
@@ -257,13 +254,7 @@ async fn pack_builder_confirmation_goal_applies_last_session_plan() {
 #[tokio::test]
 async fn pack_builder_apply_requires_explicit_approvals() {
     let state = test_state().await;
-    state
-        .tools
-        .register_tool(
-            "pack_builder".to_string(),
-            Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
-        )
-        .await;
+    register_pack_builder_tool(&state).await;
     let app = app_router(state.clone());
 
     let preview_req = Request::builder()
@@ -331,13 +322,7 @@ async fn pack_builder_apply_requires_explicit_approvals() {
 #[tokio::test]
 async fn pack_builder_preview_apply_cancel_pending_endpoints_roundtrip() {
     let state = test_state().await;
-    state
-        .tools
-        .register_tool(
-            "pack_builder".to_string(),
-            Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
-        )
-        .await;
+    register_pack_builder_tool(&state).await;
     let app = app_router(state);
 
     let preview_req = Request::builder()
@@ -429,13 +414,7 @@ async fn pack_builder_preview_apply_cancel_pending_endpoints_roundtrip() {
 #[tokio::test]
 async fn pack_builder_preview_updates_context_blackboard_when_context_run_id_provided() {
     let state = test_state().await;
-    state
-        .tools
-        .register_tool(
-            "pack_builder".to_string(),
-            Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
-        )
-        .await;
+    register_pack_builder_tool(&state).await;
     let app = app_router(state);
 
     let preview_req = Request::builder()
@@ -499,13 +478,7 @@ async fn pack_builder_preview_updates_context_blackboard_when_context_run_id_pro
 #[tokio::test]
 async fn pack_builder_apply_endpoint_honors_thread_scoped_pending_plan() {
     let state = test_state().await;
-    state
-        .tools
-        .register_tool(
-            "pack_builder".to_string(),
-            Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
-        )
-        .await;
+    register_pack_builder_tool(&state).await;
     let app = app_router(state.clone());
 
     let preview_a = Request::builder()
@@ -636,13 +609,7 @@ async fn pack_builder_apply_endpoint_honors_thread_scoped_pending_plan() {
 #[tokio::test]
 async fn pack_builder_apply_endpoint_blocks_when_required_secrets_missing() {
     let state = test_state().await;
-    state
-        .tools
-        .register_tool(
-            "pack_builder".to_string(),
-            Arc::new(crate::pack_builder::PackBuilderTool::new(state.clone())),
-        )
-        .await;
+    register_pack_builder_tool(&state).await;
     let app = app_router(state);
 
     let preview_req = Request::builder()

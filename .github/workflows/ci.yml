@@ -334,13 +334,13 @@ jobs:
         run: cargo test -p tandem-server --features storage-postgres stateful_runtime::backend -- --test-threads=1
 
       - name: Check the sqlite-only stateful backend build
-        run: cargo check -p tandem-server --no-default-features --features storage-sqlite
+        run: cargo test -p tandem-server --no-default-features --features storage-sqlite server_context_installs_deny_capable_policy_and_real_ledger --lib
 
       - name: Check the postgres-only stateful backend build
-        run: cargo check -p tandem-server --no-default-features --features storage-postgres
+        run: cargo test -p tandem-server --no-default-features --features storage-postgres server_context_installs_deny_capable_policy_and_real_ledger --lib
 
       - name: Check the combined stateful backend build
-        run: cargo check -p tandem-server --no-default-features --features storage-sqlite,storage-postgres
+        run: cargo test -p tandem-server --no-default-features --features storage-sqlite,storage-postgres server_context_installs_deny_capable_policy_and_real_ledger --lib
 
       - name: Lint the PostgreSQL-only stateful backend
         run: cargo clippy -p tandem-server --no-default-features --features storage-postgres --lib -- -D warnings

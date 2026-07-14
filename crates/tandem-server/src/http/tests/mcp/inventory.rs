@@ -82,12 +82,23 @@ async fn mcp_inventory_redacts_and_filters_connections_by_actor() {
         .and_then(Value::as_array)
         .expect("alice inventory connections");
 
-    assert!(
-        alice_inventory_connections.iter().any(|connection| {
+    let alice_connection = alice_inventory_connections
+        .iter()
+        .find(|connection| {
             connection.get("connection_id").and_then(Value::as_str)
                 == Some(alice_session.connection_id.as_str())
-        }),
-        "alice should see her own pending MCP connection"
+        })
+        .expect("alice should see her own pending MCP connection");
+    let connection_generation = alice_connection
+        .get("connection_generation")
+        .and_then(Value::as_str)
+        .expect("public connection generation");
+    assert!(!connection_generation.is_empty());
+    assert_eq!(
+        alice_connection
+            .get("connectionGeneration")
+            .and_then(Value::as_str),
+        Some(connection_generation)
     );
     assert!(
         alice_inventory_connections.iter().all(|connection| {

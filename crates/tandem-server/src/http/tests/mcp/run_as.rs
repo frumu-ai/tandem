@@ -202,6 +202,35 @@ async fn mcp_run_as_denies_explicit_tenant_without_context_assertion() {
 }
 
 #[tokio::test]
+async fn mcp_denial_surfaces_required_receipt_failure() {
+    let mut state = test_state().await;
+    let failed_path = state
+        .protected_audit_path
+        .with_file_name("mcp-denial-audit-is-a-directory");
+    tokio::fs::create_dir_all(&failed_path)
+        .await
+        .expect("create invalid protected-audit path");
+    state.protected_audit_path = failed_path;
+    let alice =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+
+    let error = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
+        &state,
+        "notion",
+        "alice_search",
+        json!({ "query": "roadmap" }),
+        &alice,
+    )
+    .await
+    .expect_err("MCP denial receipt failure must remain blocked");
+
+    assert!(
+        error.contains("required MCP context denial receipt could not be written"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn mcp_run_as_scheduled_automation_uses_tenant_service_principal_connection() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;

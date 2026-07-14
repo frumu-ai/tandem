@@ -634,7 +634,7 @@ pub async fn dispatch_workflow_event(state: &AppState, event: &EngineEvent) {
             }
             seen.insert(dedupe_key, now_ms());
         }
-        let _ = execute_hook_binding(
+        let _ = Box::pin(execute_hook_binding(
             state,
             &hook,
             tenant_context.clone(),
@@ -642,7 +642,7 @@ pub async fn dispatch_workflow_event(state: &AppState, event: &EngineEvent) {
             Some(source_event_id),
             task_id,
             false,
-        )
+        ))
         .await;
     }
 }
@@ -838,7 +838,15 @@ async fn execute_actions(
     if dry_run {
         return Ok(run);
     }
-    drive_workflow_actions(state, &automation, &automation_run.run_id, &actions, run, 0).await
+    Box::pin(drive_workflow_actions(
+        state,
+        &automation,
+        &automation_run.run_id,
+        &actions,
+        run,
+        0,
+    ))
+    .await
 }
 
 /// Mirror a workflow gate decision onto the shadow automation-v2 run so the
@@ -959,14 +967,14 @@ pub async fn resume_workflow_run(
         .iter()
         .position(|row| row.status != WorkflowActionRunStatus::Completed)
         .unwrap_or(actions.len());
-    drive_workflow_actions(
+    Box::pin(drive_workflow_actions(
         state,
         &automation,
         &automation_run_id,
         &actions,
         run,
         start_index,
-    )
+    ))
     .await
 }
 
@@ -1130,7 +1138,7 @@ pub(crate) async fn drive_workflow_actions(
             ),
         ));
         let run_workflow_id = run.workflow_id.clone();
-        match execute_action(
+        match Box::pin(execute_action(
             state,
             &run.run_id,
             &run_workflow_id,
@@ -1138,7 +1146,7 @@ pub(crate) async fn drive_workflow_actions(
             action_row,
             &run.tenant_context,
             trigger_event.clone(),
-        )
+        ))
         .await
         {
             Ok(output) => {
@@ -1351,12 +1359,14 @@ async fn execute_action(
                     .run(run_id)
                     .node(action_row.action_id.clone()),
                 tenant_context.clone(),
-                Vec::new(),
+                workflow_tool_dispatch_scope(&tool_name, &payload),
             );
-            let result = state
-                .tool_dispatcher
-                .dispatch(&tool_name, payload.clone(), dispatch_context)
-                .await?;
+            let result = Box::pin(state.tool_dispatcher.dispatch(
+                &tool_name,
+                payload.clone(),
+                dispatch_context,
+            ))
+            .await?;
             let mut response = json!({
                 "tool": tool_name,
                 "output": result.output,
@@ -1396,12 +1406,14 @@ async fn execute_action(
                     .run(run_id)
                     .node(action_row.action_id.clone()),
                 tenant_context.clone(),
-                Vec::new(),
+                workflow_tool_dispatch_scope(&tool_name, &payload),
             );
-            let result = state
-                .tool_dispatcher
-                .dispatch(&tool_name, payload.clone(), dispatch_context)
-                .await?;
+            let result = Box::pin(state.tool_dispatcher.dispatch(
+                &tool_name,
+                payload.clone(),
+                dispatch_context,
+            ))
+            .await?;
             let mut response = json!({
                 "capability": capability_id,
                 "tool": tool_name,
@@ -1483,6 +1495,27 @@ enum WorkflowExternalActionExecution {
         capability_id: String,
         tool_name: String,
     },
+}
+
+fn workflow_tool_dispatch_scope(tool_name: &str, payload: &Value) -> Vec<String> {
+    let mut scope = vec![tool_name.to_string()];
+    if tool_name.trim().eq_ignore_ascii_case("batch") {
+        for call in payload["tool_calls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(20)
+        {
+            let Some(subcall_tool) = tandem_tools::resolve_batch_call_tool_name(call) else {
+                continue;
+            };
+            if !subcall_tool.is_empty() && subcall_tool != "batch" && !scope.contains(&subcall_tool)
+            {
+                scope.push(subcall_tool);
+            }
+        }
+    }
+    scope
 }
 
 async fn record_workflow_external_action(

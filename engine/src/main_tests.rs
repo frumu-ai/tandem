@@ -2,6 +2,7 @@ use super::*;
 use chrono::Utc;
 use serde_json::json;
 use tandem_memory::db::MemoryDatabase;
+use tandem_types::TenantContext;
 
 #[test]
 fn stateful_storage_paths_use_the_engine_state_directory() {
@@ -93,6 +94,70 @@ fn build_cli_overrides_accepts_custom_provider() {
         overrides["providers"]["minimax"]["default_model"],
         json!("MiniMax-M2")
     );
+}
+
+#[tokio::test]
+async fn cli_dispatch_policy_denies_unmatched_tools_and_allows_explicit_rules() {
+    let permissions = PermissionManager::new(EventBus::new());
+    let policy = CliPermissionDispatchPolicy {
+        permissions: permissions.clone(),
+    };
+    let context = ToolDispatchPolicyContext {
+        requested_tool: "read".to_string(),
+        canonical_tool: Some("read".to_string()),
+        args: json!({ "path": "Cargo.toml" }),
+        tenant_context: TenantContext::local_implicit(),
+        verified_tenant_context: None,
+        source: tandem_tools::ToolDispatchSource::new("cli_test"),
+        scope_allowlist: Vec::new(),
+        schema: None,
+    };
+
+    let unmatched = policy
+        .evaluate(context.clone())
+        .await
+        .expect("unmatched decision");
+    assert!(!unmatched.is_allowed());
+    permissions
+        .add_rule(
+            "read".to_string(),
+            "read".to_string(),
+            PermissionAction::Allow,
+        )
+        .await;
+    let allowed = policy.evaluate(context).await.expect("allowed decision");
+    assert!(allowed.is_allowed());
+}
+
+#[tokio::test]
+async fn cli_dispatch_ledger_persists_jsonl_receipts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("tool-dispatch-receipts.jsonl");
+    let ledger = CliJsonlDispatchLedger {
+        path: path.clone(),
+        write_lock: Arc::new(tokio::sync::Mutex::new(())),
+    };
+    ledger
+        .record(ToolDispatchLedgerEvent {
+            dispatch_id: Some("cli-dispatch-test".to_string()),
+            tool: "read".to_string(),
+            canonical_tool: Some("read".to_string()),
+            tenant_context: TenantContext::local_implicit(),
+            source: tandem_tools::ToolDispatchSource::new("cli_test"),
+            scope_allowlist: Vec::new(),
+            policy_outcome: tandem_tools::ToolDispatchPolicyOutcome::Denied,
+            receipt_phase: tandem_tools::ToolDispatchReceiptPhase::PolicyDecision,
+            policy_decision_id: None,
+            payload_digest: None,
+            status: tandem_tools::ToolDispatchStatus::Blocked,
+            error: Some("no matching CLI rule".to_string()),
+        })
+        .await
+        .expect("persist CLI receipt");
+
+    let persisted = fs::read_to_string(path).expect("read CLI receipt");
+    assert!(persisted.contains("cli-dispatch-test"));
+    assert!(persisted.contains("\"policy_outcome\":\"denied\""));
 }
 
 #[tokio::test]

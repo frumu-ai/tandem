@@ -18,7 +18,7 @@ use tandem_server::{
     AutomationV2Schedule, AutomationV2ScheduleType, AutomationV2Spec, AutomationV2Status,
     RoutineMisfirePolicy,
 };
-use tandem_tools::ToolDispatchSource;
+use tandem_tools::{AllowAllToolDispatchPolicy, ToolDispatchSource};
 use tandem_types::{
     AuthorityChain, HumanActor, RequestPrincipal, Session, TenantContext, VerifiedTenantContext,
 };
@@ -763,6 +763,10 @@ async fn evaluate_draft_lifecycle(
     }
     let planner_session_id = format!("planner-{}", test_case.id);
     let plan_id = format!("plan-{}", test_case.id);
+    let workspace_root = std::env::temp_dir()
+        .join("tandem-agentic-authoring-eval")
+        .to_string_lossy()
+        .to_string();
     let steps = automation
         .flow
         .nodes
@@ -790,7 +794,7 @@ async fn evaluate_draft_lifecycle(
         "description": automation.description,
         "schedule": automation.schedule,
         "execution_target": "automation_v2",
-        "workspace_root": "/tmp/tandem-agentic-authoring-eval",
+        "workspace_root": workspace_root,
         "steps": steps,
         "requires_integrations": [],
         "allowed_mcp_servers": [],
@@ -1413,6 +1417,10 @@ fn dispatch_context(
             vec![tool.to_string()],
         )
         .with_verified_tenant_context(verified.clone())
+        // These recorded acceptance cases explicitly pre-authorize the one
+        // scoped tool so they can exercise downstream product behavior. Server
+        // contexts still reject allow-all policies at startup.
+        .with_policy(Arc::new(AllowAllToolDispatchPolicy))
 }
 
 async fn next_dispatch_event(
@@ -1425,6 +1433,13 @@ async fn next_dispatch_event(
             .context("timed out waiting for tool dispatch audit event")??;
         if event.event_type == "tool.dispatch.recorded"
             && event.properties.get("tool").and_then(Value::as_str) == Some(tool)
+            && matches!(
+                event
+                    .properties
+                    .get("receipt_phase")
+                    .and_then(Value::as_str),
+                Some("execution_completed" | "execution_failed")
+            )
         {
             return Ok(event.properties);
         }

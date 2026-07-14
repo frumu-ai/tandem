@@ -366,6 +366,12 @@ function WaitFields({
               <option value="resume">Resume</option>
             </select>
           </Field>
+          {timeout?.on_timeout === "resume" ? (
+            <p className="tcp-subtle text-xs">
+              Warning: Resume is an explicit fail-open choice. The workflow will continue without
+              the awaited event or approval when this timeout expires.
+            </p>
+          ) : null}
           {timeout?.on_timeout === "escalate" ? (
             <Field label="Escalation principal or queue">
               <input

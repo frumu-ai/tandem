@@ -5,10 +5,24 @@ use crate::{AppState, AutomationMcpConnectionGrant, AutomationMcpRunAs};
 pub(crate) fn automation_mcp_connection_grant_for_server<'a>(
     server_name: &str,
     allowed_connections: &'a [AutomationMcpConnectionGrant],
+    live_connections: &std::collections::HashMap<String, tandem_runtime::McpConnection>,
 ) -> Option<&'a AutomationMcpConnectionGrant> {
-    allowed_connections
-        .iter()
-        .find(|grant| grant.server.eq_ignore_ascii_case(server_name))
+    allowed_connections.iter().find(|grant| {
+        if !grant.server.eq_ignore_ascii_case(server_name) {
+            return false;
+        }
+        let (Some(connection_id), Some(connection_generation)) = (
+            grant.connection_id.as_deref(),
+            grant.connection_generation.as_deref(),
+        ) else {
+            return false;
+        };
+        live_connections.values().any(|connection| {
+            connection.server_id.eq_ignore_ascii_case(server_name)
+                && connection.connection_id == connection_id
+                && connection.connection_generation == connection_generation
+        })
+    })
 }
 
 pub(crate) fn automation_mcp_preflight_tenant_context(
@@ -67,6 +81,7 @@ mod tests {
         let grant = AutomationMcpConnectionGrant {
             server: "notion".to_string(),
             connection_id: None,
+            connection_generation: None,
             run_as: Some(AutomationMcpRunAs::ServicePrincipal {
                 principal_id: "tenant-service".to_string(),
             }),
@@ -78,5 +93,39 @@ mod tests {
         assert_eq!(resolved.org_id, tenant.org_id);
         assert_eq!(resolved.workspace_id, tenant.workspace_id);
         assert!(resolved.actor_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn saved_grant_requires_current_connection_id_and_generation() {
+        let file = std::env::temp_dir().join(format!(
+            "mcp-grant-test-{}.json",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let registry = tandem_runtime::McpRegistry::new_with_state_file(file.clone());
+        registry
+            .add("notion".to_string(), "https://example.com/mcp".to_string())
+            .await;
+        let live_connections = registry.list_connections().await;
+        let live = live_connections.values().next().expect("live connection");
+        let valid = AutomationMcpConnectionGrant {
+            server: "notion".to_string(),
+            connection_id: Some(live.connection_id.clone()),
+            connection_generation: Some(live.connection_generation.clone()),
+            run_as: None,
+        };
+        let stale = AutomationMcpConnectionGrant {
+            connection_generation: Some("stale-generation".to_string()),
+            ..valid.clone()
+        };
+
+        assert!(
+            automation_mcp_connection_grant_for_server("notion", &[valid], &live_connections,)
+                .is_some()
+        );
+        assert!(
+            automation_mcp_connection_grant_for_server("notion", &[stale], &live_connections,)
+                .is_none()
+        );
+        let _ = std::fs::remove_file(file);
     }
 }

@@ -332,9 +332,9 @@ pub async fn append_protected_audit_event(
 
 /// Append protected audit evidence without failing the caller.
 ///
-/// This is reserved for denial evidence, telemetry, and other paths where the
-/// primary operation cannot report an audit persistence error to its caller.
-/// Consequential mutation and success paths must call
+/// This is reserved for non-enforcement telemetry where the primary operation
+/// cannot report an audit persistence error to its caller. Enforcement denials,
+/// consequential mutations, and success paths must call
 /// [`append_protected_audit_event`] directly and propagate its result.
 pub async fn append_protected_audit_event_best_effort(
     state: &AppState,

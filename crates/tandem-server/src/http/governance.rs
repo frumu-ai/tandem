@@ -174,6 +174,39 @@ mod tests {
         let actor = resolve_governance_actor(&headers, &tenant_context, &request_principal);
         assert_eq!(actor.kind, GovernanceActorKind::Human);
     }
+
+    #[tokio::test]
+    async fn governance_denial_surfaces_required_receipt_failure() {
+        let mut state = crate::test_support::test_state().await;
+        let failed_path = state
+            .protected_audit_path
+            .with_file_name("governance-denial-audit-is-a-directory");
+        tokio::fs::create_dir_all(&failed_path)
+            .await
+            .expect("create invalid protected-audit path");
+        state.protected_audit_path = failed_path;
+        let tenant = TenantContext::explicit("org-a", "workspace-a", None);
+        let actor = GovernanceActorRef::human(Some("reviewer-a".to_string()), "test");
+
+        let error = enforce_mutation_or_audit::<()>(
+            &state,
+            &tenant,
+            "automation-a",
+            &actor,
+            Err(GovernanceError::forbidden(
+                "TEST_DENIAL",
+                "mutation denied for test",
+            )),
+        )
+        .await
+        .expect_err("denial receipt failure must be explicit");
+
+        assert_eq!(error.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            error.1 .0.get("code").and_then(Value::as_str),
+            Some("AUDIT_PERSISTENCE_FAILED")
+        );
+    }
 }
 
 pub(crate) fn governance_error_response(error: GovernanceError) -> (StatusCode, Json<Value>) {
@@ -200,7 +233,7 @@ pub(crate) async fn enforce_mutation_or_audit<T>(
     match result {
         Ok(value) => Ok(value),
         Err(error) => {
-            crate::audit::append_protected_audit_event_best_effort(
+            if let Err(audit_error) = crate::audit::append_protected_audit_event(
                 state,
                 "automation.governance.denied",
                 tenant_context,
@@ -213,7 +246,16 @@ pub(crate) async fn enforce_mutation_or_audit<T>(
                     "actor": actor.clone(),
                 }),
             )
-            .await;
+            .await
+            {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("governance mutation remained denied, but its required denial receipt could not be written: {audit_error}"),
+                        "code": "AUDIT_PERSISTENCE_FAILED",
+                    })),
+                ));
+            }
             Err(governance_error_response(error))
         }
     }

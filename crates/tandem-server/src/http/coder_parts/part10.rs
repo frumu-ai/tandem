@@ -383,33 +383,122 @@ mod issue_fix_handoff_tests {
         let _ = std::fs::remove_dir_all(&workspace_root);
         let _ = std::fs::remove_dir_all(&remote_root);
     }
+
+    #[test]
+    fn github_create_payload_uses_declared_legacy_schema_without_retry() {
+        let args = github_create_pull_request_args(
+            &json!({
+                "type": "object",
+                "properties": {
+                    "owner": {"type": "string"},
+                    "repo": {"type": "string"},
+                    "title": {"type": "string"}
+                }
+            }),
+            "frumu-ai",
+            "tandem",
+            "Title",
+            "Body",
+            "main",
+            "codex/fix",
+        );
+        assert!(args.get("method").is_none());
+        assert_eq!(args.get("head").and_then(Value::as_str), Some("codex/fix"));
+    }
+
+    #[test]
+    fn github_merge_payload_uses_declared_legacy_number_without_retry() {
+        let args = github_merge_pull_request_args(
+            &json!({
+                "type": "object",
+                "properties": {
+                    "owner": {"type": "string"},
+                    "repo": {"type": "string"},
+                    "number": {"type": "integer"}
+                }
+            }),
+            "frumu-ai",
+            "tandem",
+            1894,
+        );
+        assert_eq!(args.get("number").and_then(Value::as_u64), Some(1894));
+        assert!(args.get("pull_number").is_none());
+        assert!(args.get("merge_method").is_none());
+    }
+
+    #[test]
+    fn github_merge_payload_preserves_declared_squash_for_legacy_number() {
+        let args = github_merge_pull_request_args(
+            &json!({
+                "type": "object",
+                "properties": {
+                    "owner": {"type": "string"},
+                    "repo": {"type": "string"},
+                    "number": {"type": "integer"},
+                    "merge_method": {"type": "string"}
+                }
+            }),
+            "frumu-ai",
+            "tandem",
+            1894,
+        );
+        assert_eq!(args.get("number").and_then(Value::as_u64), Some(1894));
+        assert_eq!(
+            args.get("merge_method").and_then(Value::as_str),
+            Some("squash")
+        );
+    }
 }
 async fn call_merge_pull_request(
     state: &AppState,
+    tenant_context: &tandem_types::TenantContext,
+    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
     server_name: &str,
     tool_name: &str,
+    input_schema: &Value,
     owner: &str,
     repo: &str,
     pull_number: u64,
 ) -> Result<tandem_types::ToolResult, StatusCode> {
-    let preferred = json!({
-        "owner": owner,
-        "repo": repo,
-        "pull_number": pull_number,
-        "merge_method": "squash",
-    });
-    let fallback = json!({
-        "owner": owner,
-        "repo": repo,
-        "number": pull_number,
-    });
-    let first = state.mcp.call_tool(server_name, tool_name, preferred).await;
-    match first {
-        Ok(result) => Ok(result),
-        Err(_) => state
-            .mcp
-            .call_tool(server_name, tool_name, fallback)
-            .await
-            .map_err(|_| StatusCode::BAD_GATEWAY),
+    let args = github_merge_pull_request_args(input_schema, owner, repo, pull_number);
+    let args = with_coder_mcp_phase_authority(args, server_name, tool_name, "coder_merge_submit");
+    crate::http::mcp_run_as::call_mcp_tool_for_tenant_with_verified_context(
+        state,
+        server_name,
+        tool_name,
+        args,
+        tenant_context,
+        verified_tenant_context,
+    )
+    .await
+    .map_err(|_| StatusCode::BAD_GATEWAY)
+}
+
+fn github_merge_pull_request_args(
+    input_schema: &Value,
+    owner: &str,
+    repo: &str,
+    pull_number: u64,
+) -> Value {
+    let properties = input_schema.get("properties").and_then(Value::as_object);
+    if properties
+        .is_some_and(|fields| fields.contains_key("number") && !fields.contains_key("pull_number"))
+    {
+        let mut args = json!({
+            "owner": owner,
+            "repo": repo,
+            "number": pull_number,
+        });
+        if properties.is_some_and(|fields| fields.contains_key("merge_method")) {
+            args["merge_method"] = json!("squash");
+        }
+        args
+    } else {
+        json!({
+            "owner": owner,
+            "repo": repo,
+            "pull_number": pull_number,
+            "merge_method": "squash",
+        })
     }
 }

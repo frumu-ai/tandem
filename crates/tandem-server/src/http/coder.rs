@@ -8,6 +8,7 @@ include!("coder_parts/part01.rs");
 include!("coder_parts/part02.rs");
 include!("coder_parts/part03.rs");
 include!("coder_parts/part04.rs");
+include!("coder_parts/part13.rs");
 include!("coder_parts/part10.rs");
 include!("coder_parts/part05.rs");
 include!("coder_parts/part06.rs");
