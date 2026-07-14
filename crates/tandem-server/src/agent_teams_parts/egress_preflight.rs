@@ -177,10 +177,10 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
     .await;
 
     if matches!(effect, PolicyDecisionEffect::Allow) && policy_decision_id.is_none() {
-        let failure_reason = format!(
+        let mut failure_reason = format!(
             "tool `{tool}` denied because the consumed egress approval could not be linked to a durable policy decision receipt"
         );
-        let _ = crate::audit::append_protected_audit_event(
+        if let Err(error) = crate::audit::append_protected_audit_event(
             state,
             "egress.preflight.denied",
             &tenant_context,
@@ -196,7 +196,12 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
                 "receipt_write_failed": true,
             }),
         )
-        .await;
+        .await
+        {
+            failure_reason.push_str(&format!(
+                "; the required protected denial audit also failed: {error}"
+            ));
+        }
         return Some(ToolPolicyDecision {
             allowed: false,
             reason: Some(failure_reason),
