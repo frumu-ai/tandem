@@ -358,7 +358,7 @@ Allow writes only inside the workspace and require approval for pushes to the pr
 
 Implementation issues TAN-742 and TAN-743 must remain in design/backlog until both reviews are recorded here or in the merged pull request:
 
-- [ ] Runtime engineering review: selector/evaluator integration, inheritance, performance, migration.
-- [ ] Security engineering review: normalization, fail-closed behavior, receipt privacy, bypass analysis.
+- [x] Runtime engineering review: selector/evaluator integration, inheritance, performance, migration — recorded in [PR #1896](https://github.com/frumu-ai/tandem/pull/1896).
+- [x] Security engineering review: normalization, fail-closed behavior, receipt privacy, bypass analysis — recorded in [PR #1896](https://github.com/frumu-ai/tandem/pull/1896).
 
 Any material change to missing-field semantics, deny precedence, receipt redaction, or trusted operand tokens requires both reviewers again.
