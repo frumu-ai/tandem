@@ -6,6 +6,7 @@ import {
   buildPolicyPreviewArguments,
   buildTemplatePredicateOverrides,
   parsePolicyOperand,
+  preservedPolicyRuleMetadata,
 } from "../lib/enterprise/policy-authoring.js";
 
 test("policy authoring builds typed predicate operands and preview arguments", () => {
@@ -56,4 +57,24 @@ test("policy supersede only carries forward published rules", () => {
   ];
 
   assert.deepEqual(activePolicyRulesForSupersede(rules, "payments"), [rules[0]]);
+});
+
+test("template draft edits preserve version and ownership metadata", () => {
+  assert.deepEqual(
+    preservedPolicyRuleMetadata({
+      policy_id: "finance-production",
+      version: 2,
+      template_id: "finance-agent",
+      template_version: 2,
+    }),
+    {
+      policy_id: "finance-production",
+      version: 2,
+      template_id: "finance-agent",
+      template_version: 2,
+    }
+  );
+  assert.deepEqual(preservedPolicyRuleMetadata({ policy_id: "custom", version: 4 }), {
+    version: 4,
+  });
 });

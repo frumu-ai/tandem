@@ -761,3 +761,163 @@ async fn enterprise_policy_template_transitions_require_template_ownership() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(*state.enterprise.policy_rules.read().await, original_rules);
 }
+
+#[tokio::test]
+async fn enterprise_policy_template_transition_rejects_expired_overrides_without_mutation() {
+    let state = test_state().await;
+    let app = build_router_with_extensions(state.clone(), &[apply_routes]);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/enterprise/policy-templates/finance-agent/instantiate")
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "engineering")
+                .header("x-tandem-actor-id", "admin-user")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "instance_id": "finance-expiry-guard",
+                        "version": 1,
+                        "overrides": []
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let original_rules = state.enterprise.policy_rules.read().await.clone();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/enterprise/policy-templates/finance-agent/upgrade")
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "engineering")
+                .header("x-tandem-actor-id", "admin-user")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "instance_id": "finance-expiry-guard",
+                        "version": 2,
+                        "overrides": [{
+                            "rule_id": "small-payments",
+                            "expires_at_ms": 1
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
+    assert_eq!(
+        payload.pointer("/errors/0/path").and_then(Value::as_str),
+        Some("expires_at_ms")
+    );
+    assert_eq!(*state.enterprise.policy_rules.read().await, original_rules);
+}
+
+#[tokio::test]
+async fn enterprise_policy_template_draft_updates_preserve_ownership_metadata() {
+    let state = test_state().await;
+    let app = build_router_with_extensions(state.clone(), &[apply_routes]);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/enterprise/policy-templates/finance-agent/instantiate")
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "engineering")
+                .header("x-tandem-actor-id", "admin-user")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "instance_id": "finance-edit-guard",
+                        "version": 2,
+                        "overrides": []
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
+    let mut replacement = payload
+        .pointer("/instantiation/rules/0")
+        .cloned()
+        .expect("template rule");
+    let rule_id = replacement
+        .get("rule_id")
+        .and_then(Value::as_str)
+        .expect("rule id")
+        .to_string();
+    let replacement_object = replacement.as_object_mut().expect("rule object");
+    replacement_object.insert("version".to_string(), json!(1));
+    replacement_object.insert("policy_id".to_string(), json!("detached-policy"));
+    replacement_object.remove("template_id");
+    replacement_object.remove("template_version");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/enterprise/policies/{rule_id}"))
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "engineering")
+                .header("x-tandem-actor-id", "admin-user")
+                .header("content-type", "application/json")
+                .body(Body::from(replacement.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
+    assert_eq!(
+        payload
+            .pointer("/rules/0/policy_id")
+            .and_then(Value::as_str),
+        Some("finance-edit-guard")
+    );
+    assert_eq!(
+        payload.pointer("/rules/0/version").and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        payload
+            .pointer("/rules/0/template_id")
+            .and_then(Value::as_str),
+        Some("finance-agent")
+    );
+    assert_eq!(
+        payload
+            .pointer("/rules/0/template_version")
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+}

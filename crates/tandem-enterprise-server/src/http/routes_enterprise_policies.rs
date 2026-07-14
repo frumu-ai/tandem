@@ -215,6 +215,12 @@ async fn update_policy_rule(
     replacement
         .tenant_context
         .clone_from(&existing.tenant_context);
+    replacement.version = existing.version;
+    replacement.template_id.clone_from(&existing.template_id);
+    replacement.template_version = existing.template_version;
+    if existing.template_id.is_some() {
+        replacement.policy_id.clone_from(&existing.policy_id);
+    }
     replacement.state = EnterprisePolicyRuleState::Draft;
     replacement.updated_at_ms = now_ms();
     let validation = validate_rule(&replacement, false);
@@ -564,6 +570,10 @@ async fn transition_policy_template(
             "{}:template-v{}:revision-{revision}",
             rule.rule_id, template.version
         );
+        let validation = validate_rule(rule, true);
+        if !validation.errors.is_empty() {
+            return validation_error(validation);
+        }
     }
     let current_version;
     let previous;

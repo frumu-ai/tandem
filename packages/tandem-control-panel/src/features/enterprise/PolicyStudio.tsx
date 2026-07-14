@@ -6,6 +6,7 @@ import {
   buildPolicyPreviewArguments,
   buildTemplatePredicateOverrides,
   parsePolicyOperand,
+  preservedPolicyRuleMetadata,
   splitPolicyList,
 } from "../../../lib/enterprise/policy-authoring.js";
 import type { EnterpriseTenantContext } from "./queries";
@@ -124,11 +125,16 @@ const emptyDraft = (): RuleDraft => ({
   operand: "",
 });
 
-function buildRule(draft: RuleDraft, tenant?: EnterpriseTenantContext): EnterprisePolicyRule {
+function buildRule(
+  draft: RuleDraft,
+  tenant?: EnterpriseTenantContext,
+  existing?: EnterprisePolicyRule
+): EnterprisePolicyRule {
+  const preserved = preservedPolicyRuleMetadata(existing);
   const rule: EnterprisePolicyRule = {
     rule_id: draft.ruleId.trim(),
-    policy_id: draft.policyId.trim(),
-    version: 1,
+    policy_id: preserved.policy_id || draft.policyId.trim(),
+    version: preserved.version ?? 1,
     scope_level: draft.scopeLevel,
     effect: draft.effect,
     tool_patterns: splitPolicyList(draft.toolPatterns),
@@ -137,6 +143,10 @@ function buildRule(draft: RuleDraft, tenant?: EnterpriseTenantContext): Enterpri
     reason_code: draft.reasonCode.trim() || `policy_${draft.effect}`,
     reason: draft.reason.trim() || `Policy resolves to ${draft.effect}`,
     updated_at_ms: Date.now(),
+    ...(preserved.template_id ? { template_id: preserved.template_id } : {}),
+    ...(preserved.template_version == null
+      ? {}
+      : { template_version: preserved.template_version }),
   };
   if (draft.scopeLevel === "org_unit") rule.org_unit_id = draft.orgUnitId.trim();
   if (draft.scopeLevel === "resource") {
@@ -252,7 +262,7 @@ export function PolicyStudio({ tenant }: { tenant?: EnterpriseTenantContext }) {
     (rule) => rule.rule_id === overrideRuleId.trim()
   )?.predicate?.condition;
   const selectedRule = rules.find((rule) => rule.rule_id === draft.ruleId);
-  const currentRule = buildRule(draft, tenant);
+  const currentRule = buildRule(draft, tenant, selectedRule);
   const busy =
     validatePolicy.isPending ||
     previewPolicy.isPending ||

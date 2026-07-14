@@ -60,6 +60,19 @@ export function buildTemplatePredicateOverrides(
 }
 
 /**
+ * @param {{policy_id?: string, version?: number, template_id?: string, template_version?: number} | undefined} rule
+ */
+export function preservedPolicyRuleMetadata(rule) {
+  if (!rule) return {};
+  return {
+    ...(rule.template_id ? { policy_id: rule.policy_id } : {}),
+    ...(rule.version == null ? {} : { version: rule.version }),
+    ...(rule.template_id ? { template_id: rule.template_id } : {}),
+    ...(rule.template_version == null ? {} : { template_version: rule.template_version }),
+  };
+}
+
+/**
  * @template {{ policy_id: string, state?: string }} T
  * @param {T[]} rules
  * @param {string} policyId
