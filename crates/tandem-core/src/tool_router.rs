@@ -556,20 +556,15 @@ fn is_live_integration_inspection_request(input: &str) -> bool {
     ) {
         return false;
     }
-    contains_any(
+    let integration_subject = contains_any(
         input,
-        &[
-            "inspect the live integration",
-            "inspect live integration",
-            "inspect the integration tools",
-            "inspect integration tools",
-            "discover integration tools",
-            "test the live integration",
-            "test live integration",
-            "list mcp tools",
-            "inspect mcp tools",
-        ],
-    )
+        &["live integration", "integration tools", "mcp tools"],
+    );
+    let inspection_action = contains_any(
+        input,
+        &["inspect", "discover", "test", "list", "check", "show"],
+    );
+    integration_subject && inspection_action
 }
 
 fn has_repository_workflow_signal(input: &str) -> bool {
@@ -966,6 +961,14 @@ mod tests {
             classify_intent(
                 "Create a Slack automation and inspect the live integration tools first"
             ),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create a Slack automation and list the integration tools first"),
+            ToolIntent::ProductAuthoringWithMcp
+        );
+        assert_eq!(
+            classify_intent("Create an automation and check MCP tools before drafting"),
             ToolIntent::ProductAuthoringWithMcp
         );
         assert_eq!(
