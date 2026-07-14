@@ -149,34 +149,11 @@ pub(super) async fn workflow_plan_apply(
         apply_idempotency_key.as_deref(),
         apply_idempotency_fingerprint.as_deref(),
     ) {
-        let reservation = state
-            .reserve_idempotency_key(crate::app::state::IdempotencyReservationInput {
-                tenant_context: tenant_context.clone(),
-                operation: "workflow_plan.apply".to_string(),
-                key: key.to_string(),
-                owner: creator_id.clone(),
-                request_fingerprint: fingerprint.to_string(),
-                first_seen_event_id: None,
-                now_ms: crate::now_ms(),
-                expires_at_ms: None,
-            })
+        if let Some(record) = state
+            .get_idempotency_key(&tenant_context, "workflow_plan.apply", key)
             .await
-            .map_err(|error| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({
-                        "error": format!("failed to reserve workflow apply: {error}"),
-                        "code": "WORKFLOW_PLAN_APPLY_FAILED",
-                    })),
-                )
-            })?;
-        match reservation {
-            crate::app::state::IdempotencyReservation::Duplicate(record) => {
-                if let Some(outcome) = record.outcome {
-                    return Ok(Json(outcome.details));
-                }
-            }
-            crate::app::state::IdempotencyReservation::Conflict(_) => {
+        {
+            if record.request_fingerprint != fingerprint {
                 return Err((
                     StatusCode::CONFLICT,
                     Json(json!({
@@ -185,7 +162,17 @@ pub(super) async fn workflow_plan_apply(
                     })),
                 ));
             }
-            crate::app::state::IdempotencyReservation::Reserved(_) => {}
+            if let Some(outcome) = record.outcome {
+                return Ok(Json(outcome.details));
+            }
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "workflow plan apply is already in progress",
+                    "code": "WORKFLOW_PLAN_APPLY_IN_PROGRESS",
+                    "retryable": true,
+                })),
+            ));
         }
     }
     let mut overlap_analysis = compile_preview_plan_overlap(&state, &plan_package).await;
@@ -224,6 +211,58 @@ pub(super) async fn workflow_plan_apply(
             .get_or_insert_with(Default::default)
             .overlap_log
             .push(entry);
+    }
+
+    if let (Some(key), Some(fingerprint)) = (
+        apply_idempotency_key.as_deref(),
+        apply_idempotency_fingerprint.as_deref(),
+    ) {
+        let reservation = state
+            .reserve_idempotency_key(crate::app::state::IdempotencyReservationInput {
+                tenant_context: tenant_context.clone(),
+                operation: "workflow_plan.apply".to_string(),
+                key: key.to_string(),
+                owner: creator_id.clone(),
+                request_fingerprint: fingerprint.to_string(),
+                first_seen_event_id: None,
+                now_ms: crate::now_ms(),
+                expires_at_ms: None,
+            })
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("failed to reserve workflow apply: {error}"),
+                        "code": "WORKFLOW_PLAN_APPLY_FAILED",
+                    })),
+                )
+            })?;
+        match reservation {
+            crate::app::state::IdempotencyReservation::Reserved(_) => {}
+            crate::app::state::IdempotencyReservation::Duplicate(record) => {
+                if let Some(outcome) = record.outcome {
+                    return Ok(Json(outcome.details));
+                }
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "workflow plan apply is already in progress",
+                        "code": "WORKFLOW_PLAN_APPLY_IN_PROGRESS",
+                        "retryable": true,
+                    })),
+                ));
+            }
+            crate::app::state::IdempotencyReservation::Conflict(_) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "idempotency key is already bound to a different workflow apply request",
+                        "code": "WORKFLOW_PLAN_IDEMPOTENCY_CONFLICT",
+                    })),
+                ));
+            }
+        }
     }
 
     let mut automation =
@@ -335,15 +374,31 @@ pub(super) async fn workflow_plan_apply(
     }
     let stored = match recovered_automation {
         Some(existing) => existing,
-        None => state.put_automation_v2(automation).await.map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "WORKFLOW_PLAN_APPLY_FAILED",
-                })),
-            )
-        })?,
+        None => match state.put_automation_v2(automation).await {
+            Ok(stored) => stored,
+            Err(error) => {
+                if let (Some(key), Some(fingerprint)) = (
+                    apply_idempotency_key.as_deref(),
+                    apply_idempotency_fingerprint.as_deref(),
+                ) {
+                    let _ = state
+                        .release_reserved_idempotency_key(
+                            &tenant_context,
+                            "workflow_plan.apply",
+                            key,
+                            fingerprint,
+                        )
+                        .await;
+                }
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": error.to_string(),
+                        "code": "WORKFLOW_PLAN_APPLY_FAILED",
+                    })),
+                ));
+            }
+        },
     };
     append_workflow_plan_materialization_audit(
         &state,
@@ -420,4 +475,3 @@ pub(super) async fn workflow_plan_apply(
     }
     Ok(Json(response))
 }
-

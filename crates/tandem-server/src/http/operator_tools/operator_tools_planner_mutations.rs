@@ -85,26 +85,7 @@ pub(super) async fn workflow_start(
             )
             .await;
         }
-        release_idempotent(
-            state,
-            tenant,
-            "operator.workflow_plan_start",
-            key,
-            &fingerprint,
-        )
-        .await?;
-        if let Some(replay) = reserve_idempotent(
-            state,
-            tenant,
-            "operator.workflow_plan_start",
-            key,
-            &actor,
-            &fingerprint,
-        )
-        .await?
-        {
-            return Ok(replay);
-        }
+        return Ok(replay);
     }
 
     let now = crate::now_ms();
@@ -318,26 +299,7 @@ pub(super) async fn workflow_revise(
             )
             .await;
         }
-        release_idempotent(
-            state,
-            tenant,
-            "operator.workflow_plan_revise",
-            key,
-            &fingerprint,
-        )
-        .await?;
-        if let Some(replay) = reserve_idempotent(
-            state,
-            tenant,
-            "operator.workflow_plan_revise",
-            key,
-            &actor,
-            &fingerprint,
-        )
-        .await?
-        {
-            return Ok(replay);
-        }
+        return Ok(replay);
     }
     let input = serde_json::from_value(json!({ "message": message }))?;
     let response = match super::workflow_planner::workflow_planner_session_message(

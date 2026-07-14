@@ -423,3 +423,50 @@ async fn hosted_automation_control_requires_operator_authority() {
         .to_string()
         .contains("requires an operator role or automation-control capability"));
 }
+
+#[tokio::test]
+async fn duplicate_workflow_start_keeps_the_original_reservation_in_progress() {
+    let state = test_state().await;
+    let tenant = TenantContext::local_implicit();
+    let session = chat_session(&state, tenant.clone(), None).await;
+    let args = json!({
+        "__dispatch_session_id": session.id,
+        "prompt": "Create a daily report workflow",
+        "idempotency_key": "planner-start-in-flight"
+    });
+    let mut normalized = args.clone();
+    normalized
+        .as_object_mut()
+        .unwrap()
+        .retain(|key, _| !key.starts_with("__"));
+    let fingerprint = crate::sha256_hex(&["operator.workflow_plan_start", &normalized.to_string()]);
+    state
+        .reserve_idempotency_key(crate::app::state::IdempotencyReservationInput {
+            tenant_context: tenant.clone(),
+            operation: "operator.workflow_plan_start".to_string(),
+            key: "planner-start-in-flight".to_string(),
+            owner: "local-operator".to_string(),
+            request_fingerprint: fingerprint.clone(),
+            first_seen_event_id: None,
+            now_ms: crate::now_ms(),
+            expires_at_ms: None,
+        })
+        .await
+        .unwrap();
+
+    let result = operator_tool(state.clone(), "workflow_plan_start")
+        .execute_for_tenant(args, tenant.clone())
+        .await
+        .expect("duplicate call returns in-progress state");
+    assert_eq!(result.metadata["status"], json!("in_progress"));
+    let record = state
+        .get_idempotency_key(
+            &tenant,
+            "operator.workflow_plan_start",
+            "planner-start-in-flight",
+        )
+        .await
+        .expect("reservation remains owned by original call");
+    assert_eq!(record.request_fingerprint, fingerprint);
+    assert!(record.outcome.is_none());
+}
