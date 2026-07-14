@@ -41,7 +41,7 @@ integration.
 - **Protected audit and evidence export:** `crates/tandem-server/src/audit.rs`, `http/audit_stream.rs`, and `http/context_run_ledger.rs` implement hash-chained durable records, a ledger manifest, deterministic NDJSON export, and structured run-governance evidence packages.
 - **Central dispatch and effect receipts:** `crates/tandem-tools/src/tool_dispatcher.rs` owns deny-by-default policy, scope, batch subcall, and lifecycle-receipt enforcement. `crates/tandem-server/src/app/state/tool_dispatch_outbox.rs` persists dispatch effect receipts and pre-send outbox claims; server startup asserts that its policy is not allow-all and its ledger is not a no-op.
 - **Runtime docs:** `docs/WORKFLOW_RUNTIME.md` documents artifacts, validation, retries, repair, and runtime-owned workflow execution.
-- **MCP identity and policy:** Runtime MCP definitions are separated from tenant/principal-scoped connections. OAuth sessions and run-as enforcement bind calls to an acting account, Automation V2 supports step-level tool, server, connection-grant, and service/shared run-as policy, connector `allowed_tools` is checked immediately before execution, and connection-generation pins invalidate stale saved grants after identity or credential changes.
+- **MCP identity and policy:** Runtime MCP definitions are separated from tenant/principal-scoped connections. Governed bridge calls bind execution to an acting account, Automation V2 supports step-level tool, server, connection-grant, and service/shared run-as policy, connector `allowed_tools` is checked immediately before execution, and connection-generation pins invalidate stale saved grants after identity or credential changes. Some coder GitHub Project and Incident Monitor compatibility callers still invoke the MCP registry directly and do not establish the same bridge run-as, phase-authority, or central dispatch-receipt evidence.
 - **Parameter-aware policy design:** `docs/rfcs/parameter-aware-permission-predicates.md` defines the typed predicate and authoring contract. It is design evidence, not proof that the evaluator, Control Panel authoring surface, or starter templates have landed on the reviewed `main`.
 - **Stateful orchestration:** The stateful runtime includes durable waits, tenant-scoped leases, pinned definition hashes, governed handoffs, deterministic event and effect-record identities, outbox and dead-letter records, compensation handling, and SQLite/PostgreSQL storage backends. This does not make every upstream provider effect idempotent.
 - **Enterprise ingestion reference:** The Google Drive enterprise path demonstrates source-bound read-only credentials, fail-closed admission, high-risk quarantine/review, and tenant-scoped source-object lifecycle records. Other planned enterprise ingestion providers are not implemented.
@@ -85,6 +85,8 @@ Keep the boundary explicit: this proof sprint demonstrates governed investigatio
 
 - That customer traffic cannot route around Tandem.
 - That every protected tool consumes cryptographically signed approval evidence.
+- That remaining direct internal MCP registry callers carry governed bridge
+  run-as, phase-authority, or central dispatch-receipt enforcement.
 - That parameter-aware inherited-policy authoring or starter templates are shipped on the reviewed `main`.
 - That the audit ledger is exported to immutable external storage or a SIEM.
 - That hosted OAuth and signing secrets are universally KMS-backed.

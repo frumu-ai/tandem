@@ -31,14 +31,19 @@ panel:
   connections fail closed and emit protected denial evidence.
 - Automation MCP policy can pin connection grants and service/shared run-as
   modes. Missing phase tool authority fails closed.
-- Internal coder and other reviewed server MCP calls use the governed bridge,
-  carrying verified tenant context, run-as identity, and phase-tool authority.
-  Connector `allowed_tools` is rechecked immediately before the remote call.
+- MCP tools registered through the server's governed bridge, including migrated
+  coder submit/merge paths, carry verified tenant context, run-as identity, and
+  phase-tool authority. Connector `allowed_tools` is rechecked immediately before
+  the remote call.
+- Some internal compatibility callers still invoke `McpRegistry::call_tool`
+  directly, including coder GitHub Project discovery/status sync and Incident
+  Monitor MCP destinations. Those paths are outside the bridge run-as,
+  phase-authority, and central dispatch-receipt guarantee until migrated.
 - Saved automation grants pin both `connection_id` and an opaque connection
   generation. Connector removal, identity replacement, and credential changes
   rotate or remove that generation so stale or same-name replacement grants do
   not execute.
-- Governed MCP decisions and executions write required protected denial/effect
+- MCP calls that use the governed bridge write required protected denial/effect
   evidence; receipt persistence failure remains an execution error.
 - The control panel lists actor-scoped, shared, and service connections and lets
   workflow/automation policy select explicit connection grants.
@@ -274,9 +279,11 @@ Enterprise runtime-owned OAuth must fail closed unless all of these are present:
 
 ## Run-As Resolution
 
-Every MCP tool call resolves an internal run-as record before policy evaluation
-or `tools/call`. The effective record includes the following authority data
-(the concrete type is private to the HTTP module):
+Every MCP tool call that enters the governed server bridge resolves an internal
+run-as record before policy evaluation or `tools/call`. The effective record
+includes the following authority data (the concrete type is private to the HTTP
+module). Remaining direct internal compatibility callers are excluded from this
+guarantee until they are migrated to the bridge:
 
 ```rust
 pub struct McpRunAsResolution {
@@ -307,7 +314,7 @@ Resolution rules:
 
 ## Authorization Checks
 
-At tool execution, the runtime checks:
+At governed bridge execution, the runtime checks:
 
 - The request has verified tenant context in hosted/enterprise mode.
 - The requested connection belongs to the tenant.
@@ -324,8 +331,10 @@ effect-class semantics for `SharedReadOnly`, `SharedReadWrite`, and
 paths should apply the same authority before exposing schemas; until all paths
 do so, execution-time enforcement is the hard boundary.
 
-No enterprise call path may fall back to local implicit headers or the global
-server row when a scoped connection is missing.
+No governed enterprise bridge call may fall back to local implicit headers or
+the global server row when a scoped connection is missing. The remaining direct
+internal compatibility callers are not covered by this guarantee and must be
+migrated before a deployment can claim universal enterprise MCP enforcement.
 
 ## State Migration
 
@@ -412,8 +421,9 @@ The original implementation sequence has substantially landed:
 4. TAN-352: run-as/delegation enforcement for sessions and automations — implemented,
    with hosted grant administration still incomplete.
 5. TAN-354 plus TAN-734/TAN-737/TAN-738: required protected denial and execution
-   evidence is implemented for governed server MCP paths; the complete named
-   event taxonomy remains open.
+   evidence is implemented where server MCP calls use the governed bridge;
+   remaining direct internal compatibility callers and the complete named event
+   taxonomy remain open.
 6. TAN-353: connection-aware control-panel surfaces — implemented, with hosted
    administration UX still incomplete.
 
