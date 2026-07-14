@@ -1471,6 +1471,7 @@ fn intent_name(intent: ToolIntent) -> &'static str {
         ToolIntent::MemoryOps => "memory_ops",
         ToolIntent::McpExplicit => "mcp_explicit",
         ToolIntent::ProductAuthoring => "product_authoring",
+        ToolIntent::ProductAuthoringWithMcp => "product_authoring_with_mcp",
         ToolIntent::ProductControl => "product_control",
     }
 }

@@ -729,6 +729,7 @@ impl PromptContextHook for ServerPromptContextHook {
             if matches!(
                 tandem_core::tool_router::classify_intent(&query),
                 tandem_core::tool_router::ToolIntent::ProductAuthoring
+                    | tandem_core::tool_router::ToolIntent::ProductAuthoringWithMcp
                     | tandem_core::tool_router::ToolIntent::ProductControl
             ) {
                 let tenant_context = session
