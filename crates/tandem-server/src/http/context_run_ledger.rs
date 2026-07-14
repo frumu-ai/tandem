@@ -121,13 +121,8 @@ pub(super) async fn context_run_governance_evidence_export(
             )
             .await
             {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({
-                        "error": format!("export remained denied, but its required denial receipt could not be written: {error}"),
-                        "code": "AUDIT_PERSISTENCE_FAILED",
-                    })),
-                ));
+                let body = json!({"error": format!("export remained denied, but its required denial receipt could not be written: {error}"), "code": "AUDIT_PERSISTENCE_FAILED"});
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(body)));
             }
             return Err((
                 StatusCode::FORBIDDEN,
