@@ -302,10 +302,12 @@ fn evaluate_condition(condition: &PredicateCondition, arguments: &Value) -> Pred
             })
         }
         PredicateOperator::StartsWith => {
-            string_operand(&actual, &condition.operand).map(|(a, b)| a.starts_with(&b))
+            string_operand(&actual, &condition.operand, condition.value_type)
+                .map(|(a, b)| a.starts_with(&b))
         }
         PredicateOperator::EndsWith => {
-            string_operand(&actual, &condition.operand).map(|(a, b)| a.ends_with(&b))
+            string_operand(&actual, &condition.operand, condition.value_type)
+                .map(|(a, b)| a.ends_with(&b))
         }
         PredicateOperator::LessThan => {
             numeric_operand(&actual, &condition.operand).map(|(a, b)| a < b)
@@ -320,7 +322,7 @@ fn evaluate_condition(condition: &PredicateCondition, arguments: &Value) -> Pred
             numeric_operand(&actual, &condition.operand).map(|(a, b)| a >= b)
         }
         PredicateOperator::IsSubdomainOf | PredicateOperator::NotSubdomainOf => {
-            string_operand(&actual, &condition.operand).map(|(a, b)| {
+            string_operand(&actual, &condition.operand, condition.value_type).map(|(a, b)| {
                 let matches = a == b || a.ends_with(&format!(".{b}"));
                 if condition.operator == PredicateOperator::NotSubdomainOf {
                     !matches
@@ -330,7 +332,7 @@ fn evaluate_condition(condition: &PredicateCondition, arguments: &Value) -> Pred
             })
         }
         PredicateOperator::Within | PredicateOperator::NotWithin => {
-            string_operand(&actual, &condition.operand).map(|(a, b)| {
+            string_operand(&actual, &condition.operand, condition.value_type).map(|(a, b)| {
                 let matches = a == b || a.starts_with(&format!("{}/", b.trim_end_matches('/')));
                 if condition.operator == PredicateOperator::NotWithin {
                     !matches
@@ -386,7 +388,12 @@ fn normalize_operand(value: &Value, value_type: PredicateValueType) -> Option<Va
     normalize_value(value, value_type)
 }
 
-fn string_operand(actual: &Value, operand: &Value) -> Option<(String, String)> {
+fn string_operand(
+    actual: &Value,
+    operand: &Value,
+    value_type: PredicateValueType,
+) -> Option<(String, String)> {
+    let operand = normalize_operand(operand, value_type)?;
     Some((actual.as_str()?.to_string(), operand.as_str()?.to_string()))
 }
 
@@ -618,6 +625,39 @@ mod tests {
         assert_eq!(
             predicate.evaluate(&json!({"amount":"10"})),
             PredicateResult::Indeterminate
+        );
+    }
+
+    #[test]
+    fn canonicalized_operands_match_canonicalized_arguments() {
+        let host: PermissionPredicate = serde_json::from_value(json!({
+            "expression_version": "permission_predicates/v1",
+            "condition": {
+                "selector":"/recipient",
+                "value_type":"email_domain",
+                "operator":"is_subdomain_of",
+                "operand":"EXAMPLE.COM."
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            host.evaluate(&json!({"recipient":"user@Team.Example.Com"})),
+            PredicateResult::Match
+        );
+
+        let path: PermissionPredicate = serde_json::from_value(json!({
+            "expression_version": "permission_predicates/v1",
+            "condition": {
+                "selector":"/path",
+                "value_type":"path",
+                "operator":"within",
+                "operand":"/repo/./src"
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            path.evaluate(&json!({"path":"/repo/src/lib.rs"})),
+            PredicateResult::Match
         );
     }
 }

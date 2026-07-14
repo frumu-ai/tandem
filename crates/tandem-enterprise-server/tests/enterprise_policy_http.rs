@@ -149,6 +149,7 @@ async fn enterprise_policy_authoring_publishes_and_previews_argument_predicates(
         "updated_at_ms": 0
     });
     let response = app
+        .clone()
         .oneshot(
             tenant_headers(
                 Request::builder()
@@ -193,6 +194,28 @@ async fn enterprise_policy_authoring_publishes_and_previews_argument_predicates(
             .iter()
             .any(|event| event.event_type == event_type));
     }
+    let response = app
+        .oneshot(
+            tenant_headers(
+                Request::builder()
+                    .method("POST")
+                    .uri("/enterprise/policies/finance-policy/publish"),
+            )
+            .body(Body::empty())
+            .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let rules = state.enterprise.policy_rules.read().await;
+    assert!(rules.values().any(|rule| {
+        rule.rule_id == "finance-small-payment"
+            && rule.state == tandem_enterprise_contract::EnterprisePolicyRuleState::Superseded
+    }));
+    assert!(rules.values().any(|rule| {
+        rule.rule_id == "finance-small-payment:v2"
+            && rule.state == tandem_enterprise_contract::EnterprisePolicyRuleState::Published
+    }));
 }
 
 #[tokio::test]
@@ -287,6 +310,76 @@ async fn enterprise_policy_validation_returns_actionable_scope_and_predicate_err
         .join(" ");
     assert!(messages.contains("resource scope requires resource"));
     assert!(messages.contains("is not valid for value type"));
+}
+
+#[tokio::test]
+async fn enterprise_policy_publish_validates_every_rule_before_mutating_any() {
+    let state = test_state().await;
+    let app = build_router_with_extensions(state.clone(), &[apply_routes]);
+    for rule in [
+        json!({
+            "rule_id": "atomic-publish-valid",
+            "policy_id": "atomic-publish-policy",
+            "version": 1,
+            "scope_level": "tenant",
+            "effect": "allow",
+            "tool_patterns": ["mcp.github.get_issue"],
+            "reason_code": "valid_draft",
+            "reason": "valid draft",
+            "updated_at_ms": 1
+        }),
+        json!({
+            "rule_id": "atomic-publish-expired",
+            "policy_id": "atomic-publish-policy",
+            "version": 1,
+            "scope_level": "tenant",
+            "effect": "deny",
+            "tool_patterns": ["mcp.github.delete_repository"],
+            "expires_at_ms": 1,
+            "reason_code": "expired_draft",
+            "reason": "expired draft",
+            "updated_at_ms": 1
+        }),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/enterprise/policies")
+                    .header("x-tandem-org-id", "acme")
+                    .header("x-tandem-workspace-id", "engineering")
+                    .header("x-tandem-actor-id", "admin-user")
+                    .header("content-type", "application/json")
+                    .body(Body::from(rule.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/enterprise/policies/atomic-publish-policy/publish")
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "engineering")
+                .header("x-tandem-actor-id", "admin-user")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(state
+        .enterprise
+        .policy_rules
+        .read()
+        .await
+        .values()
+        .filter(|rule| rule.policy_id == "atomic-publish-policy")
+        .all(|rule| rule.state == tandem_enterprise_contract::EnterprisePolicyRuleState::Draft));
 }
 
 #[tokio::test]

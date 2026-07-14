@@ -600,23 +600,31 @@ async fn mutate_policy_state(
     let mut changed = Vec::new();
     {
         let mut registry = state.enterprise.policy_rules.write().await;
-        for rule in registry
-            .values_mut()
-            .filter(|rule| rule.policy_id == policy_id && tenant_matches(rule, tenant_context))
-        {
-            if transition.validate_for_publish {
+        let candidates = registry
+            .values()
+            .filter(|rule| {
+                policy_state_transition_matches(rule, tenant_context, policy_id, transition)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Err(not_found("ENTERPRISE_POLICY_NOT_FOUND"));
+        }
+        if transition.validate_for_publish {
+            for rule in &candidates {
                 let validation = validate_rule(rule, true);
                 if !validation.errors.is_empty() {
                     return validation_error(validation);
                 }
             }
+        }
+        for rule in registry.values_mut().filter(|rule| {
+            policy_state_transition_matches(rule, tenant_context, policy_id, transition)
+        }) {
             rule.state = transition.target_state;
             rule.updated_at_ms = now_ms();
             changed.push(rule.clone());
         }
-    }
-    if changed.is_empty() {
-        return Err(not_found("ENTERPRISE_POLICY_NOT_FOUND"));
     }
     commit_and_audit(
         state,
@@ -633,6 +641,19 @@ async fn mutate_policy_state(
         rules: changed,
         receipt_event: transition.event_type,
     }))
+}
+
+fn policy_state_transition_matches(
+    rule: &EnterprisePolicyRule,
+    tenant_context: &TenantContext,
+    policy_id: &str,
+    transition: PolicyStateTransition,
+) -> bool {
+    rule.policy_id == policy_id
+        && tenant_matches(rule, tenant_context)
+        && rule.state != EnterprisePolicyRuleState::Superseded
+        && (transition.target_state != EnterprisePolicyRuleState::Published
+            || rule.state == EnterprisePolicyRuleState::Draft)
 }
 
 fn validate_rule(rule: &EnterprisePolicyRule, publishing: bool) -> PolicyValidationResponse {
