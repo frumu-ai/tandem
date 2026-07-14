@@ -2,27 +2,49 @@
 
 Design owner: TAN-348
 
+Document status: implemented contract with remaining hosted-control-plane work.
+
+Implementation review: 2026-07-14 against `origin/main` at `801559fd`.
+Repository behavior does not prove that a particular hosted deployment is running
+the reviewed build; deployment verification remains an operator responsibility.
+
 This document defines the enterprise MCP identity model for multi-employee
-Tandem instances. It turns the current single global MCP server registry into a
-model where server definitions, user-owned connections, service-principal
-connections, delegated execution, and audit identity are separate concepts.
+Tandem instances. The runtime now separates server definitions, user-owned
+connections, service-principal connections, delegated execution, and audit
+identity. The legacy global server representation remains as a local compatibility
+surface, not as enterprise authority.
 
-## Current State
+## Implementation Status
 
-The existing generic MCP path is safe enough for local single-user use, and it
-has useful tenant checks for store-backed secret headers, but it is not a
-complete enterprise account model.
+The principal-scoped MCP account model is implemented in the runtime and control
+panel:
 
-- `McpRegistry` stores servers in a `HashMap<String, McpServer>` keyed by server
-  name.
-- `McpServer` mixes provider definition, connection state, secret refs, auth
-  challenge state, OAuth metadata, session id, allowed tools, and tool cache.
-- MCP OAuth sessions are tied to server name and OAuth state, not tenant,
-  actor, service principal, or connection id.
-- Tool execution can carry `TenantContext`, but connect, refresh, readiness,
-  OAuth refresh, and discovery paths still have tenantless/global behavior.
-- The control panel presents MCP as a global server list with global
-  connect/auth/delete actions.
+- `McpRegistry` retains provider/server rows for compatibility and separately
+  exposes `McpServerDefinition` and `McpConnection` records.
+- `McpConnection` owns tenant/principal identity, credential references,
+  connection state, OAuth metadata, MCP session state, and authenticated tool
+  cache.
+- MCP OAuth sessions are bound to tenant context, acting principal,
+  `connection_id`, provider, redirect URI, and OAuth state.
+- Tool calls resolve run-as identity before readiness, policy evaluation, or
+  execution. Wrong-tenant, wrong-actor, disabled, missing, or unsupported shared
+  connections fail closed and emit protected denial evidence.
+- Automation MCP policy can pin connection grants and service/shared run-as
+  modes. Missing phase tool authority fails closed.
+- The control panel lists actor-scoped, shared, and service connections and lets
+  workflow/automation policy select explicit connection grants.
+
+The following work is not a shipped universal guarantee:
+
+- Hosted OAuth custody and long-lived secret storage still need a fully wired
+  control-plane/KMS resolver for every provider. Local compatibility paths may
+  retain runtime-owned OAuth state.
+- Shared/service connection creation and grant administration are not yet a
+  complete hosted identity-administration product.
+- Tool schemas are not universally filtered before discovery for every possible
+  provider/policy path; execution-time enforcement remains the hard boundary.
+- The event taxonomy below is only partially implemented and should not be
+  treated as a complete exported observability contract.
 
 The enterprise requirement is stricter: when Tandem performs an MCP tool call,
 the call must act as a known principal and use only the credential that principal
@@ -52,12 +74,12 @@ context, so first-party product tools must execute with that delegated identity.
 They must never ask the user to paste a Tandem API key into chat or expose the
 runtime transport token to the model.
 
-| Caller and target | Authentication boundary | Credential visible to the model |
-| --- | --- | --- |
-| Control Panel chat to Tandem product tools | Existing browser/desktop session plus `VerifiedTenantContext` | None |
-| External agent to the Tandem API | Supported API token or OAuth entry credential plus hosted context assertion where required | Never; the agent host owns transport authentication |
-| Tandem to a third-party MCP/service | Principal-scoped connection or governed service credential | Only an opaque connection reference |
-| Tandem Docs MCP | Public read-only endpoint; catalog contract is `requires_auth = false` | None |
+| Caller and target                          | Authentication boundary                                                                    | Credential visible to the model                     |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------ | --------------------------------------------------- |
+| Control Panel chat to Tandem product tools | Existing browser/desktop session plus `VerifiedTenantContext`                              | None                                                |
+| External agent to the Tandem API           | Supported API token or OAuth entry credential plus hosted context assertion where required | Never; the agent host owns transport authentication |
+| Tandem to a third-party MCP/service        | Principal-scoped connection or governed service credential                                 | Only an opaque connection reference                 |
+| Tandem Docs MCP                            | Public read-only endpoint; catalog contract is `requires_auth = false`                     | None                                                |
 
 The desktop sidecar may use a generated local transport token internally. That
 is an implementation detail of the trusted desktop boundary, not a credential
@@ -85,36 +107,39 @@ worked around by prompting an in-product user for an API key.
 An MCP server definition is the provider or endpoint shape. It is not a
 credential and does not imply that anyone is connected.
 
-Suggested fields:
+Implemented core fields:
 
 ```rust
 pub struct McpServerDefinition {
     pub server_id: String,
-    pub display_name: String,
+    pub name: String,
     pub transport: String,
     pub auth_kind: String,
+    pub enabled: bool,
     pub purpose: String,
     pub grounding_required: bool,
-    pub allowed_tools_policy: Option<Vec<String>>,
-    pub catalog_slug: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
 }
 ```
 
-`server_id` replaces global server name as the stable internal id. Display names
-may remain user-editable, but policy and connection records should use ids.
+`server_id` serves as the stable internal id even when it is initially derived
+from a legacy server name. Display names may remain user-editable, but policy
+and connection records should use ids.
 
 ### McpConnection
 
 An MCP connection is a principal-scoped account/credential binding for one
 server definition.
 
-Suggested fields:
+Implemented identity fields are shown below. The runtime record also carries
+secret-header references, OAuth configuration, connection/auth state, MCP
+session state, pending challenges, and the per-connection tool cache.
 
 ```rust
 pub struct McpConnection {
     pub connection_id: String,
     pub server_id: String,
-    pub tenant: TenantScope,
+    pub tenant_context: TenantContext,
     pub owner: McpPrincipalRef,
     pub credential_ref: Option<McpCredentialRef>,
     pub upstream_account: Option<McpUpstreamAccount>,
@@ -127,7 +152,8 @@ pub struct McpConnection {
 
 `McpConnection` owns authenticated runtime state. Connection status,
 MCP-session id, authenticated tool cache, pending auth challenge, and OAuth
-refresh metadata should move here or into state keyed by `connection_id`.
+refresh metadata are stored on the connection or in state keyed by
+`connection_id`.
 
 ### McpPrincipalRef
 
@@ -139,10 +165,13 @@ pub enum McpPrincipalRef {
     ServicePrincipal { principal_id: String },
     AutomationPrincipal { automation_id: String },
     SharedConnection { grant_id: String },
+    LocalImplicit,
 }
 ```
 
-Human-owned connections are usable by that actor unless an admin policy further
+`LocalImplicit` is the explicit compatibility identity for local single-user
+mode; it is not enterprise authority. Human-owned connections are usable by
+that actor unless an admin policy further
 restricts them. Service and shared connections require explicit grants.
 Automation principals must be backed by an approved service principal or a
 specific delegated connection grant; an automation id alone is not authority.
@@ -159,9 +188,11 @@ pub enum McpConnectionClass {
 }
 ```
 
-The class bounds what policy may permit. For example, a user-owned connection
-cannot silently become a shared workflow credential; a shared read-only
-connection cannot execute write tools even if a server exposes them.
+The class records the intended policy ceiling. A user-owned connection must not
+silently become a shared workflow credential, and a shared read-only connection
+must not execute write tools merely because a server exposes them. The current
+runtime persists and audits the class, but complete class-to-effect enforcement
+is still required before those semantics can be claimed universally.
 
 ### McpCredentialRef
 
@@ -212,7 +243,8 @@ tenant and requested acting principal.
 
 ## OAuth Ownership
 
-Hosted/enterprise OAuth follows the TAN-38 connector decision:
+The target hosted/enterprise OAuth boundary follows the TAN-38 connector
+decision:
 
 - The control plane starts and owns the OAuth flow.
 - The control plane stores long-lived OAuth material in KMS or a customer
@@ -233,17 +265,20 @@ Enterprise runtime-owned OAuth must fail closed unless all of these are present:
 
 ## Run-As Resolution
 
-Every MCP tool call resolves an `McpActingContext` before readiness, discovery,
-or `tools/call`:
+Every MCP tool call resolves an internal run-as record before policy evaluation
+or `tools/call`. The effective record includes the following authority data
+(the concrete type is private to the HTTP module):
 
 ```rust
-pub struct McpActingContext {
-    pub tenant: TenantContext,
-    pub initiating_actor: Option<String>,
-    pub acting_principal: McpPrincipalRef,
+pub struct McpRunAsResolution {
+    pub args: Value,
+    pub requested_tenant_context: TenantContext,
+    pub effective_tenant_context: TenantContext,
     pub connection_id: String,
-    pub server_id: String,
-    pub delegation_id: Option<String>,
+    pub principal: McpPrincipalRef,
+    pub connection_class: Option<String>,
+    pub upstream_account: Option<Value>,
+    pub requested_connection_id: Option<String>,
 }
 ```
 
@@ -255,21 +290,27 @@ Resolution rules:
 3. Scheduled automation must name a service-principal or shared connection
    grant. It cannot inherit the last editor's user-owned connection.
 4. Workflow tasks may narrow the connection/tool set but cannot widen beyond the
-   run's approved `McpActingContext`.
+   run's approved connection grant and resolved `McpRunAsResolution`.
 5. Missing, disabled, wrong-tenant, wrong-actor, or wrong-grant connections fail
-   before discovery/readiness/tool execution.
+   before tool execution. Connection-aware readiness also uses the resolved
+   identity; complete pre-discovery schema filtering remains open work.
 
 ## Authorization Checks
 
-Before a tool schema is exposed to a model or a tool call is executed, the
-runtime checks:
+At tool execution, the runtime checks:
 
 - The request has verified tenant context in hosted/enterprise mode.
 - The requested connection belongs to the tenant.
 - The acting principal owns or is granted the connection.
-- The connection class permits the requested effect class.
 - Server-level allowed tools and workflow/session allowlists permit the tool.
-- Approval gates, if required, show the acting account and connection id.
+- Context-assertion and phase-tool authority permit the call where those
+  policies apply.
+
+Connection class is persisted and exposed for policy/audit use, but complete
+effect-class semantics for `SharedReadOnly`, `SharedReadWrite`, and
+`AdminManaged` are not established as a universal execution check. Discovery
+paths should apply the same authority before exposing schemas; until all paths
+do so, execution-time enforcement is the hard boundary.
 
 No enterprise call path may fall back to local implicit headers or the global
 server row when a scoped connection is missing.
@@ -314,11 +355,16 @@ Sensitive fields that must never be emitted:
 - Raw provider payloads unless a product-specific audit policy explicitly
   allows a redacted summary.
 
-Recommended event names:
+Implemented protected event names include:
 
 - `mcp.connection.oauth_started`
 - `mcp.connection.oauth_completed`
 - `mcp.connection.oauth_denied`
+- `mcp.run_as_denied`
+
+The following names remain the intended complete taxonomy; do not rely on every
+name being emitted on every path yet:
+
 - `mcp.connection.connected`
 - `mcp.connection.refreshed`
 - `mcp.connection.discovery_denied`
@@ -326,38 +372,49 @@ Recommended event names:
 - `mcp.tool.call_denied`
 - `mcp.tool.call_completed`
 
-## Control Panel Implications
+## Control Panel Behavior And Remaining Work
 
-The control panel should show four concepts separately:
+The control panel now shows provider/server definitions separately from visible
+actor-scoped, shared, and service-principal connections. Workflow and automation
+surfaces persist explicit connection grants and run-as configuration rather than
+only a server name.
+
+The intended hosted administration model still distinguishes four concepts:
 
 - Provider/server catalog entry.
 - My connection.
 - Shared/admin-managed connection.
 - Service-principal connection.
 
-Non-admin users can connect and revoke their own accounts. Admins can manage
-shared/service connections and grants. Workflow and automation screens should
-select the acting connection or delegation mode explicitly instead of selecting
-only an MCP server name.
+Self-service revocation and complete admin management of shared/service
+connections and grants remain product-level work even where the underlying
+runtime types and policy checks exist.
 
-## Implementation Order
+## Implementation History
 
-1. TAN-349: add scoped connection records and local migration.
-2. TAN-350: scope OAuth sessions, callbacks, and refresh.
-3. TAN-351: make connect, refresh, readiness, and discovery connection-aware.
-4. TAN-352: enforce run-as/delegation policy in sessions and automations.
-5. TAN-354: add audit, observability, and isolation tests.
-6. TAN-353: update the control panel once backend contracts are stable.
+The original implementation sequence has substantially landed:
 
-## Open Decisions For Implementation
+1. TAN-349: scoped connection records and local compatibility migration — implemented.
+2. TAN-350: tenant/principal/connection-scoped OAuth sessions and callbacks — implemented.
+3. TAN-351: connection-aware connect, readiness, and execution state — implemented.
+4. TAN-352: run-as/delegation enforcement for sessions and automations — implemented,
+   with hosted grant administration still incomplete.
+5. TAN-354: protected denial/audit and isolation coverage — partially implemented;
+   the complete event taxonomy remains open.
+6. TAN-353: connection-aware control-panel surfaces — implemented, with hosted
+   administration UX still incomplete.
 
-- Whether `connection_id` should be opaque UUID only or include a deterministic
-  tenant/server/principal prefix for easier support debugging.
+## Remaining Decisions
+
 - Whether tool caches should be per connection only, or whether unauthenticated
   catalog schemas can be shared by server definition.
 - Whether local desktop should expose principal terminology at all, or keep a
   single-user "Connected account" facade over the compatibility connection.
 - Which secret resolver provider name is canonical for hosted MCP OAuth refs.
+- Which shared/service grant lifecycle and revocation API is authoritative in
+  hosted deployments.
+- Which discovery paths must pre-filter schemas in addition to the existing
+  execution-time fail-closed checks.
 
 These decisions are implementation-level and do not block the model: enterprise
 behavior must remain scoped by tenant, acting principal, connection, and grant.

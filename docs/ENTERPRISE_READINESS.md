@@ -1,5 +1,12 @@
 # Tandem Enterprise Readiness
 
+Document status: implementation inventory and explicit roadmap boundary.
+
+Implementation review: 2026-07-14 against `origin/main` at `801559fd`.
+“Available now” means implemented in the reviewed repository. It does not prove
+that a particular hosted deployment runs that commit or that an external auditor
+has accepted the control.
+
 This document separates what Tandem can credibly show today from what is still in progress or planned. Tandem is not yet a complete enterprise platform with OIDC, SCIM, turnkey SIEM connector integrations, SOC2, and private sidecar enforcement. The current proof is the runtime authority foundation those enterprise features will attach to, including tenant-aware policy decisions, governed approvals, scoped memory, protected audit evidence, and initial intra-tenant authority modeling.
 
 ## Available Now
@@ -7,19 +14,24 @@ This document separates what Tandem can credibly show today from what is still i
 - **Engine-owned run state:** Workflows and automations execute as durable runtime records rather than chat transcripts.
 - **Plan preview and apply flow:** Intent can be compiled through plan preview/apply paths into runtime-owned workflow bundles.
 - **Tenant context foundations:** The OSS enterprise contract includes tenant context, local implicit tenant defaults, principals, authority chains, and secret references.
-- **Public enterprise status:** `/enterprise/status` exposes a public-safe summary of enterprise mode, bridge state, capabilities, contract version, and tenant context.
+- **Public OSS enterprise status contract:** `/enterprise/status` exposes the public status schema, but the current public route is backed by `NoopEnterpriseBridge` and reports the OSS/local-implicit state (`disabled` / `absent`). It is not a live hosted bridge diagnostic.
+- **Admin readiness summary:** The enterprise server exposes admin-gated `/enterprise/readiness` checks and onboarding-plan preview for configured organization units, grants, connectors, source bindings, quarantines, and approvals.
+- **Strict hosted/enterprise HTTP ingress for non-public routes:** Hosted and `enterprise_required` auth modes require a transport token and signed context assertion on non-public engine/API routes, reject caller-supplied raw tenant headers there, and fail startup configuration checks when verifier keys or the transport token are absent. OAuth callbacks, `POST /webhooks/automations/*`, and `POST /channels/slack/events` intentionally bypass the global transport/context gate so external providers can reach them; those routes depend on their own OAuth-state or webhook-signature controls. This is implemented route-aware ingress enforcement, not universal transport authentication or private-sidecar availability enforcement.
 - **Approval gates and inbox:** Automation runs can pause on human gates, publish deadlines, reject late decisions after auto-cancel expiry, and process reminder or escalation policies while keeping the gate decidable. The control panel includes an Approvals Inbox backed by the pending approvals aggregator.
 - **Approval channel fan-out:** Slack, Discord, and Telegram approval delivery exists, including authorization checks, callback deduplication, user capability tiers, rate limits, and lifecycle updates.
-- **Durable protected audit records:** Protected events such as approvals, denials, pauses, provider secret changes, MCP activity, governance events, and coder transitions can be written to durable JSONL audit envelopes.
+- **Durable protected audit records:** Protected events such as approvals, denials, pauses, provider secret changes, MCP activity, governance events, and coder transitions can be written to durable JSONL audit envelopes. Required records are sequence-numbered, hash-chained, and fsynced. Callers can deny or report failure when required audit persistence fails, but the repository does not establish transactional atomicity between every external/business effect and its audit append.
 - **Tenant-scoped protected audit:** `/audit/stream` provides an admin-gated newline-delimited JSON feed for approval decisions, tool ledger events, and channel capability changes. Explicit tenant reads fail closed across tenant boundaries, and protected action/tool-effect events carry tenant context.
-- **Protected audit ledger and evidence export:** Policy decisions, protected audit records, tool-effect ledger entries, and context-run journals can be tied together for governance evidence export.
+- **Protected audit ledger and evidence export:** `/audit/ledger/manifest` and `/audit/ledger/export` expose a verifiable hash-chain manifest and deterministic NDJSON export. Run-governance evidence packages tie policy decisions, protected audit records, tool calls, approval history, memory audit, artifacts, and context-run journals together. These are generic exports, not turnkey SIEM integrations or WORM retention.
 - **MCP secret tenant checks:** MCP store secret references validate against tenant context before resolution.
-- **Per-task tool and MCP policy:** Automation V2 nodes support step-level built-in tool and MCP connector scoping.
+- **Principal-scoped MCP connections and run-as:** MCP definitions are separated from tenant/principal-owned connections. OAuth sessions bind tenant, principal, provider, and connection identity; interactive and scheduled calls resolve run-as authority and reject wrong-tenant, wrong-actor, missing-authority, and unsupported shared/service use. The control panel exposes connection-aware policy selection.
+- **Per-task tool and MCP policy:** Automation V2 nodes support step-level built-in tools, MCP connector scoping, explicit connection grants, and service/shared run-as configuration.
 - **Runtime policy decision store:** Governed runtime decisions can be persisted and queried with tenant/run filtering through governance policy-decision surfaces.
 - **Initial intra-tenant authority graph:** Direct grants, org-unit membership, role-domain nesting, inherited membership, explicit deny, and fail-closed no-grant decisions are modeled for runtime authorization.
 - **Declarative approval gate matrix:** Risk tier and data class map to allow, deny, or approval-required outcomes with reviewer eligibility and approval TTL.
 - **Cross-tenant grant contract:** Governed tenant-to-tenant sharing has signed grant envelopes, server/API surfaces, and positive sharing eval coverage; ordinary cross-tenant access remains denied unless an explicit grant applies.
 - **Memory retrieval and encryption hardening:** Retrieval gateways govern memory/knowledge egress, memory promotion is policy-visible, local encrypted memory can store encryptable payloads as ciphertext, hosted KMS mode fails closed until configured, and hosted/enterprise or verifier-key-configured runtimes activate strict tenant memory/context policy before prompt assembly.
+- **PostgreSQL storage options:** Enterprise builds can use PostgreSQL/pgvector for the memory store and PostgreSQL for the stateful orchestration storage backend. SQLite remains the local default. Backend availability is not equivalent to a managed migration or hosted operations guarantee.
+- **Enterprise ingestion control plane:** Google Drive provides the implemented reference path for tenant-scoped connector credentials, source bindings, read-only ingestion, admission policy, high-risk quarantine/review, and source-object lifecycle tracking. Notion, GitHub, Slack, and Gmail enterprise ingestion remain plans.
 - **Action Firewall and egress preflight:** Protected actions and agent-team outbound effects can be evaluated before execution/egress.
 - **Context hygiene guardrails:** Provider-facing context assembly emits budget telemetry, Full-context mode has fail-closed hard limits, and long-session evals assert provenance instead of only answer text.
 - **Runtime artifacts and validation:** Runs can persist artifacts with validation metadata and expose them through runtime/debugging surfaces.
@@ -27,13 +39,14 @@ This document separates what Tandem can credibly show today from what is still i
 
 ## In Progress
 
-- **EnterpriseManager:** Runtime mode handling for `disabled`, `optional`, and `required` enterprise operation.
-- **Fail-closed required mode:** Protected paths should block if enterprise is configured as required and the bridge is unavailable.
+- **Dynamic EnterpriseManager:** A runtime manager that reports and coordinates `disabled`, `optional`, and `required` private-bridge operation is not implemented. The current public status route always reports the no-op OSS bridge.
+- **Private-bridge fail-closed required mode:** Non-public engine/API routes already fail closed on missing transport/context authentication in strict modes. Deliberately public OAuth callback and webhook routes use separate route-specific controls, and blocking protected paths specifically because a required private enterprise bridge is unavailable remains unimplemented.
 - **Bridge handshake:** Version negotiation, runtime instance identity, boot nonce, and sidecar capability discovery.
 - **Capability negotiation:** Shared capability families for identity resolution, tenant resolution, policy authorization, token introspection, and audit append.
-- **Status split:** Public-safe enterprise summary separate from admin-only diagnostics.
+- **Status split and live bridge diagnostics:** Public no-op status and admin readiness routes exist, but the public endpoint is not yet backed by a dynamic bridge manager and there is no complete admin bridge-health diagnostic.
 - **Tenant propagation audits:** Continued verification that sessions, automations, runs, artifacts, approvals, queues, memory, caches, logs, event streams, and exports are tenant-scoped.
-- **Provider ACL sync and hosted identity integration:** Runtime grants currently model Tandem authority; upstream provider ACL sync and hosted identity lifecycle remain private control-plane work.
+- **Provider ACL sync and hosted identity integration:** Runtime grants and admin-labeled fallback currently model Tandem authority; no provider has proven synchronized per-object ACLs. Hosted identity lifecycle remains private control-plane work.
+- **Hosted MCP and connector secret custody:** Runtime reference types and tenant checks exist, while universal control-plane OAuth custody and KMS/secret-manager resolution remain incomplete.
 
 ## Planned
 
@@ -49,9 +62,9 @@ This document separates what Tandem can credibly show today from what is still i
 
 Tandem can honestly claim a serious enterprise authority path today:
 
-> The public runtime already carries the primitives enterprise AI work needs: durable runs, tenant-aware records, scoped tools, governed approval gates, initial policy decisions, intra-tenant authority modeling, explicit cross-tenant grant contracts, artifact validation, retrieval/egress controls, protected audit events, protected audit export foundations, and a sidecar-ready contract. Full enterprise identity, hosted RBAC administration, OIDC, SCIM, turnkey SIEM integrations, private sidecar enforcement, and SOC2 are roadmap items, not shipped guarantees.
+> The reviewed runtime carries substantial enterprise authority primitives: durable stateful runs, tenant-aware records, scoped tools and principal-bound MCP connections, governed approval gates, policy decisions, intra-tenant authority modeling, explicit cross-tenant grant contracts, artifact validation, retrieval/egress controls, hash-chained protected audit records, verifiable generic evidence exports, PostgreSQL storage options, and a reference enterprise ingestion path. These are repository capabilities, not proof of hosted deployment, non-bypassability, external control acceptance, or operational maturity. Full enterprise identity, hosted RBAC administration, OIDC, SCIM, turnkey SIEM integrations, private-sidecar enforcement, managed KMS custody across every signing/connector lane, and SOC2 remain roadmap items or unverified operational claims.
 
-Approval gates are runtime control points, not a complete enterprise identity boundary by themselves. For regulated or customer-impacting actions, Tandem should fail closed unless the runtime can verify tenant, policy, approval, proposed-action identity, and capability evidence at the protected tool call. Tandem now has an approval-receipt verifier, a policy decision store, a gate matrix, and protected audit evidence for governed tool calls; enterprise required-mode sidecar enforcement remains roadmap work.
+Approval gates are runtime control points, not a complete enterprise identity boundary by themselves. For regulated or customer-impacting actions, Tandem should fail closed unless the runtime can verify tenant, policy, approval, proposed-action identity, and capability evidence at the protected tool call. Tandem has a cryptographic approval-receipt verifier contract, a policy decision store, a gate matrix, protected audit evidence, and an integrated fintech path that matches approved gate history to tenant, tool, exact action hash, and expiry. The repository does not establish that every protected tool path consumes a signed approval receipt; universal receipt enforcement and enterprise required-mode private-sidecar enforcement remain open.
 
 ## Fintech Readiness Note
 
