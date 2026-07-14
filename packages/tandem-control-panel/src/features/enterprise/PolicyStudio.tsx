@@ -248,6 +248,9 @@ export function PolicyStudio({ tenant }: { tenant?: EnterpriseTenantContext }) {
   const rules = useMemo(() => policies.data?.policy_rules || [], [policies.data]);
   const templateRows = useMemo(() => templates.data?.templates || [], [templates.data]);
   const selectedTemplate = templateRows.find((template) => template.template_id === templateId);
+  const selectedOverrideCondition = selectedTemplate?.rules.find(
+    (rule) => rule.rule_id === overrideRuleId.trim()
+  )?.predicate?.condition;
   const selectedRule = rules.find((rule) => rule.rule_id === draft.ruleId);
   const currentRule = buildRule(draft, tenant);
   const busy =
@@ -801,7 +804,9 @@ export function PolicyStudio({ tenant }: { tenant?: EnterpriseTenantContext }) {
                     overrides: buildTemplatePredicateOverrides(
                       overrideRuleId,
                       overrideConditionId,
-                      overrideOperand
+                      overrideOperand,
+                      selectedOverrideCondition?.operator,
+                      selectedOverrideCondition?.value_type
                     ),
                   })
                 }

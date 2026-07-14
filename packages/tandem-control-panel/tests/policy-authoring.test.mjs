@@ -30,6 +30,21 @@ test("template authoring emits bounded condition overrides without copying rule 
     ]
   );
   assert.deepEqual(buildTemplatePredicateOverrides("", "approval-threshold", "5000.00"), []);
+  assert.deepEqual(
+    buildTemplatePredicateOverrides(
+      "internal-drafts",
+      "company-domains",
+      "example.com, example.org",
+      "in",
+      "email_domain"
+    ),
+    [
+      {
+        rule_id: "internal-drafts",
+        predicate_operands: { "company-domains": ["example.com", "example.org"] },
+      },
+    ]
+  );
 });
 
 test("policy supersede only carries forward published rules", () => {

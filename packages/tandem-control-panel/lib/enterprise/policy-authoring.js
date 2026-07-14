@@ -42,12 +42,21 @@ export function buildPolicyPreviewArguments(selector, value) {
  * @param {string} ruleId
  * @param {string} conditionId
  * @param {string} operand
+ * @param {string} [operator]
+ * @param {string} [valueType]
  */
-export function buildTemplatePredicateOverrides(ruleId, conditionId, operand) {
+export function buildTemplatePredicateOverrides(
+  ruleId,
+  conditionId,
+  operand,
+  operator = "",
+  valueType = ""
+) {
   const rule = ruleId.trim();
   const condition = conditionId.trim();
   if (!rule || !condition) return [];
-  return [{ rule_id: rule, predicate_operands: { [condition]: operand } }];
+  const parsedOperand = operator ? parsePolicyOperand(operand, operator, valueType) : operand;
+  return [{ rule_id: rule, predicate_operands: { [condition]: parsedOperand } }];
 }
 
 /**
