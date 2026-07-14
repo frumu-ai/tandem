@@ -36,13 +36,8 @@ fn authoritative_success_claim_requires_a_persisted_artifact() {
         "ok": true,
         "resource": { "id": "automation-1" }
     });
-    let error = validate_authoritative_claim(
-        "Created the automation draft.",
-        "automation-1",
-        &outcome,
-        None,
-    )
-    .expect_err("claim without persistence must fail");
+    let error = validate_authoritative_claim("Created the automation draft.", &outcome, None)
+        .expect_err("claim without persistence must fail");
     assert!(error.to_string().contains("persisted artifact"));
 }
 
