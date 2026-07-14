@@ -119,18 +119,14 @@ impl EngineLoop {
             .dispatch_identity_for(tool, &args, &dispatch_context)
             .await;
         let timeout_dispatch_context = dispatch_context.clone();
-        match tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            self.tool_dispatcher.dispatch_with_cancel_and_progress(
-                tool,
-                args,
-                dispatch_context,
-                cancel,
-                progress,
-            ),
-        )
-        .await
-        {
+        let dispatch = Box::pin(self.tool_dispatcher.dispatch_with_cancel_and_progress(
+            tool,
+            args,
+            dispatch_context,
+            cancel,
+            progress,
+        ));
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), dispatch).await {
             Ok(result) => result,
             Err(_) => {
                 timeout_dispatch_context
