@@ -171,7 +171,7 @@ test("linked workflow artifacts render parallel stages and conversational action
             plan_id: "plan-artifact",
             title: "Support triage",
             description: "Classify requests in parallel, then prepare the response.",
-            schedule: { type: "cron", expression: "0 8 * * 1-5" },
+            schedule: { type: "cron", cron_expression: "0 8 * * 1-5" },
             execution_target: "server",
             allowed_mcp_servers: ["slack"],
             metadata: { assumptions: ["Requests arrive in the support queue"] },
@@ -231,6 +231,7 @@ test("linked workflow artifacts render parallel stages and conversational action
   const artifact = page.getByTestId("chat-workflow-artifact");
   await expect(artifact).toHaveCount(1);
   await expect(artifact.getByText("Support triage", { exact: true })).toBeVisible();
+  await expect(artifact.getByText("Schedule: 0 8 * * 1-5", { exact: true })).toBeVisible();
   await expect(artifact.getByText("2 parallel", { exact: true })).toBeVisible();
   await expect(artifact.getByText("Classify urgency", { exact: true })).toBeVisible();
   await expect(artifact.getByText("Find relevant account context", { exact: true })).toBeVisible();

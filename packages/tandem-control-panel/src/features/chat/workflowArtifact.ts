@@ -150,7 +150,12 @@ function scheduleLabel(value: unknown): string {
   const schedule = asRecord(value);
   const type = clean(schedule.type) || clean(schedule.kind) || "manual";
   const expression =
-    clean(schedule.cron) || clean(schedule.expression) || clean(schedule.schedule) || "";
+    clean(schedule.cronExpression) ||
+    clean(schedule.cron_expression) ||
+    clean(schedule.cron) ||
+    clean(schedule.expression) ||
+    clean(schedule.schedule) ||
+    "";
   const event = clean(schedule.event) || clean(schedule.event_type) || clean(schedule.webhook) || "";
   if (type === "manual") return "Manual trigger";
   if (expression) return `${type === "cron" ? "Schedule" : type}: ${expression}`;
