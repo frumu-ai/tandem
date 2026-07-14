@@ -45,16 +45,23 @@ export function useChatWorkflowArtifact(
   refreshSignal: string
 ) {
   const requestRef = useRef(0);
+  const activeChatSessionRef = useRef("");
   const [state, setState] = useState<ChatWorkflowArtifactState>(EMPTY_STATE);
 
   const refresh = useCallback(async () => {
     const sessionId = chatSessionId.trim();
     const requestId = ++requestRef.current;
+    const sessionChanged = activeChatSessionRef.current !== sessionId;
+    activeChatSessionRef.current = sessionId;
     if (!sessionId) {
       setState(EMPTY_STATE);
       return null;
     }
-    setState((current) => ({ ...current, loading: !current.artifact, error: "" }));
+    setState((current) =>
+      sessionChanged
+        ? { ...EMPTY_STATE, loading: true }
+        : { ...current, loading: !current.artifact, error: "" }
+    );
     try {
       const listed = await client.workflowPlannerSessions.list({
         linkedChatSessionId: sessionId,

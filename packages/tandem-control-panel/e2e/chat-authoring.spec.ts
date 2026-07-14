@@ -404,3 +404,78 @@ test("ambiguous linked workflows do not expose actions for an arbitrary draft", 
     )
   ).toBe(false);
 });
+
+test("switching chats clears the previous workflow artifact before loading", async ({
+  page,
+  apiFixture,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("tcp.chat.session", "artifact-source-chat");
+  });
+  apiFixture.mockResponse(
+    /\/api\/engine\/session(?:\?|$)/,
+    {
+      sessions: [
+        { id: "artifact-source-chat", title: "Source chat", source_kind: "chat" },
+        { id: "artifact-target-chat", title: "Target chat", source_kind: "chat" },
+      ],
+    },
+    "GET"
+  );
+  apiFixture.mockResponse(
+    /\/api\/engine\/workflow-plans\/sessions\?linked_chat_session_id=artifact-source-chat/,
+    {
+      sessions: [
+        {
+          session_id: "wfplan-source-chat",
+          linked_chat_session_id: "artifact-source-chat",
+          title: "Source workflow",
+          project_slug: "chat-authoring",
+          workspace_root: "/workspace",
+          created_at_ms: 10,
+          updated_at_ms: 20,
+        },
+      ],
+      count: 1,
+    },
+    "GET"
+  );
+  apiFixture.mockResponse(
+    "/api/engine/workflow-plans/sessions/wfplan-source-chat",
+    {
+      session: {
+        session_id: "wfplan-source-chat",
+        linked_chat_session_id: "artifact-source-chat",
+        project_slug: "chat-authoring",
+        title: "Source workflow",
+        workspace_root: "/workspace",
+        goal: "Prepare a source workflow",
+        created_at_ms: 10,
+        updated_at_ms: 20,
+      },
+    },
+    "GET"
+  );
+  apiFixture.mockResponse(
+    /\/api\/engine\/workflow-plans\/sessions\?linked_chat_session_id=artifact-target-chat/,
+    { sessions: [], count: 0 },
+    "GET"
+  );
+
+  await page.goto("/#/chat");
+  await waitForRoute(page, "chat");
+  const artifact = page.getByTestId("chat-workflow-artifact");
+  await expect(artifact.getByText("Source workflow", { exact: true })).toBeVisible();
+
+  const targetLookup = apiFixture.holdNext(
+    "/api/engine/workflow-plans/sessions",
+    "GET"
+  );
+  await page.getByRole("button", { name: "Toggle sessions" }).click();
+  await page.getByRole("button", { name: "Target chat" }).click();
+  await targetLookup.waitUntilRequested();
+
+  await expect(page.getByTestId("chat-workflow-artifact")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Target chat" })).toBeVisible();
+  targetLookup.release();
+});
