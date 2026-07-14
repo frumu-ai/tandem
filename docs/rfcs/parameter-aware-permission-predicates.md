@@ -154,7 +154,7 @@ Predicates add no separate priority dimension. Two same-level rules that both ma
 
 ## Dispatcher outcome and approval lifecycle
 
-The dispatcher policy contract must add `ApprovalRequired` as a first-class `ToolDispatchPolicyOutcome` alongside `Allowed` and `Denied`. The outcome carries the policy decision ID, winning rule and version, required approval class, and a redacted argument digest. Native, MCP, batch, CLI, and HTTP paths must all return or pause on this outcome; no adapter may collapse it to `Allowed` or treat it as a terminal `Denied` result.
+The dispatcher policy contract must add `ApprovalRequired` as a first-class `ToolDispatchPolicyOutcome` alongside `Allowed` and `Denied`. The outcome carries the policy decision ID, winning rule and version, required approval class, and a deployment-scoped HMAC of the canonical arguments. The argument HMAC is an opaque binding token: it is available only to authorized approval surfaces, never emitted as an unkeyed digest, and cannot be correlated across deployments. Native, MCP, batch, CLI, and HTTP paths must all return or pause on this outcome; no adapter may collapse it to `Allowed` or treat it as a terminal `Denied` result.
 
 On `ApprovalRequired`, the dispatcher writes the policy-decision and approval-request receipts before it exposes the request to a client or approval worker. It then returns a non-executable pending handle. Approval creates a single-use, decision-bound approval receipt with an expiry and the original normalized tool name and argument digest; denial or expiry creates a terminal receipt and the tool is not called. Resume re-enters the same dispatcher, verifies and atomically consumes the approval receipt, re-evaluates non-waivable lower-level guards, writes the allow receipt, executes at most once, and links the execution receipt to the original decision. Changed tool identity, arguments, scope, policy version, connector generation, expired approval, or an already-consumed receipt fails closed and requires a new decision.
 
@@ -180,7 +180,7 @@ Policy decision receipts add a bounded `predicate_evidence` object:
   "conditions": [
     {
       "condition_id": "amount-threshold",
-      "selector_digest": "sha256:...",
+      "selector_digest": "hmac-sha256:...",
       "value_type": "decimal",
       "operator": "greater_than_or_equal",
       "result": "match",
