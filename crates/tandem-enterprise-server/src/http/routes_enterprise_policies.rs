@@ -9,8 +9,9 @@ use serde_json::{json, Value};
 use tandem_enterprise_contract::{
     enterprise_scope_ids_match, starter_policy_template, starter_policy_templates,
     EffectivePolicySnapshot, EnterprisePolicyInput, EnterprisePolicyRule,
-    EnterprisePolicyRuleState, PolicyStarterTemplate, PolicyTemplateInstantiation,
-    PolicyTemplateRuleOverride, RequestPrincipal, TenantContext, VerifiedTenantContext,
+    EnterprisePolicyRuleState, EnterprisePolicyScopeLevel, PolicyStarterTemplate,
+    PolicyTemplateInstantiation, PolicyTemplateRuleOverride, RequestPrincipal, TenantContext,
+    VerifiedTenantContext,
 };
 use tandem_server::{now_ms, AppState};
 
@@ -399,6 +400,18 @@ async fn supersede_policy(
     for mut rule in request.rules {
         if !replacement_ids.insert(rule.rule_id.clone()) {
             return Err(conflict("ENTERPRISE_POLICY_RULE_ID_CONFLICT"));
+        }
+        if target_tenant_context.is_none()
+            && rule.scope_level != EnterprisePolicyScopeLevel::Enterprise
+        {
+            return validation_error(PolicyValidationResponse {
+                valid: false,
+                errors: vec![PolicyValidationMessage {
+                    path: "scope_level".to_string(),
+                    message: "tenantless replacement rules must use enterprise scope".to_string(),
+                }],
+                warnings: Vec::new(),
+            });
         }
         rule.policy_id = policy_id.clone();
         rule.tenant_context.clone_from(&target_tenant_context);

@@ -246,6 +246,80 @@ async fn enterprise_policy_supersede_normalizes_tenant_scope_and_preserves_tenan
 }
 
 #[tokio::test]
+async fn enterprise_global_policy_supersede_rejects_non_enterprise_replacements() {
+    use tandem_enterprise_contract::{
+        EnterprisePolicyEffect, EnterprisePolicyRule, EnterprisePolicyRuleState,
+        EnterprisePolicyScopeLevel,
+    };
+
+    let state = test_state().await;
+    let original = EnterprisePolicyRule::new(
+        "global-existing",
+        "global-policy",
+        EnterprisePolicyScopeLevel::Enterprise,
+        EnterprisePolicyEffect::Deny,
+    )
+    .with_tool_patterns(vec!["mcp.secrets.export".to_string()]);
+    state
+        .enterprise
+        .policy_rules
+        .write()
+        .await
+        .insert(original.rule_id.clone(), original);
+    let app = build_router_with_extensions(state.clone(), &[apply_routes])
+        .layer(Extension(verified_admin_context(&["enterprise:admin"])));
+    let replacement = json!({
+        "rule_id": "invalid-global-replacement",
+        "policy_id": "ignored-client-policy",
+        "version": 2,
+        "scope_level": "tenant",
+        "effect": "deny",
+        "tool_patterns": ["mcp.secrets.export"],
+        "reason_code": "global_secret_export_denied",
+        "reason": "secret export remains denied globally",
+        "updated_at_ms": 1
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/enterprise/policies/global-policy/supersede")
+                .header("x-tandem-org-id", "acme")
+                .header("x-tandem-workspace-id", "engineering")
+                .header("x-tandem-actor-id", "admin-user")
+                .header("x-tandem-request-source", "tandem-web")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"rules":[replacement]}).to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("ENTERPRISE_POLICY_VALIDATION_FAILED")
+    );
+    assert_eq!(
+        payload.pointer("/errors/0/path").and_then(Value::as_str),
+        Some("scope_level")
+    );
+    let rules = state.enterprise.policy_rules.read().await;
+    assert_eq!(
+        rules.get("global-existing").map(|rule| rule.state),
+        Some(EnterprisePolicyRuleState::Published)
+    );
+    assert!(!rules.contains_key("invalid-global-replacement"));
+}
+
+#[tokio::test]
 async fn enterprise_policy_supersede_rejects_cross_tenant_rule_id_collisions() {
     use tandem_enterprise_contract::{
         EnterprisePolicyEffect, EnterprisePolicyRule, EnterprisePolicyRuleState,
