@@ -6,8 +6,10 @@ use std::{
 use anyhow::Context;
 use futures::StreamExt;
 use reqwest::{redirect::Policy as RedirectPolicy, StatusCode, Url};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use tandem_types::EngineEvent;
+use tandem_tools::Tool;
+use tandem_types::{EngineEvent, ToolResult, ToolSchema, ToolSecurityDescriptor};
 use url::Host;
 
 use crate::{
@@ -36,6 +38,150 @@ const DEFAULT_PAYLOAD_BYTE_LIMIT: usize = 64 * 1024;
 const MAX_PAYLOAD_BYTE_LIMIT: usize = 256 * 1024;
 const DEFAULT_RESPONSE_BYTE_LIMIT: usize = 4 * 1024;
 const MAX_RESPONSE_BYTE_LIMIT: usize = 16 * 1024;
+
+pub(crate) const INCIDENT_MONITOR_WEBHOOK_TOOL: &str = "incident_monitor_webhook_send";
+
+pub(crate) fn incident_monitor_webhook_dispatch_args(
+    destination_id: &str,
+    url: &Url,
+    config: Option<&Value>,
+    signing_ref: Option<&str>,
+    delivery_id: &str,
+    idempotency_key: &str,
+    body: &[u8],
+) -> Value {
+    json!({
+        "destination_id": destination_id,
+        "url": url.as_str(),
+        "config": config,
+        "signing_ref_sha256": webhook_signing_ref_binding(signing_ref),
+        "delivery_id": delivery_id,
+        "idempotency_key": idempotency_key,
+        "body": String::from_utf8_lossy(body),
+    })
+}
+
+fn webhook_signing_ref_binding(signing_ref: Option<&str>) -> Option<String> {
+    signing_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| sha256_hex(&["incident_monitor_webhook_signing_ref_v1", value]))
+}
+
+#[derive(Clone)]
+pub(crate) struct IncidentMonitorWebhookDispatchTool {
+    state: AppState,
+}
+
+impl IncidentMonitorWebhookDispatchTool {
+    pub(crate) fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for IncidentMonitorWebhookDispatchTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            INCIDENT_MONITOR_WEBHOOK_TOOL,
+            "Send an Incident Monitor webhook through the governed server dispatcher",
+            json!({"type":"object","additionalProperties":true}),
+        )
+        .with_security(ToolSecurityDescriptor {
+            external_side_effect: true,
+            ..Default::default()
+        })
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let destination_id = args
+            .get("destination_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("webhook destination id is missing"))?;
+        let url = Url::parse(
+            args.get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("webhook URL is missing"))?,
+        )?;
+        let destination = self
+            .state
+            .incident_monitor_config()
+            .await
+            .effective_destinations()
+            .into_iter()
+            .find(|destination| destination.destination_id == destination_id)
+            .ok_or_else(|| anyhow::anyhow!("webhook destination is no longer configured"))?;
+        if !destination.enabled || destination.kind != IncidentMonitorDestinationKind::Webhook {
+            anyhow::bail!("webhook destination is no longer enabled");
+        }
+        let configured_url = Url::parse(
+            destination
+                .webhook_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("webhook URL is missing"))?,
+        )?;
+        let requested_config = args.get("config").filter(|value| !value.is_null());
+        let requested_signing_ref = args.get("signing_ref_sha256").and_then(Value::as_str);
+        let configured_signing_ref =
+            webhook_signing_ref_binding(destination.webhook_secret_ref.as_deref());
+        if configured_url != url
+            || requested_config != destination.config.as_ref()
+            || requested_signing_ref != configured_signing_ref.as_deref()
+        {
+            anyhow::bail!("webhook destination changed after policy evaluation");
+        }
+        let policy = WebhookPolicy::from_config(destination.config.as_ref());
+        let resolved_target = validate_webhook_url(&url, &policy).await?;
+        let secret = resolve_webhook_secret(
+            destination
+                .webhook_secret_ref
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("webhook secret reference is missing"))?,
+        )?;
+        let delivery_id = args
+            .get("delivery_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("webhook delivery id is missing"))?;
+        let idempotency_key = args
+            .get("idempotency_key")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("webhook idempotency key is missing"))?;
+        let body = args
+            .get("body")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("webhook body is missing"))?
+            .as_bytes();
+        let sent = send_webhook(
+            &url,
+            &resolved_target,
+            &policy,
+            &secret,
+            delivery_id,
+            idempotency_key,
+            body,
+        )
+        .await
+        .map_err(anyhow::Error::new)?;
+        let attempts = sent
+            .attempts
+            .iter()
+            .map(WebhookSendAttempt::receipt_value)
+            .collect::<Vec<_>>();
+        Ok(ToolResult {
+            output: sent.response_excerpt.clone().unwrap_or_default(),
+            metadata: json!({
+                "status_code": sent.status_code,
+                "response_excerpt": sent.response_excerpt,
+                "response_truncated": sent.response_truncated,
+                "attempts": attempts,
+            }),
+        })
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct WebhookDestinationContext {
@@ -112,7 +258,7 @@ struct ResponseExcerpt {
     truncated: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 struct WebhookSendAttempt {
     attempt: u64,
     status_code: Option<u16>,
@@ -148,6 +294,14 @@ struct WebhookSendFailure {
     detail: String,
     attempts: Vec<WebhookSendAttempt>,
 }
+
+impl std::fmt::Display for WebhookSendFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for WebhookSendFailure {}
 
 #[derive(Debug, Clone, Default)]
 struct WebhookResolvedTarget {
@@ -527,56 +681,64 @@ async fn publish_claimed_webhook(
         return Err((anyhow::anyhow!(detail), post));
     }
 
-    let resolved_target = match validate_webhook_url(parsed_url, policy).await {
-        Ok(resolved_target) => resolved_target,
-        Err(error) => {
-            let detail = error.to_string();
-            let post = record_claim_failure(
-                state,
-                claim,
-                destination,
-                target_ref,
+    let dispatch_context = state.tool_dispatch_context(
+        tandem_tools::ToolDispatchSource::new("incident_monitor_webhook")
+            .request(format!("{}:webhook_publish", draft.draft_id))
+            .run(
+                draft
+                    .triage_run_id
+                    .clone()
+                    .unwrap_or_else(|| draft.draft_id.clone()),
+            ),
+        crate::incident_monitor::draft_tenant_context(draft),
+        vec![INCIDENT_MONITOR_WEBHOOK_TOOL.to_string()],
+    );
+    let send_result = state
+        .tool_dispatcher
+        .dispatch(
+            INCIDENT_MONITOR_WEBHOOK_TOOL,
+            incident_monitor_webhook_dispatch_args(
+                &destination.destination_id,
+                parsed_url,
+                destination.config.as_ref(),
+                destination.webhook_secret_ref.as_deref(),
                 delivery_id,
-                "blocked",
-                &detail,
-                Vec::new(),
-                Some(body.len()),
-            )
-            .await;
-            return Err((error, post));
-        }
-    };
-
-    let secret = match resolve_webhook_secret(destination.secret_ref().unwrap_or_default()) {
-        Ok(secret) => secret,
-        Err(error) => {
-            let detail = error.to_string();
-            let post = record_claim_failure(
-                state,
-                claim,
-                destination,
-                target_ref,
-                delivery_id,
-                "failed",
-                &detail,
-                Vec::new(),
-                Some(body.len()),
-            )
-            .await;
-            return Err((error, post));
-        }
-    };
-
-    let send_result = send_webhook(
-        parsed_url,
-        &resolved_target,
-        policy,
-        &secret,
-        delivery_id,
-        idempotency_key,
-        &body,
-    )
-    .await;
+                idempotency_key,
+                &body,
+            ),
+            dispatch_context,
+        )
+        .await
+        .map(|result| WebhookSendSuccess {
+            status_code: result
+                .metadata
+                .get("status_code")
+                .and_then(Value::as_u64)
+                .unwrap_or(200) as u16,
+            response_excerpt: result
+                .metadata
+                .get("response_excerpt")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            response_truncated: result
+                .metadata
+                .get("response_truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            attempts: result
+                .metadata
+                .get("attempts")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or_default(),
+        })
+        .map_err(|error| match error.downcast::<WebhookSendFailure>() {
+            Ok(failure) => failure,
+            Err(error) => WebhookSendFailure {
+                detail: error.to_string(),
+                attempts: Vec::new(),
+            },
+        });
     match send_result {
         Ok(sent) => {
             let post = IncidentMonitorPostRecord {
@@ -1468,6 +1630,31 @@ async fn mirror_webhook_post_as_external_action(
 #[cfg(test)]
 mod webhook_retry_tests {
     use super::*;
+
+    #[test]
+    fn webhook_dispatch_binds_signing_ref_without_exposing_it() {
+        let url = Url::parse("https://hooks.example.com/incidents").unwrap();
+        let original_ref = "env:TANDEM_WEBHOOK_SECRET_A";
+        let args = incident_monitor_webhook_dispatch_args(
+            "incident-primary",
+            &url,
+            None,
+            Some(original_ref),
+            "delivery-1",
+            "idempotency-1",
+            b"Incident summary",
+        );
+
+        assert_eq!(
+            args.get("signing_ref_sha256").and_then(Value::as_str),
+            webhook_signing_ref_binding(Some(original_ref)).as_deref()
+        );
+        assert_ne!(
+            args.get("signing_ref_sha256").and_then(Value::as_str),
+            webhook_signing_ref_binding(Some("env:TANDEM_WEBHOOK_SECRET_B")).as_deref()
+        );
+        assert!(!args.to_string().contains(original_ref));
+    }
 
     fn failed_post(retryable: Option<bool>) -> IncidentMonitorPostRecord {
         let attempt = match retryable {

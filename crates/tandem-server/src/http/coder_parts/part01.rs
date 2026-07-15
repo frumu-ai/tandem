@@ -643,8 +643,9 @@ pub(super) struct CoderFollowOnRunCreateInput {
 #[derive(Clone)]
 struct GithubProjectsAdapter<'a> {
     state: &'a AppState,
+    tenant_context: tandem_types::TenantContext,
+    verified_tenant_context: Option<tandem_types::VerifiedTenantContext>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GithubProjectIssueSummary {
     number: u64,
@@ -660,12 +661,6 @@ struct GithubProjectInboxItemRecord {
     status_option_id: Option<String>,
     issue: Option<GithubProjectIssueSummary>,
     raw: Value,
-}
-
-impl<'a> GithubProjectsAdapter<'a> {
-    fn new(state: &'a AppState) -> Self {
-        Self { state }
-    }
 }
 
 fn default_coder_handoff_policy() -> String {
@@ -965,7 +960,7 @@ async fn maybe_sync_github_project_status(
     }
     let target_option =
         context_status_to_project_option(&project_ref.status_mapping, &context_run.status);
-    let adapter = GithubProjectsAdapter::new(state);
+    let adapter = GithubProjectsAdapter::new(state, context_run.tenant_context.clone(), None);
     match adapter
         .update_project_item_status(
             &project_binding,

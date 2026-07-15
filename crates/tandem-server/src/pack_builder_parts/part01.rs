@@ -412,28 +412,6 @@ struct CatalogServer {
     tool_names: Vec<String>,
 }
 
-#[derive(Clone)]
-struct McpBridgeTool {
-    schema: ToolSchema,
-    mcp: tandem_runtime::McpRegistry,
-    server_name: String,
-    tool_name: String,
-}
-
-#[async_trait]
-impl Tool for McpBridgeTool {
-    fn schema(&self) -> ToolSchema {
-        self.schema.clone()
-    }
-
-    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
-        self.mcp
-            .call_tool(&self.server_name, &self.tool_name, args)
-            .await
-            .map_err(anyhow::Error::msg)
-    }
-}
-
 #[async_trait]
 impl Tool for PackBuilderTool {
     fn schema(&self) -> ToolSchema {
@@ -1108,7 +1086,7 @@ impl PackBuilderTool {
                 .await;
             let connected = self.state.mcp.connect(&name).await;
             let tool_count = if connected {
-                sync_mcp_tools_for_server(&self.state, &name).await
+                crate::http::mcp::sync_mcp_tools_for_server(&self.state, &name).await
             } else {
                 0
             };

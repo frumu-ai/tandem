@@ -175,6 +175,7 @@ pub trait IncidentMonitorGithubHost: Sync {
     ) -> anyhow::Result<GithubToolSet>;
     async fn call_mcp_tool(
         &self,
+        draft: &IncidentMonitorDraftRecord,
         server_name: &str,
         tool_name: &str,
         payload: Value,
@@ -464,9 +465,10 @@ pub async fn publish_draft(
             );
             let body =
                 append_error_provenance_section(state, body, &draft, incident.as_ref()).await;
-            let result = call_add_issue_comment(state, &tools, &owner_repo, issue.number, &body)
-                .await
-                .context("post Incident Monitor comment to GitHub")?;
+            let result =
+                call_add_issue_comment(state, &draft, &tools, &owner_repo, issue.number, &body)
+                    .await
+                    .context("post Incident Monitor comment to GitHub")?;
             let post = IncidentMonitorPostRecord {
                 post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
                 draft_id: draft.draft_id.clone(),
@@ -760,7 +762,7 @@ async fn create_issue_from_draft(
             build_issue_body(&draft, incident, matched_closed_issue, evidence_digest)
         });
     let body = append_error_provenance_section(state, body, &draft, incident).await;
-    let created = match call_create_issue(state, tools, &owner_repo, title, &body).await {
+    let created = match call_create_issue(state, &draft, tools, &owner_repo, title, &body).await {
         Ok(created) => created,
         Err(error) => {
             let mut failed_claim = existing_claim.clone();
@@ -831,7 +833,7 @@ async fn find_matching_issue(
     owner_repo: &(&str, &str),
     draft: &IncidentMonitorDraftRecord,
 ) -> anyhow::Result<Option<GithubIssue>> {
-    let mut issues = call_list_issues(state, tools, owner_repo).await?;
+    let mut issues = call_list_issues(state, draft, tools, owner_repo).await?;
     if let Some(existing_number) = draft.issue_number {
         if let Some(existing) = issues
             .iter()
@@ -840,7 +842,7 @@ async fn find_matching_issue(
         {
             return Ok(Some(existing));
         }
-        if let Ok(issue) = call_get_issue(state, tools, owner_repo, existing_number).await {
+        if let Ok(issue) = call_get_issue(state, draft, tools, owner_repo, existing_number).await {
             return Ok(Some(issue));
         }
     }
@@ -1336,6 +1338,7 @@ const GITHUB_LIST_ISSUES_MAX_PAGES: u64 = 10;
 
 async fn call_list_issues(
     state: &dyn IncidentMonitorGithubHost,
+    draft: &IncidentMonitorDraftRecord,
     tools: &GithubToolSet,
     (owner, repo): &(&str, &str),
 ) -> anyhow::Result<Vec<GithubIssue>> {
@@ -1344,6 +1347,7 @@ async fn call_list_issues(
     for page in 1..=GITHUB_LIST_ISSUES_MAX_PAGES {
         let result = state
             .call_mcp_tool(
+                draft,
                 &tools.server_name,
                 &tools.list_issues,
                 github_list_issues_payload(owner, repo, page),
@@ -1379,12 +1383,14 @@ fn github_list_issues_payload(owner: &str, repo: &str, page: u64) -> Value {
 
 async fn call_get_issue(
     state: &dyn IncidentMonitorGithubHost,
+    draft: &IncidentMonitorDraftRecord,
     tools: &GithubToolSet,
     (owner, repo): &(&str, &str),
     issue_number: u64,
 ) -> anyhow::Result<GithubIssue> {
     let result = state
         .call_mcp_tool(
+            draft,
             &tools.server_name,
             &tools.get_issue,
             github_get_issue_payload(owner, repo, issue_number),
@@ -1407,6 +1413,7 @@ fn github_get_issue_payload(owner: &str, repo: &str, issue_number: u64) -> Value
 
 async fn call_create_issue(
     state: &dyn IncidentMonitorGithubHost,
+    draft: &IncidentMonitorDraftRecord,
     tools: &GithubToolSet,
     (owner, repo): &(&str, &str),
     title: &str,
@@ -1428,13 +1435,13 @@ async fn call_create_issue(
         "labels": [INCIDENT_MONITOR_LABEL],
     });
     let first = state
-        .call_mcp_tool(&tools.server_name, &tools.create_issue, preferred)
+        .call_mcp_tool(draft, &tools.server_name, &tools.create_issue, preferred)
         .await;
     let result = match first {
         Ok(result) => result,
         Err(_) => {
             state
-                .call_mcp_tool(&tools.server_name, &tools.create_issue, fallback)
+                .call_mcp_tool(draft, &tools.server_name, &tools.create_issue, fallback)
                 .await?
         }
     };
@@ -1444,11 +1451,20 @@ async fn call_create_issue(
     let fingerprint_marker = body
         .lines()
         .find(|line| line.contains("<!-- tandem:fingerprint:v1:"));
-    find_created_issue_after_create(state, tools, &(owner, repo), title, fingerprint_marker).await
+    find_created_issue_after_create(
+        state,
+        draft,
+        tools,
+        &(owner, repo),
+        title,
+        fingerprint_marker,
+    )
+    .await
 }
 
 async fn find_created_issue_after_create(
     state: &dyn IncidentMonitorGithubHost,
+    draft: &IncidentMonitorDraftRecord,
     tools: &GithubToolSet,
     owner_repo: &(&str, &str),
     title: &str,
@@ -1459,7 +1475,7 @@ async fn find_created_issue_after_create(
         if delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
-        match call_list_issues(state, tools, owner_repo).await {
+        match call_list_issues(state, draft, tools, owner_repo).await {
             Ok(issues) => {
                 if let Some(issue) = issues.into_iter().find(|issue| {
                     issue.title.trim() == title.trim()
@@ -1483,6 +1499,7 @@ async fn find_created_issue_after_create(
 
 async fn call_add_issue_comment(
     state: &dyn IncidentMonitorGithubHost,
+    draft: &IncidentMonitorDraftRecord,
     tools: &GithubToolSet,
     (owner, repo): &(&str, &str),
     issue_number: u64,
@@ -1490,6 +1507,7 @@ async fn call_add_issue_comment(
 ) -> anyhow::Result<GithubComment> {
     let result = state
         .call_mcp_tool(
+            draft,
             &tools.server_name,
             &tools.comment_on_issue,
             json!({

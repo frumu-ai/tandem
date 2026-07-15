@@ -60,6 +60,50 @@ async fn server_context_installs_deny_capable_policy_and_real_ledger() {
         .expect("every server feature composition must install real governance");
 }
 
+#[tokio::test]
+async fn server_boot_rejects_allow_all_in_actual_dispatch_composition() {
+    let _env_guard = crate::test_support::TEST_STATE_ENV_LOCK.lock().await;
+    let (state, runtime) = starting_test_state_and_runtime().await;
+    let composition = super::ServerToolDispatchComposition {
+        trusted_policy: Arc::new(tandem_tools::AllowAllToolDispatchPolicy),
+        untrusted_policy: Arc::new(super::AppStateToolDispatchPolicy {
+            state: state.clone(),
+            trust_server_scope: false,
+        }),
+        ledger: Arc::new(super::AppStateToolDispatchLedger {
+            event_bus: runtime.event_bus.clone(),
+            runtime_events_path: state.runtime_events_path.clone(),
+        }),
+    };
+    let error = state
+        .mark_ready_with_tool_dispatch_composition(runtime, composition)
+        .await
+        .expect_err("allow-all composition must fail startup");
+    assert!(error.to_string().contains("allow-all"));
+}
+
+#[tokio::test]
+async fn server_boot_rejects_noop_ledger_in_actual_dispatch_composition() {
+    let _env_guard = crate::test_support::TEST_STATE_ENV_LOCK.lock().await;
+    let (state, runtime) = starting_test_state_and_runtime().await;
+    let composition = super::ServerToolDispatchComposition {
+        trusted_policy: Arc::new(super::AppStateToolDispatchPolicy {
+            state: state.clone(),
+            trust_server_scope: true,
+        }),
+        untrusted_policy: Arc::new(super::AppStateToolDispatchPolicy {
+            state: state.clone(),
+            trust_server_scope: false,
+        }),
+        ledger: Arc::new(tandem_tools::NoopToolDispatchLedger),
+    };
+    let error = state
+        .mark_ready_with_tool_dispatch_composition(runtime, composition)
+        .await
+        .expect_err("no-op ledger composition must fail startup");
+    assert!(error.to_string().contains("no-op ledger"));
+}
+
 #[allow(dead_code)]
 pub(crate) struct AutomationNodeBuilder {
     node: AutomationFlowNode,

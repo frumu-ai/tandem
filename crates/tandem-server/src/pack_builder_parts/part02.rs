@@ -399,36 +399,6 @@ fn namespace_segment(raw: &str) -> String {
     }
 }
 
-async fn sync_mcp_tools_for_server(state: &AppState, name: &str) -> usize {
-    let prefix = format!("mcp.{}.", namespace_segment(name));
-    state.tools.unregister_by_prefix(&prefix).await;
-    let tools = state.mcp.server_tools(name).await;
-    for tool in &tools {
-        let schema = ToolSchema::new(
-            tool.namespaced_name.clone(),
-            if tool.description.trim().is_empty() {
-                format!("MCP tool {} from {}", tool.tool_name, tool.server_name)
-            } else {
-                tool.description.clone()
-            },
-            tool.input_schema.clone(),
-        );
-        state
-            .tools
-            .register_tool(
-                schema.name.clone(),
-                Arc::new(McpBridgeTool {
-                    schema,
-                    mcp: state.mcp.clone(),
-                    server_name: tool.server_name.clone(),
-                    tool_name: tool.tool_name.clone(),
-                }),
-            )
-            .await;
-    }
-    tools.len()
-}
-
 fn save_pack_preset(plan: &PreparedPlan, registered_servers: &[String]) -> anyhow::Result<PathBuf> {
     let paths = tandem_core::resolve_shared_paths().context("resolve shared paths")?;
     let dir = paths

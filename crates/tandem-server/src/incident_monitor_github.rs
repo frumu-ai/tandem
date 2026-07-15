@@ -242,14 +242,20 @@ impl IncidentMonitorGithubHost for AppState {
 
     async fn call_mcp_tool(
         &self,
+        draft: &IncidentMonitorDraftRecord,
         server_name: &str,
         tool_name: &str,
         payload: Value,
     ) -> anyhow::Result<ToolResult> {
-        self.mcp
-            .call_tool(server_name, tool_name, payload)
-            .await
-            .map_err(anyhow::Error::msg)
+        crate::incident_monitor::dispatch_mcp_tool(
+            self,
+            draft,
+            server_name,
+            tool_name,
+            payload,
+            "github_publish",
+        )
+        .await
     }
 
     fn context_run_events_path(&self, run_id: &str) -> PathBuf {

@@ -1,4 +1,16 @@
 impl<'a> GithubProjectsAdapter<'a> {
+    fn new(
+        state: &'a AppState,
+        tenant_context: tandem_types::TenantContext,
+        verified_tenant_context: Option<tandem_types::VerifiedTenantContext>,
+    ) -> Self {
+        Self {
+            state,
+            tenant_context,
+            verified_tenant_context,
+        }
+    }
+
     async fn resolve_project_tools(
         &self,
         preferred_server: Option<&str>,
@@ -167,17 +179,18 @@ impl<'a> GithubProjectsAdapter<'a> {
             .find(|(capability_id, _)| capability_id == "github.get_project")
             .map(|(_, tool)| tool.clone())
             .ok_or(StatusCode::BAD_GATEWAY)?;
-        let result = self
-            .state
-            .mcp
-            .call_tool(
-                &server_name,
-                &get_project_tool,
-                json!({
-                    "owner": request.owner,
-                    "project_number": request.project_number,
-                }),
-            )
+        let result = crate::http::mcp::dispatch_mcp_tool_for_tenant(
+            self.state,
+            &server_name,
+            &get_project_tool,
+            json!({
+                "owner": request.owner,
+                "project_number": request.project_number,
+            }),
+            self.tenant_context.clone(),
+            self.verified_tenant_context.clone(),
+            tandem_tools::ToolDispatchSource::new("coder_github_project_bind"),
+        )
             .await
             .map_err(|_| StatusCode::BAD_GATEWAY)?;
         let (schema_snapshot, status_mapping, schema_fingerprint) =
@@ -210,17 +223,18 @@ impl<'a> GithubProjectsAdapter<'a> {
             .find(|(capability_id, _)| capability_id == "github.list_project_items")
             .map(|(_, tool)| tool.clone())
             .ok_or(StatusCode::BAD_GATEWAY)?;
-        let result = self
-            .state
-            .mcp
-            .call_tool(
-                &server_name,
-                &list_items_tool,
-                json!({
-                    "owner": binding.owner,
-                    "project_number": binding.project_number,
-                }),
-            )
+        let result = crate::http::mcp::dispatch_mcp_tool_for_tenant(
+            self.state,
+            &server_name,
+            &list_items_tool,
+            json!({
+                "owner": binding.owner,
+                "project_number": binding.project_number,
+            }),
+            self.tenant_context.clone(),
+            self.verified_tenant_context.clone(),
+            tandem_tools::ToolDispatchSource::new("coder_github_project_inbox"),
+        )
             .await
             .map_err(|_| StatusCode::BAD_GATEWAY)?;
         let mut out = Vec::new();
@@ -256,19 +270,21 @@ impl<'a> GithubProjectsAdapter<'a> {
             .find(|(capability_id, _)| capability_id == "github.update_project_item_field")
             .map(|(_, tool)| tool.clone())
             .ok_or(StatusCode::BAD_GATEWAY)?;
-        self.state
-            .mcp
-            .call_tool(
-                &server_name,
-                &update_tool,
-                json!({
-                    "owner": binding.owner,
-                    "project_number": binding.project_number,
-                    "project_item_id": project_item_id,
-                    "field_id": binding.status_mapping.field_id,
-                    "single_select_option_id": option.id,
-                }),
-            )
+        crate::http::mcp::dispatch_mcp_tool_for_tenant(
+            self.state,
+            &server_name,
+            &update_tool,
+            json!({
+                "owner": binding.owner,
+                "project_number": binding.project_number,
+                "project_item_id": project_item_id,
+                "field_id": binding.status_mapping.field_id,
+                "single_select_option_id": option.id,
+            }),
+            self.tenant_context.clone(),
+            self.verified_tenant_context.clone(),
+            tandem_tools::ToolDispatchSource::new("coder_github_project_status_sync"),
+        )
             .await
             .map_err(|_| StatusCode::BAD_GATEWAY)?;
         Ok(())

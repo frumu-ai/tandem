@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use tandem_types::EngineEvent;
+use tandem_tools::ToolDispatchSource;
+use tandem_types::{EngineEvent, TenantContext};
 use tokio::fs;
 
 use crate::app::state::AppState;
@@ -577,10 +578,16 @@ async fn sync_summary_to_notion(
         };
     };
     let payload = notion_row_payload(&database_id, summary, summary_path);
-    match state
-        .mcp
-        .call_tool(&tool.server_name, &tool.tool_name, payload)
-        .await
+    match crate::http::mcp::dispatch_mcp_tool_for_tenant(
+        state,
+        &tool.server_name,
+        &tool.tool_name,
+        payload,
+        TenantContext::local_implicit(),
+        None,
+        ToolDispatchSource::new("benchmarking_notion_sync").run(summary.run_id.clone()),
+    )
+    .await
     {
         Ok(result) => NotionSyncResult {
             status: "synced".to_string(),
@@ -594,7 +601,7 @@ async fn sync_summary_to_notion(
         Err(error) => NotionSyncResult {
             status: "failed".to_string(),
             page_id: None,
-            error: Some(redact_text(&error)),
+            error: Some(redact_text(&error.to_string())),
         },
     }
 }

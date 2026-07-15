@@ -216,6 +216,31 @@ impl ToolDispatchPolicy for DenyAllToolDispatchPolicy {
     }
 }
 
+#[derive(Debug)]
+struct ExactToolDispatchPolicy {
+    tools: Vec<String>,
+}
+
+#[async_trait]
+impl ToolDispatchPolicy for ExactToolDispatchPolicy {
+    async fn evaluate(
+        &self,
+        context: ToolDispatchPolicyContext,
+    ) -> anyhow::Result<ToolDispatchDecision> {
+        let requested = context
+            .canonical_tool
+            .as_deref()
+            .unwrap_or(&context.requested_tool);
+        Ok(if self.tools.iter().any(|tool| tool == requested) {
+            ToolDispatchDecision::allow_with_id("explicit_local_tool_scope")
+        } else {
+            ToolDispatchDecision::deny(format!(
+                "local dispatch scope does not authorize tool `{requested}`"
+            ))
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDispatchLedgerEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -394,10 +419,35 @@ impl GovernedToolDispatcher {
     }
 
     pub async fn dispatch_local(&self, name: &str, args: Value) -> anyhow::Result<ToolResult> {
+        let canonical_tool = self
+            .registry
+            .resolve_schema(name)
+            .await
+            .map(|schema| schema.name)
+            .unwrap_or_else(|| name.to_string());
+        let mut tools = vec![canonical_tool.clone()];
+        if canonical_tool == "batch" {
+            for call in args["tool_calls"].as_array().into_iter().flatten() {
+                let Some(tool) = crate::resolve_batch_call_tool_name(call) else {
+                    continue;
+                };
+                let canonical = self
+                    .registry
+                    .resolve_schema(&tool)
+                    .await
+                    .map(|schema| schema.name)
+                    .unwrap_or(tool);
+                if canonical != "batch" && !tools.contains(&canonical) {
+                    tools.push(canonical);
+                }
+            }
+        }
         self.dispatch(
             name,
             args,
-            ToolDispatchContext::local("local").with_policy(Arc::new(AllowAllToolDispatchPolicy)),
+            ToolDispatchContext::local("local")
+                .with_scope_allowlist(tools.clone())
+                .with_policy(Arc::new(ExactToolDispatchPolicy { tools })),
         )
         .await
     }

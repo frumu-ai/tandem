@@ -12,6 +12,12 @@ use tandem_runtime::{McpAuthChallenge, McpPrincipalRef};
 use tandem_types::{RequestPrincipal, StrictTenantContext, TenantContext, VerifiedTenantContext};
 use uuid::Uuid;
 
+mod bridge_registry;
+use bridge_registry::{resync_mcp_bridge_tools_for_server, unregister_mcp_bridge_tools_for_server};
+
+mod dispatch;
+pub(crate) use dispatch::dispatch_mcp_tool_for_tenant;
+
 pub(crate) use super::mcp_run_as::{
     call_mcp_tool_for_tenant_with_audit, call_mcp_tool_for_tenant_with_verified_context,
 };
@@ -1435,37 +1441,6 @@ pub(crate) async fn sync_mcp_tools_for_server_for_tenant(
     scoped_count
 }
 
-async fn resync_mcp_bridge_tools_for_server(state: &AppState, name: &str) -> (usize, usize) {
-    let prefix = format!("mcp.{}.", mcp_namespace_segment(name));
-    let removed = state.tools.unregister_by_prefix(&prefix).await;
-    let tools = state.mcp.bridge_tools_for_server(name).await;
-    for tool in &tools {
-        let schema = ToolSchema::new(
-            tool.namespaced_name.clone(),
-            if tool.description.trim().is_empty() {
-                format!("MCP tool {} from {}", tool.tool_name, tool.server_name)
-            } else {
-                tool.description.clone()
-            },
-            tool.input_schema.clone(),
-        )
-        .with_security(tool_name_security_descriptor(&tool.namespaced_name));
-        state
-            .tools
-            .register_tool(
-                schema.name.clone(),
-                Arc::new(McpBridgeTool {
-                    schema,
-                    state: state.clone(),
-                    server_name: tool.server_name.clone(),
-                    tool_name: tool.tool_name.clone(),
-                }),
-            )
-            .await;
-    }
-    (removed, tools.len())
-}
-
 pub(super) async fn connect_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -1545,8 +1520,7 @@ pub(super) async fn disconnect_mcp(
 ) -> Json<Value> {
     let ok = state.mcp.disconnect(&name).await;
     if ok {
-        let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
-        let removed = state.tools.unregister_by_prefix(&prefix).await;
+        let removed = unregister_mcp_bridge_tools_for_server(&state, &name).await;
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.disconnected",
             json!({
@@ -1562,8 +1536,7 @@ pub(super) async fn delete_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Response {
-    let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
-    let removed_tool_count = state.tools.unregister_by_prefix(&prefix).await;
+    let removed_tool_count = unregister_mcp_bridge_tools_for_server(&state, &name).await;
     let ok = state.mcp.remove(&name).await;
     if ok {
         if let Err(error) = crate::audit::append_protected_audit_event(
@@ -1620,8 +1593,7 @@ pub(super) async fn patch_mcp(
             if enabled {
                 let _ = state.mcp.connect(&name).await;
             } else {
-                let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
-                let _ = state.tools.unregister_by_prefix(&prefix).await;
+                let _ = unregister_mcp_bridge_tools_for_server(&state, &name).await;
             }
             if let Err(error) = crate::audit::append_protected_audit_event(
                 &state,
@@ -1941,8 +1913,7 @@ pub(super) async fn delete_auth_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Json<Value> {
-    let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
-    let removed_tool_count = state.tools.unregister_by_prefix(&prefix).await;
+    let removed_tool_count = unregister_mcp_bridge_tools_for_server(&state, &name).await;
     let removed_oauth_session_count = remove_mcp_oauth_sessions_for_server(&state, &name).await;
     let ok = state.mcp.clear_auth_material(&name).await;
     if ok {

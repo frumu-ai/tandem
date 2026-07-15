@@ -234,6 +234,7 @@ impl AppState {
         > = Arc::new(crate::app::state::governance::UnavailableGovernanceEngine);
         Self {
             runtime: Arc::new(OnceLock::new()),
+            server_tool_dispatch_composition: Arc::new(OnceLock::new()),
             startup: Arc::new(RwLock::new(StartupState {
                 status: StartupStatus::Starting,
                 phase: "boot".to_string(),
@@ -501,17 +502,15 @@ impl AppState {
         } else {
             source.request(uuid::Uuid::new_v4().to_string())
         };
+        let composition = self
+            .server_tool_dispatch_composition
+            .get()
+            .expect("server tool dispatch composition must be installed before dispatch");
         ToolDispatchContext::for_tenant(source.kind.clone(), tenant_context)
             .with_source(source)
             .with_scope_allowlist(scope_allowlist)
-            .with_policy(Arc::new(AppStateToolDispatchPolicy {
-                state: self.clone(),
-                trust_server_scope: true,
-            }))
-            .with_ledger(Arc::new(AppStateToolDispatchLedger {
-                event_bus: self.event_bus.clone(),
-                runtime_events_path: self.runtime_events_path.clone(),
-            }))
+            .with_policy(composition.trusted_policy.clone())
+            .with_ledger(composition.ledger.clone())
     }
 
     pub fn untrusted_tool_dispatch_context(
@@ -525,45 +524,53 @@ impl AppState {
         } else {
             source.request(uuid::Uuid::new_v4().to_string())
         };
+        let composition = self
+            .server_tool_dispatch_composition
+            .get()
+            .expect("server tool dispatch composition must be installed before dispatch");
         ToolDispatchContext::for_tenant(source.kind.clone(), tenant_context)
             .with_source(source)
             .with_scope_allowlist(scope_allowlist)
-            .with_policy(Arc::new(AppStateToolDispatchPolicy {
-                state: self.clone(),
-                trust_server_scope: false,
-            }))
-            .with_ledger(Arc::new(AppStateToolDispatchLedger {
-                event_bus: self.event_bus.clone(),
-                runtime_events_path: self.runtime_events_path.clone(),
-            }))
+            .with_policy(composition.untrusted_policy.clone())
+            .with_ledger(composition.ledger.clone())
     }
 
     pub async fn mark_ready(&self, runtime: RuntimeState) -> anyhow::Result<()> {
+        let composition = ServerToolDispatchComposition {
+            trusted_policy: Arc::new(AppStateToolDispatchPolicy {
+                state: self.clone(),
+                trust_server_scope: true,
+            }),
+            untrusted_policy: Arc::new(AppStateToolDispatchPolicy {
+                state: self.clone(),
+                trust_server_scope: false,
+            }),
+            ledger: Arc::new(AppStateToolDispatchLedger {
+                event_bus: runtime.event_bus.clone(),
+                runtime_events_path: self.runtime_events_path.clone(),
+            }),
+        };
+        self.mark_ready_with_tool_dispatch_composition(runtime, composition)
+            .await
+    }
+
+    async fn mark_ready_with_tool_dispatch_composition(
+        &self,
+        runtime: RuntimeState,
+        composition: ServerToolDispatchComposition,
+    ) -> anyhow::Result<()> {
         self.acquire_stateful_engine_lock()?;
         let hosted_governance_required = Self::hosted_governance_readiness_required()?;
         if hosted_governance_required {
             self.validate_hosted_governance_readiness().await?;
         }
-        ToolDispatchContext::for_tenant("server_startup_guard", TenantContext::local_implicit())
-            .with_source(
-                ToolDispatchSource::new("server_startup_guard")
-                    .request(uuid::Uuid::new_v4().to_string()),
-            )
-            .with_policy(Arc::new(AppStateToolDispatchPolicy {
-                state: self.clone(),
-                trust_server_scope: false,
-            }))
-            .with_ledger(Arc::new(AppStateToolDispatchLedger {
-                event_bus: runtime.event_bus.clone(),
-                runtime_events_path: self.runtime_events_path.clone(),
-            }))
-            .assert_server_governed()?;
+        composition.assert_governed()?;
+        self.server_tool_dispatch_composition
+            .set(composition.clone())
+            .map_err(|_| anyhow::anyhow!("server tool dispatch composition already initialized"))?;
         runtime
             .engine_loop
-            .set_tool_dispatch_ledger(Arc::new(AppStateToolDispatchLedger {
-                event_bus: runtime.event_bus.clone(),
-                runtime_events_path: self.runtime_events_path.clone(),
-            }))
+            .set_tool_dispatch_ledger(composition.ledger.clone())
             .await;
         self.runtime
             .set(runtime)
@@ -572,6 +579,16 @@ impl AppState {
             .register_tool(
                 "pack_builder".to_string(),
                 Arc::new(crate::pack_builder::PackBuilderTool::new(self.clone())),
+            )
+            .await;
+        self.tools
+            .register_tool(
+                crate::incident_monitor_webhook::INCIDENT_MONITOR_WEBHOOK_TOOL.to_string(),
+                Arc::new(
+                    crate::incident_monitor_webhook::IncidentMonitorWebhookDispatchTool::new(
+                        self.clone(),
+                    ),
+                ),
             )
             .await;
         for tool in crate::http::orchestration_tools::orchestration_tools(self.clone()) {
