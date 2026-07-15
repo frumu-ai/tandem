@@ -65,7 +65,12 @@ jobs:
           import subprocess
 
           changed = subprocess.check_output(
-              ["git", "diff", "--name-only", os.environ["BASE_SHA"], os.environ["HEAD_SHA"]],
+              [
+                  "git",
+                  "diff",
+                  "--name-only",
+                  f'{os.environ["BASE_SHA"]}...{os.environ["HEAD_SHA"]}',
+              ],
               text=True,
           ).splitlines()
           deliverables = set()
