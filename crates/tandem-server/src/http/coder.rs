@@ -18,5 +18,6 @@ include!("coder_parts/part06.rs");
 include!("coder_parts/part09.rs");
 include!("coder_parts/part11.rs");
 include!("coder_parts/part07.rs");
+include!("coder_parts/part14.rs");
 include!("coder_parts/part08.rs");
 include!("coder_parts/part12.rs");
