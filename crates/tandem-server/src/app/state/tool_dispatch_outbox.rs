@@ -194,6 +194,12 @@ pub(crate) async fn persist_dispatch_receipt(
         {
             StatefulToolEffectStatus::Failed
         }
+        ToolDispatchReceiptPhase::PolicyDecision
+            if event.policy_outcome
+                == tandem_tools::ToolDispatchPolicyOutcome::ApprovalRequired =>
+        {
+            StatefulToolEffectStatus::Pending
+        }
         ToolDispatchReceiptPhase::PolicyDecision => StatefulToolEffectStatus::Succeeded,
         ToolDispatchReceiptPhase::ExecutionCompleted => StatefulToolEffectStatus::Succeeded,
         ToolDispatchReceiptPhase::ExecutionFailed => StatefulToolEffectStatus::Failed,
@@ -217,6 +223,7 @@ pub(crate) async fn persist_dispatch_receipt(
         "policy_outcome": event.policy_outcome,
         "receipt_phase": event.receipt_phase,
         "policy_decision_id": event.policy_decision_id,
+        "approval_requirement": event.approval_requirement,
         "status": event.status,
         "error": event.error,
     });
@@ -475,6 +482,7 @@ mod tests {
             policy_outcome: ToolDispatchPolicyOutcome::Allowed,
             receipt_phase: ToolDispatchReceiptPhase::ExecutionCompleted,
             policy_decision_id: Some("policy-1".to_string()),
+            approval_requirement: None,
             payload_digest: Some("sha256:payload".to_string()),
             status: ToolDispatchStatus::Succeeded,
             error: None,
@@ -497,6 +505,7 @@ mod tests {
             policy_outcome: ToolDispatchPolicyOutcome::Allowed,
             receipt_phase: ToolDispatchReceiptPhase::ExecutionFailed,
             policy_decision_id: Some("policy-1".to_string()),
+            approval_requirement: None,
             payload_digest: Some("sha256:payload".to_string()),
             status: ToolDispatchStatus::Blocked,
             error: Some(
@@ -536,6 +545,21 @@ mod tests {
         started.receipt_phase = ToolDispatchReceiptPhase::ExecutionStarted;
         let mut denied = blocked_policy_event("dispatch-denied".to_string(), tenant);
         denied.policy_outcome = ToolDispatchPolicyOutcome::Denied;
+        let mut pending = blocked_policy_event(
+            "dispatch-approval-required".to_string(),
+            denied.tenant_context.clone(),
+        );
+        pending.policy_outcome = ToolDispatchPolicyOutcome::ApprovalRequired;
+        pending.policy_decision_id = Some("policy-pending".to_string());
+        pending.approval_requirement = Some(tandem_tools::ToolDispatchApprovalRequirement {
+            approval_request_id: Some("approval-1".to_string()),
+            policy_id: "policy-1".to_string(),
+            policy_version_id: "policy-version-1".to_string(),
+            rule_id: "rule-1".to_string(),
+            rule_version: 1,
+            approval_class: "external-send".to_string(),
+            action_binding: "hmac-sha256:opaque".to_string(),
+        });
 
         persist_dispatch_receipt(&runtime_events_path, &allowed_policy)
             .await
@@ -549,11 +573,14 @@ mod tests {
         persist_dispatch_receipt(&runtime_events_path, &denied)
             .await
             .expect("persist denial receipt");
+        persist_dispatch_receipt(&runtime_events_path, &pending)
+            .await
+            .expect("persist pending approval receipt");
 
         let reliability_path =
             stateful_reliability_path_from_runtime_events_path(&runtime_events_path);
         let store = load_stateful_reliability(&reliability_path);
-        assert_eq!(store.tool_effects.len(), 4);
+        assert_eq!(store.tool_effects.len(), 5);
         assert!(store.tool_effects.iter().any(|receipt| {
             receipt.effect_id == "tool-dispatch-dispatch-allowed-execution_completed"
                 && receipt.status == StatefulToolEffectStatus::Succeeded
@@ -575,6 +602,16 @@ mod tests {
                     .and_then(|payload| payload.get("policy_outcome"))
                     .and_then(Value::as_str)
                     == Some("denied")
+        }));
+        assert!(store.tool_effects.iter().any(|receipt| {
+            receipt.effect_id == "tool-dispatch-dispatch-approval-required-policy_decision"
+                && receipt.status == StatefulToolEffectStatus::Pending
+                && receipt
+                    .receipt_payload_redacted
+                    .as_ref()
+                    .and_then(|payload| payload.pointer("/approval_requirement/approval_class"))
+                    .and_then(Value::as_str)
+                    == Some("external-send")
         }));
     }
 
@@ -638,6 +675,7 @@ mod tests {
                 policy_outcome: ToolDispatchPolicyOutcome::Allowed,
                 receipt_phase: ToolDispatchReceiptPhase::ExecutionCompleted,
                 policy_decision_id: Some("policy-1".to_string()),
+                approval_requirement: None,
                 payload_digest: Some("sha256:payload".to_string()),
                 status: ToolDispatchStatus::Succeeded,
                 error: None,

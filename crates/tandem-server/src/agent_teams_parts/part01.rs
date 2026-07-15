@@ -385,6 +385,7 @@ async fn evaluate_fintech_strict_tool_policy(
                 allowed: false,
                 reason: Some(reason),
                 policy_decision_id,
+                dispatch_decision: None,
             });
         }
     }
@@ -420,6 +421,7 @@ async fn evaluate_fintech_strict_tool_policy(
                 allowed: false,
                 reason: Some(reason),
                 policy_decision_id,
+                dispatch_decision: None,
             });
         }
     }
@@ -466,6 +468,7 @@ async fn evaluate_fintech_strict_tool_policy(
                             .to_string(),
                     ),
                     policy_decision_id: None,
+                    dispatch_decision: None,
                 });
             }
             if state.is_ready() {
@@ -513,6 +516,7 @@ async fn evaluate_fintech_strict_tool_policy(
                             .to_string(),
                     ),
                     policy_decision_id: None,
+                    dispatch_decision: None,
                 });
             };
             let policy_decision_id = Some(policy_decision.decision_id.clone());
@@ -524,12 +528,14 @@ async fn evaluate_fintech_strict_tool_policy(
                         policy_decision.reason_code, policy_decision.reason
                     )),
                     policy_decision_id,
+                    dispatch_decision: None,
                 });
             }
             return Some(ToolPolicyDecision {
                 allowed: true,
                 reason: None,
                 policy_decision_id,
+                dispatch_decision: None,
             });
         }
     }
@@ -580,6 +586,7 @@ async fn evaluate_fintech_strict_tool_policy(
                 "tool denied because its required fintech denial receipt could not be written: {error}"
             )),
             policy_decision_id: None,
+            dispatch_decision: None,
         });
     }
 
@@ -634,6 +641,7 @@ async fn evaluate_fintech_strict_tool_policy(
         allowed: false,
         reason: Some(policy_reason),
         policy_decision_id,
+        dispatch_decision: None,
     })
 }
 
@@ -841,6 +849,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
         let state = self.state.clone();
         Box::pin(async move {
             let tool = normalize_tool_name(&ctx.tool);
+            let mut enterprise_allow_decision = None;
             if session_allowlist_would_deny_non_automation_tool(&state, &ctx, &tool).await {
                 // Let the core engine's session allowlist produce its side-effect-free denial
                 // for ordinary scoped runs. Automation-v2 sessions stay in this hook so the
@@ -849,6 +858,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                     allowed: true,
                     reason: None,
                     policy_decision_id: None,
+                    dispatch_decision: None,
                 });
             }
             // EAA-02 (TAN-27): discovery filtering hides unauthorized MCP
@@ -907,6 +917,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                             allowed: false,
                             reason: Some(reason),
                             policy_decision_id: None,
+                            dispatch_decision: None,
                         });
                     }
                 }
@@ -914,7 +925,11 @@ impl ToolPolicyHook for ServerToolPolicyHook {
             if let Some(decision) =
                 evaluate_enterprise_authored_tool_policy(&state, &ctx, &tool).await?
             {
-                return Ok(decision);
+                if decision.allowed {
+                    enterprise_allow_decision = Some(decision);
+                } else {
+                    return Ok(decision);
+                }
             }
             if let Some(decision) =
                 evaluate_automation_phase_tool_policy(&state, &ctx, &tool).await?
@@ -953,6 +968,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                         allowed: false,
                         reason: Some(reason),
                         policy_decision_id: None,
+                        dispatch_decision: None,
                     });
                 }
             }
@@ -975,6 +991,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                     allowed: false,
                     reason: Some(reason),
                     policy_decision_id: None,
+                    dispatch_decision: None,
                 });
             }
 
@@ -1017,11 +1034,12 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                 .instance_for_session(&ctx.session_id)
                 .await
             else {
-                return Ok(ToolPolicyDecision {
+                return Ok(enterprise_allow_decision.unwrap_or(ToolPolicyDecision {
                     allowed: true,
                     reason: None,
                     policy_decision_id: None,
-                });
+                    dispatch_decision: None,
+                }));
             };
             let caps = instance.capabilities.clone();
             let deny = evaluate_capability_deny(
@@ -1052,13 +1070,15 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                     allowed: false,
                     reason: Some(reason),
                     policy_decision_id: None,
+                    dispatch_decision: None,
                 });
             }
-            Ok(ToolPolicyDecision {
+            Ok(enterprise_allow_decision.unwrap_or(ToolPolicyDecision {
                 allowed: true,
                 reason: None,
                 policy_decision_id: None,
-            })
+                dispatch_decision: None,
+            }))
         })
     }
 }

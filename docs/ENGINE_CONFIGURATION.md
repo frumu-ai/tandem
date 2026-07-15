@@ -28,6 +28,8 @@ This page is generated from the engine config registry used by `tandem-engine co
 | `TANDEM_ENTERPRISE_CONTROL_PLANE_URL`         | `unset`               | Enterprise control-plane URL alias.                                                                                 |
 | `TANDEM_CROSS_TENANT_GRANT_SIGNING_KEY`       | `unset`               | Secret signing key for cross-tenant grants.                                                                         |
 | `TANDEM_CROSS_TENANT_GRANT_SIGNING_KEY_FILE`  | `unset`               | File containing the cross-tenant grant signing key.                                                                 |
+| `TANDEM_AUDIT_HMAC_KEY`                       | `unset`               | Deployment secret used for privacy-preserving predicate evidence and exact-action approval bindings. Required when those authored policies execute in hosted/enterprise mode. |
+| `TANDEM_AUDIT_HMAC_KEY_FILE`                  | `unset`               | File containing the deployment policy-evidence audit HMAC key.                                                      |
 | `TANDEM_RUN_STALE_MS`                         | `120000`              | Run staleness threshold; valid range 30000..=600000.                                                                |
 | `TANDEM_TOKEN_COST_PER_1K_USD`                | `0.0`                 | Non-negative token cost used for estimates.                                                                         |
 | `TANDEM_AUTOMATION_STRICT_RESEARCH_QUALITY`   | `true`                | Enable strict automation research quality checks.                                                                   |
@@ -53,3 +55,5 @@ This page is generated from the engine config registry used by `tandem-engine co
 - Hosted or enterprise auth mode rejects `TANDEM_UNSAFE_NO_API_TOKEN`.
 - Malformed verifier key material, invalid booleans, invalid modes, and out-of-range numeric settings fail fast.
 - Unknown `TANDEM_*` variables are reported as warnings to catch typos without blocking local startup.
+
+Predicate-governed decisions and enterprise-authored exact-action approvals additionally fail closed at decision time in hosted/enterprise mode unless `TANDEM_AUDIT_HMAC_KEY` or `TANDEM_AUDIT_HMAC_KEY_FILE` is configured.

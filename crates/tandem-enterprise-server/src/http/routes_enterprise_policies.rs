@@ -157,8 +157,24 @@ async fn create_policy_rule(
     Json(mut rule): Json<EnterprisePolicyRule>,
 ) -> EnterpriseResult<PolicyMutationResponse> {
     require_enterprise_admin(&request_principal, verified.as_deref())?;
+    let requested_global = rule.scope_level
+        == tandem_enterprise_contract::EnterprisePolicyScopeLevel::Enterprise
+        && rule.tenant_context.is_none();
+    if requested_global
+        && !enterprise_global_admin_allowed_for_mutation(&request_principal, verified.as_deref())
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "ENTERPRISE_GLOBAL_ADMIN_REQUIRED",
+                "message": "enterprise global admin access is required to create a tenantless policy"
+            })),
+        ));
+    }
     ensure_policy_rules_loaded(&state).await?;
-    rule.tenant_context = Some(tenant_context.clone());
+    if !requested_global {
+        rule.tenant_context = Some(tenant_context.clone());
+    }
     rule.state = EnterprisePolicyRuleState::Draft;
     rule.updated_at_ms = now_ms();
     let validation = validate_rule(&rule, false);
@@ -179,7 +195,13 @@ async fn create_policy_rule(
         &tenant_context,
         &request_principal,
         "enterprise.policy.created",
-        json!({"policy_id": rule.policy_id, "rule_id": rule.rule_id, "state": rule.state}),
+        json!({
+            "policy_id": rule.policy_id,
+            "rule_id": rule.rule_id,
+            "state": rule.state,
+            "policy_scope": if requested_global { "enterprise_global" } else { "tenant" },
+            "rule_tenant_context": rule.tenant_context,
+        }),
     )
     .await?;
     Ok(Json(PolicyMutationResponse {
@@ -355,11 +377,8 @@ async fn supersede_policy(
         let registry = state.enterprise.policy_rules.read().await;
         let tenant_owned = registry.values().any(|rule| {
             rule.policy_id == policy_id
-                && rule.tenant_context.as_ref().is_some_and(|rule_tenant| {
-                    rule_tenant.org_id == tenant_context.org_id
-                        && rule_tenant.workspace_id == tenant_context.workspace_id
-                        && rule_tenant.deployment_id == tenant_context.deployment_id
-                })
+                && rule.tenant_context.is_some()
+                && tenant_matches(rule, &tenant_context)
                 && rule.state != EnterprisePolicyRuleState::Superseded
         });
         let enterprise_global = may_manage_global
@@ -402,7 +421,8 @@ async fn supersede_policy(
         }
         previous = registry.clone();
         for rule in registry.values_mut().filter(|rule| {
-            rule.policy_id == policy_id && rule.tenant_context == target_tenant_context
+            rule.policy_id == policy_id
+                && target_tenant_context_matches(rule, target_tenant_context.as_ref())
         }) {
             rule.state = EnterprisePolicyRuleState::Superseded;
             rule.updated_at_ms = now_ms();
@@ -854,6 +874,16 @@ fn tenant_matches(rule: &EnterprisePolicyRule, tenant: &TenantContext) -> bool {
     })
 }
 
+fn target_tenant_context_matches(
+    rule: &EnterprisePolicyRule,
+    target_tenant: Option<&TenantContext>,
+) -> bool {
+    match target_tenant {
+        Some(tenant) => rule.tenant_context.is_some() && tenant_matches(rule, tenant),
+        None => rule.tenant_context.is_none(),
+    }
+}
+
 fn admin_scope_matches(
     rule: &EnterprisePolicyRule,
     tenant: &TenantContext,
@@ -952,6 +982,8 @@ mod admin_scope_tests {
             Some("staging".to_string()),
             "admin",
         );
+        let missing_deployment =
+            TenantContext::explicit_user_workspace("acme", "engineering", None, "admin");
         let tenant_rule = EnterprisePolicyRule::new(
             "tenant-rule",
             "tenant-policy",
@@ -959,8 +991,32 @@ mod admin_scope_tests {
             EnterprisePolicyEffect::Deny,
         )
         .with_tenant_context(stored_tenant);
+        let global_rule = EnterprisePolicyRule::new(
+            "global-rule",
+            "tenant-policy",
+            EnterprisePolicyScopeLevel::Enterprise,
+            EnterprisePolicyEffect::Deny,
+        );
 
         assert!(admin_scope_matches(&tenant_rule, &request_tenant, false));
         assert!(!admin_scope_matches(&tenant_rule, &other_deployment, false));
+        assert!(target_tenant_context_matches(
+            &tenant_rule,
+            Some(&request_tenant)
+        ));
+        assert!(!target_tenant_context_matches(
+            &tenant_rule,
+            Some(&other_deployment)
+        ));
+        assert!(!target_tenant_context_matches(
+            &tenant_rule,
+            Some(&missing_deployment)
+        ));
+        assert!(!target_tenant_context_matches(&tenant_rule, None));
+        assert!(target_tenant_context_matches(&global_rule, None));
+        assert!(!target_tenant_context_matches(
+            &global_rule,
+            Some(&request_tenant)
+        ));
     }
 }

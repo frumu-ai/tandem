@@ -378,11 +378,15 @@ impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
                 args: context.args,
             })
             .await?;
+        if let Some(dispatch_decision) = decision.dispatch_decision {
+            return Ok(dispatch_decision);
+        }
         if !decision.allowed {
             return Ok(ToolDispatchDecision {
                 outcome: tandem_tools::ToolDispatchPolicyOutcome::Denied,
                 reason: decision.reason,
                 policy_decision_id: decision.policy_decision_id,
+                approval_requirement: None,
             });
         }
         if self.trust_server_scope && !context.scope_allowlist.is_empty() {

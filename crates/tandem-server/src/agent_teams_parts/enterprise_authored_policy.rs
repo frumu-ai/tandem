@@ -68,17 +68,21 @@ async fn evaluate_enterprise_authored_tool_policy(
         .unwrap_or_else(|| tandem_core::tool_name_security_descriptor(tool))
         .data_classes;
     let resolved_at_ms = crate::now_ms();
-    let resolver = EnterprisePolicyResolver::new(relevant_rules);
-    let snapshot = if data_classes.is_empty() {
-        resolver.resolve(&input, resolved_at_ms)
+    let resolver = EnterprisePolicyResolver::new(relevant_rules.clone());
+    let (snapshot, resolved_input) = if data_classes.is_empty() {
+        (resolver.resolve(&input, resolved_at_ms), input.clone())
     } else {
         data_classes
             .iter()
             .copied()
             .map(|data_class| {
-                resolver.resolve(&input.clone().with_data_class(data_class), resolved_at_ms)
+                let resolved_input = input.clone().with_data_class(data_class);
+                (
+                    resolver.resolve(&resolved_input, resolved_at_ms),
+                    resolved_input,
+                )
             })
-            .max_by_key(|snapshot| {
+            .max_by_key(|(snapshot, _)| {
                 let effect_priority = match snapshot.effect {
                     EnterprisePolicyEffect::Allow => 0,
                     EnterprisePolicyEffect::ApprovalRequired => 1,
@@ -100,6 +104,24 @@ async fn evaluate_enterprise_authored_tool_policy(
             .expect("tool data classes are non-empty")
     };
     let decision_id = format!("policy_decision_{}", Uuid::new_v4().simple());
+    let evidence_rule = predicate_evidence_rule(
+        &relevant_rules,
+        &snapshot,
+        &resolved_input,
+        resolved_at_ms,
+    );
+    let mut predicate_evidence = match evidence_rule {
+        Some(rule) => predicate_decision_evidence(
+            rule,
+            &ctx.args,
+            &tenant_context,
+            &snapshot.policy_version_id,
+            &decision_id,
+            None,
+            None,
+        )?,
+        None => None,
+    };
     let mut effect = PolicyDecisionEffect::from_enterprise_effect(snapshot.effect);
     let mut reason = snapshot.reason.clone();
     let mut reason_code = snapshot.reason_code.clone();
@@ -117,7 +139,14 @@ async fn evaluate_enterprise_authored_tool_policy(
     let mut approval_automation_id = None;
     let mut approval_node_id = None;
     if snapshot.effect == EnterprisePolicyEffect::ApprovalRequired {
-        let hash = fintech_protected_action_hash(tool, &ctx.args);
+        let connector_generations =
+            governed_connector_generation_bindings(state, tool, &tenant_context).await;
+        let hash = governed_exact_action_binding(
+            tool,
+            &ctx.args,
+            &tenant_context,
+            &connector_generations,
+        )?;
         action_hash = Some(hash.clone());
         if state.premium_governance_enabled() {
             let links = action_gate_runtime_links(state, &ctx.session_id).await;
@@ -149,6 +178,7 @@ async fn evaluate_enterprise_authored_tool_policy(
                             "policy_version_id": snapshot.policy_version_id,
                             "policy_decision_id": decision_id,
                             "approval_class": snapshot.approval_id,
+                            "connector_generations": connector_generations,
                             "source": "enterprise_authored_policy",
                         }
                     }),
@@ -188,6 +218,10 @@ async fn evaluate_enterprise_authored_tool_policy(
                 Some("premium governance approval requests are unavailable".to_string());
         }
     }
+    if let Some(evidence) = predicate_evidence.as_mut() {
+        evidence.approval_request_id.clone_from(&approval_receipt_id);
+        evidence.action_binding.clone_from(&action_hash);
+    }
     let record = PolicyDecisionRecord {
         decision_id: decision_id.clone(),
         tenant_context: tenant_context.clone(),
@@ -217,7 +251,7 @@ async fn evaluate_enterprise_authored_tool_policy(
         created_at_ms: resolved_at_ms,
         metadata: json!({
             "authoring_source": "enterprise_control_panel",
-            "predicate_evidence": "redacted",
+            "predicate_evidence": predicate_evidence.clone(),
             "evaluated_data_classes": data_classes,
             "approval_class": snapshot.approval_id,
             "approval_state": approval_state,
@@ -240,18 +274,36 @@ async fn evaluate_enterprise_authored_tool_policy(
             "reason_code": reason_code,
             "policy_version_id": snapshot.policy_version_id,
             "approval_id": approval_receipt_id,
+            "predicate_evidence": predicate_evidence,
         }),
     )
     .await?;
 
     Ok(match snapshot.effect {
-        EnterprisePolicyEffect::Allow => None,
+        EnterprisePolicyEffect::Allow => Some(ToolPolicyDecision {
+            allowed: true,
+            reason: None,
+            policy_decision_id: Some(decision_id.clone()),
+            dispatch_decision: Some(tandem_tools::ToolDispatchDecision::allow_with_id(
+                decision_id,
+            )),
+        }),
         EnterprisePolicyEffect::Deny => Some(ToolPolicyDecision {
             allowed: false,
             reason: Some(reason),
             policy_decision_id: Some(decision_id),
+            dispatch_decision: None,
         }),
-        EnterprisePolicyEffect::ApprovalRequired if approval_consumed => None,
+        EnterprisePolicyEffect::ApprovalRequired if approval_consumed => {
+            Some(ToolPolicyDecision {
+                allowed: true,
+                reason: None,
+                policy_decision_id: Some(decision_id.clone()),
+                dispatch_decision: Some(tandem_tools::ToolDispatchDecision::allow_with_id(
+                    decision_id,
+                )),
+            })
+        }
         EnterprisePolicyEffect::ApprovalRequired => {
             let receipt = approval_receipt_id
                 .as_deref()
@@ -261,12 +313,35 @@ async fn evaluate_enterprise_authored_tool_policy(
                 .as_deref()
                 .map(|message| format!("; approval error: {message}"))
                 .unwrap_or_default();
+            let approval_reason =
+                format!("{reason}; approval receipt required before execution{receipt}{error}");
+            let source = snapshot.decision_source.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("approval-required policy decision has no winning rule")
+            })?;
+            let approval_class = snapshot.approval_id.clone().ok_or_else(|| {
+                anyhow::anyhow!("approval-required policy decision has no approval class")
+            })?;
+            let action_binding = action_hash.clone().ok_or_else(|| {
+                anyhow::anyhow!("approval-required policy decision has no action binding")
+            })?;
+            let dispatch_decision = tandem_tools::ToolDispatchDecision::approval_required(
+                decision_id.clone(),
+                approval_reason.clone(),
+                tandem_tools::ToolDispatchApprovalRequirement {
+                    approval_request_id: approval_receipt_id,
+                    policy_id: source.policy_id.clone(),
+                    policy_version_id: snapshot.policy_version_id.clone(),
+                    rule_id: source.rule_id.clone(),
+                    rule_version: source.version,
+                    approval_class,
+                    action_binding,
+                },
+            );
             Some(ToolPolicyDecision {
                 allowed: false,
-                reason: Some(format!(
-                    "{reason}; approval receipt required before execution{receipt}{error}"
-                )),
+                reason: Some(approval_reason),
                 policy_decision_id: Some(decision_id),
+                dispatch_decision: Some(dispatch_decision),
             })
         }
     })
@@ -378,10 +453,9 @@ mod enterprise_authored_policy_tests {
         )
         .await
         .expect("allow evaluation");
-        assert!(
-            allowed.is_none(),
-            "matching authored allow continues to lower guards"
-        );
+        let allowed = allowed.expect("matching authored allow decision");
+        assert!(allowed.allowed);
+        assert!(allowed.dispatch_decision.is_some());
 
         let denied = evaluate_enterprise_authored_tool_policy(
             &state,
@@ -397,13 +471,27 @@ mod enterprise_authored_policy_tests {
             .await
             .expect("recorded decision");
         assert_eq!(recorded.decision, PolicyDecisionEffect::Deny);
-        assert_eq!(
-            recorded
-                .metadata
-                .pointer("/predicate_evidence")
-                .and_then(Value::as_str),
-            Some("redacted")
-        );
+        let evidence = recorded
+            .metadata
+            .pointer("/predicate_evidence")
+            .expect("structured predicate evidence");
+        assert_eq!(evidence["expression_version"], "permission_predicates/v1");
+        assert_eq!(evidence["result"], "no_match");
+        assert_eq!(evidence["conditions"][0]["condition_id"], "threshold");
+        assert_eq!(evidence["conditions"][0]["result"], "no_match");
+        assert!(evidence["expression_digest"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("hmac-sha256:")));
+        assert!(evidence["conditions"][0]["selector_digest"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("hmac-sha256:")));
+        assert!(evidence["conditions"][0]["value_digest"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("hmac-sha256:")));
+        let metadata = recorded.metadata.to_string();
+        assert!(!metadata.contains("15000"));
+        assert!(!metadata.contains("10000"));
+        assert!(!metadata.contains("/amount"));
         assert!(recorded.metadata.get("tool_arguments").is_none());
 
         let approval_rule = EnterprisePolicyRule::new(
@@ -450,6 +538,22 @@ mod enterprise_authored_policy_tests {
         .expect("approval evaluation")
         .expect("approval gate decision");
         assert!(!approval.allowed);
+        let pending = approval
+            .dispatch_decision
+            .as_ref()
+            .expect("first-class approval-required outcome");
+        assert_eq!(
+            pending.outcome,
+            tandem_tools::ToolDispatchPolicyOutcome::ApprovalRequired
+        );
+        let requirement = pending
+            .approval_requirement
+            .as_ref()
+            .expect("approval metadata");
+        assert_eq!(requirement.policy_id, "finance-authored");
+        assert_eq!(requirement.rule_id, "large-refund");
+        assert_eq!(requirement.approval_class, "finance-large-refund");
+        assert!(requirement.action_binding.starts_with("hmac-sha256:"));
         let recorded = state
             .get_policy_decision(approval.policy_decision_id.as_deref().expect("decision id"))
             .await
@@ -525,6 +629,30 @@ mod enterprise_authored_policy_tests {
             .await;
         assert_eq!(approvals.len(), 1);
         let approval = &approvals[0];
+        let dispatch = pending
+            .dispatch_decision
+            .as_ref()
+            .expect("first-class pending dispatch decision");
+        assert_eq!(
+            dispatch.outcome,
+            tandem_tools::ToolDispatchPolicyOutcome::ApprovalRequired
+        );
+        let requirement = dispatch
+            .approval_requirement
+            .as_ref()
+            .expect("approval requirement");
+        assert_eq!(
+            requirement.approval_request_id.as_deref(),
+            Some(approval.approval_id.as_str())
+        );
+        assert_eq!(requirement.rule_id, "approved-send");
+        assert_eq!(requirement.rule_version, 1);
+        assert_eq!(requirement.approval_class, "external-communications");
+        assert!(requirement.action_binding.starts_with("hmac-sha256:"));
+        assert_ne!(
+            requirement.action_binding,
+            fintech_protected_action_hash(&context.tool, &context.args)
+        );
         assert_eq!(
             approval
                 .context
@@ -562,8 +690,10 @@ mod enterprise_authored_policy_tests {
                 .await
                 .expect("consumed retry");
         assert!(
-            first_retry.is_none(),
-            "approved retry must continue through lower policy guards"
+            first_retry.is_some_and(|decision| {
+                decision.allowed && decision.dispatch_decision.is_some()
+            }),
+            "approved retry must preserve its allow receipt while lower guards continue"
         );
         assert!(
             second_retry.is_some_and(|decision| !decision.allowed),

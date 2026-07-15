@@ -26,6 +26,19 @@ pub enum ToolDispatchStatus {
 pub enum ToolDispatchPolicyOutcome {
     Allowed,
     Denied,
+    ApprovalRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDispatchApprovalRequirement {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_request_id: Option<String>,
+    pub policy_id: String,
+    pub policy_version_id: String,
+    pub rule_id: String,
+    pub rule_version: u64,
+    pub approval_class: String,
+    pub action_binding: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +149,7 @@ pub struct ToolDispatchDecision {
     pub outcome: ToolDispatchPolicyOutcome,
     pub reason: Option<String>,
     pub policy_decision_id: Option<String>,
+    pub approval_requirement: Option<ToolDispatchApprovalRequirement>,
 }
 
 impl ToolDispatchDecision {
@@ -144,6 +158,7 @@ impl ToolDispatchDecision {
             outcome: ToolDispatchPolicyOutcome::Allowed,
             reason: None,
             policy_decision_id: None,
+            approval_requirement: None,
         }
     }
 
@@ -152,6 +167,7 @@ impl ToolDispatchDecision {
             outcome: ToolDispatchPolicyOutcome::Allowed,
             reason: None,
             policy_decision_id: Some(policy_decision_id.into()),
+            approval_requirement: None,
         }
     }
 
@@ -160,6 +176,20 @@ impl ToolDispatchDecision {
             outcome: ToolDispatchPolicyOutcome::Denied,
             reason: Some(reason.into()),
             policy_decision_id: None,
+            approval_requirement: None,
+        }
+    }
+
+    pub fn approval_required(
+        policy_decision_id: impl Into<String>,
+        reason: impl Into<String>,
+        approval_requirement: ToolDispatchApprovalRequirement,
+    ) -> Self {
+        Self {
+            outcome: ToolDispatchPolicyOutcome::ApprovalRequired,
+            reason: Some(reason.into()),
+            policy_decision_id: Some(policy_decision_id.into()),
+            approval_requirement: Some(approval_requirement),
         }
     }
 
@@ -167,6 +197,20 @@ impl ToolDispatchDecision {
         self.outcome == ToolDispatchPolicyOutcome::Allowed
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct ToolDispatchBlocked {
+    pub decision: ToolDispatchDecision,
+    pub message: String,
+}
+
+impl std::fmt::Display for ToolDispatchBlocked {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ToolDispatchBlocked {}
 
 #[async_trait]
 pub trait ToolDispatchPolicy: Send + Sync {
@@ -230,6 +274,8 @@ pub struct ToolDispatchLedgerEvent {
     pub receipt_phase: ToolDispatchReceiptPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_decision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_requirement: Option<ToolDispatchApprovalRequirement>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_digest: Option<String>,
     pub status: ToolDispatchStatus,
@@ -524,7 +570,19 @@ impl GovernedToolDispatcher {
                 error: Some(reason.clone()),
             })
             .await?;
-            return Err(anyhow!("ToolDenied {{ reason: Policy }}: {reason}"));
+            let message = match decision.outcome {
+                ToolDispatchPolicyOutcome::ApprovalRequired => {
+                    format!("ToolApprovalRequired {{ reason: Policy }}: {reason}")
+                }
+                ToolDispatchPolicyOutcome::Denied => {
+                    format!("ToolDenied {{ reason: Policy }}: {reason}")
+                }
+                ToolDispatchPolicyOutcome::Allowed => unreachable!("handled above"),
+            };
+            return Err(anyhow::Error::new(ToolDispatchBlocked {
+                decision,
+                message,
+            }));
         }
 
         self.record(ToolDispatchRecordInput {
@@ -678,6 +736,7 @@ impl GovernedToolDispatcher {
                 policy_outcome: record.decision.outcome.clone(),
                 receipt_phase: record.receipt_phase,
                 policy_decision_id: record.decision.policy_decision_id.clone(),
+                approval_requirement: record.decision.approval_requirement.clone(),
                 payload_digest: record.payload_digest.map(str::to_string),
                 status: record.status,
                 error: record.error,
@@ -732,13 +791,30 @@ impl GovernedToolDispatcher {
                     "error": null,
                     "metadata": result.metadata
                 })),
-                Err(error) => outputs.push(json!({
-                    "tool": tool,
-                    "status": "error",
-                    "output": "",
-                    "error": error.to_string(),
-                    "metadata": {}
-                })),
+                Err(error) => {
+                    let blocked = error.downcast_ref::<ToolDispatchBlocked>();
+                    let approval_requirement = blocked
+                        .filter(|blocked| {
+                            blocked.decision.outcome == ToolDispatchPolicyOutcome::ApprovalRequired
+                        })
+                        .and_then(|blocked| blocked.decision.approval_requirement.clone());
+                    let policy_decision_id =
+                        blocked.and_then(|blocked| blocked.decision.policy_decision_id.clone());
+                    outputs.push(json!({
+                        "tool": tool,
+                        "status": if approval_requirement.is_some() {
+                            "approval_required"
+                        } else {
+                            "error"
+                        },
+                        "output": "",
+                        "error": error.to_string(),
+                        "metadata": {
+                            "policy_decision_id": policy_decision_id,
+                            "approval_requirement": approval_requirement,
+                        }
+                    }));
+                }
             }
         }
         Ok(ToolResult {
@@ -1235,6 +1311,38 @@ mod tests {
         }
     }
 
+    fn pending_approval_decision() -> ToolDispatchDecision {
+        ToolDispatchDecision::approval_required(
+            "decision-approval-1",
+            "human approval is pending",
+            ToolDispatchApprovalRequirement {
+                approval_request_id: Some("approval-request-1".to_string()),
+                policy_id: "policy-1".to_string(),
+                policy_version_id: "policy-version-1".to_string(),
+                rule_id: "rule-1".to_string(),
+                rule_version: 7,
+                approval_class: "external-send".to_string(),
+                action_binding: "hmac-sha256:opaque".to_string(),
+            },
+        )
+    }
+
+    struct BatchApprovalPolicy;
+
+    #[async_trait]
+    impl ToolDispatchPolicy for BatchApprovalPolicy {
+        async fn evaluate(
+            &self,
+            context: ToolDispatchPolicyContext,
+        ) -> anyhow::Result<ToolDispatchDecision> {
+            if context.requested_tool == "batch" {
+                Ok(ToolDispatchDecision::allow_with_id("batch-policy"))
+            } else {
+                Ok(pending_approval_decision())
+            }
+        }
+    }
+
     async fn dispatcher_with_echo() -> GovernedToolDispatcher {
         let registry = ToolRegistry::new();
         registry
@@ -1326,6 +1434,78 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].status, ToolDispatchStatus::Blocked);
         assert_eq!(events[0].policy_outcome, ToolDispatchPolicyOutcome::Denied);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_preserves_pending_approval_without_execution() {
+        let dispatcher = dispatcher_with_echo().await;
+        let ledger = Arc::new(RecordingLedger::default());
+        let context = ToolDispatchContext::local("test")
+            .with_policy(Arc::new(StaticPolicy(pending_approval_decision())))
+            .with_ledger(ledger.clone());
+
+        let error = dispatcher
+            .dispatch("echo_test", json!({"value": 1}), context)
+            .await
+            .expect_err("pending approval must not execute");
+        let blocked = error
+            .downcast_ref::<ToolDispatchBlocked>()
+            .expect("typed dispatch block");
+        assert_eq!(
+            blocked.decision.outcome,
+            ToolDispatchPolicyOutcome::ApprovalRequired
+        );
+        assert_eq!(
+            blocked
+                .decision
+                .approval_requirement
+                .as_ref()
+                .map(|requirement| requirement.rule_version),
+            Some(7)
+        );
+
+        let events = ledger.events.lock().expect("ledger lock");
+        assert_eq!(events.len(), 1, "no execution receipt may be emitted");
+        assert_eq!(
+            events[0].policy_outcome,
+            ToolDispatchPolicyOutcome::ApprovalRequired
+        );
+        assert_eq!(
+            events[0]
+                .approval_requirement
+                .as_ref()
+                .and_then(|requirement| requirement.approval_request_id.as_deref()),
+            Some("approval-request-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn governed_batch_preserves_subcall_pending_approval() {
+        let dispatcher = dispatcher_with_echo().await;
+        let ledger = Arc::new(RecordingLedger::default());
+        let context = ToolDispatchContext::local("batch_test")
+            .with_scope_allowlist(vec!["batch".to_string(), "echo_test".to_string()])
+            .with_policy(Arc::new(BatchApprovalPolicy))
+            .with_ledger(ledger);
+
+        let result = dispatcher
+            .dispatch(
+                "batch",
+                json!({
+                    "tool_calls": [
+                        { "tool": "echo_test", "args": { "value": 7 } }
+                    ]
+                }),
+                context,
+            )
+            .await
+            .expect("batch itself is allowed");
+        let rows: Value = serde_json::from_str(&result.output).expect("batch result JSON");
+        assert_eq!(rows[0]["status"], "approval_required");
+        assert_eq!(
+            rows[0]["metadata"]["approval_requirement"]["rule_id"],
+            "rule-1"
+        );
     }
 
     #[tokio::test]

@@ -6,8 +6,8 @@ use tandem_tools::{
     ToolDispatchReceiptPhase, ToolDispatchSource, ToolDispatchStatus,
 };
 
-#[derive(Debug, Default)]
-struct EnginePreauthorizedDispatchPolicy;
+#[derive(Debug)]
+struct EnginePreauthorizedDispatchPolicy(ToolDispatchDecision);
 
 #[async_trait::async_trait]
 impl ToolDispatchPolicy for EnginePreauthorizedDispatchPolicy {
@@ -15,7 +15,7 @@ impl ToolDispatchPolicy for EnginePreauthorizedDispatchPolicy {
         &self,
         _context: ToolDispatchPolicyContext,
     ) -> anyhow::Result<ToolDispatchDecision> {
-        Ok(ToolDispatchDecision::allow_with_id("engine_preflight"))
+        Ok(self.0.clone())
     }
 }
 
@@ -44,6 +44,23 @@ impl EngineLoop {
         reason: &str,
         policy_decision_id: Option<String>,
     ) -> anyhow::Result<()> {
+        let decision = ToolDispatchDecision {
+            outcome: ToolDispatchPolicyOutcome::Denied,
+            reason: Some(reason.to_string()),
+            policy_decision_id,
+            approval_requirement: None,
+        };
+        self.record_tool_preflight_policy_decision(session_id, message_id, tool, &decision)
+            .await
+    }
+
+    pub(super) async fn record_tool_preflight_policy_decision(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        tool: &str,
+        decision: &ToolDispatchDecision,
+    ) -> anyhow::Result<()> {
         let session = self.storage.get_session(session_id).await;
         let tenant_context = session
             .map(|session| session.tenant_context)
@@ -67,12 +84,13 @@ impl EngineLoop {
                     .session(session_id)
                     .message(message_id),
                 scope_allowlist,
-                policy_outcome: ToolDispatchPolicyOutcome::Denied,
+                policy_outcome: decision.outcome.clone(),
                 receipt_phase: ToolDispatchReceiptPhase::PolicyDecision,
-                policy_decision_id,
+                policy_decision_id: decision.policy_decision_id.clone(),
+                approval_requirement: decision.approval_requirement.clone(),
                 payload_digest: None,
                 status: ToolDispatchStatus::Blocked,
-                error: Some(reason.to_string()),
+                error: decision.reason.clone(),
             })
             .await
     }
@@ -83,6 +101,7 @@ impl EngineLoop {
         message_id: &str,
         tool: &str,
         args: Value,
+        preauthorized_decision: Option<ToolDispatchDecision>,
         cancel: CancellationToken,
         progress: Option<SharedToolProgressSink>,
     ) -> anyhow::Result<tandem_types::ToolResult> {
@@ -108,7 +127,10 @@ impl EngineLoop {
                     .message(message_id),
             )
             .with_scope_allowlist(scope_allowlist)
-            .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy))
+            .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy(
+                preauthorized_decision
+                    .unwrap_or_else(|| ToolDispatchDecision::allow_with_id("engine_preflight")),
+            )))
             .with_ledger(tool_dispatch_ledger);
         if let Some(verified_tenant_context) = verified_tenant_context {
             dispatch_context =
@@ -141,6 +163,7 @@ impl EngineLoop {
                         policy_outcome: ToolDispatchPolicyOutcome::Allowed,
                         receipt_phase: ToolDispatchReceiptPhase::ExecutionFailed,
                         policy_decision_id: None,
+                        approval_requirement: None,
                         payload_digest: Some(timeout_payload_digest),
                         status: ToolDispatchStatus::Failed,
                         error: Some(format!("TOOL_EXEC_TIMEOUT_MS_EXCEEDED({timeout_ms})")),

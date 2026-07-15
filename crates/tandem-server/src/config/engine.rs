@@ -37,6 +37,7 @@ pub struct EngineConfig {
     pub context_assertion_verifier_configured: bool,
     pub hosted_control_plane_configured: bool,
     pub cross_tenant_grant_signing_key_configured: bool,
+    pub audit_hmac_key_configured: bool,
     pub transport_token_configured: bool,
     pub unsafe_no_api_token: bool,
 }
@@ -115,6 +116,7 @@ impl EngineConfigReport {
             hosted_control_plane_configured: super::env::hosted_control_plane_configured(),
             cross_tenant_grant_signing_key_configured:
                 super::env::cross_tenant_grant_signing_key_configured(),
+            audit_hmac_key_configured: super::env::audit_hmac_key_configured(),
             transport_token_configured,
             unsafe_no_api_token,
         };
@@ -175,6 +177,10 @@ impl EngineConfigReport {
                 self.config.cross_tenant_grant_signing_key_configured
             ),
             format!(
+                "- audit_hmac_key_configured: {}",
+                self.config.audit_hmac_key_configured
+            ),
+            format!(
                 "- automation_execute_node_timeout_ms: {}",
                 self.config.automation_execute_node_timeout_ms
             ),
@@ -210,7 +216,8 @@ pub fn config_reference_markdown() -> String {
 - Hosted or enterprise auth mode requires an explicit transport token from `TANDEM_API_TOKEN`, `TANDEM_API_TOKEN_FILE`, or `--api-token`.\n\
 - Hosted or enterprise auth mode rejects `TANDEM_UNSAFE_NO_API_TOKEN`.\n\
 - Malformed verifier key material, invalid booleans, invalid modes, and out-of-range numeric settings fail fast.\n\
-- Unknown `TANDEM_*` variables are reported as warnings to catch typos without blocking local startup.\n",
+- Unknown `TANDEM_*` variables are reported as warnings to catch typos without blocking local startup.\n\n\
+Predicate-governed decisions and enterprise-authored exact-action approvals additionally fail closed at decision time in hosted/enterprise mode unless `TANDEM_AUDIT_HMAC_KEY` or `TANDEM_AUDIT_HMAC_KEY_FILE` is configured.\n",
     );
     out
 }
@@ -651,6 +658,7 @@ struct ConfigVar {
 const KNOWN_PREFIXES: &[&str] = &[
     "TANDEM_AGENT_AUTOMATION_",
     "TANDEM_APPROVAL_",
+    "TANDEM_AUDIT_",
     "TANDEM_AUTO_",
     "TANDEM_BASE_",
     "TANDEM_BASH_",
@@ -754,6 +762,8 @@ const CONFIG_VARS: &[ConfigVar] = &[
     ConfigVar { name: "TANDEM_ENTERPRISE_CONTROL_PLANE_URL", default: "unset", notes: "Enterprise control-plane URL alias." },
     ConfigVar { name: "TANDEM_CROSS_TENANT_GRANT_SIGNING_KEY", default: "unset", notes: "Secret signing key for cross-tenant grants." },
     ConfigVar { name: "TANDEM_CROSS_TENANT_GRANT_SIGNING_KEY_FILE", default: "unset", notes: "File containing the cross-tenant grant signing key." },
+    ConfigVar { name: "TANDEM_AUDIT_HMAC_KEY", default: "unset", notes: "Deployment secret used for privacy-preserving predicate evidence and exact-action approval bindings. Required when those authored policies execute in hosted/enterprise mode." },
+    ConfigVar { name: "TANDEM_AUDIT_HMAC_KEY_FILE", default: "unset", notes: "File containing the deployment policy-evidence audit HMAC key." },
     ConfigVar { name: "TANDEM_RUN_STALE_MS", default: "120000", notes: "Run staleness threshold; valid range 30000..=600000." },
     ConfigVar { name: "TANDEM_TOKEN_COST_PER_1K_USD", default: "0.0", notes: "Non-negative token cost used for estimates." },
     ConfigVar { name: "TANDEM_AUTOMATION_STRICT_RESEARCH_QUALITY", default: "true", notes: "Enable strict automation research quality checks." },

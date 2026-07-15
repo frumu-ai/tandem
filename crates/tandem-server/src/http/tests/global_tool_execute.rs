@@ -124,7 +124,7 @@ async fn tool_execute_without_matching_server_policy_is_denied_and_receipted() {
         .expect("request");
 
     let resp = app.oneshot(req).await.expect("response");
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let reliability_path =
         crate::stateful_runtime::stateful_reliability_path_from_runtime_events_path(
             &state.runtime_events_path,
@@ -167,7 +167,90 @@ async fn tool_execute_client_scope_cannot_grant_server_permission() {
         .expect("request");
 
     let resp = app.oneshot(req).await.expect("response");
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tool_execute_returns_structured_pending_approval_without_running_tool() {
+    let state = test_state().await;
+    state
+        .runtime
+        .get()
+        .expect("runtime")
+        .permissions
+        .add_rule(
+            "echo_global_execute_args".to_string(),
+            "echo_global_execute_args".to_string(),
+            tandem_core::PermissionAction::Allow,
+        )
+        .await;
+    state
+        .tools
+        .register_tool(
+            "echo_global_execute_args".to_string(),
+            std::sync::Arc::new(EchoGlobalExecuteArgsTool),
+        )
+        .await;
+    let rule = tandem_enterprise_contract::EnterprisePolicyRule::new(
+        "global-http-approval",
+        "global-http-policy",
+        tandem_enterprise_contract::EnterprisePolicyScopeLevel::Enterprise,
+        tandem_enterprise_contract::EnterprisePolicyEffect::ApprovalRequired,
+    )
+    .with_tool_patterns(vec!["echo_global_execute_args".to_string()])
+    .with_approval_id("global-http-review");
+    state
+        .enterprise
+        .policy_rules
+        .write()
+        .await
+        .insert(rule.rule_id.clone(), rule);
+
+    let app = app_router(state.clone());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/tool/execute")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "tool": "echo_global_execute_args",
+                "args": { "value": "must-wait" }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+
+    let response = app.oneshot(request).await.expect("response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("JSON response");
+    assert_eq!(payload["code"], "TOOL_APPROVAL_REQUIRED");
+    assert_eq!(payload["outcome"], "approval_required");
+    assert_eq!(
+        payload["approval_requirement"]["approval_class"],
+        "global-http-review"
+    );
+    assert_eq!(
+        payload["approval_requirement"]["rule_id"],
+        "global-http-approval"
+    );
+
+    let reliability_path =
+        crate::stateful_runtime::stateful_reliability_path_from_runtime_events_path(
+            &state.runtime_events_path,
+        );
+    let receipts = crate::stateful_runtime::load_stateful_reliability(&reliability_path);
+    assert!(receipts.tool_effects.iter().any(|receipt| {
+        receipt.tool.as_deref() == Some("echo_global_execute_args")
+            && receipt
+                .receipt_payload_redacted
+                .as_ref()
+                .and_then(|payload| payload.get("policy_outcome"))
+                .and_then(serde_json::Value::as_str)
+                == Some("approval_required")
+    }));
 }
 
 #[tokio::test]

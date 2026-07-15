@@ -76,6 +76,25 @@ pub struct PermissionPredicate {
     pub expression: PredicateExpression,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PredicateConditionTrace {
+    pub condition_id: Option<String>,
+    pub selector: String,
+    pub value_type: PredicateValueType,
+    pub operator: PredicateOperator,
+    pub result: PredicateResult,
+    pub normalized_value: Option<Value>,
+    pub reason_code: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PredicateEvaluationTrace {
+    pub result: PredicateResult,
+    pub conditions: Vec<PredicateConditionTrace>,
+    pub truncated: bool,
+    pub reason_codes: Vec<&'static str>,
+}
+
 fn predicate_version() -> String {
     "permission_predicates/v1".to_string()
 }
@@ -95,10 +114,65 @@ impl PermissionPredicate {
     }
 
     pub fn evaluate(&self, arguments: &Value) -> PredicateResult {
+        self.evaluate_with_trace(arguments).result
+    }
+
+    pub fn evaluate_with_trace(&self, arguments: &Value) -> PredicateEvaluationTrace {
         if !self.validate().is_empty() {
-            return PredicateResult::Indeterminate;
+            let mut trace = PredicateEvaluationTrace {
+                result: PredicateResult::Indeterminate,
+                conditions: Vec::new(),
+                truncated: false,
+                reason_codes: vec!["predicate_invalid"],
+            };
+            collect_invalid_condition_traces(&self.expression, &mut trace);
+            return trace;
         }
-        evaluate_expression(&self.expression, arguments)
+        let mut trace = PredicateEvaluationTrace {
+            result: PredicateResult::Indeterminate,
+            conditions: Vec::new(),
+            truncated: false,
+            reason_codes: Vec::new(),
+        };
+        trace.result = evaluate_expression_with_trace(&self.expression, arguments, &mut trace);
+        if trace.result == PredicateResult::Indeterminate
+            && !trace.reason_codes.contains(&"condition_indeterminate")
+        {
+            trace.reason_codes.push("condition_indeterminate");
+        }
+        trace
+    }
+}
+
+fn collect_invalid_condition_traces(
+    expression: &PredicateExpression,
+    trace: &mut PredicateEvaluationTrace,
+) {
+    if trace.conditions.len() >= 32 {
+        trace.truncated = true;
+        if !trace.reason_codes.contains(&"condition_limit_exceeded") {
+            trace.reason_codes.push("condition_limit_exceeded");
+        }
+        return;
+    }
+    match expression {
+        PredicateExpression::All { all } | PredicateExpression::Any { any: all } => {
+            for child in all {
+                collect_invalid_condition_traces(child, trace);
+            }
+        }
+        PredicateExpression::Not { not } => collect_invalid_condition_traces(not, trace),
+        PredicateExpression::Condition { condition } => {
+            trace.conditions.push(PredicateConditionTrace {
+                condition_id: condition.condition_id.clone(),
+                selector: condition.selector.clone(),
+                value_type: condition.value_type,
+                operator: condition.operator,
+                result: PredicateResult::Indeterminate,
+                normalized_value: None,
+                reason_code: Some("predicate_invalid"),
+            });
+        }
     }
 }
 
@@ -205,22 +279,52 @@ fn operand_is_valid(condition: &PredicateCondition) -> bool {
     }
 }
 
-fn evaluate_expression(expression: &PredicateExpression, arguments: &Value) -> PredicateResult {
+fn evaluate_expression_with_trace(
+    expression: &PredicateExpression,
+    arguments: &Value,
+    trace: &mut PredicateEvaluationTrace,
+) -> PredicateResult {
     match expression {
         PredicateExpression::All { all } => {
-            let results = all.iter().map(|item| evaluate_expression(item, arguments));
-            fold_all(results)
+            let results = all
+                .iter()
+                .map(|item| evaluate_expression_with_trace(item, arguments, trace))
+                .collect::<Vec<_>>();
+            fold_all(results.into_iter())
         }
         PredicateExpression::Any { any } => {
-            let results = any.iter().map(|item| evaluate_expression(item, arguments));
-            fold_any(results)
+            let results = any
+                .iter()
+                .map(|item| evaluate_expression_with_trace(item, arguments, trace))
+                .collect::<Vec<_>>();
+            fold_any(results.into_iter())
         }
-        PredicateExpression::Not { not } => match evaluate_expression(not, arguments) {
-            PredicateResult::Match => PredicateResult::NoMatch,
-            PredicateResult::NoMatch => PredicateResult::Match,
-            PredicateResult::Indeterminate => PredicateResult::Indeterminate,
-        },
-        PredicateExpression::Condition { condition } => evaluate_condition(condition, arguments),
+        PredicateExpression::Not { not } => {
+            match evaluate_expression_with_trace(not, arguments, trace) {
+                PredicateResult::Match => PredicateResult::NoMatch,
+                PredicateResult::NoMatch => PredicateResult::Match,
+                PredicateResult::Indeterminate => PredicateResult::Indeterminate,
+            }
+        }
+        PredicateExpression::Condition { condition } => {
+            let (result, normalized_value, reason_code) =
+                evaluate_condition_details(condition, arguments);
+            trace.conditions.push(PredicateConditionTrace {
+                condition_id: condition.condition_id.clone(),
+                selector: condition.selector.clone(),
+                value_type: condition.value_type,
+                operator: condition.operator,
+                result,
+                normalized_value,
+                reason_code,
+            });
+            if result == PredicateResult::Indeterminate
+                && !trace.reason_codes.contains(&"condition_indeterminate")
+            {
+                trace.reason_codes.push("condition_indeterminate");
+            }
+            result
+        }
     }
 }
 
@@ -256,7 +360,10 @@ fn fold_any(results: impl Iterator<Item = PredicateResult>) -> PredicateResult {
     }
 }
 
-fn evaluate_condition(condition: &PredicateCondition, arguments: &Value) -> PredicateResult {
+fn evaluate_condition_details(
+    condition: &PredicateCondition,
+    arguments: &Value,
+) -> (PredicateResult, Option<Value>, Option<&'static str>) {
     let selected = if condition.selector.is_empty() {
         Some(arguments)
     } else {
@@ -264,23 +371,31 @@ fn evaluate_condition(condition: &PredicateCondition, arguments: &Value) -> Pred
     };
     if condition.operator == PredicateOperator::Exists {
         return if selected.is_some() {
-            PredicateResult::Match
+            (PredicateResult::Match, None, None)
         } else {
-            PredicateResult::NoMatch
+            (PredicateResult::NoMatch, None, None)
         };
     }
     if condition.operator == PredicateOperator::NotExists {
         return if selected.is_none() {
-            PredicateResult::Match
+            (PredicateResult::Match, None, None)
         } else {
-            PredicateResult::NoMatch
+            (PredicateResult::NoMatch, None, None)
         };
     }
     let Some(selected) = selected else {
-        return PredicateResult::Indeterminate;
+        return (
+            PredicateResult::Indeterminate,
+            None,
+            Some("selector_missing"),
+        );
     };
     let Some(actual) = normalize_value(selected, condition.value_type) else {
-        return PredicateResult::Indeterminate;
+        return (
+            PredicateResult::Indeterminate,
+            None,
+            Some("selected_value_invalid"),
+        );
     };
     let result = match condition.operator {
         PredicateOperator::Equals => {
@@ -346,9 +461,13 @@ fn evaluate_condition(condition: &PredicateCondition, arguments: &Value) -> Pred
         PredicateOperator::Exists | PredicateOperator::NotExists => unreachable!(),
     };
     match result {
-        Some(true) => PredicateResult::Match,
-        Some(false) => PredicateResult::NoMatch,
-        None => PredicateResult::Indeterminate,
+        Some(true) => (PredicateResult::Match, Some(actual), None),
+        Some(false) => (PredicateResult::NoMatch, Some(actual), None),
+        None => (
+            PredicateResult::Indeterminate,
+            Some(actual),
+            Some("comparison_indeterminate"),
+        ),
     }
 }
 
@@ -659,5 +778,60 @@ mod tests {
             path.evaluate(&json!({"path":"/repo/src/lib.rs"})),
             PredicateResult::Match
         );
+    }
+
+    #[test]
+    fn evaluation_trace_records_bounded_results_and_stable_reasons() {
+        let predicate: PermissionPredicate = serde_json::from_value(json!({
+            "expression_version": "permission_predicates/v1",
+            "all": [
+                {"condition": {"condition_id":"domain","selector":"/recipient","value_type":"email_domain","operator":"is_subdomain_of","operand":"example.com"}},
+                {"condition": {"condition_id":"amount","selector":"/amount","value_type":"decimal","operator":"greater_than","operand":"100"}}
+            ]
+        }))
+        .unwrap();
+        let trace = predicate.evaluate_with_trace(&json!({
+            "recipient": "private-local-part@team.example.com"
+        }));
+        assert_eq!(trace.result, PredicateResult::Indeterminate);
+        assert_eq!(trace.conditions.len(), 2);
+        assert_eq!(
+            trace.conditions[0].normalized_value,
+            Some(json!("team.example.com"))
+        );
+        assert_eq!(trace.conditions[1].reason_code, Some("selector_missing"));
+        assert_eq!(trace.reason_codes, vec!["condition_indeterminate"]);
+        assert!(!trace.truncated);
+    }
+
+    #[test]
+    fn invalid_oversized_trace_is_truncated_without_evaluating_values() {
+        let condition = PredicateExpression::Condition {
+            condition: PredicateCondition {
+                condition_id: None,
+                selector: "/secret".to_string(),
+                value_type: PredicateValueType::String,
+                operator: PredicateOperator::Equals,
+                operand: json!("never-persist-this"),
+            },
+        };
+        let predicate = PermissionPredicate {
+            expression_version: predicate_version(),
+            expression: PredicateExpression::All {
+                all: vec![condition; 40],
+            },
+        };
+        let trace = predicate.evaluate_with_trace(&json!({
+            "secret": "private-runtime-value"
+        }));
+        assert_eq!(trace.result, PredicateResult::Indeterminate);
+        assert_eq!(trace.conditions.len(), 32);
+        assert!(trace.truncated);
+        assert!(trace
+            .conditions
+            .iter()
+            .all(|condition| condition.normalized_value.is_none()));
+        assert!(trace.reason_codes.contains(&"predicate_invalid"));
+        assert!(trace.reason_codes.contains(&"condition_limit_exceeded"));
     }
 }

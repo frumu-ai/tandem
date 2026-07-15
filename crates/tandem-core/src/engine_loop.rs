@@ -8,7 +8,8 @@ use std::time::Duration;
 use tandem_observability::{emit_event_with_tenant, ObservabilityEvent, ProcessKind};
 use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk, TokenUsage};
 use tandem_tools::{
-    validate_tool_schemas, GovernedToolDispatcher, ToolDispatchLedger, ToolRegistry,
+    validate_tool_schemas, GovernedToolDispatcher, ToolDispatchDecision, ToolDispatchLedger,
+    ToolDispatchPolicyOutcome, ToolRegistry,
 };
 use tandem_types::{
     ContextMode, EngineEvent, HostRuntimeContext, Message, MessagePart, MessagePartInput,
@@ -665,6 +666,7 @@ impl EngineLoop {
                 return Ok(Some(message));
             }
         };
+        let mut preauthorized_dispatch_decision = None;
         if let Some(hook) = self.tool_policy_hook.read().await.clone() {
             let session_context = self
                 .storage
@@ -685,7 +687,18 @@ impl EngineLoop {
                 })
                 .await?;
             if !decision.allowed {
-                let policy_decision_id = decision.policy_decision_id.clone();
+                let dispatch_decision =
+                    decision
+                        .dispatch_decision
+                        .unwrap_or_else(|| ToolDispatchDecision {
+                            outcome: ToolDispatchPolicyOutcome::Denied,
+                            reason: decision.reason.clone(),
+                            policy_decision_id: decision.policy_decision_id.clone(),
+                            approval_requirement: None,
+                        });
+                let approval_required =
+                    dispatch_decision.outcome == ToolDispatchPolicyOutcome::ApprovalRequired;
+                let policy_decision_id = dispatch_decision.policy_decision_id.clone();
                 let reason = decision
                     .reason
                     .unwrap_or_else(|| "Tool denied by runtime policy".to_string());
@@ -696,7 +709,11 @@ impl EngineLoop {
                     Some(args.clone()),
                     json!(null),
                 );
-                blocked_part.state = Some("failed".to_string());
+                blocked_part.state = Some(if approval_required {
+                    "approval_required".to_string()
+                } else {
+                    "failed".to_string()
+                });
                 blocked_part.error = Some(reason.clone());
                 self.event_bus.publish(EngineEvent::new(
                     "message.part.updated",
@@ -719,19 +736,23 @@ impl EngineLoop {
                     record,
                     tool_effect_tenant_context.as_ref(),
                 ));
-                self.record_tool_preflight_denial(
+                self.record_tool_preflight_policy_decision(
                     session_id,
                     message_id,
                     &tool,
-                    &reason,
-                    policy_decision_id,
+                    &dispatch_decision,
                 )
                 .await?;
-                if write_required {
+                if write_required && !approval_required {
                     return Err(anyhow::anyhow!(reason));
                 }
                 return Ok(Some(reason));
             }
+            preauthorized_dispatch_decision = decision.dispatch_decision.or_else(|| {
+                decision
+                    .policy_decision_id
+                    .map(ToolDispatchDecision::allow_with_id)
+            });
         }
         if let Some(allowed_tools) = self
             .session_allowed_tools
@@ -1464,6 +1485,7 @@ impl EngineLoop {
                 message_id,
                 &tool,
                 args,
+                preauthorized_dispatch_decision,
                 cancel.clone(),
                 Some(progress_sink),
             )

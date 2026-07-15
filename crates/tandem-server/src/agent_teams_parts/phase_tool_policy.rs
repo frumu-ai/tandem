@@ -80,6 +80,7 @@ async fn evaluate_automation_phase_tool_policy(
         allowed: false,
         reason: Some(reason),
         policy_decision_id: Some(decision_id),
+        dispatch_decision: None,
     }))
 }
 

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added first-class `approval_required` governed tool-dispatch outcomes across
+  engine/native, batch, global HTTP, server-backed CLI, and bridged MCP paths.
+  Pending outcomes carry the policy decision, winning rule/version, approval
+  class, optional request handle, and deployment-HMAC exact-action binding;
+  matching approvals are consumed once before execution.
+- Added bounded, privacy-preserving `permission_predicates/v1` decision
+  evidence with deployment-scoped HMAC expression, selector, and permitted
+  selected-value digests, stable condition result/reason codes, truncation
+  state, and hosted fail-closed audit-key requirements.
+- Added explicit tenantless enterprise policy creation for enterprise/global
+  admins while preserving the tenant boundary for workspace administrators.
 - Added first-party product authoring to Control Panel chat. Users can ask
   Tandem to create, inspect, validate, revise, preview, and materialize workflow
   plans; inspect or manage Automation V2 drafts; inspect orchestrations; and
@@ -49,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Normalized tenant matching during enterprise policy supersession so padded or
+  mixed-case stored IDs follow the same canonical matcher as runtime
+  enforcement while deployment presence and global-versus-tenant scope remain
+  exact.
 - Routed new natural-language automation requests through the workflow planner
   instead of exposing raw Automation V2 creation through draft management, and
   prevented disabled-draft authoring from probing external MCP integrations

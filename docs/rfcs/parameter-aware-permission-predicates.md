@@ -1,6 +1,6 @@
 # RFC: Parameter-aware permission predicates
 
-- Status: Partially implemented on `main` through PR #1897
+- Status: Implemented through PR #1897 and the TAN-744 through TAN-747 follow-up
 - Linear: TAN-741, TAN-742, TAN-743; follow-ups TAN-744 through TAN-747
 - Owners: Governance and runtime
 - Required reviewers: Runtime engineering, security engineering
@@ -14,14 +14,7 @@ The model is deny-by-default. A missing, malformed, unnormalizable, or over-budg
 
 ## Implementation status
 
-[PR #1897](https://github.com/frumu-ai/tandem/pull/1897) landed the `permission_predicates/v1` types, bounded evaluator, inheritance integration, enterprise authoring and preview APIs, tenant-scoped Control Panel Policy Studio, runtime enforcement adapter, and versioned CRM, finance, and coding starter policies. TAN-742 and TAN-743 are complete for that shipped scope.
-
-This is not full conformance with every normative guarantee below:
-
-- TAN-744 tracks supported creation of tenantless global policies; the current create route always stamps the request tenant.
-- TAN-745 tracks canonical tenant matching in supersession; the current initial lookup uses raw tenant-ID equality.
-- TAN-746 tracks a first-class `ApprovalRequired` dispatcher outcome. Current pending predicate approvals are represented as blocked `ToolPolicyDecision` records through the action-gate adapter because `ToolDispatchPolicyOutcome` still contains only `Allowed` and `Denied`.
-- TAN-747 tracks structured, deployment-HMAC predicate evidence. Current policy-decision metadata records a redacted marker rather than the condition-level evidence contract below.
+[PR #1897](https://github.com/frumu-ai/tandem/pull/1897) landed the `permission_predicates/v1` types, bounded evaluator, inheritance integration, enterprise authoring and preview APIs, tenant-scoped Control Panel Policy Studio, runtime enforcement adapter, and versioned CRM, finance, and coding starter policies. The TAN-744 through TAN-747 follow-up adds enterprise-admin tenantless global creation, canonical supersession matching, first-class pending dispatcher outcomes, single-use exact-action resume, and bounded deployment-HMAC predicate evidence. Hosted/enterprise predicate enforcement requires `TANDEM_AUDIT_HMAC_KEY` or `TANDEM_AUDIT_HMAC_KEY_FILE`; missing authority fails closed before a predicate-governed decision is recorded or exposed.
 
 ## Motivation and current state
 
@@ -169,7 +162,7 @@ The dispatcher policy contract must add `ApprovalRequired` as a first-class `Too
 
 On `ApprovalRequired`, the dispatcher writes the policy-decision and approval-request receipts before it exposes the request to a client or approval worker. It then returns a non-executable pending handle. Approval creates a single-use, decision-bound approval receipt with an expiry and the original normalized tool name and argument digest; denial or expiry creates a terminal receipt and the tool is not called. Resume re-enters the same dispatcher, verifies and atomically consumes the approval receipt, re-evaluates non-waivable lower-level guards, writes the allow receipt, executes at most once, and links the execution receipt to the original decision. Changed tool identity, arguments, scope, policy version, connector generation, expired approval, or an already-consumed receipt fails closed and requires a new decision.
 
-Full RFC conformance requires `ToolDispatchPolicyOutcome` and every exhaustive consumer to preserve `ApprovalRequired` as a first-class outcome. The current implementation can publish approval-required predicate rules, but its server adapter creates and checks an action-gate approval and represents an unconsumed approval as a blocked `ToolPolicyDecision`. TAN-746 tracks migration to the generic dispatcher contract so clients can distinguish pending approval from terminal denial without adapter-specific reason parsing.
+The governed dispatcher now preserves `ApprovalRequired` as a first-class outcome. The server policy hook carries it into engine/native execution, the batch dispatcher returns `approval_required` subcall rows, global HTTP returns `409 TOOL_APPROVAL_REQUIRED` with structured metadata, and the server-backed CLI and bridged MCP paths retain the typed central-dispatch error/receipt. Pending decisions do not enter pre-send or execution phases. Resume re-evaluates policy and uses the existing action-gate store to atomically consume one matching, unexpired approval; action, tenant, policy-version, connector-generation, expiry, and replay drift fail closed.
 
 ## Expiry, publication, and invalid policy handling
 
@@ -204,7 +197,7 @@ Policy decision receipts add a bounded `predicate_evidence` object:
 
 Receipts never contain raw selected values, raw operands, email local parts, paths, repository URLs, or request arguments. `expression_digest`, `selector_digest`, and `value_digest` use a deployment-scoped audit HMAC key so operators can correlate identical expressions, selectors, or values inside one deployment without enabling cross-deployment correlation or offline guessing. The expression digest covers the canonical complete expression, including operands, only after HMAC protection; no unkeyed digest of policy operands is emitted. Low-cardinality selected values such as booleans and currency codes omit `value_digest`. Evidence contains at most 32 condition rows and records truncation or indeterminate causes using stable reason codes.
 
-The reviewed implementation does not yet emit this structure. It records a redacted predicate-evidence marker in the runtime policy-decision metadata. TAN-747 tracks the bounded HMAC evidence contract and its non-disclosure tests.
+The runtime emits this structure for the winning predicate, or the highest-precedence scope candidate that produced a default deny. Evaluation traces are deliberately non-serializable while they contain transient normalized values; only deployment-HMAC digests and bounded result metadata enter policy and protected-audit records. Tests cover match, no-match, indeterminate, truncation, low-cardinality omission, cross-deployment unlinkability, and non-disclosure.
 
 Allow, deny, approval-required, and execution receipts link to the same policy decision ID and expression digest. Policy-decision, deny, approval-request, approval-resolution, approval-consumption, allow, and execution-attempt receipts are mandatory writes. The dispatcher must receive a durable success result for each write required before the next state transition; a write error blocks dispatch, approval publication, resume, or execution as applicable. Existing optional or best-effort recording helpers, including MCP preflight helpers that return `Option`, cannot satisfy this contract and must be replaced with required `Result`-returning calls on predicate-governed paths. A post-execution result receipt may report an execution that already occurred, but failure to persist it places the server in an operator-visible unhealthy state and prevents retry under the same decision rather than risking duplicate execution.
 
@@ -361,11 +354,11 @@ Allow writes only inside the workspace and require approval for pushes to the pr
 
 ## Implementation and remaining rollout
 
-1. Types, validation, bounded evaluation, inheritance integration, and tenant-scoped authoring are implemented.
+1. Types, validation, bounded evaluation, inheritance integration, and tenant/global authoring are implemented.
 2. Versioned CRM, finance, and coding templates with bounded overrides, upgrade, rollback, and preview are implemented.
 3. Published rules participate in runtime tool-policy decisions while existing specialized guards remain authoritative.
-4. Complete the global-policy creation and canonical supersession work tracked by TAN-744 and TAN-745.
-5. Complete first-class dispatcher approval and structured receipt evidence tracked by TAN-746 and TAN-747.
+4. Tenantless global creation and canonical supersession matching are implemented with global-admin and deployment-presence boundaries.
+5. First-class dispatcher approval and structured deployment-HMAC predicate evidence are implemented.
 6. Consider deprecating duplicated specialized checks only through separate reviewed changes and differential evidence.
 
 ## Required review record

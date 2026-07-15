@@ -180,6 +180,7 @@ pub(crate) async fn evaluate_action_gate_tool_policy(
             allowed: true,
             reason: None,
             policy_decision_id,
+            dispatch_decision: None,
         });
     }
 
@@ -219,5 +220,6 @@ pub(crate) async fn evaluate_action_gate_tool_policy(
         allowed: false,
         reason: Some(reason),
         policy_decision_id,
+        dispatch_decision: None,
     })
 }

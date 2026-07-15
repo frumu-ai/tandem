@@ -76,6 +76,34 @@ Stable layout and retained transcript position remove the flashing and viewport
 jumps that made earlier updates difficult to follow, including on narrow
 viewports and keyboard or screen-reader paths.
 
+### Enterprise Policy Enforcement Follow-Through
+
+Enterprise/global admins can now explicitly author tenantless enterprise rules,
+while workspace administrators remain restricted to their verified tenant.
+Policy supersession uses the same canonical organization, workspace, and
+deployment matching as runtime enforcement, so harmless casing or padding drift
+cannot strand an old published rule and global rules cannot be confused with
+tenant rules.
+
+Approval-required enterprise policies are now a first-class governed dispatcher
+result rather than a denial-shaped error. Native, batch, global HTTP,
+server-backed CLI, and bridged MCP paths preserve a pending handle containing
+the winning policy and rule version, approval class, optional request ID, and an
+opaque exact-action binding. A pending decision never enters pre-send or tool
+execution. Resume re-evaluates policy and atomically consumes one matching,
+unexpired approval; changed arguments, tenant scope, policy version, MCP
+connection generation, expiry, or replay fail closed.
+
+Predicate policy decisions now include bounded, privacy-preserving evidence:
+the expression result, at most 32 condition results, stable indeterminate and
+truncation reasons, and deployment-scoped HMAC digests for the expression,
+selector, and permitted selected values. Raw request arguments, operands,
+selected values, paths, repository URLs, and email local parts are not copied
+into evidence, and low-cardinality values omit their digest. Hosted and
+enterprise deployments must configure `TANDEM_AUDIT_HMAC_KEY` or
+`TANDEM_AUDIT_HMAC_KEY_FILE`; predicate decisions and enterprise-authored
+exact-action approvals fail closed without that authority.
+
 ### Automation Wizard Reliability And Live Progress
 
 Long-running workflow generation now reports live progress in the automation

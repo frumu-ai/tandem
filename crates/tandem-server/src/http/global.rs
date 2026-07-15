@@ -467,7 +467,7 @@ pub(super) async fn execute_tool(
     Extension(tenant_context): Extension<TenantContext>,
     verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<ToolExecutionInput>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let mut args = input.args.unwrap_or_else(|| json!({}));
     let verified_tenant_context = verified_tenant_context.map(|Extension(context)| context);
     if let Some(verified_tenant_context) = verified_tenant_context.as_ref() {
@@ -492,8 +492,37 @@ pub(super) async fn execute_tool(
         .dispatch(&input.tool, args, dispatch_context)
         .await
         .map_err(|e| {
+            if let Some(blocked) = e.downcast_ref::<tandem_tools::ToolDispatchBlocked>() {
+                let status = if blocked.decision.outcome
+                    == tandem_tools::ToolDispatchPolicyOutcome::ApprovalRequired
+                {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::FORBIDDEN
+                };
+                return (
+                    status,
+                    Json(json!({
+                        "code": if status == StatusCode::CONFLICT {
+                            "TOOL_APPROVAL_REQUIRED"
+                        } else {
+                            "TOOL_DISPATCH_DENIED"
+                        },
+                        "outcome": blocked.decision.outcome,
+                        "reason": blocked.decision.reason,
+                        "policy_decision_id": blocked.decision.policy_decision_id,
+                        "approval_requirement": blocked.decision.approval_requirement,
+                    })),
+                );
+            }
             tracing::error!("Tool execution failed: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "code": "TOOL_DISPATCH_FAILED",
+                    "error": e.to_string(),
+                })),
+            )
         })?;
     Ok(Json(json!({
         "output": result.output,

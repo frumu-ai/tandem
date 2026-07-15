@@ -1,6 +1,7 @@
 #![allow(unused_imports, dead_code)]
 
 use axum::body::{to_bytes, Body};
+use axum::extract::Extension;
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -8,6 +9,241 @@ use tower::ServiceExt;
 use tandem_enterprise_server::apply_routes;
 use tandem_server::build_router_with_extensions;
 use tandem_server::test_support::test_state;
+
+fn verified_admin_context(roles: &[&str]) -> tandem_enterprise_contract::VerifiedTenantContext {
+    use tandem_enterprise_contract::{
+        AuthorityChain, HumanActor, RequestPrincipal, TenantContext, VerifiedTenantContext,
+    };
+
+    let principal = RequestPrincipal::authenticated_user("admin-user", "tandem-web");
+    VerifiedTenantContext {
+        tenant_context: TenantContext::explicit_user_workspace(
+            "acme",
+            "engineering",
+            None,
+            "admin-user",
+        ),
+        human_actor: HumanActor::tandem_user("admin-user"),
+        authority_chain: AuthorityChain::from_request(principal),
+        roles: roles.iter().map(|role| (*role).to_string()).collect(),
+        org_units: Vec::new(),
+        capabilities: Vec::new(),
+        policy_version: None,
+        strict_projection: None,
+        issuer: "tandem-web".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1_000,
+        expires_at_ms: u64::MAX,
+        assertion_id: "policy-authoring-test".to_string(),
+        assertion_key_id: None,
+    }
+}
+
+fn global_policy_rule(rule_id: &str, policy_id: &str) -> Value {
+    json!({
+        "rule_id": rule_id,
+        "policy_id": policy_id,
+        "version": 1,
+        "scope_level": "enterprise",
+        "effect": "deny",
+        "tool_patterns": ["mcp.secrets.export"],
+        "reason_code": "global_secret_export_denied",
+        "reason": "secret export is denied globally",
+        "updated_at_ms": 1
+    })
+}
+
+#[tokio::test]
+async fn enterprise_global_policy_creation_requires_global_admin_and_preserves_scope() {
+    let state = test_state().await;
+    let workspace_app = build_router_with_extensions(state.clone(), &[apply_routes])
+        .layer(Extension(verified_admin_context(&["workspace:admin"])));
+    let request = |rule: Value| {
+        Request::builder()
+            .method("POST")
+            .uri("/enterprise/policies")
+            .header("x-tandem-org-id", "acme")
+            .header("x-tandem-workspace-id", "engineering")
+            .header("x-tandem-actor-id", "admin-user")
+            .header("x-tandem-request-source", "tandem-web")
+            .header("content-type", "application/json")
+            .body(Body::from(rule.to_string()))
+            .expect("request")
+    };
+
+    let response = workspace_app
+        .oneshot(request(global_policy_rule(
+            "workspace-global-rule",
+            "workspace-global-policy",
+        )))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(state.enterprise.policy_rules.read().await.is_empty());
+
+    let enterprise_app = build_router_with_extensions(state.clone(), &[apply_routes])
+        .layer(Extension(verified_admin_context(&["enterprise:admin"])));
+    let response = enterprise_app
+        .clone()
+        .oneshot(request(global_policy_rule(
+            "enterprise-global-rule",
+            "enterprise-global-policy",
+        )))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
+    assert!(payload.pointer("/rules/0/tenant_context").is_none());
+    assert!(state
+        .enterprise
+        .policy_rules
+        .read()
+        .await
+        .get("enterprise-global-rule")
+        .is_some_and(|rule| rule.tenant_context.is_none()));
+
+    let tenant_rule = json!({
+        "rule_id": "tenant-rule",
+        "policy_id": "tenant-policy",
+        "version": 1,
+        "scope_level": "tenant",
+        "effect": "allow",
+        "tool_patterns": ["mcp.github.get_issue"],
+        "reason_code": "tenant_read_allowed",
+        "reason": "tenant reads are allowed",
+        "updated_at_ms": 1
+    });
+    let response = enterprise_app
+        .oneshot(request(tenant_rule))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let tenant = state
+        .enterprise
+        .policy_rules
+        .read()
+        .await
+        .get("tenant-rule")
+        .and_then(|rule| rule.tenant_context.clone())
+        .expect("tenant context");
+    assert_eq!(tenant.org_id, "acme");
+    assert_eq!(tenant.workspace_id, "engineering");
+
+    let audit_tenant = tandem_enterprise_contract::TenantContext::explicit_user_workspace(
+        "acme",
+        "engineering",
+        None,
+        "admin-user",
+    );
+    let audit_events =
+        tandem_server::audit::load_protected_audit_events_for_tenant(&state, &audit_tenant).await;
+    assert!(audit_events.iter().any(|event| {
+        event.event_type == "enterprise.policy.created"
+            && event.payload.get("rule_id").and_then(Value::as_str)
+                == Some("enterprise-global-rule")
+            && event.payload.get("policy_scope").and_then(Value::as_str)
+                == Some("enterprise_global")
+            && event
+                .payload
+                .get("rule_tenant_context")
+                .is_some_and(Value::is_null)
+    }));
+}
+
+#[tokio::test]
+async fn enterprise_policy_supersede_normalizes_tenant_scope_and_preserves_tenant_boundary() {
+    use tandem_enterprise_contract::{
+        EnterprisePolicyEffect, EnterprisePolicyRule, EnterprisePolicyRuleState,
+        EnterprisePolicyScopeLevel, TenantContext,
+    };
+
+    let state = test_state().await;
+    let stored_tenant =
+        TenantContext::explicit_user_workspace(" Acme ", " ENGINEERING ", None, "admin-user");
+    let rule = EnterprisePolicyRule::new(
+        "normalized-existing",
+        "normalized-policy",
+        EnterprisePolicyScopeLevel::Tenant,
+        EnterprisePolicyEffect::Allow,
+    )
+    .with_tenant_context(stored_tenant)
+    .with_tool_patterns(vec!["mcp.github.get_issue".to_string()]);
+    state
+        .enterprise
+        .policy_rules
+        .write()
+        .await
+        .insert(rule.rule_id.clone(), rule);
+    let app = build_router_with_extensions(state.clone(), &[apply_routes]);
+    let replacement = json!({
+        "rule_id": "normalized-replacement",
+        "policy_id": "ignored",
+        "version": 2,
+        "scope_level": "tenant",
+        "effect": "deny",
+        "tool_patterns": ["mcp.github.get_issue"],
+        "reason_code": "repository_read_paused",
+        "reason": "repository reads are paused",
+        "updated_at_ms": 1
+    });
+    let supersede_request = |org_id: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/enterprise/policies/normalized-policy/supersede")
+            .header("x-tandem-org-id", org_id)
+            .header("x-tandem-workspace-id", "engineering")
+            .header("x-tandem-actor-id", "admin-user")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"rules":[replacement.clone()]}).to_string(),
+            ))
+            .expect("request")
+    };
+
+    let response = app
+        .clone()
+        .oneshot(supersede_request("other-org"))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        state
+            .enterprise
+            .policy_rules
+            .read()
+            .await
+            .get("normalized-existing")
+            .map(|rule| rule.state),
+        Some(EnterprisePolicyRuleState::Published)
+    );
+
+    let response = app
+        .oneshot(supersede_request("acme"))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let rules = state.enterprise.policy_rules.read().await;
+    assert_eq!(
+        rules.get("normalized-existing").map(|rule| rule.state),
+        Some(EnterprisePolicyRuleState::Superseded)
+    );
+    let replacement = rules
+        .get("normalized-replacement")
+        .expect("replacement rule");
+    assert_eq!(replacement.state, EnterprisePolicyRuleState::Published);
+    let replacement_tenant = replacement
+        .tenant_context
+        .as_ref()
+        .expect("replacement tenant");
+    assert_eq!(replacement_tenant.org_id, "acme");
+    assert_eq!(replacement_tenant.workspace_id, "engineering");
+    assert_eq!(replacement_tenant.deployment_id, None);
+}
 
 #[tokio::test]
 async fn enterprise_policy_supersede_rejects_cross_tenant_rule_id_collisions() {

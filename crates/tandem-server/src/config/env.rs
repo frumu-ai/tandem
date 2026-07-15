@@ -132,6 +132,12 @@ pub(crate) fn cross_tenant_grant_signing_key_configured() -> bool {
     .any(|name| env_value_present(name))
 }
 
+pub(crate) fn audit_hmac_key_configured() -> bool {
+    ["TANDEM_AUDIT_HMAC_KEY", "TANDEM_AUDIT_HMAC_KEY_FILE"]
+        .iter()
+        .any(|name| env_value_present(name))
+}
+
 pub(crate) fn resolve_automation_execute_node_timeout_ms() -> u64 {
     std::env::var("TANDEM_AUTOMATION_EXECUTE_NODE_TIMEOUT_MS")
         .ok()

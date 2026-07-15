@@ -206,6 +206,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
             allowed: false,
             reason: Some(failure_reason),
             policy_decision_id: None,
+            dispatch_decision: None,
         });
     }
 
@@ -247,6 +248,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
                 "tool `{tool}` denied because its required egress audit receipt could not be written: {error}"
             )),
             policy_decision_id,
+            dispatch_decision: None,
         });
     }
 
@@ -286,6 +288,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
         allowed: matches!(effect, PolicyDecisionEffect::Allow),
         reason: surfaced_reason,
         policy_decision_id,
+        dispatch_decision: None,
     })
 }
 

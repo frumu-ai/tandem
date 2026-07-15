@@ -313,6 +313,15 @@ impl EnterprisePolicyRule {
     }
 
     fn matches(&self, input: &EnterprisePolicyInput, now_ms: u64) -> bool {
+        self.matches_scope_without_predicate(input, now_ms)
+            && self.matches_predicate(&input.arguments)
+    }
+
+    pub fn matches_scope_without_predicate(
+        &self,
+        input: &EnterprisePolicyInput,
+        now_ms: u64,
+    ) -> bool {
         self.state == EnterprisePolicyRuleState::Published
             && self.expires_at_ms.is_none_or(|expiry| expiry > now_ms)
             && self.matches_tenant(&input.tenant_context)
@@ -323,7 +332,6 @@ impl EnterprisePolicyRule {
             && self.matches_permission(input.permission)
             && self.matches_data_class(input.data_class)
             && self.matches_tool(input.tool.as_deref())
-            && self.matches_predicate(&input.arguments)
     }
 
     fn matches_tenant(&self, tenant_context: &TenantContext) -> bool {
