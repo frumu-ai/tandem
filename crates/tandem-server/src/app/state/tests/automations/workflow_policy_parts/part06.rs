@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn brief_with_timed_out_websearch_is_blocked_when_web_research_is_required() {
     let node = AutomationFlowNode {

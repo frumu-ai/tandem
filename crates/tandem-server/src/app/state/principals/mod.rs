@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Identity resolution for principals that act through external surfaces.
 //!
 //! Anyone who clicks a button on a Slack/Discord/Telegram approval card or

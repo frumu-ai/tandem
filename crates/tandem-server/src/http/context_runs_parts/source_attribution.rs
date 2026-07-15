@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn context_run_matches_source(run: &ContextRunState, source: Option<&str>) -> bool {
     let Some(source) = source.map(str::trim).filter(|value| !value.is_empty()) else {
         return true;

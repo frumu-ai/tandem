@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn incident_monitor_triage_manual_schedule() -> crate::AutomationV2Schedule {
     crate::AutomationV2Schedule {
         schedule_type: crate::AutomationV2ScheduleType::Manual,

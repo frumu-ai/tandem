@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};

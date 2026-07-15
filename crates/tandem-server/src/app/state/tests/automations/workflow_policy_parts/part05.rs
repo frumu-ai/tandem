@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn missing_required_output_requests_repair_before_attempt_budget_is_exhausted() {
     let node = AutomationFlowNode {

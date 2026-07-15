@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Deterministic ACME Slack demo **receipt fixture** (TAN-667, honesty pass
 //! TAN-682).
 //!

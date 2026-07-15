@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use crate::agent_teams::{emit_spawn_approved, emit_spawn_denied, emit_spawn_requested};
 use crate::http::AppState;
 use axum::{

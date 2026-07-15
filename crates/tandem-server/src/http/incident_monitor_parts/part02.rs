@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(super) async fn publish_incident_monitor_draft(
     State(state): State<AppState>,
     Path(id): Path<String>,

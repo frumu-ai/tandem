@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 /// AI Failure Mode Taxonomy
 ///
 /// This module provides structured categorization of AI system failures across Tandem,

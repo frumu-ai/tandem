@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn mcp_contract_summary_extracts_required_args_and_example() {
     let schema = ToolSchema::new(

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 async fn automation_v2_task_reset_preview(
     state: &AppState,
     tenant_context: &TenantContext,

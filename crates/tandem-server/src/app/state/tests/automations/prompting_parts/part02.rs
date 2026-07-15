@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn first_attempt_research_prompt_requires_completed_status() {
     let automation = AutomationV2Spec {

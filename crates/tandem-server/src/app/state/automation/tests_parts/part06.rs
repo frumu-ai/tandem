@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn connector_prompt_includes_supported_upstream_artifact_path_shapes() {
     let mut node = bare_node();

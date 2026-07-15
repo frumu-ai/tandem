@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Adversarial scenario pack endpoint tests (TAN-487).
 
 async fn configure_scenario_pack_incident_monitor(state: &AppState, require_approval_for_high_risk: bool) {

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use axum::extract::State;
 use axum::http::header;
 use axum::http::StatusCode;

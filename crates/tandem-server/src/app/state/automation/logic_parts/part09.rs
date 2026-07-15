@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 const CONNECTOR_CAPTURE_SCHEMA_VERSION: u32 = 1;
 const CONNECTOR_CAPTURE_ITEM_LIMIT: usize = 5_000;
 

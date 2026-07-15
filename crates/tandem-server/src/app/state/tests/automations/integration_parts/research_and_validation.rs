@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn local_research_flow_completes_with_read_and_write_artifact() {
     let workspace_root = std::env::temp_dir().join(format!(

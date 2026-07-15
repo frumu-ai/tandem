@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
     // ---- EUAI-09 / TAN-250: log-completeness check tests ----
 
     fn approval_required_decision(

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path as StdPath, PathBuf};

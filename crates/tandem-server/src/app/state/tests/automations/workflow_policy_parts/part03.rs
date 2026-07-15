@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn report_markdown_accepts_rich_html_synthesis_when_upstream_is_rich() {
     let workspace_root = std::env::temp_dir().join(format!(

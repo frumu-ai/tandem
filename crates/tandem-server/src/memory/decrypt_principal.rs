@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Build a memory decrypt principal from a verified request context (TAN-672).
 //!
 //! TAN-668 sealed hosted-KMS memory rows behind an authorized

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use crate::stateful_runtime::backend::{params, Executor, OptionalExtension, TransactionBehavior};
 use anyhow::{bail, Context};
 use serde_json::{json, Value};

@@ -29,7 +29,7 @@ exact terms, use the package-by-package table below.
 
 ## Prospective licensing change for 0.7.0
 
-The corrected Additional Use Grant in the four package-local BUSL licenses is
+The corrected Additional Use Grant in the five package-local BUSL licenses is
 the intended policy for **0.7.0 and later**. It is a material commercial-policy
 change and must be reviewed by a qualified software-licensing lawyer before a
 release containing it is published.
@@ -68,7 +68,6 @@ Consumers may choose either license (`MIT OR Apache-2.0`) for the packages below
 | `tandem-orchestrator`         | `crates/tandem-orchestrator/Cargo.toml`        | `MIT OR Apache-2.0` |
 | `tandem-wire`                 | `crates/tandem-wire/Cargo.toml`                | `MIT OR Apache-2.0` |
 | `tandem-repo-intelligence`    | `crates/tandem-repo-intelligence/Cargo.toml`   | `MIT OR Apache-2.0` |
-| `tandem-server`               | `crates/tandem-server/Cargo.toml`              | `MIT OR Apache-2.0` |
 | `tandem-providers`            | `crates/tandem-providers/Cargo.toml`           | `MIT OR Apache-2.0` |
 | `tandem-skills`               | `crates/tandem-skills/Cargo.toml`              | `MIT OR Apache-2.0` |
 | `tandem-types`                | `crates/tandem-types/Cargo.toml`               | `MIT OR Apache-2.0` |
@@ -106,6 +105,7 @@ The `@frumu/tandem-desktop` app package (`apps/tandem-desktop/package.json`) is
 | `tandem-governance-engine` | `crates/tandem-governance-engine/Cargo.toml` | `BUSL-1.1` |
 | `tandem-enterprise-server` | `crates/tandem-enterprise-server/Cargo.toml` | `BUSL-1.1` |
 | `tandem-incident-monitor`  | `crates/tandem-incident-monitor/Cargo.toml`  | `BUSL-1.1` |
+| `tandem-server`            | `crates/tandem-server/Cargo.toml`            | `BUSL-1.1` |
 
 ## Open-core boundary
 
@@ -126,7 +126,7 @@ engine source auditable and reusable under open-source terms.
 
 ### Engine binaries are mixed-license
 
-Every distributed Tandem engine binary includes **all four** `BUSL-1.1`
+Every distributed Tandem engine binary includes **all five** `BUSL-1.1`
 components — there is no BUSL-free or governance-free engine binary. All
 release artifacts (`tandem-engine` on every platform, the desktop sidecar,
 `tandem-tui`, `tandem-browser`) are built with `tandem-ai/enterprise`:
@@ -137,10 +137,14 @@ stack (fastembed/ort) — a build-weight difference, not a licensing one.
 
 Several permissive crates depend on source-available crates directly:
 
-- `tandem-server` (MIT) depends on `tandem-plan-compiler` and
-  `tandem-incident-monitor` (both `BUSL-1.1`)
 - `tandem-automation` (MIT) depends on `tandem-plan-compiler`
-- `tandem-eval` (MIT) depends on `tandem-incident-monitor`
+- `tandem-eval` (MIT) depends on `tandem-incident-monitor` and
+  `tandem-server` (both `BUSL-1.1`)
+
+`tandem-server` itself was relicensed from `MIT OR Apache-2.0` to `BUSL-1.1`
+effective 0.7.0: it contains substantial production governance enforcement and
+composes the other protected components. Versions released before 0.7.0 remain
+under the permissive terms they shipped with.
 
 What this means in practice:
 
@@ -171,12 +175,13 @@ Current source-available license files:
 - `crates/tandem-governance-engine/LICENSE`
 - `crates/tandem-enterprise-server/LICENSE`
 - `crates/tandem-incident-monitor/LICENSE`
+- `crates/tandem-server/LICENSE`
 
 The source-available governance layer authorizes recursive and Self-Operator behavior such as agent-authored automation creation, approval-bound capability requests, lineage enforcement, and spend/review guardrails.
 
 ### Additional Use Grant (what is free vs. licensed)
 
-The authoritative legal terms are in the four package-local `LICENSE` files.
+The authoritative legal terms are in the five package-local `LICENSE` files.
 In plain language, the grant permits without charge:
 
 - evaluation, source inspection, security review, development, testing,

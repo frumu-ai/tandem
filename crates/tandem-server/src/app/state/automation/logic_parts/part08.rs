@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn automation_node_metadata_bool_local(node: &AutomationFlowNode, key: &str) -> bool {
     node.metadata
         .as_ref()

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! TAN-707 production-surface proof for a long-lived Goal -> Plan -> Execute -> Verify loop.
 //!
 //! PR #1877 owns engine-driven workflow completion. Until it lands, this test advances only

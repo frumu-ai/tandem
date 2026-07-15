@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Notion provider webhook support (TAN-562).
 //!
 //! Notion's model differs from Tandem's generated-secret model: Notion POSTs a

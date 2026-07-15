@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 
 pub(crate) fn mcp_public_base_url_from_config(cfg: &Value) -> Option<String> {

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Compatibility policy for the legacy stateful JSON/JSONL sidecars.
 //!
 //! Before the one-time import completes, the sidecars remain the durable source

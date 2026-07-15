@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 async fn configure_local_incident_monitor_destination(
     state: &AppState,
     destination_id: &str,

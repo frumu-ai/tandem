@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Notification fan-out for newly pending approvals.
 //!
 //! When a workflow run pauses on a `HumanApprovalGate`, surfaces (Slack,

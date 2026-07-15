@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(crate) fn automation_workspace_project_id(workspace_root: &str) -> String {
     node_runtime_impl::automation_workspace_project_id(workspace_root)
 }

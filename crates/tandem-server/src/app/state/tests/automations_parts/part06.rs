@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn approval_policy_test_automation(id: &str) -> AutomationV2Spec {
     AutomationV2Spec {
         automation_id: id.to_string(),

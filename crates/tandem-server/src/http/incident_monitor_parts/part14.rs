@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Adversarial scenario pack endpoints (TAN-487), split into its own part file
 // for the file-size gate; same module via include!.
 

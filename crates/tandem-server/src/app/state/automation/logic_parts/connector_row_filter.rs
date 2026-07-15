@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 
 fn automation_node_expects_connector_row_filter(node: &AutomationFlowNode) -> bool {
     automation_node_metadata_string(node, "source_node_id").is_some()

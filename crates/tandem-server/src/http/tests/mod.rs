@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 
 pub(super) mod acme_slack_demo_e2e;

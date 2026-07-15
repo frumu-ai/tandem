@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn load_run_events_jsonl_filters_since_and_tail() {
     let test_root = std::env::temp_dir().join(format!("run-events-test-{}", Uuid::new_v4()));

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use crate::config::channels::normalize_allowed_tools;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! On-disk state-file formats for Automation V2 webhook records.
 //!
 //! Split from `automation_webhook_store.rs` purely for file-size hygiene: the

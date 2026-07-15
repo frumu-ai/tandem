@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 
 fn context_run_mutation_checkpoint_test_lock() -> &'static tokio::sync::Mutex<()> {

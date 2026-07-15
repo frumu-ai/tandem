@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Tenant-scoped runtime APIs for long-running goals (TAN-695): lifecycle,
 //! graph/lineage/event read models, governed handoff emission and decisions,
 //! external-condition wait inspection/resolution, and an SSE change stream.

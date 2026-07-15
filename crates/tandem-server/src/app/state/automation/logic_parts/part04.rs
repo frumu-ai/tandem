@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn automation_node_text_suggests_notion_database_row_update(node_action_text: &str) -> bool {
     (node_action_text.contains("notion")
         || node_action_text.contains("database")

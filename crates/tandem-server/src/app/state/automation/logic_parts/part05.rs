@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 async fn record_automation_external_actions_for_session(
     state: &AppState,
     run_id: &str,

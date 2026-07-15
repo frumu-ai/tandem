@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn legacy_routine_and_automation_routes_isolate_tenants() {
     let state = test_state().await;

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn automations_v2_gate_rework_on_failed_branch_preserves_completed_sibling_branch() {
     let state = test_state().await;

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Top-level state helpers split from mod.rs for the file-size gate
 // (same module via include!).
 

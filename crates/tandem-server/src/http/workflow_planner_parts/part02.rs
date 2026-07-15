@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use std::collections::BTreeSet;
 
 fn planner_session_title_from_record(session: &WorkflowPlannerSessionRecord) -> String {

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 const EGRESS_DLP_POLICY_ID: &str = "egress_dlp_preflight";
 const EGRESS_ARRAY_INSPECTION_LIMIT: usize = 20;
 const EGRESS_PREVIEW_LIMIT: usize = 700;

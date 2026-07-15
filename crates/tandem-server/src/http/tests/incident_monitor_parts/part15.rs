@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 #[serial_test::serial]
 async fn incident_monitor_redacts_secrets_from_published_body_fields() {

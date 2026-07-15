@@ -44,6 +44,7 @@ Business Source License 1.1:
 - `crates/tandem-governance-engine`
 - `crates/tandem-enterprise-server`
 - `crates/tandem-incident-monitor`
+- `crates/tandem-server`
 
 By submitting a contribution that modifies any of these packages, you
 additionally grant Frumu LTD a perpetual, worldwide, non-exclusive,

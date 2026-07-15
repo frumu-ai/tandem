@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn intermediate_nodes_cannot_treat_live_output_targets_as_input_files() {
     let mut gather = bare_node();

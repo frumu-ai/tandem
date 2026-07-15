@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Continuation of the AppState impl split from part01.rs for the file-size gate.
 // A second `impl AppState` block (Rust permits multiple); included via mod.rs.
 

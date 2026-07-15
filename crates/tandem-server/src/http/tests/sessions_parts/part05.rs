@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // TAN-400: enterprise strict-mode fail-closed regression tests. These prove
 // the boundary refuses to dispatch — before the provider is ever called —
 // when the strict posture cannot positively establish tenant context or

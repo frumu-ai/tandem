@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::mcp_inventory::{
     compact_mcp_inventory_for_tool_output, filter_mcp_inventory_snapshot_to_servers,
     filter_mcp_snapshot_by_discovery_authorization, filter_mcp_snapshot_by_tool_scope,

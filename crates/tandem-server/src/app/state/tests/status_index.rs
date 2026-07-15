@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 #[test]
 fn default_model_spec_from_effective_config_reads_default_route() {

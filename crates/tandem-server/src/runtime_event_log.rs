@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Durable runtime event log — an **observability-only, tenant-scoped** ledger of
 //! verbatim engine/tool events (TAN-650, decision recorded).
 //!

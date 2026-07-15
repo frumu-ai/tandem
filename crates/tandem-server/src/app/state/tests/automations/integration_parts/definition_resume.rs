@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn restart_recovery_projects_resume_boundary_with_definition_metadata() {
     let workspace_root = restart_test_workspace("tandem-restart-definition-projection");

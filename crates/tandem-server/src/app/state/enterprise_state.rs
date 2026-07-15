@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! EAA-12 (TAN-37): enterprise state ownership extracted out of core `AppState`.
 //!
 //! The enterprise registries (org units, memberships, access grants,

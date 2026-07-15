@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn governance_evidence_final_outcome(
     context_run: &ContextRunState,
     automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,

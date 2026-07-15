@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Capability discovery: match goals to available capabilities and compose solutions.
 
 use serde_json::json;

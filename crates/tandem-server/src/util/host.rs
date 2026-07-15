@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use tandem_types::{HostOs, HostRuntimeContext, PathStyle, ShellFamily};
 
 pub fn detect_host_runtime_context() -> HostRuntimeContext {

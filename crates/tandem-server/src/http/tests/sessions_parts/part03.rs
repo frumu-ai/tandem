@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn normalize_run_event_adds_required_fields() {
     let event = EngineEvent::new(

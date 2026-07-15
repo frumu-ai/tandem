@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn merge_automation_capabilities_metadata(
     metadata: Option<Value>,
     capabilities: Option<crate::automation_v2::governance::AutomationDeclaredCapabilities>,

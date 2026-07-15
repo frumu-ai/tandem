@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn automation_v2_backlog_task_claim_and_requeue_routes_work() {
     let state = test_state().await;

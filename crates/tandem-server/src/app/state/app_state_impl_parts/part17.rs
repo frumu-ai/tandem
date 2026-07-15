@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn routine_store_index(
     routines: std::collections::HashMap<String, RoutineSpec>,
 ) -> std::collections::HashMap<String, RoutineSpec> {

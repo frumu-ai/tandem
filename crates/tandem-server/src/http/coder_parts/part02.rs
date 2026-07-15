@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn compare_coder_memory_hits(record: &CoderRunRecord, a: &Value, b: &Value) -> std::cmp::Ordering {
     let a_same_ref = a.get("same_ref").and_then(Value::as_bool).unwrap_or(false);
     let b_same_ref = b.get("same_ref").and_then(Value::as_bool).unwrap_or(false);

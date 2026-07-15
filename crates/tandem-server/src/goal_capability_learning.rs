@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Goal Capability Learning runtime: discovery, composition, and decision persistence.
 
 mod decision_store;

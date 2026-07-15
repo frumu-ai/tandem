@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 async fn emit_incident_monitor_config_audit(state: &AppState, config: &IncidentMonitorConfig) {
     emit_incident_monitor_admin_audit_event(
         state,

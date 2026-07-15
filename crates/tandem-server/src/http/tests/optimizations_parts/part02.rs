@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 
 #[tokio::test]
 async fn optimization_reconciler_creates_candidate_eval_and_recommends_winner() {

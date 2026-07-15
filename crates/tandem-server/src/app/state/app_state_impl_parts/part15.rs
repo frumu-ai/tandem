@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 impl AppState {
     fn hosted_governance_readiness_required() -> anyhow::Result<bool> {
         let config = tandem_memory::decrypt_broker::MemoryDecryptBrokerConfig::from_env()

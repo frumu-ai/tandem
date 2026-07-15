@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use anyhow::Context;
 use axum::http::StatusCode;
 use tandem_types::TenantContext;

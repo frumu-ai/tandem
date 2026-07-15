@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Automation wire conversion helpers split from part01.rs for the file-size gate.
 
 pub(super) async fn routines_run_artifacts(

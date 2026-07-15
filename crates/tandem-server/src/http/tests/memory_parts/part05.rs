@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn memory_put_carries_explicit_trust_label_in_metadata_and_provenance() {
     let state = test_state().await;

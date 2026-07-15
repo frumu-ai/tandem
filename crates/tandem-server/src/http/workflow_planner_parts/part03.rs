@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use tandem_types::EngineEvent;
 use tandem_workflows::plan_package::WorkflowPlanDraftReviewRecord;
 

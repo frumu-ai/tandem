@@ -16,7 +16,7 @@ LICENSE files.
 
 Every distributed Tandem engine binary includes the BUSL-1.1 components
 (tandem-plan-compiler, tandem-incident-monitor, tandem-governance-engine,
-and tandem-enterprise-server). Use of a binary is governed by the BUSL
+tandem-enterprise-server, and tandem-server). Use of a binary is governed by the BUSL
 Additional Use Grant for those components. Evaluation, development, testing,
 source inspection, personal non-commercial use, and non-production proofs of
 concept are permitted without charge. Commercial production use, including

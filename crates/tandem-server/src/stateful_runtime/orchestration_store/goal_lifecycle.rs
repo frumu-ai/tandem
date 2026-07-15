@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Goal start, pause/resume, and the read models behind the public goal APIs.
 //!
 //! `start_goal` is the only way a goal comes into existence: one transaction

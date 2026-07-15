@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use tandem_types::{PrincipalKind, TenantContext, VerifiedTenantContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

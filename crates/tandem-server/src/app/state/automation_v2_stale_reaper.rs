@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 
 const AUTOMATION_STALE_NODE_TIMEOUT_GRACE_MS: u64 = 60_000;

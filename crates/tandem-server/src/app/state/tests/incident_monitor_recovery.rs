@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use crate::{
     incident_monitor::service::recover_overdue_incident_monitor_triage_runs,
     IncidentMonitorApprovalPolicy, IncidentMonitorConfig, IncidentMonitorDraftRecord,

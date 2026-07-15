@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Continuation of governance HTTP tests, split from governance.rs to satisfy the
 // per-file line-count policy. Included into the same module via governance.rs,
 // so it shares the parent module's `use super::*;` imports and helpers.

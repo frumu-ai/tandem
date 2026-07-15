@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn routine_run_status_to_step(status: &crate::RoutineRunStatus) -> ContextStepStatus {
     match status {
         crate::RoutineRunStatus::Queued => ContextStepStatus::Pending,

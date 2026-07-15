@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Workflow Learning v1 production-validation and auto-apply policy (GCL-04 / TAN-44).
 //!
 //! Workflow Learning generates [`WorkflowLearningCandidate`]s from terminal runs

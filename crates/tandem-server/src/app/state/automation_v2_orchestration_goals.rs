@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! App-layer goal lifecycle: start from a published orchestration version,
 //! operator pause/resume. The durable write happens in the stateful store's
 //! single transaction; only afterwards is the root run mirrored into the

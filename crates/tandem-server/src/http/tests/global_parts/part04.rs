@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn automation_v2_publish_block_smoke_skips_external_action_receipts() {
     let state = test_state().await;

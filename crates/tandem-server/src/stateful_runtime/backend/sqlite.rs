@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! SQLite arm of the storage backend facade. This is a thin adapter over
 //! rusqlite: statements pass through untranslated, so behavior is identical
 //! to the pre-facade store.

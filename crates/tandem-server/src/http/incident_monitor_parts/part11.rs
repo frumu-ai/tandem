@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 const INCIDENT_MONITOR_ASSESSMENT_PROBES_SCHEMA_VERSION: u64 = 1;
 
 const INCIDENT_MONITOR_ASSESSMENT_PROBES: [&str; 6] = [

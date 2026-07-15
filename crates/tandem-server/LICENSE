@@ -1,0 +1,127 @@
+Business Source License 1.1
+
+License text copyright (c) 2017 MariaDB Corporation Ab,
+All Rights Reserved.
+"Business Source License" is a trademark of MariaDB
+Corporation Ab.
+
+Parameters
+
+Licensor: Frumu LTD
+
+Licensed Work: tandem-server
+
+Additional Use Grant:
+You may use, modify, and self-host the Licensed Work without charge for
+evaluation, source inspection, security review, development, testing,
+education, training, demonstrations, and other non-production purposes.
+
+You may also use the Licensed Work to build and evaluate proofs of concept,
+provided that the Licensed Work is not connected to production systems,
+does not process production data, does not execute actions with production
+or material business consequences, and is not relied upon for ongoing
+business operations.
+
+Natural persons may use the Licensed Work without charge for personal,
+educational, experimental, open-source, and other non-commercial purposes,
+including personal self-hosting, provided that such use is not performed
+on behalf of an employer or client, does not process employer, client, or
+customer production data, does not govern commercial production agents or
+systems, and does not form part of a commercial product, service, production
+system, managed service, or client deployment.
+
+Agencies, consultants, and systems integrators may use the Licensed Work
+without charge for training, demonstrations, integration development,
+template development, and non-production client proofs of concept.
+This permission does not authorize production deployment for a client.
+
+Any Production Use of the Licensed Work requires a separate commercial
+license from Frumu LTD.
+
+For purposes of this Additional Use Grant, "Production Use" includes using
+the Licensed Work:
+
+- in connection with live business systems, infrastructure, accounts, or data;
+- to process production customer, employee, operational, financial,
+  security, regulated, or other live business data;
+- to govern, monitor, approve, restrict, or execute actions performed by
+  production AI agents or automation systems;
+- as part of persistent, scheduled, unattended, business-critical, or
+  operational workflows;
+- as an operational service within a commercial organization;
+- for a production deployment performed on behalf of a client; or
+- as part of a managed, hosted, software-as-a-service, white-label,
+  embedded, OEM, reseller, or other commercial product or service.
+
+Personal non-commercial use permitted above is not Production Use solely
+because it is persistent, scheduled, or unattended, provided it continues to
+satisfy the conditions of that personal-use permission.
+
+For clarity, internal Production Use by a commercial organization is not
+permitted under this Additional Use Grant and requires a separate
+commercial license from Frumu LTD.
+
+A client production deployment performed by an agency, consultant, or
+systems integrator must be covered by either a commercial license issued
+to the client by Frumu LTD or a separate written partner agreement with
+Frumu LTD.
+
+Contact Frumu LTD to obtain a commercial license.
+
+Change Date: 2030-07-15
+
+Change License: GPL-2.0-or-later OR MIT OR Apache-2.0
+
+Terms
+
+The Licensor hereby grants you the right to copy,
+modify, create derivative works, redistribute, and
+make non-production use of the Licensed Work. The
+Licensor may make an Additional Use Grant, above,
+permitting limited production use.
+
+Effective on the Change Date, or the fourth
+anniversary of the first publicly available
+distribution of a specific version of the Licensed
+Work under this License, whichever comes first, the
+Licensor hereby grants you rights under the terms of
+the Change License, and the rights granted in the
+paragraph above terminate.
+
+If your use of the Licensed Work does not comply with
+the requirements currently in effect as described in
+this License, you must purchase a commercial license
+from the Licensor, its affiliated entities, or
+authorized resellers, or you must refrain from using
+the Licensed Work.
+
+All copies of the original and modified Licensed
+Work, and derivative works of the Licensed Work, are
+subject to this License. This License applies
+separately for each version of the Licensed Work and
+the Change Date may vary for each version of the
+Licensed Work released by Licensor.
+
+You must conspicuously display this License on each
+original or modified copy of the Licensed Work. If
+you receive the Licensed Work in original or modified
+form from a third party, the terms and conditions set
+forth in this License apply to your use of that work.
+
+Any use of the Licensed Work in violation of this
+License will automatically terminate your rights
+under this License for the current and all other
+versions of the Licensed Work.
+
+This License does not grant you any right in any
+trademark or logo of Licensor or its affiliates
+(provided that you may use a trademark or logo of
+Licensor as expressly required by this License).
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE
+LICENSED WORK IS PROVIDED ON AN "AS IS" BASIS.
+LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND
+CONDITIONS, EXPRESS OR IMPLIED, INCLUDING (WITHOUT
+LIMITATION) WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND
+TITLE.

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Relicensed `tandem-server` from `MIT OR Apache-2.0` to `BUSL-1.1` under the
+  same Additional Use Grant as the other protected components. It contains
+  substantial production governance enforcement and composes the protected
+  crates; versions released before 0.7.0 remain under the permissive terms
+  they shipped with.
 - Corrected the Additional Use Grant for the four protected BUSL components.
   Evaluation, development, testing, source inspection, genuine personal
   non-commercial use, and non-production proofs of concept remain permitted

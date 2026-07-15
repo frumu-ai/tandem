@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn generic_artifact_output_schema_rejects_raw_connector_response() {
     let workspace_root = std::env::temp_dir().join(format!(

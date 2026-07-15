@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 #[serial_test::serial]
 async fn coder_merge_recommendation_summary_ready_to_merge_awaits_approval() {

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::collections::BTreeMap;

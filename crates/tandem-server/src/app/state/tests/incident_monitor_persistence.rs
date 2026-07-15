@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Regression coverage for TAN-541: incident-monitor state files must be written
 // atomically and a corrupt file must be quarantined (preserved) on load rather
 // than silently discarded and overwritten with empty state.

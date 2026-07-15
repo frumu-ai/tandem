@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(crate) fn compile_plan_to_automation_v2(
     plan: &crate::WorkflowPlan,
     plan_package: Option<&tandem_plan_compiler::api::PlanPackage>,

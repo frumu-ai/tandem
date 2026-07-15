@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 async fn sync_incident_monitor_automation_node_artifact(
     state: &AppState,
     context_run_id: &str,

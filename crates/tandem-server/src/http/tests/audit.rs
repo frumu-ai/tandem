@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // TAN-9 / CT-04: cross-tenant audit visibility negative tests for `/audit/stream`.
 //
 // These drive the real HTTP audit read path end to end. The handler subscribes to

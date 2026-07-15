@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Channel status reporting for AppState.
 //
 // Split out of part01 to keep that file within the repository's per-file line

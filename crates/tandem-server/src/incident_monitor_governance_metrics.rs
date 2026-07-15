@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Governance maturity metrics and behavioral drift monitoring (TAN-488).
 //!
 //! Aggregates the Incident Monitor's audit events, incidents, publish receipts,

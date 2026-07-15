@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn normalize_upstream_paths_passthrough_when_no_content_key() {
     let output = json!({ "summary": "hello" });

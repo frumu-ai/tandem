@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Continuous reassessment scheduler runtime (TAN-490).
 //!
 //! Re-runs the Incident Monitor governance posture (authority inventory,

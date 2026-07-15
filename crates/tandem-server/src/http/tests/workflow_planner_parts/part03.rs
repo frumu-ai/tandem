@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 #[serial_test::serial]
 async fn workflow_plan_apply_can_materialize_a_disabled_draft_with_planner_metadata() {

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 /// Context mode for coder worker sessions. Coder workers historically
 /// hard-coded Full context; this keeps Full as the explicit default while
 /// allowing rollout of bounded modes (and rollback) via

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! TAN-398: operator monitoring read model for data-boundary decisions.
 //!
 //! Aggregates the `data_boundary.*` records already persisted in the

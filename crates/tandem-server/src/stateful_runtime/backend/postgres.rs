@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! PostgreSQL arm of the storage backend facade (TAN-715).
 //!
 //! Store SQL is authored in the SQLite dialect; [`translate_sql`] rewrites it

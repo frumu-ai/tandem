@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn draft_lifecycle_enforces_optimistic_concurrency() {
     let state = test_state().await;

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn repair_brief_names_exact_connector_remote_file_path() {
     let node = bare_node();

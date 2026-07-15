@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn automation_v2_run_history_lists_archived_blocked_runs() {
     let mut state = test_state_with_path(tmp_resource_file("automation-history-state"));

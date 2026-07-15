@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Backend conformance suite (TAN-714/TAN-715).
 //!
 //! Every test here runs the same store operations against each compiled

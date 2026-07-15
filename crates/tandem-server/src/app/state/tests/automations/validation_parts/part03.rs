@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn structured_handoff_workspace_bootstrap_nodes_treat_reads_as_optional() {
     let node = AutomationFlowNode {

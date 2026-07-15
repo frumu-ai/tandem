@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn memory_promote_rejects_disallowed_target_and_emits_blocked_audit() {
     let state = test_state().await;

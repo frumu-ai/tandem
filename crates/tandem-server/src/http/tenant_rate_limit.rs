@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Per-tenant inbound request rate limiting (TAN2-11).
 //!
 //! The runtime previously had no request rate limiting anywhere: a single

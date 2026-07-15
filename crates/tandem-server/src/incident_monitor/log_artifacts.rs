@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use crate::{AppState, IncidentMonitorLogCandidate};
 
 pub async fn write_log_evidence_artifact(

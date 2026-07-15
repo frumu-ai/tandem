@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::normalize_workspace_display_path;
 use serde_json::{json, Value};
 use std::path::PathBuf;

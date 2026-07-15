@@ -10,7 +10,7 @@ This npm package (the installer/launcher scripts) is `MIT OR Apache-2.0`. The
 engine binary it downloads and runs includes source-available components
 licensed under the Business Source License 1.1 (`tandem-enterprise-server`,
 `tandem-governance-engine`, `tandem-plan-compiler`,
-`tandem-incident-monitor`) — as does every Tandem engine binary. Evaluation,
+`tandem-incident-monitor`, `tandem-server`) — as does every Tandem engine binary. Evaluation,
 development, testing, source inspection, personal non-commercial use, and
 non-production proofs of concept are permitted without charge. Commercial
 production use, including internal production use and client deployments,

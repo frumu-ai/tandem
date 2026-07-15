@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn prompt_sync_strict_kb_grounding_rewrites_explicitly_undefined_policy_answers() {
     let state = strict_kb_test_state(

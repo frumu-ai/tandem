@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Dry-run runner for production-mirroring adversarial scenario packs (TAN-487).
 //!
 //! Each scenario is evaluated against the destination router's route preview,

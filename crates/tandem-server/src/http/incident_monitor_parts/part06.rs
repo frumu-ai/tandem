@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn automation_node_timeout_from_reason(reason: &str) -> Option<(String, u64)> {
     let marker = "automation node `";
     let start = reason.find(marker)? + marker.len();

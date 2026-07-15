@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn workflow_plan_import_rejects_runnable_lifecycle_state() {
     let state = test_state().await;

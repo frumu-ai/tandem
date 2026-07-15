@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn execution_error_blocker_category(detail: &str) -> &'static str {
     let lowered = detail.trim().to_ascii_lowercase();
     if lowered.contains("failed to reach provider")

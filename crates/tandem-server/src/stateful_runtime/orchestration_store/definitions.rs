@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Draft lifecycle and version queries for orchestration definitions.
 //!
 //! Drafts occupy the mutable `version = 0` slot of `orchestration_specs`;

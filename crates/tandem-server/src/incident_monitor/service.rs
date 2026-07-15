@@ -1,4 +1,7 @@
-﻿use anyhow::Result;
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
+use anyhow::Result;
 use serde_json::{Map, Value};
 
 use crate::incident_monitor::types::IncidentMonitorIncidentRecord;

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(super) async fn coder_memory_hits_get(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,

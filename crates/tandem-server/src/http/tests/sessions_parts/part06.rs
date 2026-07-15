@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn same_tenant_actor_cannot_access_another_actor_session_routes() {
     let state = test_state().await;

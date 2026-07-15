@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 const ARTICLE_50_NOTICE: &str =
     "This content was produced or materially transformed by an AI system. Review before relying on it.";
 

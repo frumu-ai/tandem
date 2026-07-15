@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Feature-gated persistent runner for the five-profile ACME Slack demo.
 
 use std::collections::HashMap;

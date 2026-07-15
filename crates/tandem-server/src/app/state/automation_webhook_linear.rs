@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Linear provider webhook support (TAN-610/TAN-611).
 //!
 //! Linear's model is the inverse of Notion's handshake: Linear generates the

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use tandem_plan_compiler::api as compiler_api;

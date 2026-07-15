@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 struct CoderMemoryAuthorityJobContextBase<'a> {
     tenant_context: &'a tandem_types::TenantContext,
     capability: &'a tandem_memory::MemoryCapabilityToken,

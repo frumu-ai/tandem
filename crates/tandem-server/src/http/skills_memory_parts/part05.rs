@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Tests for the fail-close attribution rule in event memory ingestion
 // (TAN-633): events that cannot be attributed to a session's run context must
 // not be persisted at all, instead of being filed under a fabricated

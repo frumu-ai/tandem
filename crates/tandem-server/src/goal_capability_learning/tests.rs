@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::decision_store::GoalCapabilityLearningDecisionStore;
 use super::discovery::discover_capabilities_for_goal;
 use tandem_types::GoalSpec;

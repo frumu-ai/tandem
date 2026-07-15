@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Neutral execution facade for the stateful orchestration store (TAN-714).
 //!
 //! The orchestration store's domain logic (idempotency, tenant scoping,

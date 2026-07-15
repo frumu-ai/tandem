@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 
 const DEFAULT_AUTOMATION_RUN_CLAIM_LEASE_MS: u64 = 30 * 60 * 1000;

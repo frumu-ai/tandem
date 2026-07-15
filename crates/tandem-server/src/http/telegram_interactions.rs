@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Telegram callback_query webhook handler.
 //!
 //! Telegram POSTs an `Update` object here whenever a user taps an inline

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 use crate::memory::subject::{
     blocked_memory_subject_audit, local_memory_subject, verified_memory_subject, MemorySubjectAudit,

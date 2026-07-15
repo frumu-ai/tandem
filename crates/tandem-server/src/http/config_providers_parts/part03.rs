@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn remote_catalog_support_message(provider_id: &str) -> String {
     match provider_id {
         "openai-codex" => {

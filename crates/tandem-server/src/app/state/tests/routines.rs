@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 #[test]
 fn misfire_skip_drops_runs_and_advances_next_fire() {

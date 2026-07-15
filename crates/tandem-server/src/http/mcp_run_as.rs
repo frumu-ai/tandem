@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use serde_json::{json, Value};
 use tandem_core::any_policy_matches;
 use tandem_runtime::McpPrincipalRef;

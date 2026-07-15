@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use std::sync::Arc;
 
 use tandem_core::tool_name_security_descriptor;

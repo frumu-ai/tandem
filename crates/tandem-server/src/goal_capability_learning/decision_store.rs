@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Decision persistence for Goal Capability Learning discovery.
 
 use std::collections::HashMap;

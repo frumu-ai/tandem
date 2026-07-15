@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 const INCIDENT_MONITOR_ASSESSMENT_REPORT_SCHEMA_VERSION: u64 = 1;
 
 #[derive(Debug, Default, serde::Deserialize)]

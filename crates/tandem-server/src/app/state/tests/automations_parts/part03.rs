@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn marketing_template_automation_migrates_to_split_research_flow() {
     let mut automation = AutomationV2Spec {

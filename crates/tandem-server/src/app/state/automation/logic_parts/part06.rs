@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn tool_telemetry_u32(tool_telemetry: &Value, key: &str) -> Option<u32> {
     tool_telemetry
         .get(key)

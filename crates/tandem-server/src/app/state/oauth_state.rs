@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! OAuth callback session state owned as a single AppState manager.
 //!
 //! Provider OAuth and MCP OAuth both keep short-lived callback sessions while a

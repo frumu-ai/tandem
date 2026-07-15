@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(super) async fn workflow_plan_apply(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<tandem_types::TenantContext>,

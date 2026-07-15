@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub async fn run_automation_v2_scheduler(state: AppState) {
     crate::app::tasks::run_automation_v2_scheduler(state).await
 }

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // TAN-392: audit-mode data-boundary integration tests. The engine loop reads
 // TANDEM_DATA_BOUNDARY_* at dispatch time, so these tests scope configuration
 // through the in-crate override (TAN-684) instead of mutating the process

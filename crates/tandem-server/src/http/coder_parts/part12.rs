@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // TAN-638: coder memory candidate GC + tenant-scoping tests.
 
 /// Delete coder memory candidate JSON files older than `retention_days` across

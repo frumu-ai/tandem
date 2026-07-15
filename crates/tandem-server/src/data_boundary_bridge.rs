@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Bridges engine-loop `data_boundary.*` bus events into the protected audit
 //! ledger (TAN-391). The engine loop cannot write protected audit records
 //! itself (it has no `AppState`), so this server-side subscriber composes the

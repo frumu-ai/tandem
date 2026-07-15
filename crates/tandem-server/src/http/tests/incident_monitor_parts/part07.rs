@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 async fn spawn_fake_incident_monitor_linear_mcp_server_with_issues(
     seeded_issues: Vec<Value>,
     fail_create: bool,

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use uuid::Uuid;
 
 pub(crate) fn compile_materialization_seed_to_spec_into<I, O>(

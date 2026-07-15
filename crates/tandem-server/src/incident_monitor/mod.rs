@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub use tandem_incident_monitor::{
     comment_summary, error_provenance, governance_metrics, log_parser, reassessment, scenarios,
     types,

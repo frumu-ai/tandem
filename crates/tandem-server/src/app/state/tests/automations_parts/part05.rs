@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Continuation of automation executor tests, split from part02.rs to satisfy the
 // per-file line-count policy. Included into the same module via automations.rs.
 #[tokio::test]

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! TAN-682: production-path five-profile ACME Slack governance E2E.
 //!
 //! Unlike the receipt-shape fixture in `crate::acme_demo::harness` (which

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 async fn evaluate_automation_phase_tool_policy(
     state: &AppState,
     ctx: &ToolPolicyContext,

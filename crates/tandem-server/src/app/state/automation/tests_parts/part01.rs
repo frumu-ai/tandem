@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::node_runtime_impl;
 use super::node_runtime_impl::automation_node_should_surface_mcp_discovery;
 use super::*;

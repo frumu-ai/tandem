@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 impl AgentTeamRuntime {
     async fn instance_id_for_session(&self, session_id: &str) -> Option<String> {
         self.instances

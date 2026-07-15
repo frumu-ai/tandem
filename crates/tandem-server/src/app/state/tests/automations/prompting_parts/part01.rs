@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn knowledge_context_is_injected_into_automation_prompt() {
     let automation = AutomationV2Spec {

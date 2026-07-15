@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(super) fn suspicious_kb_retrieval_query_reason(query: &str) -> Option<&'static str> {
     let normalized = query
         .split_whitespace()

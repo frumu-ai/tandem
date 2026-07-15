@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Memory isolation matrix (TAN-608): consolidated regressions for the axes the
 // Memory Isolation & Scoping project fixed. Each test names the axis it pins.
 // Sibling coverage (do not duplicate here):

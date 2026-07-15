@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 use std::collections::HashMap;
 use tandem_core::{tool_name_matches_profile, tool_schema_matches_profile, ToolCapabilityProfile};

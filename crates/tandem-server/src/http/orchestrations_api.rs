@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Tenant-scoped authoring APIs for orchestration drafts and immutable
 //! published versions (TAN-694).
 //!

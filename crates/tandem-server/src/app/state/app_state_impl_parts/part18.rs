@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Enterprise policy authoring persistence and preview helpers.
 
 fn policy_decision_input_base(decision: &PolicyDecisionRecord) -> EnterprisePolicyInput {

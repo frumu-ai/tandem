@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn goal_event_stream_replays_from_last_event_id() {
     let directory = tempfile::tempdir().unwrap();

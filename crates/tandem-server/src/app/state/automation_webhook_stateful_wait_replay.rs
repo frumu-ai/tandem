@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Replay-on-registration for webhook waits (TAN-571, reopen of TAN-524).
 //!
 //! Split out of `automation_webhook_store.rs` to keep that module under the

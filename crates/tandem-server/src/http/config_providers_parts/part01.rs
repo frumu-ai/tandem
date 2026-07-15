@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use base64::Engine;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};

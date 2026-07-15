@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn automation_status_scan_window(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.is_empty() {

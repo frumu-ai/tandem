@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn run_claim_records_durable_execution_claim() {
     let workspace_root = restart_test_workspace("tandem-run-claim-record");

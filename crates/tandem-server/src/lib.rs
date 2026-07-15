@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #![recursion_limit = "256"]
 // TAN-200 narrows the old crate-wide `allow(warnings)` blanket. The remaining
 // warning backlog is explicit so it can be paid down while production panic

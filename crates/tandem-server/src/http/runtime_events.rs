@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 
 use crate::runtime_event_log::{query_runtime_event_log_window, RuntimeEventLogWindowQuery};

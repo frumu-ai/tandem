@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // TAN-637: tool-event capture mode + memory record content cap tests.
 
 #[cfg(test)]

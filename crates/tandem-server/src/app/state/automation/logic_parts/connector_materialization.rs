@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn automation_connector_source_artifact_candidates(value: &Value, candidates: &mut Vec<Value>) {
     match value {
         Value::Object(object) => {

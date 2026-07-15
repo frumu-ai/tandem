@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(crate) use super::*;
 use std::collections::HashMap;
 use std::sync::Arc;

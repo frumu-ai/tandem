@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use serde::Serialize;
 use tandem_orchestrator::{MissionSpec, WorkItem};
 use tandem_plan_compiler::api as compiler_api;

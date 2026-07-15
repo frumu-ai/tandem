@@ -20,6 +20,13 @@ non-production client proofs of concept. Those permissions do not authorize a
 client production deployment; it requires either a commercial license issued to
 the client or a separate written partner agreement with Frumu LTD.
 
+Tandem 0.7.0 also relicenses the `tandem-server` engine crate from
+`MIT OR Apache-2.0` to `BUSL-1.1` under the same Additional Use Grant. The
+server contains substantial production governance enforcement and composes the
+other protected components, so it now sits inside the same commercial
+boundary. The permissive protocol, SDK, client, and tooling crates are
+unchanged.
+
 This is a prospective change. Each released version remains governed by the
 license distributed with that release, including v0.6.9. Existing tags and
 release artifacts are not modified. The in-progress v0.7.0 BUSL license files

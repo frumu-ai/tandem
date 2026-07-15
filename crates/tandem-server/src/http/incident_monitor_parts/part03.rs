@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(super) async fn preview_incident_monitor_route(
     State(state): State<AppState>,
     Json(input): Json<IncidentMonitorRoutePreviewInput>,

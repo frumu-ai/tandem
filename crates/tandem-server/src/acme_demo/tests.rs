@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Fixture-load + golden reachable-set tests for the ACME governance demo
 //! (TAN-655).
 //!

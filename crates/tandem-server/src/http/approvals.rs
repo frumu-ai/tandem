@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Cross-subsystem aggregator for pending approvals.
 //!
 //! Surfaces a unified list of [`ApprovalRequest`]s drawn from every Tandem

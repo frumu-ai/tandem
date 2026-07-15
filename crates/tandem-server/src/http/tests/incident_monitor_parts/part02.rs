@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn age_incident_monitor_triage_run_state(
     state: &crate::app::state::AppState,
     triage_run_id: &str,

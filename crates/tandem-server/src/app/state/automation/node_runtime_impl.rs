@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 
 fn is_agent_standup_automation(automation: &AutomationV2Spec) -> bool {

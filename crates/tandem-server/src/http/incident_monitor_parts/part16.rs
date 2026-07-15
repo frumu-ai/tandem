@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Continuous reassessment scheduler endpoints (TAN-490), split into its own
 // part file for the file-size gate; same module via include!.
 

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 use crate::automation_v2::types::{
     AutomationHandoffConfig, AutomationV2Schedule, AutomationV2ScheduleType, AutomationV2Status,

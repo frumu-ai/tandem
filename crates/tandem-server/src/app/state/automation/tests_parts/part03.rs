@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn reconcile_verified_output_path_unwraps_json_handoff_wrapper_from_session_text() {
     let workspace_root = std::env::temp_dir().join(format!(

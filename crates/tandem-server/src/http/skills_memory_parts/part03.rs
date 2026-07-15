@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(super) async fn workflow_learning_candidate_promote(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,

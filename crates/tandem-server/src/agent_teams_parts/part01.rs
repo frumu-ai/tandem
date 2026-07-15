@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use tandem_core::{
     fintech_policy_decision_payload, fintech_protected_action_hash, fintech_strict_tool_decision,
     metadata_enables_fintech_strict, FintechProtectedActionCategory,

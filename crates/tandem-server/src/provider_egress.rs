@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use std::{sync::Arc, time::Duration};
 
 use tandem_core::{

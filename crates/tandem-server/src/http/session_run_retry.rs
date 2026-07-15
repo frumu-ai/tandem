@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Tenant-scoped provider authentication and dispatch-boundary OAuth recovery.
 //!
 //! Recovery is installed as a task-local callback in `ProviderRegistry`. A

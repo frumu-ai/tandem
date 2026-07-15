@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! ACME governance-demo dataset (TAN-655).
 //!
 //! Seeds the "Department-Scoped Slack Agent — Governance Demo" storyline: five

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Discord interaction endpoint.
 //!
 //! Discord POSTs a payload here for every interaction (PING, button click,

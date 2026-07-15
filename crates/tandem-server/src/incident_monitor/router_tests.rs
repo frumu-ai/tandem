@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Router unit tests, split out of router.rs to stay under the file-size
 // gate (2000-line hard cap). Included via `#[path] mod tests;`.
 

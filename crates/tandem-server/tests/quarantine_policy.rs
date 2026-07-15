@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! TAN-684: guard for the nextest quarantine policy.
 //!
 //! TAN-230/TAN-684 drained the CI exclusion list; this test keeps it drained.

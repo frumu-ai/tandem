@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! EAA-10 (TAN-35): test-support seam for crates that own routes mounted onto
 //! the Tandem server (e.g. `tandem-enterprise-server`).
 //!

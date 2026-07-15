@@ -2,7 +2,7 @@
 name = "tandem-server"
 version = "0.7.0"
 description = "HTTP server for Tandem engine APIs"
-license = "MIT OR Apache-2.0"
+license = "BUSL-1.1"
 repository = "https://github.com/frumu-ai/tandem"
 edition = "2021"
 

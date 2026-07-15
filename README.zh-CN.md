@@ -617,7 +617,11 @@ tandem/
   - 使用 Business Source License 1.1 (`BUSL-1.1`)
   - 见 `crates/tandem-enterprise-server/LICENSE`
 
-简而言之：Tandem 是 open core。Permissive runtime、protocol、SDK 和 local tooling surfaces 是 open source；mission/plan compiler、recursive governance engine、incident monitor 和 enterprise server 在 Business Source License 条款下 source-available。
+- Engine server crate（`tandem-server`，自 0.7.0 起）：
+  - 使用 Business Source License 1.1 (`BUSL-1.1`)
+  - 见 `crates/tandem-server/LICENSE`
+
+简而言之：Tandem 是 open core。Permissive protocol、SDK、client 和 local tooling surfaces 是 open source；engine server、mission/plan compiler、recursive governance engine、incident monitor 和 enterprise server 在 Business Source License 条款下 source-available。
 
 本仓库中的任何 license 均不授予商标权。"Tandem"、"Frumu" 及相关 logos 是 Frumu LTD 的商标——使用政策见 [TRADEMARKS.md](TRADEMARKS.md)。
 

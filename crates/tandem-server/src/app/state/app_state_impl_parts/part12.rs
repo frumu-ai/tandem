@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Incident Monitor draft submission helpers split from part02.rs for the file-size
 // gate (same module via include!).
 

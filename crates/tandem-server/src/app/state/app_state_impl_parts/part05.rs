@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 const DEFAULT_STALE_AUTO_RESUME_WINDOW_MS: u64 = 20 * 60 * 1000;
 const DEFAULT_STALE_AUTO_RESUME_MAX_ATTEMPTS: usize = 2;
 const MAX_AUTOMATION_WAIT_OUTPUT_METADATA_BYTES: usize = 16 * 1024;

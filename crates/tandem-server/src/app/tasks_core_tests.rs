@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 
 fn runtime_event(event_type: &str, properties: Value, seq: u64) -> EngineEvent {

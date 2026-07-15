@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn init_git_repo() -> std::path::PathBuf {
     let repo_root = std::env::temp_dir().join(format!("tandem-worktree-test-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&repo_root).expect("create repo dir");

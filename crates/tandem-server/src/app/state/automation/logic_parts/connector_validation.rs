@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn automation_tool_name_is_notion_database_writer(tool: &str) -> bool {
     tool.trim()
         .to_ascii_lowercase()

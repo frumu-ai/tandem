@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn approval_send_restart_automation(
     automation_id: &str,
     workspace_root: &std::path::Path,

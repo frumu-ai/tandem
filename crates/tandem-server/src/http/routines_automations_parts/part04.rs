@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Continuation of routines_automations handlers (split from part02.rs to satisfy
 // the 2000-line file-size gate). Included into the same module via routines_automations.rs.
 

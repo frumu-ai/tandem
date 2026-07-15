@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn ensure_provider_entry<'a>(
     wire: &'a mut WireProviderCatalog,
     provider_id: &str,

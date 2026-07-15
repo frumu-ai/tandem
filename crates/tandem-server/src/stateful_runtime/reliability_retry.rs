@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Dead-letter retry + success-supersession helpers for the reliability store.
 //!
 //! Split out of `reliability.rs` to keep that module under the repository's

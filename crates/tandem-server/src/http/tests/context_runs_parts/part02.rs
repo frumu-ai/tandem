@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 
 #[tokio::test]
 async fn context_task_fail_transition_publishes_engine_event() {

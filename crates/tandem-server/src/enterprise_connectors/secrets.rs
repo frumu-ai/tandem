@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use async_trait::async_trait;
 use std::fmt;
 use tandem_enterprise_contract::{ConnectorCredentialRef, SecretRef, TenantContext};

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use crate::app::state::automation::receipts::{
     append_automation_attempt_receipt, automation_attempt_receipt_path_for_state_dir,
     AutomationAttemptReceiptDraft, AutomationAttemptReceiptRecord,

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn automation_v2_run_store_backfills_definition_metadata_from_snapshot() {
     let automation = AutomationSpecBuilder::new("automation-definition-backfill")

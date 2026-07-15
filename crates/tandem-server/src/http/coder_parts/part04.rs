@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 async fn seed_pr_review_tasks(
     state: AppState,
     coder_run: &CoderRunRecord,

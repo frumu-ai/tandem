@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn with_coder_mcp_phase_authority(
     mut args: Value,
     server_name: &str,

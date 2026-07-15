@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // Article 12 log-completeness checks for protected actions and approval decisions
 // (EUAI-09 / TAN-250).
 //

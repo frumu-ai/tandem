@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[derive(Clone, Copy)]
 pub(crate) struct SplitResearchTemplateConfig {
     pub template_id: &'static str,

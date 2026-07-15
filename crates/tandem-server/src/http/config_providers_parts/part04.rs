@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn provider_oauth_public_base_url_from_env() -> Option<String> {
     [
         "TANDEM_CONTROL_PANEL_PUBLIC_URL",

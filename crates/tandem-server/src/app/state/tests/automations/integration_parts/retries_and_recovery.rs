@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn code_loop_flow_repairs_after_missing_verification_and_completes() {
     let workspace_root = std::env::temp_dir().join(format!(

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[tokio::test]
 async fn analyze_findings_dual_write_flow_completes_with_artifact_and_workspace_file() {
     let workspace_root = std::env::temp_dir().join(format!(

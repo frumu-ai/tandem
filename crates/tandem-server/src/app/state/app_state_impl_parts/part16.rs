@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 impl AppState {
     pub async fn load_optimization_campaigns(&self) -> anyhow::Result<()> {
         if !self.optimization_campaigns_path.exists() {

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! HTTP routes for the cross-subsystem approvals aggregator.
 //!
 //! Today: read-only `/approvals/pending`. Decisions still flow through the

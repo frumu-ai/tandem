@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(crate) fn normalize_automation_path_text(raw_path: &str) -> Option<String> {
     let trimmed = raw_path.trim();
     if trimmed.is_empty() {

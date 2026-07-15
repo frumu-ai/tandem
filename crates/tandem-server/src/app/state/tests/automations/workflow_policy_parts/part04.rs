@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[test]
 fn empty_node_output_without_artifact_requests_repair() {
     let node = AutomationFlowNode {

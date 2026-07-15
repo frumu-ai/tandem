@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Canonical, bounded read/control contract for long-running goals.
 
 use super::*;
