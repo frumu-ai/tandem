@@ -9,6 +9,53 @@ pub mod safety_context;
 pub mod service;
 pub mod source_readiness;
 
+pub(crate) fn draft_tenant_context(
+    draft: &crate::IncidentMonitorDraftRecord,
+) -> tandem_types::TenantContext {
+    match draft
+        .tenant_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        Some(org_id) => tandem_types::TenantContext::explicit(
+            org_id,
+            draft
+                .workspace_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or(org_id),
+            draft.actor.clone(),
+        ),
+        None => tandem_types::TenantContext::local_implicit(),
+    }
+}
+
+pub(crate) async fn dispatch_mcp_tool(
+    state: &crate::AppState,
+    draft: &crate::IncidentMonitorDraftRecord,
+    server_name: &str,
+    tool_name: &str,
+    args: serde_json::Value,
+    operation: &str,
+) -> anyhow::Result<tandem_types::ToolResult> {
+    let mut source = tandem_tools::ToolDispatchSource::new("incident_monitor_destination")
+        .request(format!("{}:{operation}", draft.draft_id));
+    if let Some(run_id) = draft.triage_run_id.as_deref() {
+        source = source.run(run_id);
+    }
+    crate::http::mcp::dispatch_mcp_tool_for_tenant(
+        state,
+        server_name,
+        tool_name,
+        args,
+        draft_tenant_context(draft),
+        source,
+    )
+    .await
+}
+
 pub(crate) fn source_identity_matches_draft(
     draft: &crate::IncidentMonitorDraftRecord,
     submission: &crate::IncidentMonitorSubmission,

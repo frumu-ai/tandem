@@ -133,7 +133,9 @@ jobs:
         run: cargo check -p tandem-server --features browser --lib
 
       - name: Assert browser server governance wiring
-        run: cargo test -p tandem-server --features browser server_context_installs_deny_capable_policy_and_real_ledger --lib
+        run: |
+          cargo test -p tandem-server --features browser server_context_installs_deny_capable_policy_and_real_ledger --lib
+          cargo test -p tandem-server --features browser governance_routes_fail_closed_without_premium_governance --lib
 
       - name: Check browser sidecar
         run: cargo check -p tandem-browser
@@ -329,6 +331,62 @@ jobs:
           grep -Fq 'tan_707_named_replan_edge_and_day_180_limit_are_explicit' \
             "$RUNNER_TEMP/nextest-tests.txt"
 
+      - name: Verify governance audit tests were discovered and executed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          manifest = [
+              line.strip()
+              for line in pathlib.Path('.github/governance-audit-critical-tests.txt').read_text().splitlines()
+              if line.strip() and not line.lstrip().startswith('#')
+          ]
+          discovered = pathlib.Path("${{ runner.temp }}/nextest-tests.txt").read_text()
+          junit_path = pathlib.Path('target/nextest/ci/junit.xml')
+          if not junit_path.exists():
+              raise SystemExit('nextest junit report is missing')
+          root = ET.parse(junit_path).getroot()
+          executed = '\n'.join(
+              f"{case.attrib.get('classname', '')}::{case.attrib.get('name', '')}"
+              for case in root.iter('testcase')
+              if case.find('skipped') is None
+          )
+          missing_discovery = [name for name in manifest if name not in discovered]
+          missing_execution = [name for name in manifest if name not in executed]
+          if missing_discovery or missing_execution:
+              raise SystemExit(
+                  f"governance audit coverage gap; missing discovery={missing_discovery}, "
+                  f"missing execution={missing_execution}"
+              )
+          summary = pathlib.Path("${{ runner.temp }}/governance-coverage.md")
+          summary.write_text(
+              '# Governance mode coverage\n\n'
+              '- premium-governance: all audit-critical tests discovered and executed\n'
+              '- local/default: fail-closed governance route test executed in Browser Sidecar Check\n'
+          )
+          PY
+
+      - name: Reject allow-all policy outside isolated guard tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          matches="$(rg -n 'AllowAllToolDispatchPolicy' --glob '*.rs' \
+            | grep -v '^crates/tandem-tools/src/tool_dispatcher.rs:' \
+            | grep -v '^crates/tandem-server/src/app/state/tests/mod.rs:' || true)"
+          test -z "$matches" || { echo "$matches"; exit 1; }
+          direct_mcp_calls="$(rg -n -U '\.mcp\s*\.\s*call_tool' \
+            crates/tandem-server/src/http/coder_parts/part05.rs \
+            crates/tandem-server/src/pack_builder_parts \
+            crates/tandem-server/src/benchmarking/mod.rs \
+            crates/tandem-server/src/incident_monitor_github.rs \
+            crates/tandem-server/src/incident_monitor_linear.rs \
+            crates/tandem-server/src/incident_monitor_mcp.rs \
+            crates/tandem-server/src/incident_monitor_webhook.rs || true)"
+          test -z "$direct_mcp_calls" || { echo "$direct_mcp_calls"; exit 1; }
+
       - name: Report disk usage
         if: always()
         run: df -h /
@@ -341,5 +399,6 @@ jobs:
           path: |
             target/nextest/ci/junit.xml
             ${{ runner.temp }}/nextest-tests.txt
+            ${{ runner.temp }}/governance-coverage.md
           if-no-files-found: ignore
           retention-days: 14

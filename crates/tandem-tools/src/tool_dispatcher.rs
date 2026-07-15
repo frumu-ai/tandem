@@ -216,6 +216,31 @@ impl ToolDispatchPolicy for DenyAllToolDispatchPolicy {
     }
 }
 
+#[derive(Debug)]
+struct ExactToolDispatchPolicy {
+    tool: String,
+}
+
+#[async_trait]
+impl ToolDispatchPolicy for ExactToolDispatchPolicy {
+    async fn evaluate(
+        &self,
+        context: ToolDispatchPolicyContext,
+    ) -> anyhow::Result<ToolDispatchDecision> {
+        let requested = context
+            .canonical_tool
+            .as_deref()
+            .unwrap_or(&context.requested_tool);
+        Ok(if requested == self.tool {
+            ToolDispatchDecision::allow_with_id("explicit_local_tool_scope")
+        } else {
+            ToolDispatchDecision::deny(format!(
+                "local dispatch scope does not authorize tool `{requested}`"
+            ))
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDispatchLedgerEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -397,7 +422,11 @@ impl GovernedToolDispatcher {
         self.dispatch(
             name,
             args,
-            ToolDispatchContext::local("local").with_policy(Arc::new(AllowAllToolDispatchPolicy)),
+            ToolDispatchContext::local("local")
+                .with_scope_allowlist(vec![name.to_string()])
+                .with_policy(Arc::new(ExactToolDispatchPolicy {
+                    tool: name.to_string(),
+                })),
         )
         .await
     }

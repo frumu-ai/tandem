@@ -315,14 +315,15 @@ pub async fn publish_draft(
         }
     };
 
-    let call_result = state
-        .mcp
-        .call_tool(
-            &resolved.server_name,
-            &resolved.tool.tool_name,
-            args.clone(),
-        )
-        .await;
+    let call_result = crate::incident_monitor::dispatch_mcp_tool(
+        state,
+        &draft,
+        &resolved.server_name,
+        &resolved.tool.tool_name,
+        args.clone(),
+        "mcp_tool_publish",
+    )
+    .await;
     match call_result {
         Ok(result) => {
             if mcp_auth_required(&result) {
@@ -389,7 +390,7 @@ pub async fn publish_draft(
             })
         }
         Err(error) => {
-            let error_text = truncate_text(&safe_result_excerpt(&error), 500);
+            let error_text = truncate_text(&safe_result_excerpt(&error.to_string()), 500);
             let failed = failed_mcp_tool_post(
                 existing_claim,
                 &destination,

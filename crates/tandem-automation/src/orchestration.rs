@@ -390,6 +390,15 @@ fn wait_spec_issues(wait: &AutomationWaitSpec) -> Vec<(&'static str, &'static st
             if timeout.as_ref().is_some_and(invalid_timeout) {
                 issues.push(("wait_timeout_invalid", "wait timeout policy is invalid"));
             }
+            if timeout
+                .as_ref()
+                .is_some_and(|policy| policy.on_timeout == WaitTimeoutAction::Resume)
+            {
+                issues.push((
+                    "approval_timeout_resume_forbidden",
+                    "approval waits must fail closed on timeout and cannot resume execution",
+                ));
+            }
         }
         AutomationWaitSpec::Webhook {
             trigger_id,

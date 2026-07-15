@@ -6,8 +6,10 @@ use std::{
 use anyhow::Context;
 use futures::StreamExt;
 use reqwest::{redirect::Policy as RedirectPolicy, StatusCode, Url};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use tandem_types::EngineEvent;
+use tandem_tools::Tool;
+use tandem_types::{EngineEvent, ToolResult, ToolSchema, ToolSecurityDescriptor};
 use url::Host;
 
 use crate::{
@@ -36,6 +38,79 @@ const DEFAULT_PAYLOAD_BYTE_LIMIT: usize = 64 * 1024;
 const MAX_PAYLOAD_BYTE_LIMIT: usize = 256 * 1024;
 const DEFAULT_RESPONSE_BYTE_LIMIT: usize = 4 * 1024;
 const MAX_RESPONSE_BYTE_LIMIT: usize = 16 * 1024;
+
+pub(crate) const INCIDENT_MONITOR_WEBHOOK_TOOL: &str = "incident_monitor_webhook_send";
+
+#[derive(Clone, Default)]
+pub(crate) struct IncidentMonitorWebhookDispatchTool;
+
+#[async_trait::async_trait]
+impl Tool for IncidentMonitorWebhookDispatchTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            INCIDENT_MONITOR_WEBHOOK_TOOL,
+            "Send an Incident Monitor webhook through the governed server dispatcher",
+            json!({"type":"object","additionalProperties":true}),
+        )
+        .with_security(ToolSecurityDescriptor {
+            external_side_effect: true,
+            ..Default::default()
+        })
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let url = Url::parse(
+            args.get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("webhook URL is missing"))?,
+        )?;
+        let policy = WebhookPolicy::from_config(args.get("config"));
+        let resolved_target = validate_webhook_url(&url, &policy).await?;
+        let secret_ref = args
+            .get("secret_ref")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("webhook secret reference is missing"))?;
+        let secret = resolve_webhook_secret(secret_ref)?;
+        let delivery_id = args
+            .get("delivery_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("webhook delivery id is missing"))?;
+        let idempotency_key = args
+            .get("idempotency_key")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("webhook idempotency key is missing"))?;
+        let body = args
+            .get("body")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("webhook body is missing"))?
+            .as_bytes();
+        let sent = send_webhook(
+            &url,
+            &resolved_target,
+            &policy,
+            &secret,
+            delivery_id,
+            idempotency_key,
+            body,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!(error.detail))?;
+        let attempts = sent
+            .attempts
+            .iter()
+            .map(WebhookSendAttempt::receipt_value)
+            .collect::<Vec<_>>();
+        Ok(ToolResult {
+            output: sent.response_excerpt.clone().unwrap_or_default(),
+            metadata: json!({
+                "status_code": sent.status_code,
+                "response_excerpt": sent.response_excerpt,
+                "response_truncated": sent.response_truncated,
+                "attempts": attempts,
+            }),
+        })
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct WebhookDestinationContext {
@@ -112,7 +187,7 @@ struct ResponseExcerpt {
     truncated: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 struct WebhookSendAttempt {
     attempt: u64,
     status_code: Option<u16>,
@@ -527,56 +602,60 @@ async fn publish_claimed_webhook(
         return Err((anyhow::anyhow!(detail), post));
     }
 
-    let resolved_target = match validate_webhook_url(parsed_url, policy).await {
-        Ok(resolved_target) => resolved_target,
-        Err(error) => {
-            let detail = error.to_string();
-            let post = record_claim_failure(
-                state,
-                claim,
-                destination,
-                target_ref,
-                delivery_id,
-                "blocked",
-                &detail,
-                Vec::new(),
-                Some(body.len()),
-            )
-            .await;
-            return Err((error, post));
-        }
-    };
-
-    let secret = match resolve_webhook_secret(destination.secret_ref().unwrap_or_default()) {
-        Ok(secret) => secret,
-        Err(error) => {
-            let detail = error.to_string();
-            let post = record_claim_failure(
-                state,
-                claim,
-                destination,
-                target_ref,
-                delivery_id,
-                "failed",
-                &detail,
-                Vec::new(),
-                Some(body.len()),
-            )
-            .await;
-            return Err((error, post));
-        }
-    };
-
-    let send_result = send_webhook(
-        parsed_url,
-        &resolved_target,
-        policy,
-        &secret,
-        delivery_id,
-        idempotency_key,
-        &body,
-    )
-    .await;
+    let dispatch_context = state.tool_dispatch_context(
+        tandem_tools::ToolDispatchSource::new("incident_monitor_webhook")
+            .request(format!("{}:webhook_publish", draft.draft_id))
+            .run(
+                draft
+                    .triage_run_id
+                    .clone()
+                    .unwrap_or_else(|| draft.draft_id.clone()),
+            ),
+        crate::incident_monitor::draft_tenant_context(draft),
+        vec![INCIDENT_MONITOR_WEBHOOK_TOOL.to_string()],
+    );
+    let send_result = state
+        .tool_dispatcher
+        .dispatch(
+            INCIDENT_MONITOR_WEBHOOK_TOOL,
+            json!({
+                "url": parsed_url.as_str(),
+                "config": destination.config.clone(),
+                "secret_ref": destination.secret_ref().unwrap_or_default(),
+                "delivery_id": delivery_id,
+                "idempotency_key": idempotency_key,
+                "body": String::from_utf8_lossy(&body),
+            }),
+            dispatch_context,
+        )
+        .await
+        .map(|result| WebhookSendSuccess {
+            status_code: result
+                .metadata
+                .get("status_code")
+                .and_then(Value::as_u64)
+                .unwrap_or(200) as u16,
+            response_excerpt: result
+                .metadata
+                .get("response_excerpt")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            response_truncated: result
+                .metadata
+                .get("response_truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            attempts: result
+                .metadata
+                .get("attempts")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or_default(),
+        })
+        .map_err(|error| WebhookSendFailure {
+            detail: error.to_string(),
+            attempts: Vec::new(),
+        });
     match send_result {
         Ok(sent) => {
             let post = IncidentMonitorPostRecord {

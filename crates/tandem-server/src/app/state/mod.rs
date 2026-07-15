@@ -139,6 +139,7 @@ pub(crate) use slack_event_runtime::SlackEventTaskRuntime;
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<OnceLock<RuntimeState>>,
+    server_tool_dispatch_composition: Arc<OnceLock<ServerToolDispatchComposition>>,
     pub startup: Arc<RwLock<StartupState>>,
     pub in_process_mode: Arc<AtomicBool>,
     pub api_token: Arc<RwLock<Option<String>>>,
@@ -332,6 +333,27 @@ struct AppStateToolDispatchLedger {
 struct AppStateToolDispatchPolicy {
     state: AppState,
     trust_server_scope: bool,
+}
+
+#[derive(Clone)]
+struct ServerToolDispatchComposition {
+    trusted_policy: Arc<dyn ToolDispatchPolicy>,
+    untrusted_policy: Arc<dyn ToolDispatchPolicy>,
+    ledger: Arc<dyn ToolDispatchLedger>,
+}
+
+impl ServerToolDispatchComposition {
+    fn assert_governed(&self) -> anyhow::Result<()> {
+        for policy in [&self.trusted_policy, &self.untrusted_policy] {
+            if policy.is_allow_all() {
+                anyhow::bail!("server tool dispatch cannot use an allow-all policy");
+            }
+        }
+        if self.ledger.is_noop() {
+            anyhow::bail!("server tool dispatch cannot use a no-op ledger");
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]

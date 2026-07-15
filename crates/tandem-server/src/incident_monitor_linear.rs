@@ -421,6 +421,7 @@ async fn create_linear_issue_from_draft(
     let created = match call_create_linear_issue(
         state,
         tools,
+        &draft,
         destination.team()?,
         destination.project()?,
         title,
@@ -767,7 +768,8 @@ async fn find_matching_linear_issue(
     draft: &IncidentMonitorDraftRecord,
     evidence_digest: &str,
 ) -> anyhow::Result<Option<LinearIssue>> {
-    let issues = call_list_linear_issues(state, tools, team, project, &draft.fingerprint).await?;
+    let issues =
+        call_list_linear_issues(state, tools, draft, team, project, &draft.fingerprint).await?;
     let marker = fingerprint_marker(&draft.fingerprint);
     let evidence = evidence_marker(evidence_digest);
     let normalized_title = draft
@@ -1134,30 +1136,33 @@ fn evidence_marker(digest: &str) -> String {
 async fn call_list_linear_issues(
     state: &AppState,
     tools: &LinearToolSet,
+    draft: &IncidentMonitorDraftRecord,
     team: &str,
     project: &str,
     query: &str,
 ) -> anyhow::Result<Vec<LinearIssue>> {
-    let result = state
-        .mcp
-        .call_tool(
-            &tools.server_name,
-            &tools.list_issues,
-            json!({
-                "team": team,
-                "project": project,
-                "query": query,
-                "limit": 50
-            }),
-        )
-        .await
-        .map_err(anyhow::Error::msg)?;
+    let result = crate::incident_monitor::dispatch_mcp_tool(
+        state,
+        draft,
+        &tools.server_name,
+        &tools.list_issues,
+        json!({
+            "team": team,
+            "project": project,
+            "query": query,
+            "limit": 50
+        }),
+        "linear_list_issues",
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
     Ok(extract_linear_issues_from_tool_result(&result))
 }
 
 async fn call_create_linear_issue(
     state: &AppState,
     tools: &LinearToolSet,
+    draft: &IncidentMonitorDraftRecord,
     team: &str,
     project: &str,
     title: &str,
@@ -1180,17 +1185,28 @@ async fn call_create_linear_issue(
         "description": description,
         "priority": linear_priority(risk_level),
     });
-    let first = state
-        .mcp
-        .call_tool(&tools.server_name, &tools.create_issue, preferred)
-        .await;
+    let first = crate::incident_monitor::dispatch_mcp_tool(
+        state,
+        draft,
+        &tools.server_name,
+        &tools.create_issue,
+        preferred,
+        "linear_create_issue",
+    )
+    .await;
     let result = match first {
         Ok(result) => result,
-        Err(_) => state
-            .mcp
-            .call_tool(&tools.server_name, &tools.create_issue, fallback)
-            .await
-            .map_err(anyhow::Error::msg)?,
+        Err(_) => {
+            crate::incident_monitor::dispatch_mcp_tool(
+                state,
+                draft,
+                &tools.server_name,
+                &tools.create_issue,
+                fallback,
+                "linear_create_issue_fallback",
+            )
+            .await?
+        }
     };
     if let Some(issue) = extract_linear_issues_from_tool_result(&result)
         .into_iter()
@@ -1201,13 +1217,22 @@ async fn call_create_linear_issue(
     let fingerprint_marker = description
         .lines()
         .find(|line| line.contains("<!-- tandem:fingerprint:v1:"));
-    find_created_linear_issue_after_create(state, tools, team, project, title, fingerprint_marker)
-        .await
+    find_created_linear_issue_after_create(
+        state,
+        tools,
+        draft,
+        team,
+        project,
+        title,
+        fingerprint_marker,
+    )
+    .await
 }
 
 async fn find_created_linear_issue_after_create(
     state: &AppState,
     tools: &LinearToolSet,
+    draft: &IncidentMonitorDraftRecord,
     team: &str,
     project: &str,
     title: &str,
@@ -1221,6 +1246,7 @@ async fn find_created_linear_issue_after_create(
         match call_list_linear_issues(
             state,
             tools,
+            draft,
             team,
             project,
             fingerprint_marker.unwrap_or(title),

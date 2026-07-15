@@ -18,7 +18,7 @@ use tandem_server::{
     AutomationV2Schedule, AutomationV2ScheduleType, AutomationV2Spec, AutomationV2Status,
     RoutineMisfirePolicy,
 };
-use tandem_tools::{AllowAllToolDispatchPolicy, ToolDispatchSource};
+use tandem_tools::ToolDispatchSource;
 use tandem_types::{
     AuthorityChain, HumanActor, RequestPrincipal, Session, TenantContext, VerifiedTenantContext,
 };
@@ -1417,10 +1417,6 @@ fn dispatch_context(
             vec![tool.to_string()],
         )
         .with_verified_tenant_context(verified.clone())
-        // These recorded acceptance cases explicitly pre-authorize the one
-        // scoped tool so they can exercise downstream product behavior. Server
-        // contexts still reject allow-all policies at startup.
-        .with_policy(Arc::new(AllowAllToolDispatchPolicy))
 }
 
 async fn next_dispatch_event(

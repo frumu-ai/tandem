@@ -115,6 +115,33 @@ fn automation_v2_wait_validation_rejects_execution_policy_and_unbounded_correlat
 }
 
 #[test]
+fn automation_v2_approval_wait_rejects_resume_on_timeout() {
+    let mut spec = empty_spec();
+    spec.flow.nodes.push(
+        serde_json::from_value(json!({
+            "node_id": "approval-gate",
+            "agent_id": "",
+            "objective": "Require a human decision",
+            "depends_on": [],
+            "wait": {
+                "kind": "approval",
+                "decisions": ["approve", "deny"],
+                "timeout": {
+                    "expires_after_ms": 60000,
+                    "on_timeout": "resume"
+                }
+            }
+        }))
+        .expect("approval wait"),
+    );
+
+    let issues = crate::validate_automation_wait_nodes(&spec);
+    assert!(issues
+        .iter()
+        .any(|issue| issue.code == "approval_timeout_resume_forbidden"));
+}
+
+#[test]
 fn legacy_approval_gate_projects_to_unified_wait_contract() {
     let node: AutomationFlowNode = serde_json::from_value(json!({
         "node_id": "approve",
