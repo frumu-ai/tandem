@@ -1,22 +1,33 @@
 # RFC: Parameter-aware permission predicates
 
-- Status: Proposed
-- Linear: TAN-741
+- Status: Partially implemented on `main` through PR #1897
+- Linear: TAN-741, TAN-742, TAN-743; follow-ups TAN-744 through TAN-747
 - Owners: Governance and runtime
 - Required reviewers: Runtime engineering, security engineering
 - Target model version: `permission_predicates/v1`
 
 ## Summary
 
-Tandem should extend enterprise permission rules with a typed, bounded predicate expression evaluated against trusted tool-call arguments. The predicate engine belongs in the same server-side decision path that resolves tool identity, inherited scope, approval requirements, and receipts. A rule may match domains and hosts, fixed-precision monetary amounts, filesystem paths, repository coordinates, and ordinary JSON scalar fields without adding a new hardcoded evaluator for every connector.
+This RFC defines a typed, bounded predicate expression evaluated against trusted tool-call arguments. The predicate engine belongs in the same server-side decision path that resolves tool identity, inherited scope, approval requirements, and receipts. A rule may match domains and hosts, fixed-precision monetary amounts, filesystem paths, repository coordinates, and ordinary JSON scalar fields without adding a new hardcoded evaluator for every connector.
 
 The model is deny-by-default. A missing, malformed, unnormalizable, or over-budget value can never make an allow rule match. Non-overridable denies retain their current inheritance semantics, and a predicate cannot grant authority beyond the rule's tool, tenant, workflow, phase, data-class, or resource scope.
+
+## Implementation status
+
+[PR #1897](https://github.com/frumu-ai/tandem/pull/1897) landed the `permission_predicates/v1` types, bounded evaluator, inheritance integration, enterprise authoring and preview APIs, tenant-scoped Control Panel Policy Studio, runtime enforcement adapter, and versioned CRM, finance, and coding starter policies. TAN-742 and TAN-743 are complete for that shipped scope.
+
+This is not full conformance with every normative guarantee below:
+
+- TAN-744 tracks supported creation of tenantless global policies; the current create route always stamps the request tenant.
+- TAN-745 tracks canonical tenant matching in supersession; the current initial lookup uses raw tenant-ID equality.
+- TAN-746 tracks a first-class `ApprovalRequired` dispatcher outcome. Current pending predicate approvals are represented as blocked `ToolPolicyDecision` records through the action-gate adapter because `ToolDispatchPolicyOutcome` still contains only `Allowed` and `Denied`.
+- TAN-747 tracks structured, deployment-HMAC predicate evidence. Current policy-decision metadata records a redacted marker rather than the condition-level evidence contract below.
 
 ## Motivation and current state
 
 The central tool dispatcher already supplies the full argument object to its policy context in `crates/tandem-tools/src/tool_dispatcher.rs`. The general standing-rule model in `crates/tandem-core/src/permissions.rs` matches permission and pattern identity, while `crates/tandem-enterprise-contract/src/policy_inheritance.rs` resolves scoped enterprise rules by inheritance, effect, version, and override behavior.
 
-Argument-aware controls exist today, but only as specialized code. `crates/tandem-server/src/agent_teams_parts/part02.rs` contains dedicated host, filesystem, git, and secret checks, and `crates/tandem-server/src/agent_teams_parts/egress_preflight.rs` walks outbound arguments for DLP classification. These controls prove that arguments are available at enforcement time, but they are not a general policy-authoring capability.
+Before PR #1897, argument-aware controls existed only as specialized code. `crates/tandem-server/src/agent_teams_parts/part02.rs` contains dedicated host, filesystem, git, and secret checks, and `crates/tandem-server/src/agent_teams_parts/egress_preflight.rs` walks outbound arguments for DLP classification. Those specialized guards remain authoritative, while published enterprise rules now provide the general predicate-authoring capability described by the implemented subset of this RFC.
 
 ## Goals
 
@@ -158,7 +169,7 @@ The dispatcher policy contract must add `ApprovalRequired` as a first-class `Too
 
 On `ApprovalRequired`, the dispatcher writes the policy-decision and approval-request receipts before it exposes the request to a client or approval worker. It then returns a non-executable pending handle. Approval creates a single-use, decision-bound approval receipt with an expiry and the original normalized tool name and argument digest; denial or expiry creates a terminal receipt and the tool is not called. Resume re-enters the same dispatcher, verifies and atomically consumes the approval receipt, re-evaluates non-waivable lower-level guards, writes the allow receipt, executes at most once, and links the execution receipt to the original decision. Changed tool identity, arguments, scope, policy version, connector generation, expired approval, or an already-consumed receipt fails closed and requires a new decision.
 
-The implementation must change `ToolDispatchPolicyOutcome` and every exhaustive consumer before predicate rules with `approval_required` can be published. Until that migration is complete, publication validation rejects predicate rules with that effect rather than silently degrading their behavior.
+Full RFC conformance requires `ToolDispatchPolicyOutcome` and every exhaustive consumer to preserve `ApprovalRequired` as a first-class outcome. The current implementation can publish approval-required predicate rules, but its server adapter creates and checks an action-gate approval and represents an unconsumed approval as a blocked `ToolPolicyDecision`. TAN-746 tracks migration to the generic dispatcher contract so clients can distinguish pending approval from terminal denial without adapter-specific reason parsing.
 
 ## Expiry, publication, and invalid policy handling
 
@@ -192,6 +203,8 @@ Policy decision receipts add a bounded `predicate_evidence` object:
 ```
 
 Receipts never contain raw selected values, raw operands, email local parts, paths, repository URLs, or request arguments. `expression_digest`, `selector_digest`, and `value_digest` use a deployment-scoped audit HMAC key so operators can correlate identical expressions, selectors, or values inside one deployment without enabling cross-deployment correlation or offline guessing. The expression digest covers the canonical complete expression, including operands, only after HMAC protection; no unkeyed digest of policy operands is emitted. Low-cardinality selected values such as booleans and currency codes omit `value_digest`. Evidence contains at most 32 condition rows and records truncation or indeterminate causes using stable reason codes.
+
+The reviewed implementation does not yet emit this structure. It records a redacted predicate-evidence marker in the runtime policy-decision metadata. TAN-747 tracks the bounded HMAC evidence contract and its non-disclosure tests.
 
 Allow, deny, approval-required, and execution receipts link to the same policy decision ID and expression digest. Policy-decision, deny, approval-request, approval-resolution, approval-consumption, allow, and execution-attempt receipts are mandatory writes. The dispatcher must receive a durable success result for each write required before the next state transition; a write error blocks dispatch, approval publication, resume, or execution as applicable. Existing optional or best-effort recording helpers, including MCP preflight helpers that return `Option`, cannot satisfy this contract and must be replaced with required `Result`-returning calls on predicate-governed paths. A post-execution result receipt may report an execution that already occurred, but failure to persist it places the server in an operator-visible unhealthy state and prevents retry under the same decision rather than risking duplicate execution.
 
@@ -346,17 +359,18 @@ Allow writes only inside the workspace and require approval for pushes to the pr
 
 `${trusted.workspace_root}` is not general interpolation. It is a schema-defined operand token resolved from verified server context; v1 supports only a fixed allowlist of typed trusted tokens.
 
-## Rollout
+## Implementation and remaining rollout
 
-1. Land types, validation, compilation, and receipt schema behind `TANDEM_PARAMETER_POLICY_V1=observe`.
-2. Run differential telemetry with no authority changes and publish mismatch metrics without argument values.
-3. Enable authored predicates for selected tenants with the existing specialized guards still authoritative.
-4. Make predicate evaluation generally available after security review and performance targets are met.
-5. Consider deprecating duplicated specialized checks only through separate reviewed changes.
+1. Types, validation, bounded evaluation, inheritance integration, and tenant-scoped authoring are implemented.
+2. Versioned CRM, finance, and coding templates with bounded overrides, upgrade, rollback, and preview are implemented.
+3. Published rules participate in runtime tool-policy decisions while existing specialized guards remain authoritative.
+4. Complete the global-policy creation and canonical supersession work tracked by TAN-744 and TAN-745.
+5. Complete first-class dispatcher approval and structured receipt evidence tracked by TAN-746 and TAN-747.
+6. Consider deprecating duplicated specialized checks only through separate reviewed changes and differential evidence.
 
 ## Required review record
 
-Implementation issues TAN-742 and TAN-743 must remain in design/backlog until both reviews are recorded here or in the merged pull request:
+TAN-742 and TAN-743 remained in design/backlog until the required reviews were recorded. They are now complete, and their implementation merged through [PR #1897](https://github.com/frumu-ai/tandem/pull/1897):
 
 - [x] Runtime engineering review: selector/evaluator integration, inheritance, performance, migration — recorded in [PR #1896](https://github.com/frumu-ai/tandem/pull/1896).
 - [x] Security engineering review: normalization, fail-closed behavior, receipt privacy, bypass analysis — recorded in [PR #1896](https://github.com/frumu-ai/tandem/pull/1896).
