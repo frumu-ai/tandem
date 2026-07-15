@@ -53,6 +53,49 @@ jobs:
               output.write(f"ids={','.join(issues)}\n")
           PY
 
+      - name: Classify requested deliverables from the proposed diff
+        id: deliverables
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only", os.environ["BASE_SHA"], os.environ["HEAD_SHA"]],
+              text=True,
+          ).splitlines()
+          deliverables = set()
+          for raw_path in changed:
+              path = raw_path.replace("\\", "/")
+              name = pathlib.PurePosixPath(path).name
+              if path == ".tandem/task-scope.json":
+                  continue
+              if path.startswith(".github/"):
+                  deliverables.add("ci")
+              elif (
+                  path == "AGENTS.md"
+                  or path.startswith(("docs/", "guide/"))
+                  or path.endswith(".md")
+              ):
+                  deliverables.add("documentation")
+              elif (
+                  "/tests/" in f"/{path}"
+                  or name.startswith("test_")
+                  or ".test." in name
+                  or name.endswith(("_test.rs", "_tests.rs"))
+              ):
+                  deliverables.add("tests")
+              else:
+                  deliverables.add("code")
+
+          with pathlib.Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"ids={','.join(sorted(deliverables))}\n")
+          PY
+
       - name: Enforce issue preflight
         shell: bash
         run: |
@@ -61,6 +104,11 @@ jobs:
           IFS=',' read -ra issue_ids <<< '${{ steps.issues.outputs.ids }}'
           for issue in "${issue_ids[@]}"; do
             test -z "$issue" || args+=(--issue "$issue")
+          done
+          IFS=',' read -ra deliverable_ids <<< '${{ steps.deliverables.outputs.ids }}'
+          test -n '${{ steps.deliverables.outputs.ids }}'
+          for deliverable in "${deliverable_ids[@]}"; do
+            test -z "$deliverable" || args+=(--deliverable "$deliverable")
           done
           python '${{ steps.guard.outputs.path }}' \
             --scope '${{ steps.guard.outputs.scope }}' \

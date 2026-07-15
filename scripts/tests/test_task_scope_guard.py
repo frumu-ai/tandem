@@ -187,6 +187,17 @@ class TaskScopeGuardTests(unittest.TestCase):
             2,
         )
 
+    def test_preflight_rejects_a_deliverable_outside_the_approved_scope(self):
+        args = argparse.Namespace(
+            issue=["TAN-748"],
+            deliverable=["documentation"],
+            receipt=None,
+        )
+        self.assertEqual(
+            guard.preflight(args, scope(), "digest", trust_approval(), "registry"),
+            2,
+        )
+
     def test_parked_issue_cannot_pass_the_pr_diff_guard(self):
         args = argparse.Namespace(
             base="base",
