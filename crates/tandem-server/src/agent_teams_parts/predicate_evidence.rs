@@ -282,13 +282,20 @@ fn deployment_audit_hmac_key(
     let scope = tenant_context
         .deployment_id
         .as_deref()
+        .and_then(tandem_enterprise_contract::canonical_enterprise_scope_id)
         .map(|deployment| format!("deployment:{deployment}"))
+        .map(Ok)
         .unwrap_or_else(|| {
-            format!(
-                "workspace:{}:{}",
-                tenant_context.org_id, tenant_context.workspace_id
+            let org_id = tandem_enterprise_contract::canonical_enterprise_scope_id(
+                &tenant_context.org_id,
             )
-        });
+            .ok_or_else(|| anyhow::anyhow!("tenant organization ID is empty"))?;
+            let workspace_id = tandem_enterprise_contract::canonical_enterprise_scope_id(
+                &tenant_context.workspace_id,
+            )
+            .ok_or_else(|| anyhow::anyhow!("tenant workspace ID is empty"))?;
+            Ok::<_, anyhow::Error>(format!("workspace:{org_id}:{workspace_id}"))
+        })?;
     audit_hmac_bytes(master_key, b"deployment-scope", scope.as_bytes())
 }
 
@@ -429,6 +436,36 @@ mod predicate_evidence_tests {
         assert_ne!(
             first.conditions[0].value_digest,
             other_deployment.conditions[0].value_digest
+        );
+    }
+
+    #[test]
+    fn deployment_hmac_scope_canonicalizes_tenant_ids() {
+        let master_key = b"deployment-master-secret";
+        let canonical = tandem_types::TenantContext::explicit(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+        );
+        let alternate = tandem_types::TenantContext::explicit(
+            " Org-A ",
+            " Workspace-A ",
+            Some(" Deployment-A ".to_string()),
+        );
+        assert_eq!(
+            deployment_audit_hmac_key(master_key, &canonical).expect("canonical key"),
+            deployment_audit_hmac_key(master_key, &alternate).expect("alternate key")
+        );
+
+        let canonical_workspace =
+            tandem_types::TenantContext::explicit("org-a", "workspace-a", None);
+        let alternate_workspace =
+            tandem_types::TenantContext::explicit(" Org-A ", " Workspace-A ", None);
+        assert_eq!(
+            deployment_audit_hmac_key(master_key, &canonical_workspace)
+                .expect("canonical workspace key"),
+            deployment_audit_hmac_key(master_key, &alternate_workspace)
+                .expect("alternate workspace key")
         );
     }
 
