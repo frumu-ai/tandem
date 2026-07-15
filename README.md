@@ -201,11 +201,11 @@ tandem-engine serve --hostname 127.0.0.1 --port 39731
 
 Tandem is built for developers first, using an open-core model. We believe that to trust an AI runtime, you must be able to audit the execution router line-by-line.
 
-**Local Development & Internal Use:** The core Rust execution engine, local desktop app, and tandem-agents libraries are free for local development and internal deployment.
+**Local Development & Evaluation:** The permissively licensed crates and libraries (`MIT OR Apache-2.0`) may be used under their own terms. Every distributed engine binary also includes the source-available `BUSL-1.1` components, which are free for evaluation, development, testing, source inspection, personal non-commercial use, and non-production proofs of concept.
 
 **Enterprise Path:** Advanced features for scaled organizational deployments, such as enterprise identity federation, richer policy enforcement, signed receipt chains, private sidecar enforcement, SIEM export, and HA packaging, are planned enterprise capabilities and may be governed under commercial or source-available terms, including the Business Source License 1.1 (`BUSL-1.1`) where declared.
 
-**License Boundary:** You are free to use Tandem to govern your own agents under the license terms for each package. Source-available Tandem components cannot be wrapped and sold as a managed competitive SaaS unless your license permits it. See [docs/LICENSING.md](docs/LICENSING.md) for exact details.
+**License Boundary:** Commercial production use of the `BUSL-1.1` components — including internal production use, client production deployments, and managed, hosted, SaaS, white-label, embedded, OEM, or reseller offerings — requires a separate commercial license from Frumu LTD. See [docs/LICENSING.md](docs/LICENSING.md) for the exact package-by-package terms.
 
 ## Architecture
 
@@ -602,7 +602,15 @@ This repository uses a mixed licensing model. [docs/LICENSING.md](docs/LICENSING
   - Licensed under Business Source License 1.1 (`BUSL-1.1`)
   - See `crates/tandem-governance-engine/LICENSE` for terms
 
-In short: Tandem is open core. The permissive runtime, protocol, SDK, and local tooling surfaces are open source, while the mission/plan compiler and recursive governance engine are source-available under Business Source License terms.
+- Incident monitor crate (`tandem-incident-monitor`):
+  - Licensed under Business Source License 1.1 (`BUSL-1.1`)
+  - See `crates/tandem-incident-monitor/LICENSE` for terms
+
+- Enterprise server crate (`tandem-enterprise-server`):
+  - Licensed under Business Source License 1.1 (`BUSL-1.1`)
+  - See `crates/tandem-enterprise-server/LICENSE` for terms
+
+In short: Tandem is open core. The permissive runtime, protocol, SDK, and local tooling surfaces are open source, while the mission/plan compiler, recursive governance engine, incident monitor, and enterprise server are source-available under Business Source License terms.
 
 ## Acknowledgments
 

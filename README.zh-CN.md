@@ -202,11 +202,11 @@ tandem-engine serve --hostname 127.0.0.1 --port 39731
 
 Tandem 首先面向开发者构建，并采用 open-core model。我们认为，要信任一个 AI runtime，你必须能够逐行审计 execution router。
 
-**本地开发和内部使用：** Core Rust execution engine、本地 desktop app 和 tandem-agents libraries 可按各 package 许可用于本地开发和内部部署。
+**本地开发和评估：** 采用宽松许可（`MIT OR Apache-2.0`）的 crates 和 libraries 可按其各自条款使用。每个分发的 engine binary 还包含 source-available 的 `BUSL-1.1` components，可免费用于评估、开发、测试、源码审查、个人非商业用途以及非生产环境的 proofs of concept。
 
 **企业路径：** 面向规模化组织部署的高级能力，例如 enterprise identity federation、更丰富的 policy enforcement、signed receipt chains、private sidecar enforcement、SIEM export 和 HA packaging，是规划中的企业能力，并可能受商业或 source-available 条款约束，包括在声明处使用 Business Source License 1.1 (`BUSL-1.1`)。
 
-**许可边界：** 你可以在各 package 许可条款下使用 Tandem 治理自己的 agents。除非许可允许，否则不能把 source-available Tandem components 包装后作为竞争性 managed SaaS 销售。准确条款见 [docs/LICENSING.md](docs/LICENSING.md)。
+**许可边界：** 将 `BUSL-1.1` components 用于商业生产环境——包括内部生产使用、为客户进行的生产部署，以及 managed、hosted、SaaS、white-label、embedded、OEM 或 reseller 形式的产品或服务——需要向 Frumu LTD 获取单独的商业许可。逐 package 的准确条款见 [docs/LICENSING.md](docs/LICENSING.md)。
 
 ## 架构
 
@@ -609,7 +609,15 @@ tandem/
   - 使用 Business Source License 1.1 (`BUSL-1.1`)
   - 见 `crates/tandem-governance-engine/LICENSE`
 
-简而言之：Tandem 是 open core。Permissive runtime、protocol、SDK 和 local tooling surfaces 是 open source；mission/plan compiler 和 recursive governance engine 在 Business Source License 条款下 source-available。
+- Incident monitor crate（`tandem-incident-monitor`）：
+  - 使用 Business Source License 1.1 (`BUSL-1.1`)
+  - 见 `crates/tandem-incident-monitor/LICENSE`
+
+- Enterprise server crate（`tandem-enterprise-server`）：
+  - 使用 Business Source License 1.1 (`BUSL-1.1`)
+  - 见 `crates/tandem-enterprise-server/LICENSE`
+
+简而言之：Tandem 是 open core。Permissive runtime、protocol、SDK 和 local tooling surfaces 是 open source；mission/plan compiler、recursive governance engine、incident monitor 和 enterprise server 在 Business Source License 条款下 source-available。
 
 ## 致谢
 

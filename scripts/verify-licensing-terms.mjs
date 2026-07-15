@@ -43,6 +43,11 @@ const legacyPhraseTokens = [
   ["free internal", "production"],
   ["hosted-service", "restriction"],
   ["commercial license", "required only"],
+  ["free for local development", "and internal deployment"],
+  ["cannot be wrapped and sold", "as a managed"],
+  ["managed competitive", "SaaS"],
+  ["本地开发和内部部署"],
+  ["竞争性 managed", "SaaS 销售"],
 ];
 
 function read(relativePath) {
