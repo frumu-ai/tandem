@@ -10,8 +10,9 @@ This npm package (the installer/launcher scripts) is `MIT OR Apache-2.0`. The
 engine binary it downloads and runs includes source-available components
 licensed under the Business Source License 1.1 (`tandem-enterprise-server`,
 `tandem-governance-engine`, `tandem-plan-compiler`,
-`tandem-incident-monitor`) — as does every Tandem engine binary. Internal
-production use is free; offering it to third parties as a
-hosted/SaaS/white-label/embedded commercial service requires a commercial
-license. See `docs/LICENSING.md` in the
+`tandem-incident-monitor`) — as does every Tandem engine binary. Evaluation,
+development, testing, source inspection, personal non-commercial use, and
+non-production proofs of concept are permitted without charge. Commercial
+production use, including internal production use and client deployments,
+requires a separate commercial license from Frumu LTD. See `docs/LICENSING.md` in the
 [tandem repository](https://github.com/frumu-ai/tandem) for the full terms.

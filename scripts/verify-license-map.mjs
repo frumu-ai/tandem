@@ -126,8 +126,9 @@ for (const mappedPath of mapped.keys()) {
 
 const licensingDoc = read(mapPath);
 
-// Every BUSL crate LICENSE must agree on one Change Date, and any explicit
-// date the licensing doc states must match it.
+// Every BUSL crate LICENSE must agree on one Change Date. Historical release
+// dates are also documented, so validate only the explicitly labeled current
+// source-tree date rather than every date in the licensing guide.
 const buslChangeDates = new Set();
 for (const member of members) {
   const licenseFile = `${member}/LICENSE`;
@@ -141,12 +142,17 @@ if (buslChangeDates.size > 1) {
   );
 } else if (buslChangeDates.size === 1) {
   const [actual] = buslChangeDates;
-  for (const [, stated] of licensingDoc.matchAll(/`(\d{4}-\d{2}-\d{2})`/g)) {
-    if (stated !== actual) {
-      problems.push(
-        `${mapPath} states Change Date ${stated}, but the BUSL LICENSE files say ${actual}`
-      );
-    }
+  const currentSourceTreeChangeDate = licensingDoc.match(
+    /\*\*Current source-tree BUSL Change Date:\*\* `(\d{4}-\d{2}-\d{2})`/
+  )?.[1];
+  if (!currentSourceTreeChangeDate) {
+    problems.push(
+      `${mapPath} must state the current source-tree BUSL Change Date explicitly`
+    );
+  } else if (currentSourceTreeChangeDate !== actual) {
+    problems.push(
+      `${mapPath} states current source-tree BUSL Change Date ${currentSourceTreeChangeDate}, but the BUSL LICENSE files say ${actual}`
+    );
   }
 }
 

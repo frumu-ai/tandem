@@ -12,27 +12,63 @@ Licensor: Frumu LTD
 Licensed Work: tandem-governance-engine
 
 Additional Use Grant:
-You may use, modify, and self-host the Licensed Work in production for
-your own internal use, regardless of your organization's revenue.
+You may use, modify, and self-host the Licensed Work without charge for
+evaluation, source inspection, security review, development, testing,
+education, training, demonstrations, and other non-production purposes.
 
-"Internal use" means use by your organization, together with its
-affiliates, employees, contractors, and customers, only where the
-Licensed Work is operated as part of your organization's own internal
-software development, agent governance, incident response, or
-automation workflows, and not as (or as part of) a product or service
-that you provide to third parties.
+You may also use the Licensed Work to build and evaluate proofs of concept,
+provided that the Licensed Work is not connected to production systems,
+does not process production data, does not execute actions with production
+or material business consequences, and is not relied upon for ongoing
+business operations.
 
-This grant does not permit you to provide the Licensed Work, or any
-product or service whose primary value is substantially similar to the
-Licensed Work, to third parties as a managed, hosted,
-software-as-a-service, white-label, embedded, or other commercial
-offering. Any such use requires a commercial license from the Licensor.
+Natural persons may use the Licensed Work without charge for personal,
+educational, experimental, open-source, and other non-commercial purposes,
+including personal self-hosting, provided that such use is not performed
+on behalf of an employer or client, does not process employer, client, or
+customer production data, does not govern commercial production agents or
+systems, and does not form part of a commercial product, service, production
+system, managed service, or client deployment.
 
-For the purposes of this Additional Use Grant:
-- "affiliate" means any entity that directly or indirectly controls,
-  is controlled by, or is under common control with your organization.
+Agencies, consultants, and systems integrators may use the Licensed Work
+without charge for training, demonstrations, integration development,
+template development, and non-production client proofs of concept.
+This permission does not authorize production deployment for a client.
 
-Change Date: 2030-07-12
+Any Production Use of the Licensed Work requires a separate commercial
+license from Frumu LTD.
+
+For purposes of this Additional Use Grant, "Production Use" includes using
+the Licensed Work:
+
+- in connection with live business systems, infrastructure, accounts, or data;
+- to process production customer, employee, operational, financial,
+  security, regulated, or other live business data;
+- to govern, monitor, approve, restrict, or execute actions performed by
+  production AI agents or automation systems;
+- as part of persistent, scheduled, unattended, business-critical, or
+  operational workflows;
+- as an operational service within a commercial organization;
+- for a production deployment performed on behalf of a client; or
+- as part of a managed, hosted, software-as-a-service, white-label,
+  embedded, OEM, reseller, or other commercial product or service.
+
+Personal non-commercial use permitted above is not Production Use solely
+because it is persistent, scheduled, or unattended, provided it continues to
+satisfy the conditions of that personal-use permission.
+
+For clarity, internal Production Use by a commercial organization is not
+permitted under this Additional Use Grant and requires a separate
+commercial license from Frumu LTD.
+
+A client production deployment performed by an agency, consultant, or
+systems integrator must be covered by either a commercial license issued
+to the client by Frumu LTD or a separate written partner agreement with
+Frumu LTD.
+
+Contact Frumu LTD to obtain a commercial license.
+
+Change Date: 2030-07-15
 
 Change License: GPL-2.0-or-later OR MIT OR Apache-2.0
 
