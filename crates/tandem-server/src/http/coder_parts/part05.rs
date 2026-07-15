@@ -1,4 +1,16 @@
 impl<'a> GithubProjectsAdapter<'a> {
+    fn new(
+        state: &'a AppState,
+        tenant_context: tandem_types::TenantContext,
+        verified_tenant_context: Option<tandem_types::VerifiedTenantContext>,
+    ) -> Self {
+        Self {
+            state,
+            tenant_context,
+            verified_tenant_context,
+        }
+    }
+
     async fn resolve_project_tools(
         &self,
         preferred_server: Option<&str>,
