@@ -57,6 +57,28 @@ def require(text: str, needle: str, source: Path) -> None:
         raise SystemExit(f"{source} is missing required enforcement-model marker: {needle}")
 
 
+def pull_request_paths(workflow: str) -> set[str]:
+    paths: set[str] = set()
+    collecting = False
+    for line in workflow.splitlines():
+        if line == "    paths:":
+            collecting = True
+            continue
+        if not collecting:
+            continue
+        if line.startswith("      - "):
+            value = line.removeprefix("      - ").strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            paths.add(value)
+            continue
+        if line.strip():
+            break
+    if not paths:
+        raise SystemExit(f"{DRIFT_WORKFLOW} has no pull_request.paths entries")
+    return paths
+
+
 def critical_tests(manifest: str) -> tuple[str, ...]:
     return tuple(
         line.strip()
@@ -129,8 +151,14 @@ def main(base_ref: str | None = None) -> None:
     ):
         require(page, marker, PAGE)
 
-    for marker in DRIFT_TRIGGER_PATHS:
-        require(drift_workflow, marker, DRIFT_WORKFLOW)
+    missing_trigger_paths = sorted(
+        set(DRIFT_TRIGGER_PATHS) - pull_request_paths(drift_workflow)
+    )
+    if missing_trigger_paths:
+        raise SystemExit(
+            f"{DRIFT_WORKFLOW} is missing required pull_request paths: "
+            f"{missing_trigger_paths}"
+        )
 
     critical = critical_tests(manifest)
     if not critical:
