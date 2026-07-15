@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.0] - Unreleased
+## [0.7.0] - 2026-07-15
 
 ### Changed
 
@@ -30,13 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added CI validation for the BUSL grant text, commercial-boundary notices,
   personal and agency limitations, package/license map, and Change Date policy,
   plus a license-boundary and contributor/copyright-risk audit.
-
-### Legal review required
-
-- The 0.7.0 Additional Use Grant is intended commercial policy and must be
-  reviewed by a qualified software-licensing lawyer before publication. This
-  release does not add signing keys, activation, telemetry, runtime entitlement
-  checks, billing, license servers, or other technical enforcement.
+- The licensing correction ships as legal terms only: this release adds no
+  signing keys, activation, telemetry, runtime entitlement checks, billing,
+  license servers, or other technical enforcement.
 
 ### Added
 

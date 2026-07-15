@@ -6,7 +6,7 @@ This is the canonical release-notes file used by release tooling.
 
 ### Licensing Boundary Correction
 
-Tandem 0.7.0 is planned to correct the Additional Use Grant for the protected
+Tandem 0.7.0 corrects the Additional Use Grant for the protected
 BUSL governance and enterprise components. Evaluation, development, testing,
 source inspection, genuine personal non-commercial use, and non-production
 proofs of concept remain permitted without charge. Commercial production use,
@@ -27,16 +27,15 @@ other protected components, so it now sits inside the same commercial
 boundary. The permissive protocol, SDK, client, and tooling crates are
 unchanged.
 
-This is a prospective change. Each released version remains governed by the
-license distributed with that release, including v0.6.9. Existing tags and
-release artifacts are not modified. The in-progress v0.7.0 BUSL license files
-are stamped with a new rolling Change Date; the release owner must verify it
-matches the final release date plus four years before publication.
+This change applies to 0.7.0 and later. Each released version remains governed
+by the license distributed with that release, including v0.6.9. Existing tags
+and release artifacts are not modified. The v0.7.0 BUSL license files carry a
+rolling Change Date of 2030-07-15 (release date plus four years), after which
+those versions convert to the Change License.
 
-The final grant requires review by a qualified software-licensing lawyer before
-publication. This release introduces no signing keys, activation, telemetry,
-runtime entitlement checks, billing, license servers, or other technical
-enforcement.
+The licensing change is legal terms only: this release introduces no signing
+keys, activation, telemetry, runtime entitlement checks, billing, or license
+servers.
 
 Tandem 0.7.0 turns Control Panel chat into a first-party product-authoring
 surface. A user can describe an automation or multi-workflow process in normal

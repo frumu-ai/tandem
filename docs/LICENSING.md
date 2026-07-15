@@ -27,12 +27,11 @@ exact terms, use the package-by-package table below.
   deployments, requires a separate commercial license from Frumu LTD.
 - If this document, the root `LICENSE`, and a package-local manifest or license file disagree, the package-local manifest and package-local license file control for that package.
 
-## Prospective licensing change for 0.7.0
+## Licensing change effective 0.7.0
 
 The corrected Additional Use Grant in the five package-local BUSL licenses is
-the intended policy for **0.7.0 and later**. It is a material commercial-policy
-change and must be reviewed by a qualified software-licensing lawyer before a
-release containing it is published.
+the policy for **0.7.0 and later**. It first shipped in the 0.7.0 release
+(2026-07-15).
 
 This change is prospective. Each released version remains governed by the
 license distributed with that version; it does not revoke, replace, or modify
@@ -239,11 +238,12 @@ earlier releases retain the licenses distributed with them.
 
 **Current source-tree BUSL Change Date:** `2030-07-15`.
 
-The `Change Date` in the shipped 0.6.9 license files is `2030-07-12` — the
-0.6.9 release date plus four years, per the rolling-window policy above. Before
-publication, the release owner must verify the current source-tree date is four
-years after the final 0.7.0 release date and use the existing release tooling
-to correct it if needed. Historical license files must never be rewritten.
+The `Change Date` in the shipped 0.6.9 license files is `2030-07-12`, and in
+the shipped 0.7.0 license files `2030-07-15` — each release date plus four
+years, per the rolling-window policy above. Before publishing any release, the
+release owner should verify the current source-tree date is four years after
+that release's date and use the existing release tooling to correct it if
+needed. Historical license files must never be rewritten.
 
 ## License Texts
 
@@ -260,8 +260,8 @@ No license in this repository grants trademark rights. See the
 
 See [Licensing Boundary and Contributor-Risk Audit](LICENSING_BOUNDARY_AUDIT.md)
 for the permissive packages that currently sit near the enterprise boundary,
-the factual contributor/copyright observations, and the legal questions that
-must be resolved before publishing 0.7.0.
+the factual contributor/copyright observations, and the open questions for
+counsel review.
 
 ## CI Enforcement
 

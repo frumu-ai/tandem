@@ -49,6 +49,10 @@ const legacyPhraseTokens = [
   ["managed competitive", "SaaS"],
   ["本地开发和内部部署"],
   ["竞争性 managed", "SaaS 销售"],
+  // Internal release-process language that must never ship in public
+  // release surfaces again (it leaked into the v0.7.0 release notes).
+  ["software-licensing", "lawyer"],
+  ["release owner", "must verify"],
 ];
 
 function read(relativePath) {
@@ -192,7 +196,7 @@ if (!rootLicense.includes("Commercial production use, including")) {
 
 const licensingDoc = read("docs/LICENSING.md");
 const requiredDocFragments = [
-  "the intended policy for **0.7.0 and later**",
+  "the policy for **0.7.0 and later**",
   "0.6.9 remains governed by its original",
   "it does not revoke, replace, or modify",
   "Personal or hobbyist use cannot be performed for an employer or client",
@@ -200,7 +204,6 @@ const requiredDocFragments = [
   "not a condition of\nthe public BUSL grant",
   "may charge for their own consulting",
   "no automatic production exemption based on organization\nsize",
-  "qualified software-licensing lawyer",
 ];
 for (const fragment of requiredDocFragments) {
   if (!licensingDoc.includes(fragment)) {
