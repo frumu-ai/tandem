@@ -619,6 +619,8 @@ tandem/
 
 简而言之：Tandem 是 open core。Permissive runtime、protocol、SDK 和 local tooling surfaces 是 open source；mission/plan compiler、recursive governance engine、incident monitor 和 enterprise server 在 Business Source License 条款下 source-available。
 
+本仓库中的任何 license 均不授予商标权。"Tandem"、"Frumu" 及相关 logos 是 Frumu LTD 的商标——使用政策见 [TRADEMARKS.md](TRADEMARKS.md)。
+
 ## 致谢
 
 - [Anthropic](https://anthropic.com) 提供 Cowork 方向的启发

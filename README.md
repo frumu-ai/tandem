@@ -612,6 +612,8 @@ This repository uses a mixed licensing model. [docs/LICENSING.md](docs/LICENSING
 
 In short: Tandem is open core. The permissive runtime, protocol, SDK, and local tooling surfaces are open source, while the mission/plan compiler, recursive governance engine, incident monitor, and enterprise server are source-available under Business Source License terms.
 
+None of the licenses in this repository grant trademark rights. "Tandem", "Frumu", and the associated logos are trademarks of Frumu LTD — see [TRADEMARKS.md](TRADEMARKS.md) for the usage policy.
+
 ## Acknowledgments
 
 - [Anthropic](https://anthropic.com) for the Cowork inspiration

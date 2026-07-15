@@ -6,7 +6,55 @@ Thank you for your interest in contributing to Tandem! This document provides gu
 
 Please be respectful and constructive in all interactions. We're building something together.
 
-## Getting Started
+## Licensing of Contributions and Developer Certificate of Origin
+
+This is a mixed-license repository (see [docs/LICENSING.md](docs/LICENSING.md)).
+By submitting a contribution you agree to the following terms, and CI enforces
+the sign-off that records that agreement.
+
+### Sign-off required (DCO)
+
+Every commit must be signed off:
+
+```bash
+git commit -s
+```
+
+This adds a `Signed-off-by: Your Name <your@email>` trailer certifying the
+[Developer Certificate of Origin 1.1](https://developercertificate.org/) —
+that you wrote the contribution or otherwise have the right to submit it
+under the license indicated in the file or package you are changing — **and**
+that you agree to the contribution licensing terms in this section. Commits
+without a matching sign-off fail the `DCO Sign-Off` CI check
+(`scripts/check-dco.mjs`).
+
+### Inbound license
+
+Unless you explicitly state otherwise, your contribution is licensed under
+the license of the package it modifies, as declared by that package's
+manifest and package-local `LICENSE` file (`MIT OR Apache-2.0` for the
+permissive packages, `BUSL-1.1` for the source-available packages).
+
+### Additional terms for the source-available (BUSL-1.1) packages
+
+The following packages are commercially licensed by Frumu LTD under the
+Business Source License 1.1:
+
+- `crates/tandem-plan-compiler`
+- `crates/tandem-governance-engine`
+- `crates/tandem-enterprise-server`
+- `crates/tandem-incident-monitor`
+
+By submitting a contribution that modifies any of these packages, you
+additionally grant Frumu LTD a perpetual, worldwide, non-exclusive,
+royalty-free, irrevocable right to use, reproduce, modify, distribute, and
+sublicense your contribution under licenses of Frumu LTD's choosing,
+including commercial licenses and future changes to the package license
+parameters. You retain copyright in your contribution.
+
+If you are not able or willing to grant these rights (for example, because
+your employer owns your work and has not approved), please do not submit
+changes to these packages — open an issue describing the change instead.
 
 ### Prerequisites
 

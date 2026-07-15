@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #![allow(dead_code)]
 // EAA-10 (TAN-35): shared request-body builders for the enterprise HTTP tests.
 use serde_json::json;

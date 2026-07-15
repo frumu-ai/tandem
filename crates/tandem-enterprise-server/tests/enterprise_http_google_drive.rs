@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #![allow(unused_imports, dead_code)]
 // EAA-10 (TAN-35): enterprise HTTP integration tests, owned by the crate that
 // owns the enterprise routes. The router under test is built from tandem-server's

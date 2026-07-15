@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub fn workflow_step_expects_connector_source_capture(
     step_id: &str,
     kind: &str,

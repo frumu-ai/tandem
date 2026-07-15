@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 fn value_string_array(value: &Value) -> Vec<String> {
     match value {
         Value::String(text) => text

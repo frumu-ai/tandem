@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #![allow(unused_imports, dead_code)]
 
 use axum::body::{to_bytes, Body};

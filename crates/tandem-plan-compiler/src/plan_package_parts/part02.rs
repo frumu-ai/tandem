@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub fn derive_model_routing_resolution_for_plan(plan: &PlanPackage) -> ModelRoutingReport {
     let mut entries = plan
         .routine_graph

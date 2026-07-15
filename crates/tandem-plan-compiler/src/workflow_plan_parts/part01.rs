@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use crate::contracts::{research_output_contract_policy_seed, ProjectedOutputValidatorKind};
 use crate::decomposition::{
     derive_step_decomposition_hints, derive_workflow_decomposition_profile,

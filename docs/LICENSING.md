@@ -247,6 +247,10 @@ to correct it if needed. Historical license files must never be rewritten.
 - Apache 2.0 text: `LICENSE-APACHE`
 - Business Source License 1.1 terms: package-local `LICENSE` files in each `BUSL-1.1` component
 
+No license in this repository grants trademark rights. See the
+[Frumu LTD Trademark Policy](../TRADEMARKS.md) for use of the "Tandem" and
+"Frumu" names and logos.
+
 ## Boundary and contributor review
 
 See [Licensing Boundary and Contributor-Risk Audit](LICENSING_BOUNDARY_AUDIT.md)

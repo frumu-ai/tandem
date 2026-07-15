@@ -464,6 +464,19 @@ jobs:
             apps/tandem-desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
           if-no-files-found: ignore
 
+  dco:
+    name: DCO Sign-Off
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Developer Certificate of Origin sign-offs
+        run: node scripts/check-dco.mjs
+
   docs-validate:
     name: Validate Docs
     runs-on: ubuntu-latest

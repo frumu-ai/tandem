@@ -145,6 +145,32 @@ for (const packageName of protectedBuslPackages) {
   }
 }
 
+// Every Rust source file in a protected package must carry the Frumu LTD
+// copyright and BUSL header so file-level provenance is unambiguous.
+function rustFiles(dir) {
+  const absolute = path.join(repoRoot, dir);
+  if (!fs.existsSync(absolute)) return [];
+  return fs.readdirSync(absolute, { withFileTypes: true }).flatMap((entry) => {
+    const child = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) {
+      return entry.name === "target" ? [] : rustFiles(child);
+    }
+    return entry.name.endsWith(".rs") ? [child] : [];
+  });
+}
+
+for (const packageName of protectedBuslPackages) {
+  for (const file of rustFiles(`crates/${packageName}`)) {
+    const head = read(file).slice(0, 400);
+    if (
+      !head.includes("Copyright (c) 2026 Frumu LTD") ||
+      !head.includes("Licensed under the Business Source License 1.1")
+    ) {
+      problems.push(`${file} is missing the Frumu LTD BUSL copyright header`);
+    }
+  }
+}
+
 if (new Set(grants.map(({ grant }) => grant)).size !== 1) {
   problems.push("Protected BUSL packages do not use identical Additional Use Grants");
 }
