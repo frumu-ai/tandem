@@ -184,6 +184,60 @@ async fn enterprise_allow_does_not_bypass_server_ask_permission() {
 }
 
 #[tokio::test]
+async fn enterprise_approval_is_not_created_without_server_allow_permission() {
+    let state = test_state().await;
+    state
+        .tools
+        .register_tool(
+            "echo_global_execute_args".to_string(),
+            std::sync::Arc::new(EchoGlobalExecuteArgsTool),
+        )
+        .await;
+    let rule = tandem_enterprise_contract::EnterprisePolicyRule::new(
+        "global-http-dead-approval",
+        "global-http-policy",
+        tandem_enterprise_contract::EnterprisePolicyScopeLevel::Enterprise,
+        tandem_enterprise_contract::EnterprisePolicyEffect::ApprovalRequired,
+    )
+    .with_tool_patterns(vec!["echo_global_execute_args".to_string()])
+    .with_approval_id("global-http-review");
+    state
+        .enterprise
+        .policy_rules
+        .write()
+        .await
+        .insert(rule.rule_id.clone(), rule);
+
+    let app = app_router(state.clone());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/tool/execute")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "tool": "echo_global_execute_args",
+                "args": { "value": "must-not-create-dead-approval" }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+
+    let response = app.oneshot(request).await.expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let approvals = state
+        .list_approval_requests_for_tenant(
+            None,
+            None,
+            &tandem_types::TenantContext::local_implicit(),
+        )
+        .await;
+    assert!(
+        approvals.is_empty(),
+        "server Ask permissions must not create approvals that can never authorize execution"
+    );
+}
+
+#[tokio::test]
 async fn tool_execute_client_scope_cannot_grant_server_permission() {
     let state = test_state().await;
     state
