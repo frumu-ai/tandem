@@ -493,7 +493,10 @@ impl GovernedToolDispatcher {
                 error: Some(reason.clone()),
             })
             .await?;
-            return Err(anyhow!("ToolDenied {{ reason: TenantScope }}: {reason}"));
+            return Err(anyhow::Error::new(ToolDispatchBlocked {
+                decision,
+                message: format!("ToolDenied {{ reason: TenantScope }}: {reason}"),
+            }));
         }
         if !context.scope_allowlist.is_empty()
             && !scope_allows_tool(
@@ -519,7 +522,10 @@ impl GovernedToolDispatcher {
                 error: Some(reason.clone()),
             })
             .await?;
-            return Err(anyhow!(reason));
+            return Err(anyhow::Error::new(ToolDispatchBlocked {
+                decision,
+                message: reason,
+            }));
         }
 
         let policy_context = ToolDispatchPolicyContext {
@@ -1409,6 +1415,10 @@ mod tests {
             .await
             .expect_err("allowlist should block");
         assert!(err.to_string().contains("ScopeAllowlist"));
+        let blocked = err
+            .downcast_ref::<ToolDispatchBlocked>()
+            .expect("scope denial must preserve structured dispatch metadata");
+        assert_eq!(blocked.decision.outcome, ToolDispatchPolicyOutcome::Denied);
         let events = ledger.events.lock().expect("ledger lock");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].status, ToolDispatchStatus::Blocked);
@@ -1947,6 +1957,10 @@ mod tests {
             .await
             .expect_err("tenant mismatch should block");
         assert!(err.to_string().contains("TenantScope"));
+        let blocked = err
+            .downcast_ref::<ToolDispatchBlocked>()
+            .expect("tenant denial must preserve structured dispatch metadata");
+        assert_eq!(blocked.decision.outcome, ToolDispatchPolicyOutcome::Denied);
         let events = ledger.events.lock().expect("ledger lock");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].status, ToolDispatchStatus::Blocked);

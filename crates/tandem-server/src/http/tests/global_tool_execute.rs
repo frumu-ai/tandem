@@ -267,6 +267,44 @@ async fn tool_execute_client_scope_cannot_grant_server_permission() {
 }
 
 #[tokio::test]
+async fn tool_execute_scope_denial_returns_structured_forbidden_response() {
+    let state = test_state().await;
+    state
+        .tools
+        .register_tool(
+            "echo_global_execute_args".to_string(),
+            std::sync::Arc::new(EchoGlobalExecuteArgsTool),
+        )
+        .await;
+    let app = app_router(state);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/tool/execute")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "tool": "echo_global_execute_args",
+                "scopeAllowlist": ["different_tool"],
+                "args": { "value": "must-not-run" }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+
+    let response = app.oneshot(request).await.expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("JSON response");
+    assert_eq!(payload["code"], "TOOL_DISPATCH_DENIED");
+    assert_eq!(payload["outcome"], "denied");
+    assert!(payload["reason"]
+        .as_str()
+        .is_some_and(|reason| reason.contains("ScopeAllowlist")));
+}
+
+#[tokio::test]
 async fn tool_execute_returns_structured_pending_approval_without_running_tool() {
     let state = test_state().await;
     state
