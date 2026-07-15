@@ -787,6 +787,7 @@ mod incident_monitor_webhook_tests {
             "incident-primary",
             &url,
             None,
+            Some("env:TANDEM_WEBHOOK_SECRET"),
             "delivery-1",
             "idempotency-1",
             b"Incident summary",
@@ -800,6 +801,12 @@ mod incident_monitor_webhook_tests {
         assert!(report.external_action);
         assert!(!report.has_class(DataClass::Credential));
         assert!(args.get("secret_ref").is_none());
+        assert_eq!(
+            args.get("signing_ref_sha256")
+                .and_then(serde_json::Value::as_str)
+                .map(str::len),
+            Some(64)
+        );
     }
 }
 

@@ -45,6 +45,7 @@ pub(crate) fn incident_monitor_webhook_dispatch_args(
     destination_id: &str,
     url: &Url,
     config: Option<&Value>,
+    signing_ref: Option<&str>,
     delivery_id: &str,
     idempotency_key: &str,
     body: &[u8],
@@ -53,10 +54,18 @@ pub(crate) fn incident_monitor_webhook_dispatch_args(
         "destination_id": destination_id,
         "url": url.as_str(),
         "config": config,
+        "signing_ref_sha256": webhook_signing_ref_binding(signing_ref),
         "delivery_id": delivery_id,
         "idempotency_key": idempotency_key,
         "body": String::from_utf8_lossy(body),
     })
+}
+
+fn webhook_signing_ref_binding(signing_ref: Option<&str>) -> Option<String> {
+    signing_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| sha256_hex(&["incident_monitor_webhook_signing_ref_v1", value]))
 }
 
 #[derive(Clone)]
@@ -116,7 +125,13 @@ impl Tool for IncidentMonitorWebhookDispatchTool {
                 .ok_or_else(|| anyhow::anyhow!("webhook URL is missing"))?,
         )?;
         let requested_config = args.get("config").filter(|value| !value.is_null());
-        if configured_url != url || requested_config != destination.config.as_ref() {
+        let requested_signing_ref = args.get("signing_ref_sha256").and_then(Value::as_str);
+        let configured_signing_ref =
+            webhook_signing_ref_binding(destination.webhook_secret_ref.as_deref());
+        if configured_url != url
+            || requested_config != destination.config.as_ref()
+            || requested_signing_ref != configured_signing_ref.as_deref()
+        {
             anyhow::bail!("webhook destination changed after policy evaluation");
         }
         let policy = WebhookPolicy::from_config(destination.config.as_ref());
@@ -686,6 +701,7 @@ async fn publish_claimed_webhook(
                 &destination.destination_id,
                 parsed_url,
                 destination.config.as_ref(),
+                destination.webhook_secret_ref.as_deref(),
                 delivery_id,
                 idempotency_key,
                 &body,
@@ -1614,6 +1630,31 @@ async fn mirror_webhook_post_as_external_action(
 #[cfg(test)]
 mod webhook_retry_tests {
     use super::*;
+
+    #[test]
+    fn webhook_dispatch_binds_signing_ref_without_exposing_it() {
+        let url = Url::parse("https://hooks.example.com/incidents").unwrap();
+        let original_ref = "env:TANDEM_WEBHOOK_SECRET_A";
+        let args = incident_monitor_webhook_dispatch_args(
+            "incident-primary",
+            &url,
+            None,
+            Some(original_ref),
+            "delivery-1",
+            "idempotency-1",
+            b"Incident summary",
+        );
+
+        assert_eq!(
+            args.get("signing_ref_sha256").and_then(Value::as_str),
+            webhook_signing_ref_binding(Some(original_ref)).as_deref()
+        );
+        assert_ne!(
+            args.get("signing_ref_sha256").and_then(Value::as_str),
+            webhook_signing_ref_binding(Some("env:TANDEM_WEBHOOK_SECRET_B")).as_deref()
+        );
+        assert!(!args.to_string().contains(original_ref));
+    }
 
     fn failed_post(retryable: Option<bool>) -> IncidentMonitorPostRecord {
         let attempt = match retryable {
