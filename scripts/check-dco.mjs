@@ -3,7 +3,12 @@
 // Enforces the Developer Certificate of Origin (DCO) sign-off policy
 // described in CONTRIBUTING.md: every human-authored commit in the range
 // under review must carry a Signed-off-by trailer matching the commit
-// author. Bot-authored commits (e.g. release automation) are exempt.
+// author. Only the allowlisted automation identities below are exempt.
+//
+// Merge commits are skipped, matching standard DCO tooling: GitHub's
+// "Update branch" button and merge queue create merge commits without
+// sign-off trailers, and the merged changes themselves are validated in
+// the non-merge commits that introduced them.
 //
 // Range selection:
 //   - In a pull request, GITHUB_BASE_REF is set and the range is
@@ -15,6 +20,16 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 
 const baseRef = process.env.GITHUB_BASE_REF || "main";
+
+// Exact author emails of repository-operated automation. Do NOT loosen this
+// to a pattern like /\[bot\]/ — author metadata is contributor-controlled,
+// and a broad match would let anyone bypass the sign-off check by naming
+// themselves a bot.
+const EXEMPT_AUTHOR_EMAILS = new Set([
+  "41898282+github-actions[bot]@users.noreply.github.com",
+  "github-actions[bot]@users.noreply.github.com",
+  "49699333+dependabot[bot]@users.noreply.github.com",
+]);
 
 function git(...args) {
   const result = spawnSync("git", args, { encoding: "utf8" });
@@ -44,9 +59,9 @@ for (const record of log.split(RS)) {
   const [hash, authorName, authorEmail, , body] = trimmed.split(FS);
   const shortHash = hash.slice(0, 10);
 
-  // Automation identities are exempt: DCO certifies third-party provenance,
-  // and bot commits are produced by repository-owned tooling.
-  if (/\[bot\]/i.test(authorName) || /\[bot\]/i.test(authorEmail)) continue;
+  // Allowlisted automation identities are exempt: DCO certifies third-party
+  // provenance, and these commits are produced by repository-owned tooling.
+  if (EXEMPT_AUTHOR_EMAILS.has(authorEmail.toLowerCase())) continue;
 
   checked += 1;
   const signoffs = [...body.matchAll(/^Signed-off-by:\s*(.+?)\s*<(.+?)>\s*$/gim)];

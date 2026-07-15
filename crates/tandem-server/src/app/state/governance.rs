@@ -1687,7 +1687,6 @@ impl AppState {
 
         Ok(finding_count)
     }
-
 }
 
 include!("governance_parts/part01.rs");
