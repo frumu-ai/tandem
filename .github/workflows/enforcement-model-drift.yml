@@ -1,0 +1,61 @@
+name: Enforcement Model Drift
+
+on:
+  pull_request:
+    paths:
+      - "guide/src/content/docs/policy-and-enforcement-model.md"
+      - ".github/governance-audit-critical-tests.txt"
+      - "crates/tandem-enterprise-contract/src/policy_predicates.rs"
+      - "crates/tandem-tools/src/tool_dispatcher.rs"
+      - "crates/tandem-automation/src/orchestration.rs"
+      - "crates/tandem-server/src/agent_teams_parts/**"
+      - "crates/tandem-server/src/app/state/app_state_impl_parts/part01.rs"
+      - "crates/tandem-server/src/app/state/automation_v2_wait_nodes.rs"
+      - "crates/tandem-server/src/app/state/governance_action_gate.rs"
+      - "crates/tandem-server/src/app/state/mod.rs"
+      - "crates/tandem-server/src/app/state/tool_dispatch_outbox.rs"
+      - "crates/tandem-server/src/benchmarking/mod.rs"
+      - "crates/tandem-server/src/http/coder_parts/part05.rs"
+      - "crates/tandem-server/src/http/governance.rs"
+      - "crates/tandem-server/src/http/mcp.rs"
+      - "crates/tandem-server/src/http/mcp_run_as.rs"
+      - "crates/tandem-server/src/http/tests/governance_parts/**"
+      - "crates/tandem-server/src/incident_monitor_*.rs"
+      - "crates/tandem-runtime/src/mcp_parts/part01.rs"
+      - "scripts/check_enforcement_model_drift.py"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Load trusted drift checker
+        id: checker
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          checker="$RUNNER_TEMP/check_enforcement_model_drift.py"
+          if git cat-file -e "$BASE_SHA:scripts/check_enforcement_model_drift.py" 2>/dev/null; then
+            git show "$BASE_SHA:scripts/check_enforcement_model_drift.py" > "$checker"
+            echo "source=trusted-base" >> "$GITHUB_OUTPUT"
+          else
+            cp scripts/check_enforcement_model_drift.py "$checker"
+            echo "source=bootstrap-candidate" >> "$GITHUB_OUTPUT"
+          fi
+          echo "path=$checker" >> "$GITHUB_OUTPUT"
+      - name: Run trusted drift checker
+        run: >-
+          python '${{ steps.checker.outputs.path }}'
+          --base-ref '${{ github.event.pull_request.base.sha }}'
+      - name: Validate candidate drift checker
+        run: |
+          python -m py_compile scripts/check_enforcement_model_drift.py
+          python scripts/check_enforcement_model_drift.py \
+            --base-ref '${{ github.event.pull_request.base.sha }}'
