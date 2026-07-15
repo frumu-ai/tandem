@@ -493,6 +493,9 @@ jobs:
       - name: Verify license map
         run: node scripts/verify-license-map.mjs
 
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ripgrep
+
       - name: Verify licensing terms
         run: node scripts/verify-licensing-terms.mjs
 
