@@ -20,25 +20,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Require machine-readable task scope
-        run: test -f .tandem/task-scope.json
-
-      - name: Select trusted scope guard
+      - name: Load trusted guard and proposed scope
         id: guard
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           guard="$RUNNER_TEMP/task_scope_guard.py"
-          if git cat-file -e "$BASE_SHA:scripts/task_scope_guard.py" 2>/dev/null; then
-            git show "$BASE_SHA:scripts/task_scope_guard.py" > "$guard"
-            echo "source=base" >> "$GITHUB_OUTPUT"
-          else
-            cp scripts/task_scope_guard.py "$guard"
-            echo "source=bootstrap-head" >> "$GITHUB_OUTPUT"
-          fi
+          scope="$RUNNER_TEMP/task-scope.json"
+          git cat-file -e "$BASE_SHA:scripts/task_scope_guard.py"
+          git cat-file -e "$BASE_SHA:.tandem/approved-task-scopes.json"
+          git cat-file -e "$HEAD_SHA:.tandem/task-scope.json"
+          git show "$BASE_SHA:scripts/task_scope_guard.py" > "$guard"
+          git show "$HEAD_SHA:.tandem/task-scope.json" > "$scope"
           echo "path=$guard" >> "$GITHUB_OUTPUT"
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
 
       - name: Extract linked issue scope
         id: issues
@@ -64,7 +62,10 @@ jobs:
           for issue in "${issue_ids[@]}"; do
             test -z "$issue" || args+=(--issue "$issue")
           done
-          python '${{ steps.guard.outputs.path }}' --scope .tandem/task-scope.json \
+          python '${{ steps.guard.outputs.path }}' \
+            --scope '${{ steps.guard.outputs.scope }}' \
+            --trust-registry .tandem/approved-task-scopes.json \
+            --trust-ref '${{ github.event.pull_request.base.sha }}' \
             preflight "${args[@]}" --receipt "$RUNNER_TEMP/task-scope-preflight.json"
 
       - name: Enforce final PR diff and linked issues
@@ -76,7 +77,10 @@ jobs:
           for issue in "${issue_ids[@]}"; do
             test -z "$issue" || args+=(--linked-issue "$issue")
           done
-          python '${{ steps.guard.outputs.path }}' --scope .tandem/task-scope.json diff \
+          python '${{ steps.guard.outputs.path }}' \
+            --scope '${{ steps.guard.outputs.scope }}' \
+            --trust-registry .tandem/approved-task-scopes.json \
+            --trust-ref '${{ github.event.pull_request.base.sha }}' diff \
             --base '${{ github.event.pull_request.base.sha }}' \
             --head '${{ github.event.pull_request.head.sha }}' \
             "${args[@]}" --receipt "$RUNNER_TEMP/task-scope-diff.json"
