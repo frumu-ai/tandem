@@ -9,9 +9,11 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use tandem_core::tool_name_security_descriptor;
 use tandem_runtime::{McpAuthChallenge, McpPrincipalRef};
-use tandem_tools::ToolDispatchSource;
 use tandem_types::{RequestPrincipal, StrictTenantContext, TenantContext, VerifiedTenantContext};
 use uuid::Uuid;
+
+mod dispatch;
+pub(crate) use dispatch::dispatch_mcp_tool_for_tenant;
 
 pub(crate) use super::mcp_run_as::{
     call_mcp_tool_for_tenant_with_audit, call_mcp_tool_for_tenant_with_verified_context,
@@ -1434,38 +1436,6 @@ pub(crate) async fn sync_mcp_tools_for_server_for_tenant(
         .len();
     let _ = resync_mcp_bridge_tools_for_server(state, name).await;
     scoped_count
-}
-
-/// Execute a discovered MCP tool through the server's central dispatch path.
-///
-/// System-initiated services use this entry point instead of calling the raw
-/// MCP registry so policy, outbox, and dispatch receipts cannot be skipped.
-pub(crate) async fn dispatch_mcp_tool_for_tenant(
-    state: &AppState,
-    server_name: &str,
-    tool_name: &str,
-    args: Value,
-    tenant_context: TenantContext,
-    source: ToolDispatchSource,
-) -> anyhow::Result<ToolResult> {
-    let remote = state
-        .mcp
-        .server_tools_for_tenant(server_name, &tenant_context)
-        .await
-        .into_iter()
-        .find(|tool| tool.tool_name == tool_name || tool.namespaced_name == tool_name)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "MCP tool `{tool_name}` is not available for server `{server_name}` in this tenant"
-            )
-        })?;
-    let _ = resync_mcp_bridge_tools_for_server(state, server_name).await;
-    let dispatch_name = remote.namespaced_name;
-    let context = state.tool_dispatch_context(source, tenant_context, vec![dispatch_name.clone()]);
-    state
-        .tool_dispatcher
-        .dispatch(&dispatch_name, args, context)
-        .await
 }
 
 async fn resync_mcp_bridge_tools_for_server(state: &AppState, name: &str) -> (usize, usize) {

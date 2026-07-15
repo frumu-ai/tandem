@@ -645,7 +645,6 @@ struct GithubProjectsAdapter<'a> {
     state: &'a AppState,
     tenant_context: tandem_types::TenantContext,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GithubProjectIssueSummary {
     number: u64,
@@ -665,10 +664,7 @@ struct GithubProjectInboxItemRecord {
 
 impl<'a> GithubProjectsAdapter<'a> {
     fn new(state: &'a AppState, tenant_context: tandem_types::TenantContext) -> Self {
-        Self {
-            state,
-            tenant_context,
-        }
+        Self { state, tenant_context }
     }
 }
 

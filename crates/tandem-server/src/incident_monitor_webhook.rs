@@ -94,7 +94,7 @@ impl Tool for IncidentMonitorWebhookDispatchTool {
             body,
         )
         .await
-        .map_err(|error| anyhow::anyhow!(error.detail))?;
+        .map_err(anyhow::Error::new)?;
         let attempts = sent
             .attempts
             .iter()
@@ -223,6 +223,14 @@ struct WebhookSendFailure {
     detail: String,
     attempts: Vec<WebhookSendAttempt>,
 }
+
+impl std::fmt::Display for WebhookSendFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for WebhookSendFailure {}
 
 #[derive(Debug, Clone, Default)]
 struct WebhookResolvedTarget {
@@ -652,9 +660,12 @@ async fn publish_claimed_webhook(
                 .and_then(|value| serde_json::from_value(value).ok())
                 .unwrap_or_default(),
         })
-        .map_err(|error| WebhookSendFailure {
-            detail: error.to_string(),
-            attempts: Vec::new(),
+        .map_err(|error| match error.downcast::<WebhookSendFailure>() {
+            Ok(failure) => failure,
+            Err(error) => WebhookSendFailure {
+                detail: error.to_string(),
+                attempts: Vec::new(),
+            },
         });
     match send_result {
         Ok(sent) => {
