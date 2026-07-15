@@ -44,6 +44,15 @@ DRIFT_TRIGGER_PATHS = (
     "crates/tandem-runtime/src/mcp_parts/part01.rs",
     "scripts/check_enforcement_model_drift.py",
 )
+DIRECT_MCP_AUDIT_PATHS = (
+    "crates/tandem-server/src/http/coder_parts/part05.rs",
+    "crates/tandem-server/src/pack_builder_parts",
+    "crates/tandem-server/src/benchmarking/mod.rs",
+    "crates/tandem-server/src/incident_monitor_github.rs",
+    "crates/tandem-server/src/incident_monitor_linear.rs",
+    "crates/tandem-server/src/incident_monitor_mcp.rs",
+    "crates/tandem-server/src/incident_monitor_webhook.rs",
+)
 RUST_TEST_DEFINITION = re.compile(
     r"(?m)^(?P<attrs>(?:\s*#\[[^\n]+\]\s*\n)+)"
     r"\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+"
@@ -176,10 +185,10 @@ def main(base_ref: str | None = None) -> None:
         ".github/governance-audit-critical-tests.txt",
         "governance_routes_fail_closed_without_premium_governance",
         "direct_mcp_calls=",
-        "crates/tandem-server/src/pack_builder_parts",
-        "crates/tandem-server/src/incident_monitor_mcp.rs",
     ):
         require(engine_ci, marker, ENGINE_CI)
+    for path in DIRECT_MCP_AUDIT_PATHS:
+        require(engine_ci, path, ENGINE_CI)
 
     require(
         server_policy,
