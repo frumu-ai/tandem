@@ -10,6 +10,7 @@ from pathlib import Path
 PAGE = Path("guide/src/content/docs/policy-and-enforcement-model.md")
 MANIFEST = Path(".github/governance-audit-critical-tests.txt")
 ENGINE_CI = Path(".github/workflows/engine-ci.yml")
+DRIFT_WORKFLOW = Path(".github/workflows/enforcement-model-drift.yml")
 RUST_TEST_DEFINITION = re.compile(
     r"(?m)^(?P<attrs>(?:\s*#\[[^\n]+\]\s*\n)+)"
     r"\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+"
@@ -70,6 +71,7 @@ def main(base_ref: str | None = None) -> None:
     page = PAGE.read_text(encoding="utf-8")
     manifest = MANIFEST.read_text(encoding="utf-8")
     engine_ci = ENGINE_CI.read_text(encoding="utf-8")
+    drift_workflow = DRIFT_WORKFLOW.read_text(encoding="utf-8")
     server_policy = Path("crates/tandem-server/src/agent_teams_parts/part01.rs").read_text(
         encoding="utf-8"
     )
@@ -90,8 +92,23 @@ def main(base_ref: str | None = None) -> None:
         "Dispatch receipts",
         "Credential injection",
         "System-initiated service calls",
+        "Boot composition guard",
     ):
         require(page, marker, PAGE)
+
+    for marker in (
+        ".github/workflows/enforcement-model-drift.yml",
+        ".github/workflows/engine-ci.yml",
+        ".github/governance-audit-critical-tests.txt",
+        "crates/tandem-automation/src/types_tests.rs",
+        "crates/tandem-server/src/app/state/tests/**",
+        "crates/tandem-server/src/http/tests/approval_gate_matrix.rs",
+        "crates/tandem-server/src/http/tests/governance_parts/**",
+        "crates/tandem-server/src/pack_builder_parts/**",
+        "crates/tandem-server/src/incident_monitor_*.rs",
+        "scripts/check_enforcement_model_drift.py",
+    ):
+        require(drift_workflow, marker, DRIFT_WORKFLOW)
 
     critical = critical_tests(manifest)
     if not critical:
