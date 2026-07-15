@@ -50,6 +50,7 @@ pub(crate) async fn dispatch_mcp_tool(
         tool_name,
         args,
         draft_tenant_context(draft),
+        None,
         source,
     )
     .await

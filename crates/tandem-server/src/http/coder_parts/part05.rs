@@ -176,6 +176,7 @@ impl<'a> GithubProjectsAdapter<'a> {
                 "project_number": request.project_number,
             }),
             self.tenant_context.clone(),
+            self.verified_tenant_context.clone(),
             tandem_tools::ToolDispatchSource::new("coder_github_project_bind"),
         )
             .await
@@ -219,6 +220,7 @@ impl<'a> GithubProjectsAdapter<'a> {
                 "project_number": binding.project_number,
             }),
             self.tenant_context.clone(),
+            self.verified_tenant_context.clone(),
             tandem_tools::ToolDispatchSource::new("coder_github_project_inbox"),
         )
             .await
@@ -268,6 +270,7 @@ impl<'a> GithubProjectsAdapter<'a> {
                 "single_select_option_id": option.id,
             }),
             self.tenant_context.clone(),
+            self.verified_tenant_context.clone(),
             tandem_tools::ToolDispatchSource::new("coder_github_project_status_sync"),
         )
             .await

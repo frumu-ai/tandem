@@ -584,6 +584,7 @@ async fn sync_summary_to_notion(
         &tool.tool_name,
         payload,
         TenantContext::local_implicit(),
+        None,
         ToolDispatchSource::new("benchmarking_notion_sync").run(summary.run_id.clone()),
     )
     .await

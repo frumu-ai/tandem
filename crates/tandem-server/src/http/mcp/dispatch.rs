@@ -1,6 +1,6 @@
 use serde_json::Value;
-use tandem_tools::ToolDispatchSource;
-use tandem_types::{TenantContext, ToolResult};
+use tandem_tools::{ToolDispatchContext, ToolDispatchSource};
+use tandem_types::{TenantContext, ToolResult, VerifiedTenantContext};
 
 use crate::AppState;
 
@@ -16,6 +16,7 @@ pub(crate) async fn dispatch_mcp_tool_for_tenant(
     tool_name: &str,
     args: Value,
     tenant_context: TenantContext,
+    verified_tenant_context: Option<VerifiedTenantContext>,
     source: ToolDispatchSource,
 ) -> anyhow::Result<ToolResult> {
     state
@@ -44,12 +45,27 @@ pub(crate) async fn dispatch_mcp_tool_for_tenant(
         })?;
     let _bridge_guard = ensure_mcp_bridge_tool_for_dispatch(state, &remote).await?;
     let dispatch_name = remote.namespaced_name;
-    let context = state.tool_dispatch_context(source, tenant_context, vec![dispatch_name.clone()]);
+    let context = attach_verified_tenant_context(
+        state.tool_dispatch_context(source, tenant_context, vec![dispatch_name.clone()]),
+        verified_tenant_context,
+    );
     let result = state
         .tool_dispatcher
         .dispatch(&dispatch_name, args, context)
         .await?;
     require_registered_dispatch_result(result, &dispatch_name)
+}
+
+fn attach_verified_tenant_context(
+    context: ToolDispatchContext,
+    verified_tenant_context: Option<VerifiedTenantContext>,
+) -> ToolDispatchContext {
+    match verified_tenant_context {
+        Some(verified_tenant_context) => {
+            context.with_verified_tenant_context(verified_tenant_context)
+        }
+        None => context,
+    }
 }
 
 fn require_registered_dispatch_result(
@@ -67,9 +83,42 @@ fn require_registered_dispatch_result(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use tandem_types::ToolResult;
+    use tandem_tools::ToolDispatchContext;
+    use tandem_types::{AuthorityChain, HumanActor, RequestPrincipal, TenantContext, ToolResult};
 
-    use super::require_registered_dispatch_result;
+    use super::{attach_verified_tenant_context, require_registered_dispatch_result};
+
+    #[test]
+    fn request_principal_survives_governed_mcp_context_building() {
+        let tenant_context =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "actor-a");
+        let verified = tandem_types::VerifiedTenantContext {
+            tenant_context: tenant_context.clone(),
+            human_actor: HumanActor::tandem_user("actor-a"),
+            authority_chain: AuthorityChain::from_request(RequestPrincipal::authenticated_user(
+                "actor-a",
+                "tandem-web",
+            )),
+            roles: Vec::new(),
+            org_units: Vec::new(),
+            capabilities: Vec::new(),
+            policy_version: None,
+            strict_projection: None,
+            issuer: "tandem-web".to_string(),
+            audience: "tandem-runtime".to_string(),
+            issued_at_ms: 1_000,
+            expires_at_ms: 9_999_999_999_999,
+            assertion_id: "assertion-mcp-request".to_string(),
+            assertion_key_id: None,
+        };
+
+        let context = attach_verified_tenant_context(
+            ToolDispatchContext::for_tenant("coder_request", tenant_context),
+            Some(verified.clone()),
+        );
+
+        assert_eq!(context.verified_tenant_context, Some(verified));
+    }
 
     #[test]
     fn stale_bridge_unknown_tool_result_fails_closed() {

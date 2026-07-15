@@ -397,6 +397,9 @@ pub(super) async fn coder_project_run_list(
 pub(super) async fn coder_project_binding_put(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<
+        axum::extract::Extension<tandem_types::VerifiedTenantContext>,
+    >,
     Path(project_id): Path<String>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -419,7 +422,11 @@ pub(super) async fn coder_project_binding_put(
     repo_binding.project_id = project_id.to_string();
     let github_project_binding = match parsed.github_project_binding {
         Some(request) => Some(
-            GithubProjectsAdapter::new(&state, tenant_context)
+            GithubProjectsAdapter::new(
+                &state,
+                tenant_context,
+                verified_tenant_context.map(|context| context.0),
+            )
                 .discover_binding(&request)
                 .await?,
         ),
@@ -441,6 +448,9 @@ pub(super) async fn coder_project_binding_put(
 pub(super) async fn coder_project_github_project_inbox(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<
+        axum::extract::Extension<tandem_types::VerifiedTenantContext>,
+    >,
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     let project_id = project_id.trim();
@@ -454,7 +464,11 @@ pub(super) async fn coder_project_github_project_inbox(
         .github_project_binding
         .clone()
         .ok_or(StatusCode::CONFLICT)?;
-    let adapter = GithubProjectsAdapter::new(&state, tenant_context);
+    let adapter = GithubProjectsAdapter::new(
+        &state,
+        tenant_context,
+        verified_tenant_context.map(|context| context.0),
+    );
     let live_binding = adapter
         .discover_binding(&CoderGithubProjectBindingRequest {
             owner: github_project_binding.owner.clone(),
@@ -557,6 +571,9 @@ pub(super) async fn coder_project_github_project_inbox(
 pub(super) async fn coder_project_github_project_intake(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<
+        axum::extract::Extension<tandem_types::VerifiedTenantContext>,
+    >,
     Path(project_id): Path<String>,
     Json(input): Json<CoderGithubProjectIntakeInput>,
 ) -> Result<Response, StatusCode> {
@@ -591,7 +608,11 @@ pub(super) async fn coder_project_github_project_intake(
             .into_response());
         }
     }
-    let adapter = GithubProjectsAdapter::new(&state, tenant_context.clone());
+    let adapter = GithubProjectsAdapter::new(
+        &state,
+        tenant_context.clone(),
+        verified_tenant_context.map(|context| context.0),
+    );
     let items = adapter.list_inbox_items(&github_project_binding).await?;
     let item = items
         .into_iter()

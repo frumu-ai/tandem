@@ -644,6 +644,7 @@ pub(super) struct CoderFollowOnRunCreateInput {
 struct GithubProjectsAdapter<'a> {
     state: &'a AppState,
     tenant_context: tandem_types::TenantContext,
+    verified_tenant_context: Option<tandem_types::VerifiedTenantContext>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GithubProjectIssueSummary {
@@ -663,8 +664,16 @@ struct GithubProjectInboxItemRecord {
 }
 
 impl<'a> GithubProjectsAdapter<'a> {
-    fn new(state: &'a AppState, tenant_context: tandem_types::TenantContext) -> Self {
-        Self { state, tenant_context }
+    fn new(
+        state: &'a AppState,
+        tenant_context: tandem_types::TenantContext,
+        verified_tenant_context: Option<tandem_types::VerifiedTenantContext>,
+    ) -> Self {
+        Self {
+            state,
+            tenant_context,
+            verified_tenant_context,
+        }
     }
 }
 
@@ -965,7 +974,7 @@ async fn maybe_sync_github_project_status(
     }
     let target_option =
         context_status_to_project_option(&project_ref.status_mapping, &context_run.status);
-    let adapter = GithubProjectsAdapter::new(state, context_run.tenant_context.clone());
+    let adapter = GithubProjectsAdapter::new(state, context_run.tenant_context.clone(), None);
     match adapter
         .update_project_item_status(
             &project_binding,
