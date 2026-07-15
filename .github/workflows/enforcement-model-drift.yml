@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "guide/src/content/docs/policy-and-enforcement-model.md"
+      - ".github/workflows/enforcement-model-drift.yml"
+      - ".github/workflows/engine-ci.yml"
       - ".github/governance-audit-critical-tests.txt"
       - "crates/tandem-enterprise-contract/src/policy_predicates.rs"
       - "crates/tandem-tools/src/tool_dispatcher.rs"
