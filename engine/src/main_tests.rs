@@ -148,6 +148,7 @@ async fn cli_dispatch_ledger_persists_jsonl_receipts() {
             policy_outcome: tandem_tools::ToolDispatchPolicyOutcome::Denied,
             receipt_phase: tandem_tools::ToolDispatchReceiptPhase::PolicyDecision,
             policy_decision_id: None,
+            approval_requirement: None,
             payload_digest: None,
             status: tandem_tools::ToolDispatchStatus::Blocked,
             error: Some("no matching CLI rule".to_string()),
