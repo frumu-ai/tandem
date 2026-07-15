@@ -142,6 +142,48 @@ async fn tool_execute_without_matching_server_policy_is_denied_and_receipted() {
 }
 
 #[tokio::test]
+async fn enterprise_allow_does_not_bypass_server_ask_permission() {
+    let state = test_state().await;
+    state
+        .tools
+        .register_tool(
+            "echo_global_execute_args".to_string(),
+            std::sync::Arc::new(EchoGlobalExecuteArgsTool),
+        )
+        .await;
+    let rule = tandem_enterprise_contract::EnterprisePolicyRule::new(
+        "global-http-allow",
+        "global-http-policy",
+        tandem_enterprise_contract::EnterprisePolicyScopeLevel::Enterprise,
+        tandem_enterprise_contract::EnterprisePolicyEffect::Allow,
+    )
+    .with_tool_patterns(vec!["echo_global_execute_args".to_string()]);
+    state
+        .enterprise
+        .policy_rules
+        .write()
+        .await
+        .insert(rule.rule_id.clone(), rule);
+
+    let app = app_router(state);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/tool/execute")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "tool": "echo_global_execute_args",
+                "args": { "value": "must-still-wait" }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+
+    let response = app.oneshot(request).await.expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn tool_execute_client_scope_cannot_grant_server_permission() {
     let state = test_state().await;
     state

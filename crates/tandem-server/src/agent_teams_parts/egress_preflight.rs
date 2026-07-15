@@ -284,11 +284,36 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
                 .unwrap_or_default()
         )),
     };
+    let dispatch_decision = if matches!(effect, PolicyDecisionEffect::ApprovalRequired)
+        && approval_request_error.is_none()
+    {
+        policy_decision_id
+            .as_ref()
+            .zip(approval_id.as_ref())
+            .zip(surfaced_reason.as_ref())
+            .map(|((decision_id, approval_id), surfaced_reason)| {
+                tandem_tools::ToolDispatchDecision::approval_required(
+                    decision_id.clone(),
+                    surfaced_reason.clone(),
+                    tandem_tools::ToolDispatchApprovalRequirement {
+                        approval_request_id: Some(approval_id.clone()),
+                        policy_id: EGRESS_DLP_POLICY_ID.to_string(),
+                        policy_version_id: "egress_dlp_preflight/v1".to_string(),
+                        rule_id: reason_code.to_string(),
+                        rule_version: 1,
+                        approval_class: "external_post".to_string(),
+                        action_binding: report.action_hash.clone(),
+                    },
+                )
+            })
+    } else {
+        None
+    };
     Some(ToolPolicyDecision {
         allowed: matches!(effect, PolicyDecisionEffect::Allow),
         reason: surfaced_reason,
         policy_decision_id,
-        dispatch_decision: None,
+        dispatch_decision,
     })
 }
 

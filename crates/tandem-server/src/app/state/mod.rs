@@ -378,8 +378,10 @@ impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
                 args: context.args,
             })
             .await?;
-        if let Some(dispatch_decision) = decision.dispatch_decision {
-            return Ok(dispatch_decision);
+        if let Some(dispatch_decision) = decision.dispatch_decision.as_ref() {
+            if dispatch_decision.outcome != tandem_tools::ToolDispatchPolicyOutcome::Allowed {
+                return Ok(dispatch_decision.clone());
+            }
         }
         if !decision.allowed {
             return Ok(ToolDispatchDecision {

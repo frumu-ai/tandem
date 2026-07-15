@@ -216,10 +216,35 @@ pub(crate) async fn evaluate_action_gate_tool_policy(
             }),
         ));
     }
+    let dispatch_decision = if approval_error.is_none()
+        && approval_state
+            == crate::app::state::governance_action_gate::ActionGateApprovalState::Pending
+    {
+        policy_decision_id
+            .as_ref()
+            .zip(approval_id.as_ref())
+            .map(|(decision_id, approval_id)| {
+                tandem_tools::ToolDispatchDecision::approval_required(
+                    decision_id.clone(),
+                    reason.clone(),
+                    tandem_tools::ToolDispatchApprovalRequirement {
+                        approval_request_id: Some(approval_id.clone()),
+                        policy_id: "approval_gate_matrix".to_string(),
+                        policy_version_id: "approval_gate_matrix/v1".to_string(),
+                        rule_id: outcome.reason_code.clone(),
+                        rule_version: 1,
+                        approval_class: outcome.reviewer_eligibility.as_str().to_string(),
+                        action_binding: action_hash,
+                    },
+                )
+            })
+    } else {
+        None
+    };
     Some(ToolPolicyDecision {
         allowed: false,
         reason: Some(reason),
         policy_decision_id,
-        dispatch_decision: None,
+        dispatch_decision,
     })
 }
