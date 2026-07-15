@@ -4,7 +4,7 @@ use tandem_types::{TenantContext, ToolResult};
 
 use crate::AppState;
 
-use super::resync_mcp_bridge_tools_for_server;
+use super::bridge_registry::ensure_mcp_bridge_tool_for_dispatch;
 
 /// Execute a discovered MCP tool through the server's central dispatch path.
 ///
@@ -42,7 +42,7 @@ pub(crate) async fn dispatch_mcp_tool_for_tenant(
                 "MCP tool `{tool_name}` is not available for server `{server_name}` in this tenant"
             )
         })?;
-    let _ = resync_mcp_bridge_tools_for_server(state, server_name).await;
+    let _bridge_guard = ensure_mcp_bridge_tool_for_dispatch(state, &remote).await?;
     let dispatch_name = remote.namespaced_name;
     let context = state.tool_dispatch_context(source, tenant_context, vec![dispatch_name.clone()]);
     let result = state
