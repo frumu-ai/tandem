@@ -297,13 +297,12 @@ async fn action_gate_pending_retry_reuses_durable_request() {
             dispatch.outcome,
             tandem_tools::ToolDispatchPolicyOutcome::ApprovalRequired
         );
-        assert_eq!(
-            dispatch
-                .approval_requirement
-                .as_ref()
-                .map(|requirement| requirement.policy_id.as_str()),
-            Some("approval_gate_matrix")
-        );
+        let requirement = dispatch
+            .approval_requirement
+            .as_ref()
+            .expect("structured action-gate approval metadata");
+        assert_eq!(requirement.policy_id, "approval_gate_matrix");
+        assert!(requirement.action_binding.starts_with("hmac-sha256:"));
     }
 
     let approvals = state
@@ -355,7 +354,7 @@ async fn action_gate_pending_retry_reuses_durable_request() {
         .context
         .pointer("/action_gate/action_hash")
         .and_then(Value::as_str)
-        .is_some());
+        .is_some_and(|binding| binding.starts_with("hmac-sha256:")));
 
     for decision in [first, second] {
         let decision_id = decision.policy_decision_id.expect("policy decision id");
@@ -593,15 +592,15 @@ async fn egress_preflight_creates_safe_customer_data_approval_request() {
             .await
             .expect("customer-data external send must require approval");
     assert!(!decision.allowed);
-    let dispatch_approval_id = decision
+    let requirement = decision
         .dispatch_decision
         .as_ref()
         .expect("pending egress request is a first-class dispatch outcome")
         .approval_requirement
         .as_ref()
-        .expect("structured egress approval metadata")
-        .approval_request_id
-        .clone();
+        .expect("structured egress approval metadata");
+    assert!(requirement.action_binding.starts_with("hmac-sha256:"));
+    let dispatch_approval_id = requirement.approval_request_id.clone();
     assert_eq!(
         decision
             .dispatch_decision
@@ -640,6 +639,9 @@ async fn egress_preflight_creates_safe_customer_data_approval_request() {
         approval.context["safe_preview_markdown"].as_str(),
         Some(preview)
     );
+    assert!(approval.context["action_hash"]
+        .as_str()
+        .is_some_and(|binding| binding.starts_with("hmac-sha256:")));
 
     let audit = tokio::fs::read_to_string(&state.protected_audit_path)
         .await

@@ -19,7 +19,6 @@ struct EgressPreflightReport {
     findings: Vec<EgressFinding>,
     target: Option<String>,
     safe_preview_markdown: String,
-    action_hash: String,
     inspected_field_count: usize,
     redaction_count: usize,
     inspection_truncated: bool,
@@ -54,12 +53,40 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
     let now_ms = crate::now_ms();
     let mut approval_id = None;
     let mut approval_expires_at_ms = None;
-    let mut approval_request_error = None;
+    let (action_binding, mut approval_request_error) = if report.requires_approval()
+        && !report.blocks()
+    {
+        let connector_generations =
+            governed_connector_generation_bindings(state, tool, &tenant_context).await;
+        match governed_exact_action_binding(
+            tool,
+            &ctx.args,
+            &tenant_context,
+            &connector_generations,
+        ) {
+            Ok(binding) => (Some(binding), None),
+            Err(error) => (
+                None,
+                Some(format!(
+                    "failed to derive deployment-scoped action binding: {error}"
+                )),
+            ),
+        }
+    } else {
+        (None, None)
+    };
     let mut receipt_state = None;
 
-    if report.requires_approval() && !report.blocks() && state.premium_governance_enabled() {
+    if report.requires_approval()
+        && !report.blocks()
+        && state.premium_governance_enabled()
+        && approval_request_error.is_none()
+    {
+        let action_binding = action_binding
+            .as_ref()
+            .expect("approval binding is present when binding derivation succeeded");
         match state
-            .consume_egress_dlp_approval(&report.action_hash, tool, &tenant_context)
+            .consume_egress_dlp_approval(action_binding, tool, &tenant_context)
             .await
         {
             Ok(Some(receipt)) => {
@@ -108,6 +135,9 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
             && approval_request_error.is_none()
             && state.premium_governance_enabled()
         {
+            let action_binding = action_binding
+                .as_ref()
+                .expect("approval binding is present when binding derivation succeeded");
             let requested_by = crate::automation_v2::governance::GovernanceActorRef::agent(
                 actor_id.clone(),
                 "egress_dlp_preflight",
@@ -117,7 +147,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
                 id: report
                     .target
                     .clone()
-                    .unwrap_or_else(|| report.action_hash.clone()),
+                    .unwrap_or_else(|| action_binding.clone()),
             };
             match state
                 .request_approval(
@@ -128,7 +158,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
                     serde_json::json!({
                         "policy_id": EGRESS_DLP_POLICY_ID,
                         "tool": tool,
-                        "action_hash": report.action_hash,
+                        "action_hash": action_binding,
                         "safe_preview_markdown": report.safe_preview_markdown,
                         "data_classes": report.data_classes,
                         "target": report.target,
@@ -148,7 +178,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
                     approval_request_error = Some(error.to_string());
                 }
             }
-        } else {
+        } else if approval_id.is_none() && approval_request_error.is_none() {
             approval_request_error =
                 Some("premium governance approval requests are unavailable".to_string());
         }
@@ -166,6 +196,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
         &tenant_context,
         actor_id.clone(),
         &report,
+        action_binding.as_deref(),
         effect,
         reason_code,
         reason,
@@ -191,7 +222,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
                 "session_id": ctx.session_id,
                 "message_id": ctx.message_id,
                 "tool": tool,
-                "action_hash": report.action_hash,
+                "action_binding": action_binding,
                 "reason": failure_reason,
                 "receipt_write_failed": true,
             }),
@@ -232,7 +263,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
             "risk_tier": report.risk_tier.as_str(),
             "data_classes": report.data_classes,
             "target": report.target,
-            "action_hash": report.action_hash,
+            "action_binding": action_binding,
             "safe_preview_markdown": report.safe_preview_markdown,
             "findings": egress_findings_metadata(&report.findings),
             "redaction_count": report.redaction_count,
@@ -291,7 +322,8 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
             .as_ref()
             .zip(approval_id.as_ref())
             .zip(surfaced_reason.as_ref())
-            .map(|((decision_id, approval_id), surfaced_reason)| {
+            .zip(action_binding.as_ref())
+            .map(|(((decision_id, approval_id), surfaced_reason), action_binding)| {
                 tandem_tools::ToolDispatchDecision::approval_required(
                     decision_id.clone(),
                     surfaced_reason.clone(),
@@ -302,7 +334,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
                         rule_id: reason_code.to_string(),
                         rule_version: 1,
                         approval_class: "external_post".to_string(),
-                        action_binding: report.action_hash.clone(),
+                        action_binding: action_binding.clone(),
                     },
                 )
             })
@@ -325,6 +357,7 @@ async fn record_egress_preflight_policy_decision(
     tenant_context: &tandem_types::TenantContext,
     actor_id: Option<String>,
     report: &EgressPreflightReport,
+    action_binding: Option<&str>,
     effect: PolicyDecisionEffect,
     reason_code: &str,
     reason: &str,
@@ -384,7 +417,7 @@ async fn record_egress_preflight_policy_decision(
         metadata: serde_json::json!({
             "egress_preflight": {
                 "safe_preview_markdown": report.safe_preview_markdown,
-                "action_hash": report.action_hash,
+                "action_binding": action_binding,
                 "target": report.target,
                 "findings": egress_findings_metadata(&report.findings),
                 "redaction_count": report.redaction_count,
@@ -431,7 +464,6 @@ fn inspect_egress_preflight(tool: &str, args: &Value) -> EgressPreflightReport {
         push_data_class(&mut data_classes, finding.data_class);
     }
     let target = egress_target(args);
-    let action_hash = crate::sha256_hex(&[tool, &args.to_string()]);
     let redaction_count = findings.len();
     let safe_preview_markdown = build_egress_preview(
         tool,
@@ -449,7 +481,6 @@ fn inspect_egress_preflight(tool: &str, args: &Value) -> EgressPreflightReport {
         findings,
         target,
         safe_preview_markdown,
-        action_hash,
         inspected_field_count,
         redaction_count,
         inspection_truncated,

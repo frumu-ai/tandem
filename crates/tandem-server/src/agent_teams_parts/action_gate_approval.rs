@@ -45,7 +45,7 @@ async fn link_action_gate_policy_decision(
     ctx: &ToolPolicyContext,
     links: &ActionGateLinks,
     risk_tier: ToolRiskTier,
-    action_hash: &str,
+    action_binding: Option<&str>,
     approval_id: Option<&str>,
 ) -> anyhow::Result<()> {
     let policy_decision_id = policy_decision_id
@@ -61,7 +61,7 @@ async fn link_action_gate_policy_decision(
     record.node_id.clone_from(&links.node_id);
     record.approval_id = approval_id.map(str::to_string);
     record.metadata["action_gate"] = json!({
-        "action_hash": action_hash,
+        "action_binding": action_binding,
         "policy_id": "approval_gate_matrix",
         "tool": ctx.tool,
         "risk_tier": risk_tier.as_str(),
@@ -102,15 +102,30 @@ pub(crate) async fn evaluate_action_gate_tool_policy(
     }
 
     let links = action_gate_runtime_links(state, &ctx.session_id).await;
-    let action_hash = fintech_protected_action_hash(tool, &ctx.args);
+    let connector_generations =
+        governed_connector_generation_bindings(state, tool, &tenant_context).await;
+    let (action_binding, mut approval_error) =
+        match governed_exact_action_binding(tool, &ctx.args, &tenant_context, &connector_generations)
+        {
+            Ok(binding) => (Some(binding), None),
+            Err(error) => (
+                None,
+                Some(format!(
+                    "failed to derive deployment-scoped action binding: {error}"
+                )),
+            ),
+        };
     let mut approval_id = None;
     let mut approval_state =
         crate::app::state::governance_action_gate::ActionGateApprovalState::Denied;
-    let mut approval_error = None;
 
     if matches!(outcome.effect, PolicyDecisionEffect::ApprovalRequired)
         && state.premium_governance_enabled()
+        && approval_error.is_none()
     {
+        let action_binding = action_binding
+            .as_ref()
+            .expect("approval binding is present when binding derivation succeeded");
         let request = state
             .request_approval(
                 crate::automation_v2::governance::GovernanceApprovalRequestType::ElevatedCapability,
@@ -120,12 +135,12 @@ pub(crate) async fn evaluate_action_gate_tool_policy(
                 ),
                 crate::automation_v2::governance::GovernanceResourceRef {
                     resource_type: "protected_action".to_string(),
-                    id: action_hash.clone(),
+                    id: action_binding.clone(),
                 },
                 format!("Review protected tool action `{tool}`"),
                 json!({
                     "action_gate": {
-                        "action_hash": action_hash,
+                        "action_hash": action_binding,
                         "session_id": ctx.session_id,
                         "message_id": ctx.message_id,
                         "run_id": links.run_id,
@@ -154,7 +169,9 @@ pub(crate) async fn evaluate_action_gate_tool_policy(
             }
             Err(error) => approval_error = Some(error.to_string()),
         }
-    } else if matches!(outcome.effect, PolicyDecisionEffect::ApprovalRequired) {
+    } else if matches!(outcome.effect, PolicyDecisionEffect::ApprovalRequired)
+        && !state.premium_governance_enabled()
+    {
         approval_error = Some("premium governance approval requests are unavailable".to_string());
     }
 
@@ -164,7 +181,7 @@ pub(crate) async fn evaluate_action_gate_tool_policy(
         ctx,
         &links,
         risk_tier,
-        &action_hash,
+        action_binding.as_deref(),
         approval_id.as_deref(),
     )
     .await
@@ -223,7 +240,8 @@ pub(crate) async fn evaluate_action_gate_tool_policy(
         policy_decision_id
             .as_ref()
             .zip(approval_id.as_ref())
-            .map(|(decision_id, approval_id)| {
+            .zip(action_binding.as_ref())
+            .map(|((decision_id, approval_id), action_binding)| {
                 tandem_tools::ToolDispatchDecision::approval_required(
                     decision_id.clone(),
                     reason.clone(),
@@ -234,7 +252,7 @@ pub(crate) async fn evaluate_action_gate_tool_policy(
                         rule_id: outcome.reason_code.clone(),
                         rule_version: 1,
                         approval_class: outcome.reviewer_eligibility.as_str().to_string(),
-                        action_binding: action_hash,
+                        action_binding: action_binding.clone(),
                     },
                 )
             })
