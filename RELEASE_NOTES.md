@@ -2,9 +2,36 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.6.10 (2026-07-14)
+## v0.7.0 (Unreleased)
 
-Tandem 0.6.10 turns Control Panel chat into a first-party product-authoring
+### Licensing Boundary Correction
+
+Tandem 0.7.0 is planned to correct the Additional Use Grant for the protected
+BUSL governance and enterprise components. Evaluation, development, testing,
+source inspection, genuine personal non-commercial use, and non-production
+proofs of concept remain permitted without charge. Commercial production use,
+including internal commercial use, client production deployments, and managed,
+hosted, SaaS, white-label, embedded, OEM, and reseller offerings, requires a
+separate commercial license from Frumu LTD.
+
+Agencies, consultants, and systems integrators may use the protected components
+for training, demonstrations, integration/template development, and
+non-production client proofs of concept. Those permissions do not authorize a
+client production deployment; it requires either a commercial license issued to
+the client or a separate written partner agreement with Frumu LTD.
+
+This is a prospective change. Each released version remains governed by the
+license distributed with that release, including v0.6.9. Existing tags and
+release artifacts are not modified. The in-progress v0.7.0 BUSL license files
+are stamped with a new rolling Change Date; the release owner must verify it
+matches the final release date plus four years before publication.
+
+The final grant requires review by a qualified software-licensing lawyer before
+publication. This release introduces no signing keys, activation, telemetry,
+runtime entitlement checks, billing, license servers, or other technical
+enforcement.
+
+Tandem 0.7.0 turns Control Panel chat into a first-party product-authoring
 surface. A user can describe an automation or multi-workflow process in normal
 language, let the selected model plan it with Tandem's native tools, inspect a
 durable workflow artifact directly in the conversation, revise it over several
@@ -442,13 +469,12 @@ session access attempts and assertion-verification edge cases.
 
 ### Licensing And Compliance
 
-The BUSL Additional Use Grant for Tandem BUSL components now allows internal
-production use for any organization regardless of revenue. A commercial license
-is required to provide the licensed work, or a substantially similar product,
-to third parties as a managed, hosted, SaaS, white-label, embedded, or other
-commercial offering. The BUSL Change Date policy is now rolling: each release
-stamps BUSL components to release date + four years, after which that version
-converts to the existing Change License.
+Historical licensing note: this section records the license disclosure for the
+0.6.8 release material. It remains governed by the terms distributed with that
+release and does not modify the corrected 0.7.0-and-later grant. The BUSL
+Change Date policy is rolling: each release stamps BUSL components to release
+date + four years, after which that version converts to the existing Change
+License.
 
 `tandem-enterprise-server` is now licensed under `BUSL-1.1`, matching the
 commercial enterprise layer already used by the governance and plan-compiler

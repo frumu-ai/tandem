@@ -5,7 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.10] - 2026-07-14
+## [0.7.0] - Unreleased
+
+### Changed
+
+- Corrected the Additional Use Grant for the four protected BUSL components.
+  Evaluation, development, testing, source inspection, genuine personal
+  non-commercial use, and non-production proofs of concept remain permitted
+  without charge. Commercial production use—including internal commercial use,
+  client deployments, and managed/hosted/SaaS/white-label/embedded/OEM/reseller
+  offerings—requires a separate commercial license from Frumu LTD.
+- Clarified that agencies, consultants, and systems integrators may evaluate,
+  demonstrate, and develop integrations without charge, but may not deploy the
+  protected components for a client in production without Frumu LTD
+  authorization.
+- Documented that the corrected grant applies prospectively to 0.7.0 and later;
+  existing releases, including 0.6.9, remain governed by the terms distributed
+  with those releases. Historical tags and release artifacts are unchanged.
+- Added CI validation for the BUSL grant text, commercial-boundary notices,
+  personal and agency limitations, package/license map, and Change Date policy,
+  plus a license-boundary and contributor/copyright-risk audit.
+
+### Legal review required
+
+- The 0.7.0 Additional Use Grant is intended commercial policy and must be
+  reviewed by a qualified software-licensing lawyer before publication. This
+  release does not add signing keys, activation, telemetry, runtime entitlement
+  checks, billing, license servers, or other technical enforcement.
 
 ### Added
 
@@ -352,11 +378,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Rewrote the BUSL Additional Use Grant for Tandem BUSL components so internal
-  production use is allowed regardless of organization revenue, while offering
-  the licensed work, or a substantially similar product, to third parties as a
-  managed, hosted, SaaS, white-label, embedded, or other commercial offering
-  requires a commercial license.
+- Historical licensing record: 0.6.8 was distributed under the previous
+  Additional Use Grant. That record remains applicable to the release as
+  shipped; it does not describe or alter the corrected 0.7.0-and-later grant.
 - Adopted a rolling BUSL Change Date policy: each released BUSL version should
   stamp its Change Date to release date + four years, converting to the existing
   Change License after that window.

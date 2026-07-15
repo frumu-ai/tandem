@@ -493,6 +493,9 @@ jobs:
       - name: Verify license map
         run: node scripts/verify-license-map.mjs
 
+      - name: Verify licensing terms
+        run: node scripts/verify-licensing-terms.mjs
+
       - name: Type check docs
         working-directory: guide
         run: pnpm check

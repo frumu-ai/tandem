@@ -1,6 +1,6 @@
 [package]
 name = "tandem-incident-monitor"
-version = "0.6.9"
+version = "0.7.0"
 description = "Incident Monitor domain logic for Tandem"
 license = "BUSL-1.1"
 repository = "https://github.com/frumu-ai/tandem"
@@ -17,8 +17,8 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["fs", "process", "time"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
-tandem-core = { path = "../tandem-core", version = "0.6.9" }
-tandem-types = { path = "../tandem-types", version = "0.6.9" }
+tandem-core = { path = "../tandem-core", version = "0.7.0" }
+tandem-types = { path = "../tandem-types", version = "0.7.0" }
 
 [dev-dependencies]
 tempfile = "3"

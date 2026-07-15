@@ -1,6 +1,6 @@
 [package]
 name = "tandem-core"
-version = "0.6.9"
+version = "0.7.0"
 description = "Core types and helpers for the Tandem engine"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -23,12 +23,12 @@ uuid = { version = "1", features = ["serde", "v4"] }
 keyring = "2"
 base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
-tandem-types = { path = "../tandem-types", version = "0.6.9" }
-tandem-wire = { path = "../tandem-wire", version = "0.6.9" }
-tandem-tools = { path = "../tandem-tools", version = "0.6.9" }
-tandem-providers = { path = "../tandem-providers", version = "0.6.9" }
-tandem-observability = { path = "../tandem-observability", version = "0.6.9" }
-tandem-data-boundary = { path = "../tandem-data-boundary", version = "0.6.9" }
+tandem-types = { path = "../tandem-types", version = "0.7.0" }
+tandem-wire = { path = "../tandem-wire", version = "0.7.0" }
+tandem-tools = { path = "../tandem-tools", version = "0.7.0" }
+tandem-providers = { path = "../tandem-providers", version = "0.7.0" }
+tandem-observability = { path = "../tandem-observability", version = "0.7.0" }
+tandem-data-boundary = { path = "../tandem-data-boundary", version = "0.7.0" }
 
 [dev-dependencies]
 tempfile = "3"
