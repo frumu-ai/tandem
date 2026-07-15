@@ -18,6 +18,19 @@ pub(crate) async fn dispatch_mcp_tool_for_tenant(
     tenant_context: TenantContext,
     source: ToolDispatchSource,
 ) -> anyhow::Result<ToolResult> {
+    state
+        .mcp
+        .ensure_ready_for_tenant(
+            server_name,
+            &tenant_context,
+            tandem_runtime::mcp_ready::EnsureReadyPolicy::default(),
+        )
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "MCP server `{server_name}` is not ready for governed dispatch: {error}"
+            )
+        })?;
     let remote = state
         .mcp
         .server_tools_for_tenant(server_name, &tenant_context)
