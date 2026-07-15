@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.7.0 (Unreleased)
+## v0.7.0 (2026-07-15)
 
 ### Licensing Boundary Correction
 
