@@ -9,6 +9,7 @@ from pathlib import Path
 
 PAGE = Path("guide/src/content/docs/policy-and-enforcement-model.md")
 MANIFEST = Path(".github/governance-audit-critical-tests.txt")
+ENGINE_CI = Path(".github/workflows/engine-ci.yml")
 RUST_TEST_DEFINITION = re.compile(
     r"(?m)^(?P<attrs>(?:\s*#\[[^\n]+\]\s*\n)+)"
     r"\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+"
@@ -68,6 +69,7 @@ def require_manifest_tests_exist(critical: tuple[str, ...]) -> None:
 def main(base_ref: str | None = None) -> None:
     page = PAGE.read_text(encoding="utf-8")
     manifest = MANIFEST.read_text(encoding="utf-8")
+    engine_ci = ENGINE_CI.read_text(encoding="utf-8")
     server_policy = Path("crates/tandem-server/src/agent_teams_parts/part01.rs").read_text(
         encoding="utf-8"
     )
@@ -99,6 +101,16 @@ def main(base_ref: str | None = None) -> None:
         require_manifest_does_not_shrink(critical, base_ref)
     for test in critical:
         require(page, test, PAGE)
+
+    for marker in (
+        "Verify governance audit tests were discovered and executed",
+        ".github/governance-audit-critical-tests.txt",
+        "governance_routes_fail_closed_without_premium_governance",
+        "direct_mcp_calls=",
+        "crates/tandem-server/src/pack_builder_parts",
+        "crates/tandem-server/src/incident_monitor_mcp.rs",
+    ):
+        require(engine_ci, marker, ENGINE_CI)
 
     require(
         server_policy,
