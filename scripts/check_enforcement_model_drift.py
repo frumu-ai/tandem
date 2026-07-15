@@ -62,7 +62,7 @@ def require_manifest_tests_exist(critical: tuple[str, ...]) -> None:
     missing = sorted(set(critical) - defined_tests)
     if missing:
         raise SystemExit(
-            "audit-critical manifest entries must resolve to real Rust test definitions; "
+            "required enforcement tests must resolve to real Rust test definitions; "
             f"missing={missing}"
         )
 
@@ -103,6 +103,7 @@ def main(base_ref: str | None = None) -> None:
         "crates/tandem-automation/src/types_tests.rs",
         "crates/tandem-server/src/app/state/tests/**",
         "crates/tandem-server/src/http/tests/approval_gate_matrix.rs",
+        "crates/tandem-server/src/http/tests/governance.rs",
         "crates/tandem-server/src/http/tests/governance_parts/**",
         "crates/tandem-server/src/http/mcp/**",
         "crates/tandem-server/src/incident_monitor/**",
@@ -115,7 +116,9 @@ def main(base_ref: str | None = None) -> None:
     critical = critical_tests(manifest)
     if not critical:
         raise SystemExit(f"{MANIFEST} contains no audit-critical tests")
-    require_manifest_tests_exist(critical)
+    require_manifest_tests_exist(
+        critical + ("governance_routes_fail_closed_without_premium_governance",)
+    )
     if base_ref:
         require_manifest_does_not_shrink(critical, base_ref)
     for test in critical:
