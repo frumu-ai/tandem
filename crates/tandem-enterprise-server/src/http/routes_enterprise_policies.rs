@@ -7,10 +7,10 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_enterprise_contract::{
-    starter_policy_template, starter_policy_templates, EffectivePolicySnapshot,
-    EnterprisePolicyInput, EnterprisePolicyRule, EnterprisePolicyRuleState, PolicyStarterTemplate,
-    PolicyTemplateInstantiation, PolicyTemplateRuleOverride, RequestPrincipal, TenantContext,
-    VerifiedTenantContext,
+    enterprise_scope_ids_match, starter_policy_template, starter_policy_templates,
+    EffectivePolicySnapshot, EnterprisePolicyInput, EnterprisePolicyRule,
+    EnterprisePolicyRuleState, PolicyStarterTemplate, PolicyTemplateInstantiation,
+    PolicyTemplateRuleOverride, RequestPrincipal, TenantContext, VerifiedTenantContext,
 };
 use tandem_server::{now_ms, AppState};
 
@@ -841,9 +841,16 @@ async fn commit_and_audit(
 
 fn tenant_matches(rule: &EnterprisePolicyRule, tenant: &TenantContext) -> bool {
     rule.tenant_context.as_ref().is_none_or(|rule_tenant| {
-        rule_tenant.org_id == tenant.org_id
-            && rule_tenant.workspace_id == tenant.workspace_id
-            && rule_tenant.deployment_id == tenant.deployment_id
+        enterprise_scope_ids_match(&rule_tenant.org_id, &tenant.org_id)
+            && enterprise_scope_ids_match(&rule_tenant.workspace_id, &tenant.workspace_id)
+            && match (
+                rule_tenant.deployment_id.as_deref(),
+                tenant.deployment_id.as_deref(),
+            ) {
+                (Some(left), Some(right)) => enterprise_scope_ids_match(left, right),
+                (None, None) => true,
+                _ => false,
+            }
     })
 }
 
@@ -923,5 +930,37 @@ mod admin_scope_tests {
         assert!(!admin_scope_matches(&global, &tenant, false));
         assert!(admin_scope_matches(&global, &tenant, true));
         assert!(admin_scope_matches(&tenant_rule, &tenant, false));
+    }
+
+    #[test]
+    fn workspace_admin_scope_normalizes_tenant_ids() {
+        let stored_tenant = TenantContext::explicit_user_workspace(
+            " Acme ",
+            " ENGINEERING ",
+            Some(" Production ".to_string()),
+            "admin",
+        );
+        let request_tenant = TenantContext::explicit_user_workspace(
+            "acme",
+            "engineering",
+            Some("production".to_string()),
+            "admin",
+        );
+        let other_deployment = TenantContext::explicit_user_workspace(
+            "acme",
+            "engineering",
+            Some("staging".to_string()),
+            "admin",
+        );
+        let tenant_rule = EnterprisePolicyRule::new(
+            "tenant-rule",
+            "tenant-policy",
+            EnterprisePolicyScopeLevel::Tenant,
+            EnterprisePolicyEffect::Deny,
+        )
+        .with_tenant_context(stored_tenant);
+
+        assert!(admin_scope_matches(&tenant_rule, &request_tenant, false));
+        assert!(!admin_scope_matches(&tenant_rule, &other_deployment, false));
     }
 }
