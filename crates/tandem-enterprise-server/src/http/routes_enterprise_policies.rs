@@ -274,11 +274,17 @@ async fn update_policy_rule(
 }
 
 async fn validate_policy_rule(
+    Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
     verified: Option<Extension<VerifiedTenantContext>>,
-    Json(rule): Json<EnterprisePolicyRule>,
+    Json(mut rule): Json<EnterprisePolicyRule>,
 ) -> EnterpriseResult<PolicyValidationResponse> {
     require_enterprise_admin(&request_principal, verified.as_deref())?;
+    let requested_global =
+        rule.scope_level == EnterprisePolicyScopeLevel::Enterprise && rule.tenant_context.is_none();
+    if !requested_global {
+        rule.tenant_context = Some(tenant_context);
+    }
     Ok(Json(validate_rule(&rule, true)))
 }
 
@@ -400,18 +406,6 @@ async fn supersede_policy(
     for mut rule in request.rules {
         if !replacement_ids.insert(rule.rule_id.clone()) {
             return Err(conflict("ENTERPRISE_POLICY_RULE_ID_CONFLICT"));
-        }
-        if target_tenant_context.is_none()
-            && rule.scope_level != EnterprisePolicyScopeLevel::Enterprise
-        {
-            return validation_error(PolicyValidationResponse {
-                valid: false,
-                errors: vec![PolicyValidationMessage {
-                    path: "scope_level".to_string(),
-                    message: "tenantless replacement rules must use enterprise scope".to_string(),
-                }],
-                warnings: Vec::new(),
-            });
         }
         rule.policy_id = policy_id.clone();
         rule.tenant_context.clone_from(&target_tenant_context);
@@ -780,6 +774,12 @@ fn validate_rule(rule: &EnterprisePolicyRule, publishing: bool) -> PolicyValidat
             message,
         })
         .collect::<Vec<_>>();
+    if rule.tenant_context.is_none() && rule.scope_level != EnterprisePolicyScopeLevel::Enterprise {
+        errors.push(PolicyValidationMessage {
+            path: "scope_level".to_string(),
+            message: "tenantless policy rules must use enterprise scope".to_string(),
+        });
+    }
     if publishing && rule.expires_at_ms.is_some_and(|expiry| expiry <= now_ms()) {
         errors.push(PolicyValidationMessage {
             path: "expires_at_ms".to_string(),

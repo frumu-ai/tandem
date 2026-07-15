@@ -100,12 +100,23 @@ fn governed_exact_action_binding(
 ) -> anyhow::Result<String> {
     let master_key = predicate_audit_hmac_key()?;
     let deployment_key = deployment_audit_hmac_key(&master_key, tenant_context)?;
-    let canonical_action_digest = tandem_core::fintech_protected_action_hash(tool, arguments);
+    let canonical_action_digest = tandem_core::fintech_protected_action_hash(
+        tool,
+        &governed_user_action_arguments(arguments),
+    );
     let binding = serde_json::to_vec(&serde_json::json!({
         "canonical_action_digest": canonical_action_digest,
         "connector_generations": connector_generations,
     }))?;
     audit_hmac(&deployment_key, b"exact-action", &binding)
+}
+
+fn governed_user_action_arguments(arguments: &Value) -> Value {
+    let mut sanitized = arguments.clone();
+    if let Some(object) = sanitized.as_object_mut() {
+        object.retain(|key, _| !key.starts_with("__"));
+    }
+    sanitized
 }
 
 async fn governed_connector_generation_bindings(
@@ -543,5 +554,57 @@ mod predicate_evidence_tests {
                 .expect("configured hosted key"),
             b"configured"
         );
+    }
+
+    #[test]
+    fn exact_action_binding_excludes_runtime_only_arguments() {
+        let tenant = tandem_types::TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "actor-a",
+        );
+        let connector_generations = vec!["connection-a:4".to_string()];
+        let visible_arguments = json!({
+            "recipient": "customer@example.com",
+            "subject": "Quarterly update"
+        });
+        let mut injected_arguments = visible_arguments.clone();
+        let object = injected_arguments
+            .as_object_mut()
+            .expect("visible arguments are an object");
+        object.insert(
+            "__verified_tenant_context".to_string(),
+            json!({"assertion_id":"rotating-assertion","issued_at_ms":1234}),
+        );
+        object.insert("__session_id".to_string(), json!("runtime-session"));
+
+        let visible_binding = governed_exact_action_binding(
+            "mcp.email.send",
+            &visible_arguments,
+            &tenant,
+            &connector_generations,
+        )
+        .expect("visible binding");
+        let injected_binding = governed_exact_action_binding(
+            "mcp.email.send",
+            &injected_arguments,
+            &tenant,
+            &connector_generations,
+        )
+        .expect("injected binding");
+        let changed_binding = governed_exact_action_binding(
+            "mcp.email.send",
+            &json!({
+                "recipient": "different@example.com",
+                "subject": "Quarterly update"
+            }),
+            &tenant,
+            &connector_generations,
+        )
+        .expect("changed binding");
+
+        assert_eq!(visible_binding, injected_binding);
+        assert_ne!(visible_binding, changed_binding);
     }
 }

@@ -3,6 +3,26 @@ async fn evaluate_enterprise_authored_tool_policy(
     ctx: &ToolPolicyContext,
     tool: &str,
 ) -> anyhow::Result<Option<ToolPolicyDecision>> {
+    evaluate_enterprise_authored_tool_policy_with_binding(
+        state,
+        ctx,
+        tool,
+        governed_exact_action_binding,
+    )
+    .await
+}
+
+async fn evaluate_enterprise_authored_tool_policy_with_binding(
+    state: &AppState,
+    ctx: &ToolPolicyContext,
+    tool: &str,
+    derive_action_binding: fn(
+        &str,
+        &Value,
+        &tandem_types::TenantContext,
+        &[String],
+    ) -> anyhow::Result<String>,
+) -> anyhow::Result<Option<ToolPolicyDecision>> {
     use tandem_enterprise_contract::{
         enterprise_scope_ids_match, AccessPermission, EnterprisePolicyEffect,
         EnterprisePolicyInput, EnterprisePolicyResolver, EnterprisePolicyRuleState,
@@ -141,81 +161,95 @@ async fn evaluate_enterprise_authored_tool_policy(
     if snapshot.effect == EnterprisePolicyEffect::ApprovalRequired {
         let connector_generations =
             governed_connector_generation_bindings(state, tool, &tenant_context).await;
-        let hash = governed_exact_action_binding(
+        let binding = derive_action_binding(
             tool,
             &ctx.args,
             &tenant_context,
             &connector_generations,
-        )?;
-        action_hash = Some(hash.clone());
-        if state.premium_governance_enabled() {
-            let links = action_gate_runtime_links(state, &ctx.session_id).await;
-            approval_run_id.clone_from(&links.run_id);
-            approval_automation_id.clone_from(&links.automation_id);
-            approval_node_id.clone_from(&links.node_id);
-            let request = state
-                .request_approval(
-                    crate::automation_v2::governance::GovernanceApprovalRequestType::ElevatedCapability,
-                    crate::automation_v2::governance::GovernanceActorRef::agent(
-                        tenant_context.actor_id.clone(),
-                        "enterprise_authored_policy",
-                    ),
-                    crate::automation_v2::governance::GovernanceResourceRef {
-                        resource_type: "protected_action".to_string(),
-                        id: hash.clone(),
-                    },
-                    format!("Review policy-gated tool action `{tool}`"),
-                    json!({
-                        "action_gate": {
-                            "action_hash": hash,
-                            "session_id": ctx.session_id,
-                            "message_id": ctx.message_id,
-                            "run_id": approval_run_id,
-                            "automation_id": approval_automation_id,
-                            "node_id": approval_node_id,
-                            "tool": tool,
-                            "policy_id": policy_id,
-                            "policy_version_id": snapshot.policy_version_id,
-                            "policy_decision_id": decision_id,
-                            "approval_class": snapshot.approval_id,
-                            "connector_generations": connector_generations,
-                            "source": "enterprise_authored_policy",
+        );
+        match binding {
+            Ok(hash) => {
+                action_hash = Some(hash.clone());
+                if state.premium_governance_enabled() {
+                    let links = action_gate_runtime_links(state, &ctx.session_id).await;
+                    approval_run_id.clone_from(&links.run_id);
+                    approval_automation_id.clone_from(&links.automation_id);
+                    approval_node_id.clone_from(&links.node_id);
+                    let request = state
+                        .request_approval(
+                            crate::automation_v2::governance::GovernanceApprovalRequestType::ElevatedCapability,
+                            crate::automation_v2::governance::GovernanceActorRef::agent(
+                                tenant_context.actor_id.clone(),
+                                "enterprise_authored_policy",
+                            ),
+                            crate::automation_v2::governance::GovernanceResourceRef {
+                                resource_type: "protected_action".to_string(),
+                                id: hash.clone(),
+                            },
+                            format!("Review policy-gated tool action `{tool}`"),
+                            json!({
+                                "action_gate": {
+                                    "action_hash": hash,
+                                    "session_id": ctx.session_id,
+                                    "message_id": ctx.message_id,
+                                    "run_id": approval_run_id,
+                                    "automation_id": approval_automation_id,
+                                    "node_id": approval_node_id,
+                                    "tool": tool,
+                                    "policy_id": policy_id,
+                                    "policy_version_id": snapshot.policy_version_id,
+                                    "policy_decision_id": decision_id,
+                                    "approval_class": snapshot.approval_id,
+                                    "connector_generations": connector_generations,
+                                    "source": "enterprise_authored_policy",
+                                }
+                            }),
+                            Some(crate::now_ms().saturating_add(tandem_types::DEFAULT_APPROVAL_TTL_MS)),
+                            &tenant_context,
+                        )
+                        .await;
+                    match request {
+                        Ok(request) => {
+                            approval_receipt_id = Some(request.approval_id.clone());
+                            match state
+                                .consume_action_gate_approval(&request.approval_id, &tenant_context)
+                                .await
+                            {
+                                Ok(
+                                    crate::app::state::governance_action_gate::ActionGateApprovalState::ApprovedAndConsumed,
+                                ) => {
+                                    approval_state = Some("approved_and_consumed");
+                                    approval_consumed = true;
+                                    effect = PolicyDecisionEffect::Allow;
+                                    reason_code = "matching_approval_receipt".to_string();
+                                    reason = "authored policy action approved by matching receipt".to_string();
+                                }
+                                Ok(
+                                    crate::app::state::governance_action_gate::ActionGateApprovalState::Pending,
+                                ) => approval_state = Some("pending"),
+                                Ok(
+                                    crate::app::state::governance_action_gate::ActionGateApprovalState::Denied,
+                                ) => approval_state = Some("denied_or_expired"),
+                                Err(error) => approval_error = Some(error.to_string()),
+                            }
                         }
-                    }),
-                    Some(crate::now_ms().saturating_add(tandem_types::DEFAULT_APPROVAL_TTL_MS)),
-                    &tenant_context,
-                )
-                .await;
-            match request {
-                Ok(request) => {
-                    approval_receipt_id = Some(request.approval_id.clone());
-                    match state
-                        .consume_action_gate_approval(&request.approval_id, &tenant_context)
-                        .await
-                    {
-                        Ok(
-                            crate::app::state::governance_action_gate::ActionGateApprovalState::ApprovedAndConsumed,
-                        ) => {
-                            approval_state = Some("approved_and_consumed");
-                            approval_consumed = true;
-                            effect = PolicyDecisionEffect::Allow;
-                            reason_code = "matching_approval_receipt".to_string();
-                            reason = "authored policy action approved by matching receipt".to_string();
-                        }
-                        Ok(
-                            crate::app::state::governance_action_gate::ActionGateApprovalState::Pending,
-                        ) => approval_state = Some("pending"),
-                        Ok(
-                            crate::app::state::governance_action_gate::ActionGateApprovalState::Denied,
-                        ) => approval_state = Some("denied_or_expired"),
                         Err(error) => approval_error = Some(error.to_string()),
                     }
+                } else {
+                    approval_error =
+                        Some("premium governance approval requests are unavailable".to_string());
                 }
-                Err(error) => approval_error = Some(error.to_string()),
             }
-        } else {
-            approval_error =
-                Some("premium governance approval requests are unavailable".to_string());
+            Err(error) => {
+                approval_state = Some("binding_failed");
+                approval_error = Some(format!(
+                    "failed to derive deployment-scoped action binding: {error}"
+                ));
+                effect = PolicyDecisionEffect::Deny;
+                reason_code = "approval_action_binding_unavailable".to_string();
+                reason = "authored approval policy denied because its exact-action binding could not be derived"
+                    .to_string();
+            }
         }
     }
     if let Some(evidence) = predicate_evidence.as_mut() {
@@ -294,6 +328,20 @@ async fn evaluate_enterprise_authored_tool_policy(
             policy_decision_id: Some(decision_id),
             dispatch_decision: None,
         }),
+        EnterprisePolicyEffect::ApprovalRequired if action_hash.is_none() => {
+            let dispatch_decision = tandem_tools::ToolDispatchDecision {
+                outcome: tandem_tools::ToolDispatchPolicyOutcome::Denied,
+                reason: Some(reason.clone()),
+                policy_decision_id: Some(decision_id.clone()),
+                approval_requirement: None,
+            };
+            Some(ToolPolicyDecision {
+                allowed: false,
+                reason: Some(reason),
+                policy_decision_id: Some(decision_id),
+                dispatch_decision: Some(dispatch_decision),
+            })
+        }
         EnterprisePolicyEffect::ApprovalRequired if approval_consumed => {
             Some(ToolPolicyDecision {
                 allowed: true,
@@ -581,6 +629,74 @@ mod enterprise_authored_policy_tests {
             .expect("policy preview");
         assert_eq!(preview.effect, EnterprisePolicyEffect::ApprovalRequired);
         assert_eq!(preview.approval_id.as_deref(), Some("finance-large-refund"));
+    }
+
+    #[tokio::test]
+    async fn authored_approval_binding_failure_returns_governed_denial() {
+        let state = crate::test_support::test_state().await;
+        let rule = EnterprisePolicyRule::new(
+            "global-protected-send",
+            "global-communications-policy",
+            EnterprisePolicyScopeLevel::Enterprise,
+            EnterprisePolicyEffect::ApprovalRequired,
+        )
+        .with_tool_patterns(vec!["mcp.email.send".to_string()])
+        .with_approval_id("external-communications");
+        state
+            .enterprise
+            .policy_rules
+            .write()
+            .await
+            .insert(rule.rule_id.clone(), rule);
+        let tenant =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "agent-a");
+        let context = ToolPolicyContext {
+            session_id: "session-binding-failure".to_string(),
+            message_id: "message-binding-failure".to_string(),
+            tenant_context: Some(tenant),
+            verified_tenant_context: None,
+            tool: "mcp.email.send".to_string(),
+            args: json!({"to":"customer@example.com","subject":"Hello"}),
+        };
+
+        let decision = evaluate_enterprise_authored_tool_policy_with_binding(
+            &state,
+            &context,
+            &context.tool,
+            |_, _, _, _| anyhow::bail!("configured audit HMAC key is unavailable"),
+        )
+        .await
+        .expect("binding failure must remain a governed policy outcome")
+        .expect("global approval rule must produce a decision");
+
+        assert!(!decision.allowed);
+        let dispatch = decision
+            .dispatch_decision
+            .as_ref()
+            .expect("structured governed denial");
+        assert_eq!(
+            dispatch.outcome,
+            tandem_tools::ToolDispatchPolicyOutcome::Denied
+        );
+        assert!(dispatch.approval_requirement.is_none());
+        assert_eq!(
+            dispatch.policy_decision_id.as_deref(),
+            decision.policy_decision_id.as_deref()
+        );
+        let recorded = state
+            .get_policy_decision(decision.policy_decision_id.as_deref().expect("decision id"))
+            .await
+            .expect("recorded fail-closed decision");
+        assert_eq!(recorded.decision, PolicyDecisionEffect::Deny);
+        assert_eq!(
+            recorded.reason_code,
+            "approval_action_binding_unavailable"
+        );
+        assert!(recorded
+            .metadata
+            .get("approval_error")
+            .and_then(Value::as_str)
+            .is_some_and(|error| error.contains("configured audit HMAC key is unavailable")));
     }
 
     #[cfg(feature = "premium-governance")]

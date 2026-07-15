@@ -320,6 +320,104 @@ async fn enterprise_global_policy_supersede_rejects_non_enterprise_replacements(
 }
 
 #[tokio::test]
+async fn enterprise_global_policy_update_and_publish_enforce_enterprise_scope() {
+    use tandem_enterprise_contract::{
+        EnterprisePolicyEffect, EnterprisePolicyRule, EnterprisePolicyRuleState,
+        EnterprisePolicyScopeLevel,
+    };
+
+    let state = test_state().await;
+    let mut original = EnterprisePolicyRule::new(
+        "global-draft",
+        "global-draft-policy",
+        EnterprisePolicyScopeLevel::Enterprise,
+        EnterprisePolicyEffect::Deny,
+    )
+    .with_tool_patterns(vec!["mcp.secrets.export".to_string()]);
+    original.state = EnterprisePolicyRuleState::Draft;
+    state
+        .enterprise
+        .policy_rules
+        .write()
+        .await
+        .insert(original.rule_id.clone(), original.clone());
+    let app = build_router_with_extensions(state.clone(), &[apply_routes])
+        .layer(Extension(verified_admin_context(&["enterprise:admin"])));
+    let invalid_replacement = json!({
+        "rule_id": "ignored-client-rule",
+        "policy_id": "global-draft-policy",
+        "version": 1,
+        "scope_level": "workspace",
+        "effect": "deny",
+        "tool_patterns": ["mcp.secrets.export"],
+        "reason_code": "global_secret_export_denied",
+        "reason": "secret export remains denied globally",
+        "updated_at_ms": 1
+    });
+    let tenant_headers = |builder: axum::http::request::Builder| {
+        builder
+            .header("x-tandem-org-id", "acme")
+            .header("x-tandem-workspace-id", "engineering")
+            .header("x-tandem-actor-id", "admin-user")
+            .header("x-tandem-request-source", "tandem-web")
+            .header("content-type", "application/json")
+    };
+
+    let response = app
+        .clone()
+        .oneshot(
+            tenant_headers(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/enterprise/policies/global-draft"),
+            )
+            .body(Body::from(invalid_replacement.to_string()))
+            .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        state
+            .enterprise
+            .policy_rules
+            .read()
+            .await
+            .get("global-draft"),
+        Some(&original)
+    );
+
+    state
+        .enterprise
+        .policy_rules
+        .write()
+        .await
+        .get_mut("global-draft")
+        .expect("global draft")
+        .scope_level = EnterprisePolicyScopeLevel::Workspace;
+    let response = app
+        .oneshot(
+            tenant_headers(
+                Request::builder()
+                    .method("POST")
+                    .uri("/enterprise/policies/global-draft-policy/publish"),
+            )
+            .body(Body::empty())
+            .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let rules = state.enterprise.policy_rules.read().await;
+    let invalid_draft = rules.get("global-draft").expect("global draft remains");
+    assert_eq!(invalid_draft.state, EnterprisePolicyRuleState::Draft);
+    assert_eq!(
+        invalid_draft.scope_level,
+        EnterprisePolicyScopeLevel::Workspace
+    );
+}
+
+#[tokio::test]
 async fn enterprise_policy_supersede_rejects_cross_tenant_rule_id_collisions() {
     use tandem_enterprise_contract::{
         EnterprisePolicyEffect, EnterprisePolicyRule, EnterprisePolicyRuleState,
