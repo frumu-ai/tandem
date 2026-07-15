@@ -1166,6 +1166,23 @@ pub(super) fn enterprise_admin_allowed_for_mutation(
     )
 }
 
+pub(super) fn enterprise_global_admin_allowed_for_mutation(
+    request_principal: &RequestPrincipal,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+) -> bool {
+    if let Some(verified) = verified_tenant_context {
+        return verified
+            .roles
+            .iter()
+            .any(|role| role.trim().eq_ignore_ascii_case("enterprise:admin"));
+    }
+
+    matches!(
+        request_principal.source.as_str(),
+        "api_token" | "control_panel" | "local_api_token" | "local_control_panel"
+    )
+}
+
 fn is_enterprise_admin_role(role: &str) -> bool {
     matches!(
         role.trim().to_ascii_lowercase().as_str(),
@@ -1507,5 +1524,14 @@ mod tests {
             &member,
             Some(&verified_with_roles(vec!["workspace:admin"]))
         ));
+        assert!(!enterprise_global_admin_allowed_for_mutation(
+            &member,
+            Some(&verified_with_roles(vec!["workspace:admin"]))
+        ));
+        assert!(enterprise_global_admin_allowed_for_mutation(
+            &member,
+            Some(&verified_with_roles(vec!["enterprise:admin"]))
+        ));
+        assert!(enterprise_global_admin_allowed_for_mutation(&local, None));
     }
 }

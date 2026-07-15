@@ -2,7 +2,7 @@
 // EAA-10 (TAN-35): enterprise HTTP integration tests, owned by the crate that
 // owns the enterprise routes. The router under test is built from tandem-server's
 // base router with `tandem_enterprise_server::apply_routes` mounted as a route
-// extension — the same wiring `serve_with_route_extensions` uses in production.
+// extension â€” the same wiring `serve_with_route_extensions` uses in production.
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
