@@ -41,6 +41,9 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,15 +68,15 @@ jobs:
         run: >-
           python '${{ steps.checker.outputs.path }}'
           --base-ref '${{ github.event.pull_request.base.sha }}'
-      - name: Validate candidate drift checker
-        run: |
-          python -m py_compile scripts/check_enforcement_model_drift.py
-          python scripts/check_enforcement_model_drift.py \
-            --base-ref '${{ github.event.pull_request.base.sha }}'
-      - name: Setup Rust for audit execution
-        uses: ./.github/actions/setup-rust-ci
+      - name: Install trusted Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install trusted compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Restore trusted Cargo cache
+        uses: Swatinem/rust-cache@v2
         with:
-          cache-profile: workspace-browser-premium
+          shared-key: ${{ runner.os }}-workspace-browser-premium
+          workspaces: ". -> target"
       - name: Execute premium governance audit manifest
         shell: bash
         run: |
@@ -178,3 +181,16 @@ jobs:
               [executable, matches[0], "--exact", "--nocapture"], check=True
           )
           PY
+
+  candidate-checker:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate candidate drift checker for the next trusted base
+        run: |
+          python -m py_compile scripts/check_enforcement_model_drift.py
+          python scripts/check_enforcement_model_drift.py \
+            --base-ref '${{ github.event.pull_request.base.sha }}'

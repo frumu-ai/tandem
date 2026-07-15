@@ -11,6 +11,39 @@ PAGE = Path("guide/src/content/docs/policy-and-enforcement-model.md")
 MANIFEST = Path(".github/governance-audit-critical-tests.txt")
 ENGINE_CI = Path(".github/workflows/engine-ci.yml")
 DRIFT_WORKFLOW = Path(".github/workflows/enforcement-model-drift.yml")
+DRIFT_TRIGGER_PATHS = (
+    "guide/src/content/docs/policy-and-enforcement-model.md",
+    ".github/workflows/enforcement-model-drift.yml",
+    ".github/workflows/engine-ci.yml",
+    ".github/governance-audit-critical-tests.txt",
+    "crates/tandem-enterprise-contract/src/policy_predicates.rs",
+    "crates/tandem-tools/src/tool_dispatcher.rs",
+    "crates/tandem-automation/src/orchestration.rs",
+    "crates/tandem-automation/src/types_tests.rs",
+    "crates/tandem-server/src/agent_teams_parts/**",
+    "crates/tandem-server/src/app/state/app_state_impl_parts/part01.rs",
+    "crates/tandem-server/src/app/state/automation_v2_wait_nodes.rs",
+    "crates/tandem-server/src/app/state/governance_action_gate.rs",
+    "crates/tandem-server/src/app/state/mod.rs",
+    "crates/tandem-server/src/app/state/tests/**",
+    "crates/tandem-server/src/app/state/tool_dispatch_outbox.rs",
+    "crates/tandem-server/src/benchmarking/mod.rs",
+    "crates/tandem-server/src/http/coder_parts/part05.rs",
+    "crates/tandem-server/src/http/pack_builder.rs",
+    "crates/tandem-server/src/http/governance.rs",
+    "crates/tandem-server/src/http/mcp.rs",
+    "crates/tandem-server/src/http/mcp/**",
+    "crates/tandem-server/src/http/mcp_run_as.rs",
+    "crates/tandem-server/src/http/tests/governance_parts/**",
+    "crates/tandem-server/src/http/tests/approval_gate_matrix.rs",
+    "crates/tandem-server/src/http/tests/governance.rs",
+    "crates/tandem-server/src/incident_monitor_*.rs",
+    "crates/tandem-server/src/incident_monitor/**",
+    "crates/tandem-server/src/pack_builder.rs",
+    "crates/tandem-server/src/pack_builder_parts/**",
+    "crates/tandem-runtime/src/mcp_parts/part01.rs",
+    "scripts/check_enforcement_model_drift.py",
+)
 RUST_TEST_DEFINITION = re.compile(
     r"(?m)^(?P<attrs>(?:\s*#\[[^\n]+\]\s*\n)+)"
     r"\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+"
@@ -96,21 +129,7 @@ def main(base_ref: str | None = None) -> None:
     ):
         require(page, marker, PAGE)
 
-    for marker in (
-        ".github/workflows/enforcement-model-drift.yml",
-        ".github/workflows/engine-ci.yml",
-        ".github/governance-audit-critical-tests.txt",
-        "crates/tandem-automation/src/types_tests.rs",
-        "crates/tandem-server/src/app/state/tests/**",
-        "crates/tandem-server/src/http/tests/approval_gate_matrix.rs",
-        "crates/tandem-server/src/http/tests/governance.rs",
-        "crates/tandem-server/src/http/tests/governance_parts/**",
-        "crates/tandem-server/src/http/mcp/**",
-        "crates/tandem-server/src/incident_monitor/**",
-        "crates/tandem-server/src/pack_builder_parts/**",
-        "crates/tandem-server/src/incident_monitor_*.rs",
-        "scripts/check_enforcement_model_drift.py",
-    ):
+    for marker in DRIFT_TRIGGER_PATHS:
         require(drift_workflow, marker, DRIFT_WORKFLOW)
 
     critical = critical_tests(manifest)
