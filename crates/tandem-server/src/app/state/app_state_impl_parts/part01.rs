@@ -585,7 +585,9 @@ impl AppState {
             .register_tool(
                 crate::incident_monitor_webhook::INCIDENT_MONITOR_WEBHOOK_TOOL.to_string(),
                 Arc::new(
-                    crate::incident_monitor_webhook::IncidentMonitorWebhookDispatchTool,
+                    crate::incident_monitor_webhook::IncidentMonitorWebhookDispatchTool::new(
+                        self.clone(),
+                    ),
                 ),
             )
             .await;

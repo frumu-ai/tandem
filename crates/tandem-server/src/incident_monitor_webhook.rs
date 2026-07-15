@@ -41,8 +41,34 @@ const MAX_RESPONSE_BYTE_LIMIT: usize = 16 * 1024;
 
 pub(crate) const INCIDENT_MONITOR_WEBHOOK_TOOL: &str = "incident_monitor_webhook_send";
 
-#[derive(Clone, Default)]
-pub(crate) struct IncidentMonitorWebhookDispatchTool;
+pub(crate) fn incident_monitor_webhook_dispatch_args(
+    destination_id: &str,
+    url: &Url,
+    config: Option<&Value>,
+    delivery_id: &str,
+    idempotency_key: &str,
+    body: &[u8],
+) -> Value {
+    json!({
+        "destination_id": destination_id,
+        "url": url.as_str(),
+        "config": config,
+        "delivery_id": delivery_id,
+        "idempotency_key": idempotency_key,
+        "body": String::from_utf8_lossy(body),
+    })
+}
+
+#[derive(Clone)]
+pub(crate) struct IncidentMonitorWebhookDispatchTool {
+    state: AppState,
+}
+
+impl IncidentMonitorWebhookDispatchTool {
+    pub(crate) fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
 
 #[async_trait::async_trait]
 impl Tool for IncidentMonitorWebhookDispatchTool {
@@ -59,18 +85,48 @@ impl Tool for IncidentMonitorWebhookDispatchTool {
     }
 
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let destination_id = args
+            .get("destination_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("webhook destination id is missing"))?;
         let url = Url::parse(
             args.get("url")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("webhook URL is missing"))?,
         )?;
-        let policy = WebhookPolicy::from_config(args.get("config"));
+        let destination = self
+            .state
+            .incident_monitor_config()
+            .await
+            .effective_destinations()
+            .into_iter()
+            .find(|destination| destination.destination_id == destination_id)
+            .ok_or_else(|| anyhow::anyhow!("webhook destination is no longer configured"))?;
+        if !destination.enabled || destination.kind != IncidentMonitorDestinationKind::Webhook {
+            anyhow::bail!("webhook destination is no longer enabled");
+        }
+        let configured_url = Url::parse(
+            destination
+                .webhook_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("webhook URL is missing"))?,
+        )?;
+        let requested_config = args.get("config").filter(|value| !value.is_null());
+        if configured_url != url || requested_config != destination.config.as_ref() {
+            anyhow::bail!("webhook destination changed after policy evaluation");
+        }
+        let policy = WebhookPolicy::from_config(destination.config.as_ref());
         let resolved_target = validate_webhook_url(&url, &policy).await?;
-        let secret_ref = args
-            .get("secret_ref")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("webhook secret reference is missing"))?;
-        let secret = resolve_webhook_secret(secret_ref)?;
+        let secret = resolve_webhook_secret(
+            destination
+                .webhook_secret_ref
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("webhook secret reference is missing"))?,
+        )?;
         let delivery_id = args
             .get("delivery_id")
             .and_then(Value::as_str)
@@ -626,14 +682,14 @@ async fn publish_claimed_webhook(
         .tool_dispatcher
         .dispatch(
             INCIDENT_MONITOR_WEBHOOK_TOOL,
-            json!({
-                "url": parsed_url.as_str(),
-                "config": destination.config.clone(),
-                "secret_ref": destination.secret_ref().unwrap_or_default(),
-                "delivery_id": delivery_id,
-                "idempotency_key": idempotency_key,
-                "body": String::from_utf8_lossy(&body),
-            }),
+            incident_monitor_webhook_dispatch_args(
+                &destination.destination_id,
+                parsed_url,
+                destination.config.as_ref(),
+                delivery_id,
+                idempotency_key,
+                &body,
+            ),
             dispatch_context,
         )
         .await

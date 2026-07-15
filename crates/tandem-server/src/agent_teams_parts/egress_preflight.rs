@@ -776,6 +776,33 @@ fn key_stores_sensitive_runtime_context(key: &str) -> bool {
     key.starts_with("__")
 }
 
+#[cfg(test)]
+mod incident_monitor_webhook_tests {
+    use super::*;
+
+    #[test]
+    fn webhook_dispatch_preflight_does_not_classify_host_secret_reference() {
+        let url = reqwest::Url::parse("https://hooks.example.com/incidents").unwrap();
+        let args = crate::incident_monitor_webhook::incident_monitor_webhook_dispatch_args(
+            "incident-primary",
+            &url,
+            None,
+            "delivery-1",
+            "idempotency-1",
+            b"Incident summary",
+        );
+
+        let report = inspect_egress_preflight(
+            crate::incident_monitor_webhook::INCIDENT_MONITOR_WEBHOOK_TOOL,
+            &args,
+        );
+
+        assert!(report.external_action);
+        assert!(!report.has_class(DataClass::Credential));
+        assert!(args.get("secret_ref").is_none());
+    }
+}
+
 fn push_data_class(classes: &mut Vec<DataClass>, class: DataClass) {
     if !classes.contains(&class) {
         classes.push(class);
