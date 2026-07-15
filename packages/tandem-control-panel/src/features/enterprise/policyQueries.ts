@@ -52,6 +52,10 @@ export type PolicyStarterTemplate = {
   display_name: string;
   domain: string;
   description: string;
+  maturity: "draft" | "stable";
+  validation_session_goal: number;
+  validation_sessions_completed: number;
+  promotion_requires_human_go_no_go: boolean;
   default_tool_scope: string[];
   data_constraints: string[];
   receipt_expectations: string[];

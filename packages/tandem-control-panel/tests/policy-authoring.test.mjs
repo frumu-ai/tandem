@@ -6,6 +6,7 @@ import {
   buildPolicyPreviewArguments,
   buildTemplatePredicateOverrides,
   parsePolicyOperand,
+  policyTemplateMaturityLabel,
   preservedPolicyRuleMetadata,
 } from "../lib/enterprise/policy-authoring.js";
 
@@ -77,4 +78,10 @@ test("template draft edits preserve version and ownership metadata", () => {
   assert.deepEqual(preservedPolicyRuleMetadata({ policy_id: "custom", version: 4 }), {
     version: 4,
   });
+});
+
+test("template maturity labels unvalidated templates as draft and experimental", () => {
+  assert.equal(policyTemplateMaturityLabel("draft"), "Draft · experimental");
+  assert.equal(policyTemplateMaturityLabel("stable"), "Stable");
+  assert.equal(policyTemplateMaturityLabel(undefined), "Draft · experimental");
 });

@@ -9,6 +9,30 @@ use crate::{
     PredicateOperator, PredicateValueType, TenantContext,
 };
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyTemplateMaturity {
+    #[default]
+    Draft,
+    Stable,
+}
+
+fn default_validation_session_goal() -> u64 {
+    5
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyTemplatePromotionEvidence {
+    pub validation_session_ids: Vec<String>,
+    pub approved_by: String,
+    pub approved_at_ms: u64,
+    pub decision: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyStarterTemplate {
     pub template_id: String,
@@ -16,6 +40,14 @@ pub struct PolicyStarterTemplate {
     pub display_name: String,
     pub domain: String,
     pub description: String,
+    #[serde(default)]
+    pub maturity: PolicyTemplateMaturity,
+    #[serde(default = "default_validation_session_goal")]
+    pub validation_session_goal: u64,
+    #[serde(default)]
+    pub validation_sessions_completed: u64,
+    #[serde(default = "default_true")]
+    pub promotion_requires_human_go_no_go: bool,
     pub default_tool_scope: Vec<String>,
     pub data_constraints: Vec<DataClass>,
     pub receipt_expectations: Vec<String>,
@@ -46,6 +78,40 @@ pub struct PolicyTemplateInstantiation {
 }
 
 impl PolicyStarterTemplate {
+    pub fn promote_to_stable(
+        &mut self,
+        evidence: &PolicyTemplatePromotionEvidence,
+    ) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        let unique_sessions = evidence
+            .validation_session_ids
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<std::collections::HashSet<_>>();
+        if unique_sessions.len() < self.validation_session_goal as usize {
+            errors.push(format!(
+                "template promotion requires {} distinct validation sessions",
+                self.validation_session_goal
+            ));
+        }
+        if evidence.approved_by.trim().is_empty() {
+            errors.push("template promotion requires a human approver".to_string());
+        }
+        if !evidence.decision.trim().eq_ignore_ascii_case("go") {
+            errors.push("template promotion requires an explicit go decision".to_string());
+        }
+        if evidence.approved_at_ms == 0 {
+            errors.push("template promotion requires an approval timestamp".to_string());
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        self.validation_sessions_completed = unique_sessions.len() as u64;
+        self.maturity = PolicyTemplateMaturity::Stable;
+        Ok(())
+    }
+
     pub fn instantiate(
         &self,
         instance_id: &str,
@@ -300,6 +366,10 @@ fn crm_template() -> PolicyStarterTemplate {
         domain: "crm".to_string(),
         description: "Draft safely for company domains and approve external recipients."
             .to_string(),
+        maturity: PolicyTemplateMaturity::Draft,
+        validation_session_goal: 5,
+        validation_sessions_completed: 0,
+        promotion_requires_human_go_no_go: true,
         default_tool_scope: vec!["mcp.crm.*".to_string()],
         data_constraints: vec![DataClass::CustomerData, DataClass::Credential],
         receipt_expectations: vec![
@@ -357,6 +427,10 @@ fn finance_template_v1() -> PolicyStarterTemplate {
         domain: "finance".to_string(),
         description: "Bound payment authority by amount and protect finance credentials."
             .to_string(),
+        maturity: PolicyTemplateMaturity::Draft,
+        validation_session_goal: 5,
+        validation_sessions_completed: 0,
+        promotion_requires_human_go_no_go: true,
         default_tool_scope: vec!["mcp.payments.*".to_string()],
         data_constraints: vec![DataClass::FinancialRecord, DataClass::Credential],
         receipt_expectations: vec![
@@ -433,6 +507,10 @@ fn coding_template() -> PolicyStarterTemplate {
         domain: "coding".to_string(),
         description: "Constrain repository scope, protect main, and block credential export."
             .to_string(),
+        maturity: PolicyTemplateMaturity::Draft,
+        validation_session_goal: 5,
+        validation_sessions_completed: 0,
+        promotion_requires_human_go_no_go: true,
         default_tool_scope: vec!["mcp.github.*".to_string(), "filesystem.*".to_string()],
         data_constraints: vec![DataClass::SourceCode, DataClass::Credential],
         receipt_expectations: vec![
@@ -461,6 +539,10 @@ mod tests {
     #[test]
     fn catalog_is_versioned_and_instantiates_drafts() {
         let template = starter_policy_template("finance-agent", Some(1)).unwrap();
+        assert_eq!(template.maturity, PolicyTemplateMaturity::Draft);
+        assert_eq!(template.validation_session_goal, 5);
+        assert_eq!(template.validation_sessions_completed, 0);
+        assert!(template.promotion_requires_human_go_no_go);
         let instance = template
             .instantiate("finance-prod", tenant(), &[], 100)
             .unwrap();
@@ -483,6 +565,48 @@ mod tests {
         );
         assert!(starter_policy_template("finance-agent", Some(3)).is_none());
         assert_eq!(starter_policy_templates().len(), 3);
+    }
+
+    #[test]
+    fn template_promotion_requires_five_sessions_and_human_go_decision() {
+        let mut template = starter_policy_template("crm-agent", None).unwrap();
+        let insufficient = PolicyTemplatePromotionEvidence {
+            validation_session_ids: vec!["session-1".to_string()],
+            approved_by: "founder-a".to_string(),
+            approved_at_ms: 100,
+            decision: "go".to_string(),
+        };
+        assert!(template.promote_to_stable(&insufficient).is_err());
+        assert_eq!(template.maturity, PolicyTemplateMaturity::Draft);
+
+        let approved = PolicyTemplatePromotionEvidence {
+            validation_session_ids: (1..=5).map(|index| format!("session-{index}")).collect(),
+            approved_by: "founder-a".to_string(),
+            approved_at_ms: 101,
+            decision: "go".to_string(),
+        };
+        template
+            .promote_to_stable(&approved)
+            .expect("five observed sessions plus explicit human go can promote");
+        assert_eq!(template.maturity, PolicyTemplateMaturity::Stable);
+        assert_eq!(template.validation_sessions_completed, 5);
+    }
+
+    #[test]
+    fn legacy_template_payloads_deserialize_as_unvalidated_drafts() {
+        let template = starter_policy_template("crm-agent", None).unwrap();
+        let mut payload = serde_json::to_value(template).unwrap();
+        let object = payload.as_object_mut().unwrap();
+        object.remove("maturity");
+        object.remove("validation_session_goal");
+        object.remove("validation_sessions_completed");
+        object.remove("promotion_requires_human_go_no_go");
+
+        let restored: PolicyStarterTemplate = serde_json::from_value(payload).unwrap();
+        assert_eq!(restored.maturity, PolicyTemplateMaturity::Draft);
+        assert_eq!(restored.validation_session_goal, 5);
+        assert_eq!(restored.validation_sessions_completed, 0);
+        assert!(restored.promotion_requires_human_go_no_go);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import argparse
 import hashlib
 import importlib.util
 import json
@@ -5,6 +6,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = pathlib.Path(__file__).parents[1] / "task_scope_guard.py"
@@ -109,6 +111,99 @@ class TaskScopeRegistryTrustTests(unittest.TestCase):
             self.assertEqual(approval["source"], "test fixture")
             self.assertEqual(
                 registry_digest, hashlib.sha256(trusted_registry_raw).hexdigest()
+            )
+
+
+def scope():
+    return {
+        "schema_version": 1,
+        "task_id": "scope-test",
+        "authorization": {
+            "approved_by": "evan@frumu.ai",
+            "approved_at": "2026-07-15T07:25:15Z",
+            "source": "test fixture",
+        },
+        "issues": [
+            {"id": "TAN-748", "state": "approved"},
+            {"id": "TAN-742", "state": "parked"},
+            {"id": "TAN-743", "state": "parked"},
+        ],
+        "repository_areas": ["crates/tandem-server", "docs/scope.md"],
+        "permitted_deliverables": ["code", "tests"],
+        "scope_expansion_approvals": [],
+    }
+
+
+def trust_approval():
+    return {
+        "task_id": "scope-test",
+        "scope_digest": "digest",
+        "approved_by": "evan@frumu.ai",
+        "approved_at": "2026-07-15T07:25:15Z",
+        "source": "test fixture",
+    }
+
+
+class TaskScopeGuardTests(unittest.TestCase):
+    def test_parked_issues_are_denied(self):
+        self.assertEqual(guard.effective_issue_ids(scope()), {"TAN-748"})
+
+    def test_spawn_or_retry_cannot_expand_paths(self):
+        task_scope = scope()
+        self.assertTrue(guard.path_is_allowed(task_scope, "crates/tandem-server/src/lib.rs"))
+        self.assertFalse(guard.path_is_allowed(task_scope, "packages/control-panel/src/app.tsx"))
+
+    def test_exact_human_approval_can_expand_issue_without_unparking_adjacent_issue(self):
+        task_scope = scope()
+        task_scope["scope_expansion_approvals"] = [
+            {
+                "kind": "issue",
+                "value": "TAN-742",
+                "decision": "approved",
+                "approved_by": "evan@frumu.ai",
+                "approved_at": "2026-07-15T10:00:00Z",
+            }
+        ]
+        self.assertEqual(guard.effective_issue_ids(task_scope), {"TAN-748", "TAN-742"})
+        self.assertNotIn("TAN-743", guard.effective_issue_ids(task_scope))
+
+    def test_agent_self_approval_is_rejected(self):
+        task_scope = scope()
+        task_scope["scope_expansion_approvals"] = [
+            {
+                "kind": "issue",
+                "value": "TAN-742",
+                "decision": "approved",
+                "approved_by": "codex-fleet",
+                "approved_at": "2026-07-15T10:00:00Z",
+            }
+        ]
+        self.assertNotIn("TAN-742", guard.effective_issue_ids(task_scope))
+
+    def test_preflight_fails_without_an_explicit_linked_issue(self):
+        args = argparse.Namespace(issue=[], deliverable=["code"], receipt=None)
+        self.assertEqual(
+            guard.preflight(args, scope(), "digest", trust_approval(), "registry"),
+            2,
+        )
+
+    def test_parked_issue_cannot_pass_the_pr_diff_guard(self):
+        args = argparse.Namespace(
+            base="base",
+            head="head",
+            linked_issue=["TAN-742"],
+            receipt=None,
+        )
+        with mock.patch.object(
+            guard,
+            "changed_files",
+            return_value=["crates/tandem-server/src/lib.rs"],
+        ):
+            self.assertEqual(
+                guard.diff_guard(
+                    args, scope(), "digest", trust_approval(), "registry"
+                ),
+                2,
             )
 
 

@@ -1,0 +1,91 @@
+name: Fleet Task Scope
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  enforce:
+    if: >-
+      startsWith(github.head_ref, 'codex/') ||
+      startsWith(github.head_ref, 'fleet/') ||
+      startsWith(github.head_ref, 'agent/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require machine-readable task scope
+        run: test -f .tandem/task-scope.json
+
+      - name: Select trusted scope guard
+        id: guard
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          guard="$RUNNER_TEMP/task_scope_guard.py"
+          if git cat-file -e "$BASE_SHA:scripts/task_scope_guard.py" 2>/dev/null; then
+            git show "$BASE_SHA:scripts/task_scope_guard.py" > "$guard"
+            echo "source=base" >> "$GITHUB_OUTPUT"
+          else
+            cp scripts/task_scope_guard.py "$guard"
+            echo "source=bootstrap-head" >> "$GITHUB_OUTPUT"
+          fi
+          echo "path=$guard" >> "$GITHUB_OUTPUT"
+
+      - name: Extract linked issue scope
+        id: issues
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          issues = sorted(set(re.findall(r'\bTAN-\d+\b', os.environ.get('PR_BODY', '').upper())))
+          with pathlib.Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as output:
+              output.write(f"ids={','.join(issues)}\n")
+          PY
+
+      - name: Enforce issue preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          IFS=',' read -ra issue_ids <<< '${{ steps.issues.outputs.ids }}'
+          for issue in "${issue_ids[@]}"; do
+            test -z "$issue" || args+=(--issue "$issue")
+          done
+          python '${{ steps.guard.outputs.path }}' --scope .tandem/task-scope.json \
+            preflight "${args[@]}" --receipt "$RUNNER_TEMP/task-scope-preflight.json"
+
+      - name: Enforce final PR diff and linked issues
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          IFS=',' read -ra issue_ids <<< '${{ steps.issues.outputs.ids }}'
+          for issue in "${issue_ids[@]}"; do
+            test -z "$issue" || args+=(--linked-issue "$issue")
+          done
+          python '${{ steps.guard.outputs.path }}' --scope .tandem/task-scope.json diff \
+            --base '${{ github.event.pull_request.base.sha }}' \
+            --head '${{ github.event.pull_request.head.sha }}' \
+            "${args[@]}" --receipt "$RUNNER_TEMP/task-scope-diff.json"
+
+      - name: Upload task scope receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-task-scope-receipts
+          path: ${{ runner.temp }}/task-scope-*.json
+          if-no-files-found: warn
+          retention-days: 30

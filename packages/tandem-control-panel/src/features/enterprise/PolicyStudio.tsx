@@ -6,6 +6,7 @@ import {
   buildPolicyPreviewArguments,
   buildTemplatePredicateOverrides,
   parsePolicyOperand,
+  policyTemplateMaturityLabel,
   preservedPolicyRuleMetadata,
   splitPolicyList,
 } from "../../../lib/enterprise/policy-authoring.js";
@@ -894,9 +895,20 @@ function TemplateCard({
     >
       <div className="flex items-center justify-between">
         <span className="font-medium">{template.display_name}</span>
-        <Badge tone="info">v{template.version}</Badge>
+        <div className="flex gap-1">
+          <Badge tone={template.maturity === "stable" ? "ok" : "warn"}>
+            {policyTemplateMaturityLabel(template.maturity)}
+          </Badge>
+          <Badge tone="info">v{template.version}</Badge>
+        </div>
       </div>
       <p className="mt-2 text-sm text-tcp-text-muted">{template.description}</p>
+      {template.maturity !== "stable" ? (
+        <p className="mt-2 text-xs text-amber-200/80">
+          Validation: {template.validation_sessions_completed}/{template.validation_session_goal}
+          observed sessions. Human go/no-go is required before promotion.
+        </p>
+      ) : null}
       <div className="mt-3 flex flex-wrap gap-1">
         {template.default_tool_scope.map((tool) => (
           <Badge key={tool} tone="ghost">

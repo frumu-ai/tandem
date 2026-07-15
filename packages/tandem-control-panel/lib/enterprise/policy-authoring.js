@@ -81,3 +81,8 @@ export function preservedPolicyRuleMetadata(rule) {
 export function activePolicyRulesForSupersede(rules, policyId) {
   return rules.filter((rule) => rule.policy_id === policyId && rule.state === "published");
 }
+
+/** @param {string | undefined} maturity */
+export function policyTemplateMaturityLabel(maturity) {
+  return maturity === "stable" ? "Stable" : "Draft · experimental";
+}
