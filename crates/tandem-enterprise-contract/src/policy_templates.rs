@@ -25,6 +25,14 @@ fn default_true() -> bool {
     true
 }
 
+fn human_approver(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    !normalized.is_empty()
+        && !normalized.starts_with("agent")
+        && !normalized.starts_with("codex")
+        && !normalized.starts_with("fleet")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyTemplatePromotionEvidence {
     pub validation_session_ids: Vec<String>,
@@ -95,7 +103,7 @@ impl PolicyStarterTemplate {
                 self.validation_session_goal
             ));
         }
-        if evidence.approved_by.trim().is_empty() {
+        if !human_approver(&evidence.approved_by) {
             errors.push("template promotion requires a human approver".to_string());
         }
         if !evidence.decision.trim().eq_ignore_ascii_case("go") {
@@ -590,6 +598,28 @@ mod tests {
             .expect("five observed sessions plus explicit human go can promote");
         assert_eq!(template.maturity, PolicyTemplateMaturity::Stable);
         assert_eq!(template.validation_sessions_completed, 5);
+    }
+
+    #[test]
+    fn template_promotion_rejects_automation_approvers() {
+        for approved_by in ["agent-template", "codex-fleet", "fleet-bot"] {
+            let mut template = starter_policy_template("crm-agent", None).unwrap();
+            let evidence = PolicyTemplatePromotionEvidence {
+                validation_session_ids: (1..=5).map(|index| format!("session-{index}")).collect(),
+                approved_by: approved_by.to_string(),
+                approved_at_ms: 101,
+                decision: "go".to_string(),
+            };
+
+            let errors = template
+                .promote_to_stable(&evidence)
+                .expect_err("automation identities cannot promote policy templates");
+            assert!(errors
+                .iter()
+                .any(|error| error == "template promotion requires a human approver"));
+            assert_eq!(template.maturity, PolicyTemplateMaturity::Draft);
+            assert_eq!(template.validation_sessions_completed, 0);
+        }
     }
 
     #[test]
