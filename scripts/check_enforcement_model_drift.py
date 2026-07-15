@@ -104,6 +104,8 @@ def main(base_ref: str | None = None) -> None:
         "crates/tandem-server/src/app/state/tests/**",
         "crates/tandem-server/src/http/tests/approval_gate_matrix.rs",
         "crates/tandem-server/src/http/tests/governance_parts/**",
+        "crates/tandem-server/src/http/mcp/**",
+        "crates/tandem-server/src/incident_monitor/**",
         "crates/tandem-server/src/pack_builder_parts/**",
         "crates/tandem-server/src/incident_monitor_*.rs",
         "scripts/check_enforcement_model_drift.py",
