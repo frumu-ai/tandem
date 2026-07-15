@@ -76,6 +76,20 @@ jobs:
             if updated != text:
               path.write_text(updated)
 
+          def stamp_current_source_tree_busl_change_date(path: Path) -> None:
+            text = path.read_text()
+            updated, count = re.subn(
+              r"(?m)^\*\*Current source-tree BUSL Change Date:\*\* `\d{4}-\d{2}-\d{2}`\.$",
+              f"**Current source-tree BUSL Change Date:** `{busl_change_date}`.",
+              text,
+            )
+            if count != 1:
+              raise RuntimeError(
+                "Could not find the current source-tree BUSL Change Date in docs/LICENSING.md"
+              )
+            if updated != text:
+              path.write_text(updated)
+
           def update_json(path: Path, key: str = "version") -> None:
             data = json.loads(path.read_text())
             if data.get(key) != version:
@@ -128,6 +142,7 @@ jobs:
 
           for license_path in root.glob("crates/*/LICENSE"):
             stamp_busl_change_date(license_path)
+          stamp_current_source_tree_busl_change_date(root / "docs" / "LICENSING.md")
           PY
 
           if git diff --quiet; then
@@ -140,6 +155,7 @@ jobs:
           git add \
             crates/*/Cargo.toml \
             crates/*/LICENSE \
+            docs/LICENSING.md \
             engine/Cargo.toml \
             apps/tandem-desktop/src-tauri/Cargo.toml \
             apps/tandem-desktop/src-tauri/tauri.conf.json \

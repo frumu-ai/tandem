@@ -221,11 +221,12 @@ size, revenue, employee count, or number of runtimes.
 Each released version's `Change Date` is set to **four years after that
 version's release date** (a rolling window; on the Change Date the version
 converts to the Change License, `GPL-2.0-or-later OR MIT OR Apache-2.0`).
-`scripts/bump-version.sh` (and the PowerShell twin) stamps `Change Date` to
-run-date + 4 years in every `BUSL-1.1` `LICENSE` file automatically as part of
-the release version bump; the LICENSE files it discovers are any
-`crates/*/LICENSE` containing the BUSL-1.1 text, so newly relicensed crates
-are covered without script changes.
+`scripts/bump-version.sh`, the PowerShell twin, and the release tag-sync path
+stamp `Change Date` to run-date + 4 years in every `BUSL-1.1` `LICENSE` file
+and update the labeled current source-tree date below as part of the release
+version bump. The LICENSE files they discover are any `crates/*/LICENSE`
+containing the BUSL-1.1 text, so newly relicensed crates are covered without
+script changes.
 
 BUSL applies separately to each version, so this licensing correction is
 prospective. The corrected grant is intended to first ship in **0.7.0**;

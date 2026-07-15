@@ -190,7 +190,8 @@ const stampBuslChangeDates = () => {
   // Rolling BUSL Change Date: each released version converts to the Change
   // License four years after its release date (docs/LICENSING.md, "Change
   // Date policy"). Discover the LICENSE files dynamically so newly
-  // relicensed crates are covered without touching this script (TAN-631).
+  // relicensed crates are covered without touching this script. Keep the
+  // current-source-tree date in the licensing guide in sync as well.
   const changeDate = new Date();
   changeDate.setUTCFullYear(changeDate.getUTCFullYear() + 4);
   const stamp = changeDate.toISOString().slice(0, 10);
@@ -209,6 +210,22 @@ const stampBuslChangeDates = () => {
       fs.writeFileSync(filePath, next);
       updatedFiles.push(relativePath);
     }
+  }
+
+  const licensingGuidePath = path.join(rootDir, "docs/LICENSING.md");
+  const licensingGuide = fs.readFileSync(licensingGuidePath, "utf8");
+  const currentSourceTreeDatePattern =
+    /^\*\*Current source-tree BUSL Change Date:\*\* `\d{4}-\d{2}-\d{2}`\.$/m;
+  if (!currentSourceTreeDatePattern.test(licensingGuide)) {
+    throw new Error("Could not find the current source-tree BUSL Change Date in docs/LICENSING.md");
+  }
+  const nextLicensingGuide = licensingGuide.replace(
+    currentSourceTreeDatePattern,
+    `**Current source-tree BUSL Change Date:** \`${stamp}\`.`
+  );
+  if (nextLicensingGuide !== licensingGuide) {
+    fs.writeFileSync(licensingGuidePath, nextLicensingGuide);
+    updatedFiles.push("docs/LICENSING.md");
   }
 };
 

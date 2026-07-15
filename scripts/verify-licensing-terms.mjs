@@ -186,6 +186,9 @@ for (const tool of releaseTools) {
   if (!source.includes("Change Date") || !source.includes("Business Source License 1.1")) {
     problems.push(`${tool} does not visibly stamp BUSL Change Dates`);
   }
+  if (!source.includes("Current source-tree BUSL Change Date")) {
+    problems.push(`${tool} does not update the documented current BUSL Change Date`);
+  }
 }
 if (!read("scripts/bump-version.sh").includes("crates/${entry}/LICENSE")) {
   problems.push("scripts/bump-version.sh does not dynamically discover BUSL licenses");
