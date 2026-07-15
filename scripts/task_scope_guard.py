@@ -20,8 +20,52 @@ def human_actor(value: Any) -> bool:
     return bool(actor) and not actor.lower().startswith(("agent", "codex", "fleet"))
 
 
+def read_trusted_registry(
+    trust_registry_path: pathlib.Path, trust_ref: str
+) -> bytes:
+    requested_path = trust_registry_path.resolve()
+    repository_root = pathlib.Path(
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(requested_path.parent),
+                "rev-parse",
+                "--show-toplevel",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    ).resolve()
+    try:
+        repository_path = requested_path.relative_to(repository_root).as_posix()
+    except ValueError as error:
+        raise ValueError("task scope trust registry must be inside the repository") from error
+    verified_ref = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository_root),
+            "rev-parse",
+            "--verify",
+            f"{trust_ref}^{{commit}}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if not verified_ref:
+        raise ValueError("task scope trust ref did not resolve to a commit")
+    return subprocess.run(
+        ["git", "-C", str(repository_root), "show", f"{verified_ref}:{repository_path}"],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
 def load_scope(
-    path: pathlib.Path, trust_registry_path: pathlib.Path
+    path: pathlib.Path, trust_registry_path: pathlib.Path, trust_ref: str
 ) -> tuple[dict[str, Any], str, dict[str, Any], str]:
     raw = path.read_bytes()
     scope = json.loads(raw)
@@ -46,7 +90,7 @@ def load_scope(
         raise ValueError("task scope requires a recorded human authorization")
     digest = hashlib.sha256(raw).hexdigest()
 
-    registry_raw = trust_registry_path.read_bytes()
+    registry_raw = read_trusted_registry(trust_registry_path, trust_ref)
     registry = json.loads(registry_raw)
     if registry.get("schema_version") != 1:
         raise ValueError("task scope trust registry schema_version must be 1")
@@ -214,6 +258,11 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser()
     root.add_argument("--scope", required=True)
     root.add_argument("--trust-registry", required=True)
+    root.add_argument(
+        "--trust-ref",
+        required=True,
+        help="protected base commit/ref from which the trust registry must be read",
+    )
     sub = root.add_subparsers(dest="command", required=True)
     pre = sub.add_parser("preflight")
     pre.add_argument("--issue", action="append", default=[])
@@ -231,7 +280,7 @@ def main() -> int:
     args = parser().parse_args()
     try:
         scope, digest, trust_approval, trust_registry_digest = load_scope(
-            pathlib.Path(args.scope), pathlib.Path(args.trust_registry)
+            pathlib.Path(args.scope), pathlib.Path(args.trust_registry), args.trust_ref
         )
         if args.command == "preflight":
             return preflight(
