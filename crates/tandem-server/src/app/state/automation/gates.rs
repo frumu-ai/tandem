@@ -124,11 +124,104 @@ fn default_approval_gate_expiry_action() -> AutomationGateExpiryAction {
         .unwrap_or(AutomationGateExpiryAction::Cancel)
 }
 
+fn normalized_gate_artifact_path(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches(|character| character as u32 == 96)
+        .replace("\\", "/")
+        .trim_start_matches("./")
+        .to_ascii_lowercase()
+}
+
+fn gate_reviewed_artifact_evidence(
+    run: &AutomationV2RunRecord,
+    gate: &AutomationPendingGate,
+) -> Option<Value> {
+    let metadata = gate.metadata.as_ref()?;
+    if !metadata
+        .get("record_reviewed_artifact_hash")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let display_artifact = metadata
+        .get("display_artifact")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let normalized_display = normalized_gate_artifact_path(display_artifact);
+
+    for node_id in &gate.upstream_node_ids {
+        let Some(output) = run.checkpoint.node_outputs.get(node_id) else {
+            continue;
+        };
+        let published_target = output
+            .pointer("/artifact_publication/targets")
+            .and_then(Value::as_array)
+            .and_then(|targets| {
+                targets.iter().find(|target| {
+                    target
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .map(normalized_gate_artifact_path)
+                        .is_some_and(|path| path == normalized_display)
+                })
+            });
+        if published_target.is_none() {
+            continue;
+        }
+        let Some(text) = output.pointer("/content/text").and_then(Value::as_str) else {
+            continue;
+        };
+        let content_digest = output
+            .pointer("/provenance/content_digest")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::sha256_hex(&[text]));
+        return Some(json!({
+            "path": display_artifact,
+            "content_digest": content_digest,
+            "source_node_id": node_id,
+            "source_artifact_path": published_target
+                .and_then(|target| target.get("source_artifact_path"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "captured_at_ms": gate.requested_at_ms,
+            "verified": true,
+        }));
+    }
+    Some(json!({
+        "path": display_artifact,
+        "captured_at_ms": gate.requested_at_ms,
+        "verified": false,
+        "reason": "displayed artifact could not be matched to a completed upstream publication",
+    }))
+}
+
+fn bind_gate_reviewed_artifact_metadata(
+    run: &AutomationV2RunRecord,
+    gate: &mut AutomationPendingGate,
+) {
+    let Some(evidence) = gate_reviewed_artifact_evidence(run, gate) else {
+        return;
+    };
+    let metadata = gate.metadata.get_or_insert_with(|| json!({}));
+    if !metadata.is_object() {
+        *metadata = json!({ "gate_metadata": metadata.clone() });
+    }
+    metadata
+        .as_object_mut()
+        .expect("gate metadata normalized to an object")
+        .insert("reviewed_artifact".to_string(), evidence);
+}
+
 pub(crate) fn pause_automation_run_for_gate(
     run: &mut AutomationV2RunRecord,
     mut gate: AutomationPendingGate,
     blocked_nodes: Vec<String>,
 ) {
+    bind_gate_reviewed_artifact_metadata(run, &mut gate);
     bind_gate_transition_guard_metadata(run, &mut gate);
     run.status = AutomationRunStatus::AwaitingApproval;
     run.detail = Some(format!("awaiting approval for gate `{}`", gate.node_id));
@@ -735,6 +828,18 @@ fn apply_gate_approval(
     gate: &AutomationPendingGate,
     reason: Option<String>,
 ) {
+    let decision_record = run
+        .checkpoint
+        .gate_history
+        .iter()
+        .rev()
+        .find(|record| record.node_id == gate.node_id && record.decision == "approve")
+        .cloned();
+    let reviewed_artifact = decision_record
+        .as_ref()
+        .and_then(|record| record.metadata.as_ref())
+        .and_then(|metadata| metadata.get("reviewed_artifact"))
+        .cloned();
     run.status = AutomationRunStatus::Queued;
     run.detail = Some(format!("gate `{}` approved", gate.node_id));
     run.stop_kind = None;
@@ -773,6 +878,9 @@ fn apply_gate_approval(
             "content": {
                 "decision": "approve",
                 "reason": reason,
+                "decided_at_ms": decision_record.as_ref().map(|record| record.decided_at_ms),
+                "decided_by": decision_record.as_ref().and_then(|record| record.decided_by.clone()),
+                "reviewed_artifact": reviewed_artifact,
             },
             "created_at_ms": crate::now_ms(),
             "node_id": gate.node_id.clone(),

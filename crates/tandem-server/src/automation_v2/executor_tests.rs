@@ -779,6 +779,52 @@ fn automation_with_required_output(path: &str, kind: &str) -> crate::AutomationV
 }
 
 #[test]
+fn output_cleanup_runs_only_before_the_first_node_attempt() {
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.node_outputs.clear();
+    assert!(automation_run_needs_initial_output_cleanup(&run));
+
+    run.checkpoint.node_attempts.insert("draft".to_string(), 1);
+    assert!(!automation_run_needs_initial_output_cleanup(&run));
+}
+
+#[test]
+fn completion_assertion_accepts_human_approval_without_external_receipt() {
+    let workspace = completion_test_workspace();
+    let mut automation = test_automation();
+    let node = &mut automation.flow.nodes[0];
+    node.node_id = "human_approval".to_string();
+    node.objective = "Approve the draft before publishing it.".to_string();
+    node.output_contract = Some(crate::AutomationFlowOutputContract {
+        kind: "approval_gate".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.node_outputs.clear();
+    run.checkpoint.node_outputs.insert(
+        "human_approval".to_string(),
+        json!({
+            "status": "completed",
+            "contract_kind": "approval_gate",
+            "content": {"decision": "approve"}
+        }),
+    );
+    run.checkpoint.completed_nodes = vec!["human_approval".to_string()];
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert_eq!(state, CompletionDeliverableState::Satisfied);
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn completion_assertion_requeues_outbound_action_node_without_receipt() {
     let workspace = completion_test_workspace();
     let automation = automation_with_outbound_action_node();
@@ -1024,6 +1070,45 @@ fn completion_deliverable_assertion_requeues_invalid_json() {
         CompletionDeliverableState::Repair(CompletionDeliverableRepair { ref node_id, ref path, .. })
             if node_id == "research-brief" && path == "artifacts/final.json"
     ));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_deliverable_assertion_ignores_skipped_node_artifact() {
+    let workspace = completion_test_workspace();
+    let automation = automation_with_required_output("reports/final.md", "report_markdown");
+    let mut run = test_run_with_output(json!({
+        "status": "skipped",
+        "summary": "Skipped: upstream triage found no work."
+    }));
+    run.checkpoint.completed_nodes = vec!["research-brief".to_string()];
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert_eq!(state, CompletionDeliverableState::Satisfied);
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn completion_deliverable_assertion_ignores_non_file_output_target() {
+    let workspace = completion_test_workspace();
+    let mut automation = test_automation();
+    automation.flow.nodes.clear();
+    automation.output_targets = vec!["customer.incident_reported".to_string()];
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.node_outputs.clear();
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert_eq!(state, CompletionDeliverableState::Satisfied);
     let _ = std::fs::remove_dir_all(workspace);
 }
 

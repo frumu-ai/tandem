@@ -54,6 +54,8 @@ fn planner_metadata_approval_projects_to_the_governed_gate_path() {
         "stage_kind": "Approval",
         "approval": {
             "allowed_decisions": ["Approve", "Reject"],
+            "display_artifact": "demo-output/drafts/incident-update.md",
+            "record_reviewed_artifact_hash": true,
             "require_explicit_decision": true
         },
         "builder": {
@@ -65,6 +67,117 @@ fn planner_metadata_approval_projects_to_the_governed_gate_path() {
     let gate = crate::app::state::build_automation_pending_gate(&node).expect("pending gate");
     assert_eq!(gate.decisions, vec!["Approve", "Reject"]);
     assert_eq!(gate.instructions.as_deref(), Some(node.objective.as_str()));
+    assert_eq!(
+        gate.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("display_artifact"))
+            .and_then(Value::as_str),
+        Some("demo-output/drafts/incident-update.md")
+    );
+}
+
+#[tokio::test]
+async fn planner_metadata_approval_carries_reviewed_artifact_evidence_downstream() {
+    let state = ready_test_state().await;
+    let mut draft = AutomationNodeBuilder::new("draft_incident_update").build();
+    draft.output_contract = Some(AutomationFlowOutputContract {
+        kind: "report_markdown".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    let mut approval = AutomationNodeBuilder::new("human_approval").build();
+    approval.objective = "Review the incident draft.".to_string();
+    approval.depends_on = vec![draft.node_id.clone()];
+    approval.output_contract = Some(AutomationFlowOutputContract {
+        kind: "approval_gate".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    approval.metadata = Some(json!({
+        "stage_kind": "Approval",
+        "approval": {
+            "allowed_decisions": ["Approve", "Reject"],
+            "display_artifact": "demo-output/drafts/incident-update.md",
+            "record_reviewed_artifact_hash": true,
+            "require_explicit_decision": true
+        },
+        "builder": {
+            "task_class": "human_decision_gate"
+        }
+    }));
+    let automation = AutomationSpecBuilder::new("approval-reviewed-artifact")
+        .nodes(vec![draft.clone(), approval.clone()])
+        .build();
+    let mut run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    let draft_text = "# Incident Update Draft\n\nStatus: Draft — Not Approved\n";
+    let digest = crate::sha256_hex(&[draft_text]);
+    run.checkpoint.node_outputs.insert(
+        draft.node_id.clone(),
+        json!({
+            "status": "completed",
+            "content": {
+                "path": ".tandem/runs/run/artifacts/draft-incident-update.md",
+                "text": draft_text,
+            },
+            "provenance": {
+                "content_digest": digest.clone(),
+            },
+            "artifact_publication": {
+                "targets": [{
+                    "path": "demo-output/drafts/incident-update.md",
+                    "source_artifact_path": ".tandem/runs/run/artifacts/draft-incident-update.md",
+                }]
+            }
+        }),
+    );
+    let gate = crate::app::state::build_automation_pending_gate(&approval).expect("pending gate");
+    crate::app::state::automation::pause_automation_run_for_gate(&mut run, gate, Vec::new());
+    let gate = run
+        .checkpoint
+        .awaiting_gate
+        .clone()
+        .expect("bound pending gate");
+    let reviewed = gate
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("reviewed_artifact"))
+        .expect("reviewed artifact evidence");
+    assert_eq!(reviewed["path"], "demo-output/drafts/incident-update.md");
+    assert_eq!(reviewed["content_digest"], digest);
+    assert_eq!(reviewed["source_node_id"], draft.node_id);
+    assert_eq!(reviewed["verified"], true);
+
+    let outcome = crate::app::state::apply_automation_gate_decision(
+        &mut run,
+        &automation,
+        &gate,
+        "approve",
+        None,
+        Some(crate::automation_v2::governance::GovernanceActorRef::human(
+            Some("reviewer-1".to_string()),
+            "control_panel",
+        )),
+    );
+    assert!(matches!(
+        outcome,
+        crate::app::state::AutomationGateDecisionOutcome::Applied
+    ));
+    let approval_output = &run.checkpoint.node_outputs[&approval.node_id];
+    assert_eq!(
+        approval_output["content"]["reviewed_artifact"]["content_digest"],
+        digest
+    );
+    assert_eq!(
+        approval_output["content"]["decided_by"]["actor_id"],
+        "reviewer-1"
+    );
 }
 
 #[tokio::test]

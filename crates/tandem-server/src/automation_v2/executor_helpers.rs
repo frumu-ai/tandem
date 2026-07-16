@@ -35,6 +35,94 @@ struct CompletionDeliverableRequirement {
     owner_node_id: Option<String>,
 }
 
+fn completion_output_target_looks_like_file(path: &str) -> bool {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.contains("://") {
+        return false;
+    }
+    if trimmed.starts_with('/')
+        || trimmed.starts_with("./")
+        || trimmed.starts_with("../")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+    {
+        return true;
+    }
+    let extension = std::path::Path::new(trimmed)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    matches!(
+        extension.as_deref(),
+        Some(
+            "md" | "markdown"
+                | "txt"
+                | "json"
+                | "jsonl"
+                | "yaml"
+                | "yml"
+                | "csv"
+                | "tsv"
+                | "toml"
+                | "ini"
+                | "cfg"
+                | "conf"
+                | "env"
+                | "xml"
+                | "html"
+                | "htm"
+                | "sql"
+                | "rs"
+                | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "mjs"
+                | "cjs"
+                | "py"
+                | "go"
+                | "java"
+                | "kt"
+                | "swift"
+                | "rb"
+                | "php"
+                | "c"
+                | "h"
+                | "cc"
+                | "cpp"
+                | "hpp"
+                | "cs"
+                | "sh"
+                | "css"
+                | "scss"
+                | "vue"
+                | "svelte"
+                | "pdf"
+                | "docx"
+                | "xlsx"
+                | "pptx"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "svg"
+                | "webp"
+                | "zip"
+                | "tar"
+                | "gz"
+        )
+    )
+}
+
+fn automation_run_needs_initial_output_cleanup(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+) -> bool {
+    run.checkpoint.node_attempts.is_empty()
+        && run.checkpoint.node_outputs.is_empty()
+        && run.checkpoint.completed_nodes.is_empty()
+        && run.checkpoint.gate_history.is_empty()
+}
+
 fn completion_artifact_is_substantive(path: &str, text: &str) -> Result<(), String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -73,6 +161,18 @@ fn completion_artifact_is_substantive(path: &str, text: &str) -> Result<(), Stri
     }
 }
 
+fn completion_node_was_skipped(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    node_id: &str,
+) -> bool {
+    run.checkpoint
+        .node_outputs
+        .get(node_id)
+        .and_then(|output| output.get("status"))
+        .and_then(Value::as_str)
+        .is_some_and(|status| status.eq_ignore_ascii_case("skipped"))
+}
+
 fn completion_required_deliverables(
     automation: &crate::AutomationV2Spec,
     run: &crate::automation_v2::types::AutomationV2RunRecord,
@@ -91,10 +191,12 @@ fn completion_required_deliverables(
             started_at_ms,
         ) {
             owner_by_path.insert(path.clone(), node.node_id.clone());
-            requirements.push(CompletionDeliverableRequirement {
-                path,
-                owner_node_id: Some(node.node_id.clone()),
-            });
+            if !completion_node_was_skipped(run, &node.node_id) {
+                requirements.push(CompletionDeliverableRequirement {
+                    path,
+                    owner_node_id: Some(node.node_id.clone()),
+                });
+            }
         }
     }
     for target in &automation.output_targets {
@@ -103,7 +205,7 @@ fn completion_required_deliverables(
             Some(&runtime_values),
         );
         let path = path.trim().to_string();
-        if path.is_empty() {
+        if path.is_empty() || !completion_output_target_looks_like_file(&path) {
             continue;
         }
         let owner_node_id = owner_by_path.get(&path).cloned();

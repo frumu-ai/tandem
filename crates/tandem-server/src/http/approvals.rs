@@ -367,6 +367,20 @@ async fn automation_v2_approval_preview_markdown(
         if !is_safe_artifact_node_id(node_id) {
             continue;
         }
+        if let Some(output) = run.checkpoint.node_outputs.get(node_id) {
+            if let Some(text) = output.pointer("/content/text").and_then(Value::as_str) {
+                let digest = output
+                    .pointer("/provenance/content_digest")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| crate::sha256_hex(&[text]));
+                sections.push(format!(
+                    "#### `{node_id}`\n\nContent digest: `{digest}`\n\n{}",
+                    crate::app::state::truncate_text(text, 12_000)
+                ));
+                continue;
+            }
+        }
         let artifact_path = workspace_root
             .join(".tandem")
             .join("runs")

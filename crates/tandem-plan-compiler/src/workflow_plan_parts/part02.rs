@@ -946,6 +946,22 @@ The Notion page should include:
     }
 
     #[test]
+    fn infer_explicit_output_targets_ignores_webhook_event_identifiers() {
+        let prompt = "Create a workflow triggered by an authenticated webhook event named customer.incident_reported. Create demo-output/context/incident-context.md and publish demo-output/approved/incident-update.md.";
+
+        let targets = infer_explicit_output_targets(prompt);
+
+        assert_eq!(
+            targets,
+            vec![
+                "demo-output/approved/incident-update.md".to_string(),
+                "demo-output/context/incident-context.md".to_string(),
+            ]
+        );
+        assert!(!targets.iter().any(|target| target == "customer.incident_reported"));
+    }
+
+    #[test]
     fn infer_explicit_output_targets_extracts_bare_filenames_from_write_clauses() {
         let prompt = "Read RESUME.md as the source of truth for skills. If resume_overview.md does not exist, create it. Create or append to daily_results_2026-04-15.md in the workspace root and keep the source-of-truth file untouched.";
 

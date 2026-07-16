@@ -54,7 +54,53 @@ pub(crate) fn automation_node_is_research_finalize(node: &AutomationFlowNode) ->
     automation_node_research_stage(node).as_deref() == Some("research_finalize")
 }
 
+fn automation_node_is_local_artifact_publication(node: &AutomationFlowNode) -> bool {
+    let explicitly_local =
+        automation_node_builder_metadata(node, "task_class").is_some_and(|task_class| {
+            task_class
+                .trim()
+                .eq_ignore_ascii_case("gated_local_publish")
+        });
+    let has_local_artifact_path = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.pointer("/artifact/path"))
+        .and_then(Value::as_str)
+        .is_some_and(|path| !path.trim().is_empty());
+
+    explicitly_local && has_local_artifact_path
+}
+
+fn automation_node_is_non_action_triage(node: &AutomationFlowNode) -> bool {
+    node.metadata.as_ref().is_some_and(|metadata| {
+        metadata
+            .get("triage_gate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || metadata
+                .pointer("/builder/triage_model")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            || metadata
+                .pointer("/builder/task_class")
+                .and_then(Value::as_str)
+                .is_some_and(|task_class| task_class.eq_ignore_ascii_case("connector_triage"))
+    })
+}
+
 pub(crate) fn automation_node_is_outbound_action(node: &AutomationFlowNode) -> bool {
+    if node
+        .output_contract
+        .as_ref()
+        .is_some_and(|contract| contract.kind.trim().eq_ignore_ascii_case("approval_gate"))
+    {
+        return false;
+    }
+    if automation_node_is_local_artifact_publication(node)
+        || automation_node_is_non_action_triage(node)
+    {
+        return false;
+    }
     if node
         .metadata
         .as_ref()
@@ -70,7 +116,7 @@ pub(crate) fn automation_node_is_outbound_action(node: &AutomationFlowNode) -> b
         "post ",
         "send ",
         "notify",
-        "deliver",
+        "deliver ",
         "submit",
         "share",
         "insert ",

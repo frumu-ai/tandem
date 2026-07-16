@@ -482,12 +482,37 @@ async fn validate_shared_context_pack_bindings(
     Ok(())
 }
 
+fn automation_v2_run_has_run_level_completion_assertion(
+    run: &crate::AutomationV2RunRecord,
+) -> bool {
+    run.status == crate::AutomationRunStatus::Failed
+        && run.detail.as_deref().is_some_and(|detail| {
+            detail.starts_with("automation run deliverable `")
+                || detail.starts_with("automation run missing required deliverable `")
+        })
+}
+
 fn automation_v2_recoverable_failure_node_id(run: &crate::AutomationV2RunRecord) -> Option<String> {
     run.checkpoint
         .last_failure
         .as_ref()
         .map(|failure| failure.node_id.clone())
         .or_else(|| automation_v2_failed_node_ids(run).into_iter().next())
+        .or_else(|| {
+            let detail = run.detail.as_deref()?;
+            [
+                "automation run missing successful external action receipt for outbound node `",
+                "automation run missing successful email delivery receipt for node `",
+            ]
+            .iter()
+            .find_map(|prefix| {
+                detail
+                    .strip_prefix(prefix)
+                    .and_then(|suffix| suffix.split_once('`'))
+                    .map(|(node_id, _)| node_id.trim().to_string())
+                    .filter(|node_id| !node_id.is_empty())
+            })
+        })
         .or_else(|| {
             const STARTUP_RUNTIME_CONTEXT_MISSING: &str =
                 "runtime context partition missing for automation run";

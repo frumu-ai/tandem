@@ -2,6 +2,56 @@
 // Licensed under the Business Source License 1.1
 
 #[test]
+fn artifact_required_status_marker_is_declared_by_metadata() {
+    let mut node = bare_node();
+    node.metadata = Some(json!({"artifact": {"required_status_marker": "Status: Approved"}}));
+
+    assert_eq!(
+        automation_node_required_status_marker(&node),
+        Some("Status: Approved")
+    );
+}
+
+#[test]
+fn artifact_validation_rejects_missing_required_status_marker() {
+    let mut node = bare_node();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "report_markdown".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({"artifact": {"required_status_marker": "Status: Approved"}}));
+    let session = Session::new(Some("marker validation".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+    let (accepted, validation, _) = validate_automation_artifact_output(
+        &node,
+        &session,
+        "/tmp",
+        "{\"status\":\"completed\"}",
+        &json!({
+            "requested_tools": ["write"],
+            "executed_tools": ["write"],
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/n1.md".to_string(),
+            "# Publication\n\nStatus: Withheld\n\n## Evidence\n\nApproval evidence was unavailable, so publication was not completed.".to_string(),
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_none());
+    assert!(validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet requirements")
+        .iter()
+        .any(|value| value == "required_status_marker_missing"));
+}
+
+#[test]
 fn no_work_handoff_is_not_treated_as_rich_upstream_research_evidence() {
     let output = json!({
         "content": {

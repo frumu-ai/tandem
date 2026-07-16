@@ -1493,6 +1493,24 @@ fn metadata_automation_gate_parts(
     ))
 }
 
+fn automation_pending_gate_metadata(node: &AutomationFlowNode) -> Option<Value> {
+    let approval = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("approval"))?;
+    let mut metadata = match approval.get("metadata").cloned() {
+        Some(Value::Object(object)) => object,
+        Some(value) => serde_json::Map::from_iter([("gate_metadata".to_string(), value)]),
+        None => serde_json::Map::new(),
+    };
+    for key in ["display_artifact", "record_reviewed_artifact_hash"] {
+        if let Some(value) = approval.get(key) {
+            metadata.insert(key.to_string(), value.clone());
+        }
+    }
+    (!metadata.is_empty()).then_some(Value::Object(metadata))
+}
+
 pub(crate) fn build_automation_pending_gate(
     node: &AutomationFlowNode,
 ) -> Option<AutomationPendingGate> {
@@ -1526,12 +1544,7 @@ pub(crate) fn build_automation_pending_gate(
         rework_targets,
         requested_at_ms: now_ms(),
         upstream_node_ids: node.depends_on.clone(),
-        metadata: node
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("approval"))
-            .and_then(|approval| approval.get("metadata"))
-            .cloned(),
+        metadata: automation_pending_gate_metadata(node),
         expiry_policy,
     })
 }

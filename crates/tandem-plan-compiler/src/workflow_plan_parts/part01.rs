@@ -1339,6 +1339,73 @@ fn prompt_contains_read_only_intent(prompt: &str, token: &str) -> bool {
         || prompt_token_has_ordered_context(prompt, token, &["source of truth"])
 }
 
+fn output_target_has_known_file_extension(token: &str) -> bool {
+    let extension = Path::new(token)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    matches!(
+        extension.as_deref(),
+        Some(
+            "md" | "markdown"
+                | "txt"
+                | "json"
+                | "jsonl"
+                | "yaml"
+                | "yml"
+                | "csv"
+                | "tsv"
+                | "toml"
+                | "ini"
+                | "cfg"
+                | "conf"
+                | "env"
+                | "xml"
+                | "html"
+                | "htm"
+                | "sql"
+                | "rs"
+                | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "mjs"
+                | "cjs"
+                | "py"
+                | "go"
+                | "java"
+                | "kt"
+                | "swift"
+                | "rb"
+                | "php"
+                | "c"
+                | "h"
+                | "cc"
+                | "cpp"
+                | "hpp"
+                | "cs"
+                | "sh"
+                | "css"
+                | "scss"
+                | "vue"
+                | "svelte"
+                | "pdf"
+                | "docx"
+                | "xlsx"
+                | "pptx"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "svg"
+                | "webp"
+                | "zip"
+                | "tar"
+                | "gz"
+        )
+    )
+}
+
 pub fn infer_explicit_output_targets(prompt: &str) -> Vec<String> {
     let mut targets = BTreeSet::new();
     for raw_token in prompt.split_whitespace() {
@@ -1369,7 +1436,10 @@ pub fn infer_explicit_output_targets(prompt: &str) -> Vec<String> {
         if prompt_contains_read_only_intent(prompt, token) {
             continue;
         }
-        if looks_like_path || prompt_contains_write_intent(prompt, token) {
+        if looks_like_path
+            || (output_target_has_known_file_extension(token)
+                && prompt_contains_write_intent(prompt, token))
+        {
             targets.insert(token.to_string());
         }
     }

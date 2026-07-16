@@ -1159,16 +1159,19 @@ pub async fn run_automation_v2_run(
             .await;
         return;
     }
-    if let Err(error) =
-        crate::app::state::clear_automation_declared_outputs(&state, &automation, &run.run_id).await
-    {
-        let _ = state
-            .update_automation_v2_run(&run.run_id, |row| {
-                row.status = AutomationRunStatus::Failed;
-                row.detail = Some(error.to_string());
-            })
-            .await;
-        return;
+    if automation_run_needs_initial_output_cleanup(&run) {
+        if let Err(error) =
+            crate::app::state::clear_automation_declared_outputs(&state, &automation, &run.run_id)
+                .await
+        {
+            let _ = state
+                .update_automation_v2_run(&run.run_id, |row| {
+                    row.status = AutomationRunStatus::Failed;
+                    row.detail = Some(error.to_string());
+                })
+                .await;
+            return;
+        }
     }
     let max_parallel = automation
         .execution

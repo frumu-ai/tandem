@@ -1743,7 +1743,15 @@ fn compact_automation_prompt_output_with_mode(output: &Value, summary_only: bool
         }
     }
     if let Some(content) = object.get("content") {
-        let compact_content = compact_automation_prompt_content(content, summary_only);
+        let preserve_approval_content = object
+            .get("contract_kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("approval_gate"));
+        let compact_content = if preserve_approval_content {
+            content.clone()
+        } else {
+            compact_automation_prompt_content(content, summary_only)
+        };
         if compact_content
             .as_object()
             .is_some_and(|value| !value.is_empty())
@@ -1759,4 +1767,41 @@ fn compact_automation_prompt_output_with_mode(output: &Value, summary_only: bool
 #[cfg(test)]
 pub(crate) fn extract_standup_participant_update_pub(input: &Value) -> Option<Value> {
     extract_standup_participant_update(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_compaction_preserves_structured_approval_evidence() {
+        let output = json!({
+            "status": "completed",
+            "contract_kind": "approval_gate",
+            "summary": "Gate approved.",
+            "content": {
+                "decision": "approve",
+                "decided_at_ms": 1234,
+                "decided_by": {
+                    "kind": "human",
+                    "source": "control_panel"
+                },
+                "reviewed_artifact": {
+                    "path": "demo-output/drafts/incident-update.md",
+                    "content_digest": "abc123",
+                    "verified": true
+                }
+            }
+        });
+
+        let compact = compact_automation_prompt_output_with_mode(&output, false);
+
+        assert_eq!(compact["content"]["decision"], "approve");
+        assert_eq!(compact["content"]["decided_at_ms"], 1234);
+        assert_eq!(
+            compact["content"]["reviewed_artifact"]["content_digest"],
+            "abc123"
+        );
+        assert_eq!(compact["content"]["reviewed_artifact"]["verified"], true);
+    }
 }

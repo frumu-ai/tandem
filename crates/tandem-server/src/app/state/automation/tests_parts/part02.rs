@@ -501,6 +501,108 @@ fn delivery_nodes_do_not_get_default_artifact_paths() {
 }
 
 #[test]
+fn approval_gates_are_not_outbound_actions() {
+    let mut node = bare_node();
+    node.objective = "Approve this draft before publishing it.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "approval_gate".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+
+    assert!(!automation_node_is_outbound_action(&node));
+}
+
+#[test]
+fn gated_local_publications_are_not_outbound_actions() {
+    let mut node = bare_node();
+    node.node_id = "publish_approved_update".to_string();
+    node.objective = "Publish the approved update as a local artifact.".to_string();
+    node.metadata = Some(json!({
+        "artifact": {
+            "path": "demo-output/approved/incident-update.md",
+            "visible_in_run": true
+        },
+        "builder": {
+            "role": "publisher",
+            "task_kind": "delivery",
+            "task_class": "gated_local_publish"
+        }
+    }));
+
+    assert!(!automation_node_is_outbound_action(&node));
+}
+
+#[test]
+fn connector_triage_nodes_are_not_outbound_actions() {
+    let mut node = bare_node();
+    node.node_id = "assess_issue".to_string();
+    node.objective = "Classify the issue initial urgency and delivery/security risk.".to_string();
+    node.metadata = Some(json!({
+        "triage_gate": true,
+        "builder": {
+            "task_kind": "delivery",
+            "task_class": "connector_triage",
+            "triage_model": true
+        }
+    }));
+
+    assert!(!automation_node_is_outbound_action(&node));
+}
+
+#[test]
+fn delivery_risk_language_is_not_an_outbound_action() {
+    let mut node = bare_node();
+    node.objective = "Assess delivery/security/operational risk before planning.".to_string();
+
+    assert!(!automation_node_is_outbound_action(&node));
+}
+
+#[test]
+fn explicit_deliver_action_remains_outbound() {
+    let mut node = bare_node();
+    node.objective = "Deliver the approved report to the customer.".to_string();
+
+    assert!(automation_node_is_outbound_action(&node));
+}
+
+#[test]
+fn planner_delivery_publication_gets_a_run_artifact_path() {
+    let mut node = bare_node();
+    node.node_id = "publish_approved_update".to_string();
+    node.objective = "Publish the approved local artifact.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "report_markdown".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "artifact": {
+            "path": "demo-output/approved/incident-update.md",
+            "visible_in_run": true
+        },
+        "builder": {
+            "task_kind": "delivery",
+            "task_class": "gated_local_publish"
+        }
+    }));
+
+    assert_eq!(
+        super::node_runtime_impl::automation_node_default_output_path(&node).as_deref(),
+        Some(".tandem/artifacts/publish-approved-update.md")
+    );
+    assert_eq!(
+        super::automation_node_required_output_path_for_run(&node, Some("run-approved"))
+            .as_deref(),
+        Some(".tandem/runs/run-approved/artifacts/publish-approved-update.md")
+    );
+}
+
+#[test]
 fn metadata_can_disable_default_artifact_paths_for_wrapper_nodes() {
     let mut node = generic_research_artifact_node();
     node.metadata = Some(json!({
