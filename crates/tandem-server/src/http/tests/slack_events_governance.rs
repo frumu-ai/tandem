@@ -389,6 +389,7 @@ async fn enrollment_code_with_department_binding_enables_governed_run() {
                 Some("operator".to_string()),
                 None,
                 vec!["department/nonexistent".to_string()],
+                None,
             )
             .await
             .is_err(),
@@ -403,6 +404,7 @@ async fn enrollment_code_with_department_binding_enables_governed_run() {
             Some("operator".to_string()),
             None,
             vec!["department/engineering".to_string()],
+            None,
         )
         .await
         .expect("issue department-bound enrollment code");
@@ -1006,4 +1008,176 @@ async fn slack_event_signature_must_match_the_claimed_installations_secret() {
     wait_for_slack_tasks(&state).await;
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     mock_task.abort();
+}
+
+/// P1 (PR #1910 review, round 3): a CONFIGURED installation that carries no
+/// signing secret must fail closed — never fall back to verifying against the
+/// other installations' secrets, or app A's secret could forge events for
+/// app B.
+#[tokio::test]
+async fn slack_event_for_secretless_installation_rejects_other_apps_signatures() {
+    const SECRET_A: &str = "secret-app-a";
+
+    let state = test_state().await;
+    let (api_base_url, _slack_mock, mock_task) = start_slack_api_mock().await;
+    state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "bot_token": "xoxb-governed-test",
+                    "events_enabled": true,
+                    "api_base_url": api_base_url,
+                    "model_provider_id": "governed-slack-test",
+                    "model_id": "governed-slack-test-1",
+                    "security_profile": "trusted_team",
+                    "tenant": { "org_id": ORG_ID, "workspace_id": WORKSPACE_ID },
+                    "connections": [
+                        {
+                            "channel_id": "C_APP_A",
+                            "team_id": SLACK_TEAM,
+                            "app_id": "A_APP_A",
+                            "signing_secret": SECRET_A,
+                            "allowed_users": [SLACK_USER]
+                        },
+                        {
+                            // App B is configured but has NO signing secret.
+                            "channel_id": SLACK_CHANNEL,
+                            "team_id": SLACK_TEAM,
+                            "app_id": SLACK_APP,
+                            "allowed_users": [SLACK_USER]
+                        }
+                    ]
+                }
+            }
+        }))
+        .await
+        .expect("configure secretless-app Slack connections");
+    seed_governed_slack_identity(&state).await;
+    let provider = install_governed_slack_provider(&state, 0).await;
+    let app = app_router(state.clone());
+    let request_timestamp = chrono::Utc::now().timestamp();
+
+    let body = json!({
+        "type": "event_callback",
+        "event_id": "Ev-secretless-1",
+        "team_id": SLACK_TEAM,
+        "api_app_id": SLACK_APP,
+        "event": {
+            "type": "message",
+            "user": SLACK_USER,
+            "channel": SLACK_CHANNEL,
+            "text": "What changed for ACME?",
+            "ts": "1800000000.910001"
+        }
+    })
+    .to_string();
+    let forged = Request::builder()
+        .method("POST")
+        .uri("/channels/slack/events")
+        .header("content-type", "application/json")
+        .header("x-slack-request-timestamp", request_timestamp.to_string())
+        .header(
+            "x-slack-signature",
+            super::slack_events::sign_slack_event(SECRET_A, request_timestamp, body.as_bytes()),
+        )
+        .body(Body::from(body))
+        .expect("secretless-app request");
+    let response = app.oneshot(forged).await.expect("secretless-app response");
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a configured installation without its own secret must not accept another app's signature"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    mock_task.abort();
+}
+
+/// P1 (PR #1910 review, round 3): enrollment org-unit refs must resolve in
+/// the sender's tenant. With two tenants sharing a unit name, an unscoped
+/// ref is rejected as ambiguous, and a tenant-scoped enrollment creates the
+/// membership in exactly that tenant.
+#[tokio::test]
+async fn enrollment_org_units_resolve_within_the_sender_tenant() {
+    use tandem_types::{OrganizationUnit, OrganizationUnitKind};
+
+    let state = test_state().await;
+    let now_ms = crate::now_ms();
+    let admin = PrincipalRef::human_user("admin");
+    let tenant_a = TenantContext::explicit(ORG_ID, WORKSPACE_ID, None);
+    let tenant_b = TenantContext::explicit("other-org", "other-ws", None);
+    // Both tenants define `department/sales`. Key the registry rows uniquely
+    // (production on-disk keys are arbitrary strings, not unit ids).
+    for (key, tenant) in [("a:sales", tenant_a.clone()), ("b:sales", tenant_b)] {
+        let unit = OrganizationUnit::active(
+            "sales",
+            tenant,
+            "Sales",
+            OrganizationUnitKind::Department,
+            admin.clone(),
+            now_ms,
+        )
+        .with_taxonomy_id("department");
+        state
+            .enterprise
+            .org_units
+            .write()
+            .await
+            .insert(key.to_string(), unit);
+    }
+
+    let principal = format!("channel:slack:{SLACK_TEAM}:{SLACK_APP}:{SLACK_USER}");
+    let tier = crate::app::state::channel_user_capabilities::StoredCommandTier::Approve;
+
+    // Unscoped ref matching units in two tenants: rejected, not first-match.
+    let ambiguous = state
+        .issue_channel_enrollment_code(
+            "slack",
+            principal.clone(),
+            tier,
+            Some(60_000),
+            Some("operator".to_string()),
+            None,
+            vec!["department/sales".to_string()],
+            None,
+        )
+        .await;
+    assert!(
+        ambiguous
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default()
+            .contains("ambiguous"),
+        "an org unit ref matching multiple tenants must be rejected"
+    );
+
+    // Scoped to tenant A: resolves, and redemption creates the membership in
+    // tenant A only.
+    let code = state
+        .issue_channel_enrollment_code(
+            "slack",
+            principal.clone(),
+            tier,
+            Some(60_000),
+            Some("operator".to_string()),
+            None,
+            vec!["department/sales".to_string()],
+            Some((ORG_ID.to_string(), WORKSPACE_ID.to_string())),
+        )
+        .await
+        .expect("issue tenant-scoped enrollment code");
+    assert_eq!(code.tenant_org_id.as_deref(), Some(ORG_ID));
+    state
+        .confirm_channel_enrollment_code(&code.code, None)
+        .await
+        .expect("confirm tenant-scoped enrollment code");
+    let memberships = state.enterprise.org_unit_memberships.read().await;
+    let created = memberships
+        .values()
+        .filter(|membership| membership.member.id == principal)
+        .collect::<Vec<_>>();
+    assert_eq!(created.len(), 1, "exactly one membership must be created");
+    assert_eq!(created[0].tenant_context.org_id, ORG_ID);
+    assert_eq!(created[0].tenant_context.workspace_id, WORKSPACE_ID);
 }

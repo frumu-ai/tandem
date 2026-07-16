@@ -192,14 +192,23 @@ pub(crate) async fn slack_interactions(
         .as_ref()
         .ok()
         .and_then(|payload| config_string(payload, "/api_app_id"));
-    let mut signing_secrets = slack_installation_signing_secrets(
+    let signing_secrets = match slack_installation_signing_secrets(
         &connections,
         claimed_team.as_deref(),
         claimed_app.as_deref(),
-    );
-    if signing_secrets.is_empty() {
-        signing_secrets = all_signing_secrets;
-    }
+    ) {
+        InstallationSigningSecrets::Bound(secrets) => secrets,
+        InstallationSigningSecrets::MissingSecret => {
+            // A configured installation without its own secret fails closed:
+            // verifying it against another app's secret would let that app
+            // forge payloads for this one.
+            tracing::warn!(target: "tandem_server::slack_interactions", "rejecting Slack interaction for installation without a signing secret");
+            return reject_unauthorized(
+                "slack signing secret not configured for this installation",
+            );
+        }
+        InstallationSigningSecrets::Unclaimed => all_signing_secrets,
+    };
     if let Err(error) =
         verify_slack_signature_any(&body, signature, timestamp, &signing_secrets, now)
     {
@@ -873,7 +882,7 @@ use axum::response::IntoResponse;
 use installation::{
     slack_event_envelope_team_id, slack_installation_signing_secrets, slack_signing_secrets,
     validate_slack_event_installation, validate_slack_interaction_installation,
-    verify_slack_signature_any,
+    verify_slack_signature_any, InstallationSigningSecrets,
 };
 
 /// Slack Events API ingress. Slack's signature authenticates the event before a
@@ -919,18 +928,37 @@ pub(crate) async fn slack_events(
     let claimed_app = payload
         .as_ref()
         .and_then(|payload| config_string(payload, "/api_app_id"));
-    let mut signing_secrets = slack_installation_signing_secrets(
+    let signing_secrets = match slack_installation_signing_secrets(
         &connections,
         claimed_team.as_deref(),
         claimed_app.as_deref(),
-    );
-    if signing_secrets.is_empty() {
+    ) {
+        InstallationSigningSecrets::Bound(secrets) => secrets,
+        InstallationSigningSecrets::MissingSecret => {
+            // A configured installation without its own secret fails closed:
+            // verifying it against another app's secret would let that app
+            // forge events for this one.
+            tracing::warn!(target: "tandem_server::slack_events", "rejecting Slack event for installation without a signing secret");
+            audit_slack_denial(
+                &state,
+                &effective_config,
+                None,
+                None,
+                "slack signing secret not configured for this installation",
+                json!({
+                    "team_id": claimed_team,
+                    "api_app_id": claimed_app,
+                }),
+            )
+            .await;
+            return reject_forbidden("slack signing secret not configured for this installation");
+        }
         // No matching installation (or a payload without one, e.g. the
         // url_verification handshake): any configured app's secret may vouch
         // for the request; installation validation still rejects mismatches
         // downstream before anything runs.
-        signing_secrets = all_signing_secrets;
-    }
+        InstallationSigningSecrets::Unclaimed => all_signing_secrets,
+    };
     if let Err(error) =
         verify_slack_signature_any(&body, signature, timestamp, &signing_secrets, now)
     {

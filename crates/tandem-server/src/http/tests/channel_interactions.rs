@@ -139,6 +139,7 @@ async fn configure_bound_channels(state: &AppState, discord_public_key: &str) {
                 Some("ct05-test".to_string()),
                 None,
                 Vec::new(),
+                None,
             )
             .await
             .expect("issue enrollment code");

@@ -64,7 +64,12 @@ export function ChannelConnectionsPage({ client, api, toast, navigate }: AppPage
   const [enrollUnits, setEnrollUnits] = useState("");
   const [issuedCode, setIssuedCode] = useState<{ principal: string; code: string } | null>(null);
   const enrollMutation = useMutation({
-    mutationFn: (input: { principal: string; orgUnits: string[] }) =>
+    mutationFn: (input: {
+      principal: string;
+      orgUnits: string[];
+      tenantOrgId: string;
+      tenantWorkspaceId: string;
+    }) =>
       api("/api/engine/channels/enroll", {
         method: "POST",
         body: JSON.stringify({
@@ -73,6 +78,14 @@ export function ChannelConnectionsPage({ client, api, toast, navigate }: AppPage
           user_id: input.principal,
           tier: "approve",
           org_units: input.orgUnits,
+          // Scope unit refs to the sender's tenant so a same-named unit in
+          // another tenant can never satisfy this enrollment.
+          ...(input.tenantOrgId && input.tenantWorkspaceId
+            ? {
+                tenant_org_id: input.tenantOrgId,
+                tenant_workspace_id: input.tenantWorkspaceId,
+              }
+            : {}),
         }),
         headers: { "content-type": "application/json" },
       }),
@@ -258,6 +271,8 @@ export function ChannelConnectionsPage({ client, api, toast, navigate }: AppPage
                         enrollMutation.mutate({
                           principal: sender.principal,
                           orgUnits: parseOrgUnitsInput(enrollUnits),
+                          tenantOrgId: sender.tenantOrgId,
+                          tenantWorkspaceId: sender.tenantWorkspaceId,
                         })
                       }
                     >

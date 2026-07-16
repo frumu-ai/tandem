@@ -59,6 +59,13 @@ pub struct ChannelEnrollmentCodeRecord {
     /// memberships for the enrolled identity, not just an approval tier.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub org_units: Vec<String>,
+    /// Tenant the `org_units` refs resolve in. Set together; when present,
+    /// redemption only matches units bound to this tenant, so a shared unit
+    /// name in another tenant can never satisfy this code's binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_org_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_workspace_id: Option<String>,
 }
 
 impl From<CommandTier> for StoredCommandTier {
@@ -94,12 +101,20 @@ impl AppState {
         issued_by: Option<String>,
         pinned_workspace_id: Option<String>,
         org_units: Vec<String>,
+        tenant: Option<(String, String)>,
     ) -> anyhow::Result<ChannelEnrollmentCodeRecord> {
         let org_units = normalize_org_unit_refs(org_units);
-        // Fail fast on typos: every referenced unit must exist at issue time,
-        // so the operator learns immediately rather than the redeeming user
-        // hitting a dead code later.
-        self.resolve_org_unit_refs(&org_units).await?;
+        // Fail fast on typos: every referenced unit must exist at issue time
+        // — within the enrollment's tenant when one is given, and rejecting
+        // cross-tenant-ambiguous refs otherwise — so the operator learns
+        // immediately rather than the redeeming user hitting a dead code.
+        self.resolve_org_unit_refs(
+            &org_units,
+            tenant
+                .as_ref()
+                .map(|(org_id, workspace_id)| (org_id.as_str(), workspace_id.as_str())),
+        )
+        .await?;
         let issued_at_ms = crate::now_ms();
         let expires_at_ms =
             issued_at_ms.saturating_add(ttl_ms.unwrap_or(DEFAULT_ENROLLMENT_TTL_MS));
@@ -120,6 +135,8 @@ impl AppState {
             issued_by,
             pinned_workspace_id,
             org_units,
+            tenant_org_id: tenant.as_ref().map(|(org_id, _)| org_id.clone()),
+            tenant_workspace_id: tenant.map(|(_, workspace_id)| workspace_id),
         };
         self.channel_enrollment_codes
             .write()
@@ -148,8 +165,18 @@ impl AppState {
         // grant so a failure here leaves no partial authority. The code is
         // already consumed either way — a failed binding needs a fresh code.
         if !pending.org_units.is_empty() {
-            self.grant_org_unit_memberships_for_principal(&pending.user_id, &pending.org_units)
-                .await?;
+            let tenant = match (&pending.tenant_org_id, &pending.tenant_workspace_id) {
+                (Some(org_id), Some(workspace_id)) => {
+                    Some((org_id.as_str(), workspace_id.as_str()))
+                }
+                _ => None,
+            };
+            self.grant_org_unit_memberships_for_principal(
+                &pending.user_id,
+                &pending.org_units,
+                tenant,
+            )
+            .await?;
         }
 
         let record = ChannelUserCapabilityRecord {
@@ -167,20 +194,48 @@ impl AppState {
 
     /// Resolve org-unit references (bare unit id or `taxonomy/unit_id`
     /// principal id) against the enterprise org-unit store. Errors on any
-    /// unknown reference.
+    /// unknown reference. When `tenant` is given, only units bound to that
+    /// `(org_id, workspace_id)` are considered; without it, a reference that
+    /// matches units in more than one tenant is REJECTED rather than resolved
+    /// to an arbitrary one — enrolling a sender must never grant authority in
+    /// a different tenant because two tenants share a unit name.
     pub async fn resolve_org_unit_refs(
         &self,
         refs: &[String],
+        tenant: Option<(&str, &str)>,
     ) -> anyhow::Result<Vec<tandem_enterprise_contract::OrganizationUnit>> {
         let units = self.enterprise.org_units.read().await;
         refs.iter()
             .map(|entry| {
                 let wanted = entry.trim();
-                units
+                let matches = units
                     .values()
-                    .find(|unit| unit.unit_id == wanted || unit.principal_ref().id == wanted)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("unknown org unit: {wanted}"))
+                    .filter(|unit| unit.unit_id == wanted || unit.principal_ref().id == wanted)
+                    .filter(|unit| {
+                        tenant.is_none_or(|(org_id, workspace_id)| {
+                            unit.tenant_context.org_id == org_id
+                                && unit.tenant_context.workspace_id == workspace_id
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let mut tenants = matches
+                    .iter()
+                    .map(|unit| {
+                        (
+                            unit.tenant_context.org_id.as_str(),
+                            unit.tenant_context.workspace_id.as_str(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                tenants.sort();
+                tenants.dedup();
+                match tenants.len() {
+                    0 => Err(anyhow::anyhow!("unknown org unit: {wanted}")),
+                    1 => Ok(matches[0].clone()),
+                    _ => Err(anyhow::anyhow!(
+                        "org unit ref {wanted} is ambiguous across tenants; scope the enrollment to a tenant"
+                    )),
+                }
             })
             .collect()
     }
@@ -193,12 +248,13 @@ impl AppState {
         &self,
         member_id: &str,
         unit_refs: &[String],
+        tenant: Option<(&str, &str)>,
     ) -> anyhow::Result<Vec<String>> {
         use tandem_types::{OrganizationUnitMembership, OrganizationUnitMembershipSource};
 
         let member_id = member_id.trim();
         anyhow::ensure!(!member_id.is_empty(), "member id must not be empty");
-        let units = self.resolve_org_unit_refs(unit_refs).await?;
+        let units = self.resolve_org_unit_refs(unit_refs, tenant).await?;
         let member = tandem_types::PrincipalRef::human_user(member_id);
         let now_ms = crate::now_ms();
 
@@ -499,6 +555,7 @@ mod tests {
                 Some("operator".to_string()),
                 Some("/workspace/acme".to_string()),
                 Vec::new(),
+                None,
             )
             .await
             .expect("issue enrollment code");

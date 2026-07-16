@@ -30,6 +30,13 @@ pub(crate) enum ChannelEnrollRequest {
         /// the redeeming identity should become a member of.
         #[serde(default)]
         org_units: Vec<String>,
+        /// Tenant the `org_units` refs resolve in (set both or neither).
+        /// Without it, refs that match units in multiple tenants are
+        /// rejected rather than resolved to an arbitrary tenant.
+        #[serde(default)]
+        tenant_org_id: Option<String>,
+        #[serde(default)]
+        tenant_workspace_id: Option<String>,
     },
     Confirm {
         pairing_code: String,
@@ -105,6 +112,8 @@ pub(crate) async fn channel_enroll(
             issued_by,
             pinned_workspace_id,
             org_units,
+            tenant_org_id,
+            tenant_workspace_id,
         } => {
             if channel.trim().is_empty() || user_id.trim().is_empty() {
                 return enrollment_error(
@@ -112,6 +121,20 @@ pub(crate) async fn channel_enroll(
                     "channel and user_id are required",
                 );
             }
+            let tenant = match (tenant_org_id, tenant_workspace_id) {
+                (Some(org_id), Some(workspace_id))
+                    if !org_id.trim().is_empty() && !workspace_id.trim().is_empty() =>
+                {
+                    Some((org_id.trim().to_string(), workspace_id.trim().to_string()))
+                }
+                (None, None) => None,
+                _ => {
+                    return enrollment_error(
+                        StatusCode::BAD_REQUEST,
+                        "tenant_org_id and tenant_workspace_id must be provided together",
+                    );
+                }
+            };
             let enrollment = match state
                 .issue_channel_enrollment_code(
                     channel.trim().to_ascii_lowercase(),
@@ -123,6 +146,7 @@ pub(crate) async fn channel_enroll(
                         .as_deref()
                         .and_then(tandem_core::normalize_workspace_path),
                     org_units,
+                    tenant,
                 )
                 .await
             {
@@ -179,6 +203,8 @@ mod tests {
                 issued_by: Some("operator".to_string()),
                 pinned_workspace_id: Some("/workspace/acme".to_string()),
                 org_units: Vec::new(),
+                tenant_org_id: None,
+                tenant_workspace_id: None,
             }),
         )
         .await;

@@ -26,36 +26,63 @@ pub(super) fn slack_signing_secrets(connections: &[ResolvedSlackConnection]) -> 
     secrets
 }
 
+/// How the claimed installation `(team_id, api_app_id)` maps to signing
+/// secrets. The three cases must stay distinct: only a payload whose claimed
+/// installation matches *no* configured connection may fall back to the
+/// all-secrets check (installation validation rejects it downstream anyway).
+pub(super) enum InstallationSigningSecrets {
+    /// The claimed installation matches connection(s) carrying secrets —
+    /// verify against exactly these.
+    Bound(Vec<String>),
+    /// The claimed installation matches configured connection(s), but none
+    /// of them carries a signing secret. Fail closed: another app's secret
+    /// must never vouch for this installation.
+    MissingSecret,
+    /// No configured connection claims the installation, or the payload
+    /// makes no claim (e.g. the `url_verification` handshake).
+    Unclaimed,
+}
+
 /// Signing secrets bound to one claimed installation `(team_id, api_app_id)`.
 ///
 /// The signing secret is a Slack *app* credential, so a payload claiming
 /// installation B must verify against B's secret — never against another
 /// configured app's secret (that would break tenant/app isolation the moment
-/// one installation's secret is compromised). Returns an empty list when the
-/// claimed installation matches no configured connection or the matching
-/// connections carry no secret; callers then fall back to
-/// [`slack_signing_secrets`] so signed-but-unknown installations still reach
-/// the installation-mismatch rejection instead of a misleading signature
-/// error.
+/// one installation's secret is compromised). A configured installation
+/// without a secret is [`InstallationSigningSecrets::MissingSecret`], which
+/// callers must reject; only [`InstallationSigningSecrets::Unclaimed`] may
+/// fall back to [`slack_signing_secrets`] so signed-but-unknown installations
+/// still reach the installation-mismatch rejection instead of a misleading
+/// signature error.
 pub(super) fn slack_installation_signing_secrets(
     connections: &[ResolvedSlackConnection],
     team_id: Option<&str>,
     app_id: Option<&str>,
-) -> Vec<String> {
+) -> InstallationSigningSecrets {
     let (Some(team_id), Some(app_id)) = (team_id, app_id) else {
-        return Vec::new();
+        return InstallationSigningSecrets::Unclaimed;
     };
-    let mut secrets = connections
+    let matching = connections
         .iter()
         .filter(|connection| {
             connection.team_id.as_deref() == Some(team_id)
                 && connection.app_id.as_deref() == Some(app_id)
         })
+        .collect::<Vec<_>>();
+    if matching.is_empty() {
+        return InstallationSigningSecrets::Unclaimed;
+    }
+    let mut secrets = matching
+        .iter()
         .filter_map(|connection| connection.signing_secret.clone())
         .collect::<Vec<_>>();
     secrets.sort();
     secrets.dedup();
-    secrets
+    if secrets.is_empty() {
+        InstallationSigningSecrets::MissingSecret
+    } else {
+        InstallationSigningSecrets::Bound(secrets)
+    }
 }
 
 /// Verify a Slack HMAC signature against every configured secret; success on
