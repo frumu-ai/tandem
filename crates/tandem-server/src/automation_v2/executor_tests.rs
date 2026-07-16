@@ -220,6 +220,26 @@ fn triage_gate_skips_dependency_with_structured_handoff_has_work_false() {
 }
 
 #[test]
+fn triage_gate_skips_when_has_work_is_embedded_in_content_text() {
+    let triage = test_triage_node("select");
+    let writer = test_node("write", vec!["select"]);
+    let outputs = std::collections::HashMap::from([(
+        "select".to_string(),
+        json!({
+            "content": {
+                "text": "{\"has_work\":false,\"summary\":\"Unsupported event\"}\n{\"status\":\"completed\"}"
+            }
+        }),
+    )]);
+
+    assert!(should_skip_due_to_triage_gate(
+        &writer,
+        &outputs,
+        &[triage, writer.clone()]
+    ));
+}
+
+#[test]
 fn triage_gate_does_not_skip_fan_in_when_non_triage_parent_has_output() {
     let triage = test_triage_node("select");
     let research = test_node("research", vec![]);

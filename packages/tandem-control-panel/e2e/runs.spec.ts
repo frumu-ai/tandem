@@ -163,7 +163,7 @@ test("Porcelain loading state uses the dark Tandem blue mark", async ({ page, ap
   await expect(page.getByText("Loading runs", { exact: true })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "porcelain");
   const baseFill = await page
-    .locator(".tcp-loading-logo .tcp-logo-base")
+    .locator(".tcp-tandem-logo-compact .tcp-logo-base")
     .first()
     .evaluate((element) => getComputedStyle(element).fill);
   expect(baseFill).toBe("rgb(30, 58, 138)");

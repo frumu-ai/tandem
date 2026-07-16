@@ -3659,7 +3659,7 @@ html[data-theme="porcelain"] .tcp-btn-primary {
   color: #ffffff;
 }
 
-html[data-theme="porcelain"] .tcp-loading-logo {
+html[data-theme="porcelain"] .tcp-tandem-logo-compact {
   --tcp-logo-compact-base: #1e3a8a;
   --tcp-logo-compact-accent-a: #1d4ed8;
   --tcp-logo-compact-accent-b: #1e40af;

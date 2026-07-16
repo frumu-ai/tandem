@@ -110,6 +110,10 @@ test("loading and typography use the shared UI contracts", async () => {
 
   const css = readFileSync(join(srcDir, "styles.css"), "utf8");
   assert.match(css, /\.tcp-spinner\s*\{[^}]*animation:\s*tcpSpin\b/s);
+  const tandemLogo = readFileSync(join(srcDir, "ui", "TandemLogoAnimation.tsx"), "utf8");
+  assert.match(tandemLogo, /tcp-tandem-logo-animation/);
+  assert.match(tandemLogo, /tcp-tandem-logo-compact/);
+  assert.match(css, /html\[data-theme="porcelain"\]\s+\.tcp-tandem-logo-compact\s*\{/);
   const declarations = [...css.matchAll(/font-size:\s*([^;]+);/g)].map((match) => match[1].trim());
   const allowedValues = new Set([...typeScale].map((name) => `var(--font-size-${name})`));
   assert.deepEqual(

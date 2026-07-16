@@ -105,7 +105,8 @@ export function TandemLogoAnimation({
 
   return (
     <div
-      className={`relative isolate ${compact ? "flex items-center justify-center overflow-visible" : "overflow-hidden border border-white/6 bg-black/30"} ${className}`.trim()}
+      className={`tcp-tandem-logo-animation ${compact ? "tcp-tandem-logo-compact flex items-center justify-center overflow-visible" : "tcp-tandem-logo-panel overflow-hidden border border-white/6 bg-black/30"} relative isolate ${className}`.trim()}
+      data-logo-mode={mode}
       title={title}
       aria-hidden="true"
     >
