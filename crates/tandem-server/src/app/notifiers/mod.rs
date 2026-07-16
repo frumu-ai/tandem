@@ -110,12 +110,7 @@ pub(crate) fn approval_request_to_card(
         body_markdown,
         fields,
         buttons,
-        reason_prompt: Some(InteractiveCardReasonPrompt {
-            modal_title: "Request rework".to_string(),
-            field_label: "What should change before this can be approved?".to_string(),
-            field_placeholder: Some("Add the feedback the workflow should use.".to_string()),
-            submit_label: "Send rework".to_string(),
-        }),
+        reason_prompt: Some(InteractiveCardReasonPrompt::default_rework()),
         thread_key: Some(request.run_id.clone()),
         correlation,
     }

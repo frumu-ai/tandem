@@ -43,7 +43,7 @@ use tandem_channels::dispatcher::{
 use tandem_channels::redaction::redact_outbound;
 use tandem_channels::signing::verify_slack_signature;
 use tandem_channels::slack::SlackChannel;
-use tandem_channels::traits::{Channel, ThreadReply};
+use tandem_channels::traits::{Channel, InteractiveCardReasonPrompt, ThreadReply};
 use tandem_types::{
     AccessEffect, AssertionMetadata, AuthorityChain, CreateSessionRequest, DataBoundary,
     HumanActor, MessagePart, MessagePartInput, MessageRole, ModelSpec, OrganizationUnitKind,
@@ -192,6 +192,13 @@ pub(crate) async fn slack_interactions(
     };
 
     let connections = slack_connections_from_effective_config(&effective_config);
+
+    // Modal submissions (the rework-reason round-trip) carry no `actions`
+    // array or channel container — route them to their own handler.
+    if payload.get("type").and_then(Value::as_str) == Some("view_submission") {
+        return handle_slack_view_submission(&state, &connections, &payload).await;
+    }
+
     let (installation, connection) = match validate_slack_interaction_installation(
         &connections,
         &payload,
@@ -217,110 +224,14 @@ pub(crate) async fn slack_interactions(
         Err(reason) => return reject_bad_request(&reason),
     };
 
-    // CRITICAL: Authorize the user against the connection's allowlist BEFORE
-    // dispatching.
-    let resolved_principal = match resolve_slack_user_for_connection(
-        &connection.allowed_users,
-        &installation.team_id,
-        &installation.app_id,
-        &action.user_id,
-    ) {
-        ChannelIdentityResolution::Resolved(principal) => principal,
-        ChannelIdentityResolution::Denied { .. } => {
-            tracing::warn!(
-                target: "tandem_server::slack_interactions",
-                user_id = %action.user_id,
-                "rejecting Slack interaction from unauthorized user"
-            );
-            return reject_forbidden("user not in allowed_users");
-        }
-        ChannelIdentityResolution::ChannelNotConfigured(_) => {
-            return reject_bad_request("slack channel not properly configured");
-        }
-    };
-    let approval_identity = resolved_principal.actor_id.unwrap_or_else(|| {
-        slack_installation_identity(&installation.team_id, &installation.app_id, &action.user_id)
-    });
-    let profile = connection.security_profile;
-    if !state
-        .channel_user_can_approve(
-            ChannelKind::Slack.as_str(),
-            &approval_identity,
-            profile,
-            connection.is_open_to_all(),
-        )
-        .await
-    {
-        tracing::warn!(
-            target: "tandem_server::slack_interactions",
-            user_id = %action.user_id,
-            "rejecting Slack interaction without approval capability"
-        );
-        return reject_forbidden("user lacks approval capability");
-    }
-    // GOV-B5b: on a channel that opts into step-up, an approval requires an active
-    // per-identity step-up grant issued out-of-band by the control panel.
-    if connection.require_approval_step_up
-        && !state
-            .channel_step_up_active(ChannelKind::Slack.as_str(), &approval_identity)
-            .await
-    {
-        tracing::warn!(
-            target: "tandem_server::slack_interactions",
-            user_id = %action.user_id,
-            "rejecting Slack interaction without an active step-up"
-        );
-        return reject_forbidden("step-up required");
-    }
-    let rate_key = ChannelRateLimitKey {
-        channel: ChannelKind::Slack.as_str().to_string(),
-        user_id: approval_identity.clone(),
-    };
-    let rate_decision = state
-        .channel_rate_limiter
-        .check(&rate_key, ChannelRateLimitKind::Decision, profile)
-        .await;
-    if !rate_decision.allowed {
-        return reject_rate_limited(rate_decision.retry_after_secs);
-    }
-
-    // TAN-764: on a department-bound connection, approval authority must not
-    // exceed the channel's departmental scope — the approver needs an active
-    // membership in one of the bound units. A department binding without a
-    // tenant binding is a misconfiguration and fails closed (there is no
-    // authority graph to resolve memberships against).
-    if connection.binds_departments() {
-        let Some((org_id, workspace_id)) = connection.bound_tenant() else {
-            tracing::warn!(
-                target: "tandem_server::slack_interactions",
-                user_id = %action.user_id,
-                "rejecting Slack interaction: connection binds org units without a bound tenant"
-            );
-            return reject_forbidden(
-                "channel binds org units but has no bound tenant; failing closed",
-            );
+    // CRITICAL: Authorize the user against the connection's allowlist,
+    // capability tier, step-up, rate limit, and department binding BEFORE
+    // dispatching anything.
+    let approval_identity =
+        match authorize_slack_approver(&state, &connection, &installation, &action.user_id).await {
+            Ok(identity) => identity,
+            Err(response) => return response,
         };
-        let channel_tenant = TenantContext::explicit(org_id, workspace_id, None);
-        let graph = state
-            .build_intra_tenant_authority_graph(&channel_tenant, Vec::new())
-            .await;
-        let principal = PrincipalRef::human_user(approval_identity.clone());
-        let now_ms = crate::now_ms();
-        let resolved_units = graph.resolved_unit_principals(&principal, now_ms);
-        let holds_bound_unit = graph.units.iter().any(|unit| {
-            unit.state.is_active()
-                && resolved_units.contains(&unit.principal_ref())
-                && connection.binds_org_unit(&unit.principal_ref().id, &unit.unit_id)
-        });
-        if !holds_bound_unit {
-            tracing::warn!(
-                target: "tandem_server::slack_interactions",
-                user_id = %action.user_id,
-                "rejecting Slack interaction outside the channel's bound departments"
-            );
-            return reject_forbidden("user has no membership in the channel's bound departments");
-        }
-    }
 
     let parsed_value = match parse_button_value(&action.value) {
         Ok(v) => v,
@@ -342,17 +253,52 @@ pub(crate) async fn slack_interactions(
         other => return reject_bad_request(&format!("unknown action_id: {other}")),
     };
 
-    // For W2.4 we dispatch the approve/cancel decisions directly. Rework
-    // requires a reason and Slack passes the reason via a follow-up modal
-    // submission — that round-trip lands in W2.5. For now we accept the
-    // rework click but defer the decision until the modal is wired.
+    let tenant_context =
+        match guard_slack_run_tenant(&state, &connection, &approval_identity, &run_id).await {
+            Ok(tenant_context) => tenant_context,
+            Err(response) => return response,
+        };
+
+    // Rework requires a reason, which Slack collects via a modal round-trip:
+    // open the reason modal bound to this run; the decision dispatches when
+    // the `view_submission` callback arrives. The click itself must still be
+    // acked within Slack's 3-second window, and `trigger_id`s expire fast, so
+    // the modal opens before the ack.
     if decision == "rework" {
-        // Open the modal (the caller built it via slack_blocks::build_rework_modal_payload).
-        // Until the modal POST handler lands in W2.5, return 200 with a hint.
+        let Some(trigger_id) = config_string(&payload, "/trigger_id") else {
+            return reject_bad_request("rework requires a trigger_id to open the reason modal");
+        };
+        let private_metadata = json!({
+            "automation_v2_run_id": run_id,
+            "channel_id": connection.channel_id,
+        })
+        .to_string();
+        let modal = tandem_channels::slack_blocks::build_rework_modal_payload(
+            &InteractiveCardReasonPrompt::default_rework(),
+            &trigger_id,
+            SLACK_REWORK_CALLBACK_ID,
+            &private_metadata,
+        );
+        let Some(channel) = slack_channel_for_connection(&connection) else {
+            return reject_forbidden("slack bot token not configured");
+        };
+        if let Err(error) = channel.open_view(&modal).await {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                run_id = %run_id,
+                %error,
+                "failed to open Slack rework modal"
+            );
+            return ok_with_payload(json!({
+                "ok": false,
+                "error": "could not open the rework reason modal; click Rework again",
+            }));
+        }
         tracing::info!(
             target: "tandem_server::slack_interactions",
             run_id = %run_id,
-            "rework button clicked; modal flow lands in W2.5"
+            user = %action.user_id,
+            "opened Slack rework reason modal"
         );
         return ok_empty();
     }
@@ -363,45 +309,6 @@ pub(crate) async fn slack_interactions(
         approval_request_id: None,
         transition_id: None,
     };
-
-    let tenant_context = state
-        .get_automation_v2_run(&run_id)
-        .await
-        .map(|run| run.tenant_context)
-        .unwrap_or_else(tandem_types::TenantContext::local_implicit);
-    // GOV-B5c: if this connection is bound to a tenant, refuse to act on a run
-    // that belongs to a different tenant (prevents a channel acting cross-tenant
-    // by run id). An unbound connection (single-tenant/local) is unaffected.
-    if let Some((org_id, workspace_id)) = connection.bound_tenant() {
-        if tenant_context.org_id != org_id || tenant_context.workspace_id != workspace_id {
-            tracing::warn!(
-                target: "tandem_server::slack_interactions",
-                user_id = %action.user_id,
-                "rejecting Slack interaction targeting a run outside the channel's bound tenant"
-            );
-            let channel_tenant = tandem_types::TenantContext::explicit_user_workspace(
-                org_id,
-                workspace_id,
-                None,
-                "slack",
-            );
-            if let Err(error) = crate::http::channel_interaction_audit::append_cross_tenant_denial(
-                &state,
-                "slack",
-                &approval_identity,
-                &run_id,
-                channel_tenant,
-                &tenant_context,
-            )
-            .await
-            {
-                return reject_forbidden(&format!(
-                    "channel denied; required denial receipt persistence failed: {error}"
-                ));
-            }
-            return reject_forbidden("channel not bound to this run's tenant");
-        }
-    }
     // GOV-B1: this user has already passed signature verification, allowlist, and
     // the Approve capability-tier check above, so record the decision as a verified
     // human approver attributed to the Slack identity.
@@ -447,6 +354,330 @@ pub(crate) async fn slack_interactions(
                 "ok": false,
                 "status": status.as_u16(),
                 "body": body_json.0,
+            }))
+        }
+    }
+}
+
+/// `callback_id` of the rework-reason modal. Versioned so a future layout
+/// change can coexist with in-flight modals.
+const SLACK_REWORK_CALLBACK_ID: &str = "tandem_rework_v1";
+
+/// Shared approver authorization for button clicks and modal submissions:
+/// connection allowlist → Approve capability (GOV-B5a) → step-up (GOV-B5b) →
+/// rate limit → department binding (TAN-764). Returns the installation-scoped
+/// approval identity, or the rejection response to return as-is.
+async fn authorize_slack_approver(
+    state: &AppState,
+    connection: &ResolvedSlackConnection,
+    installation: &SlackInstallationBinding,
+    surface_user_id: &str,
+) -> Result<String, Response> {
+    let resolved_principal = match resolve_slack_user_for_connection(
+        &connection.allowed_users,
+        &installation.team_id,
+        &installation.app_id,
+        surface_user_id,
+    ) {
+        ChannelIdentityResolution::Resolved(principal) => principal,
+        ChannelIdentityResolution::Denied { .. } => {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                user_id = %surface_user_id,
+                "rejecting Slack interaction from unauthorized user"
+            );
+            return Err(reject_forbidden("user not in allowed_users"));
+        }
+        ChannelIdentityResolution::ChannelNotConfigured(_) => {
+            return Err(reject_bad_request("slack channel not properly configured"));
+        }
+    };
+    let approval_identity = resolved_principal.actor_id.unwrap_or_else(|| {
+        slack_installation_identity(&installation.team_id, &installation.app_id, surface_user_id)
+    });
+    let profile = connection.security_profile;
+    if !state
+        .channel_user_can_approve(
+            ChannelKind::Slack.as_str(),
+            &approval_identity,
+            profile,
+            connection.is_open_to_all(),
+        )
+        .await
+    {
+        tracing::warn!(
+            target: "tandem_server::slack_interactions",
+            user_id = %surface_user_id,
+            "rejecting Slack interaction without approval capability"
+        );
+        return Err(reject_forbidden("user lacks approval capability"));
+    }
+    // GOV-B5b: on a channel that opts into step-up, an approval requires an active
+    // per-identity step-up grant issued out-of-band by the control panel.
+    if connection.require_approval_step_up
+        && !state
+            .channel_step_up_active(ChannelKind::Slack.as_str(), &approval_identity)
+            .await
+    {
+        tracing::warn!(
+            target: "tandem_server::slack_interactions",
+            user_id = %surface_user_id,
+            "rejecting Slack interaction without an active step-up"
+        );
+        return Err(reject_forbidden("step-up required"));
+    }
+    let rate_key = ChannelRateLimitKey {
+        channel: ChannelKind::Slack.as_str().to_string(),
+        user_id: approval_identity.clone(),
+    };
+    let rate_decision = state
+        .channel_rate_limiter
+        .check(&rate_key, ChannelRateLimitKind::Decision, profile)
+        .await;
+    if !rate_decision.allowed {
+        return Err(reject_rate_limited(rate_decision.retry_after_secs));
+    }
+
+    // TAN-764: on a department-bound connection, approval authority must not
+    // exceed the channel's departmental scope — the approver needs an active
+    // membership in one of the bound units. A department binding without a
+    // tenant binding is a misconfiguration and fails closed (there is no
+    // authority graph to resolve memberships against).
+    if connection.binds_departments() {
+        let Some((org_id, workspace_id)) = connection.bound_tenant() else {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                user_id = %surface_user_id,
+                "rejecting Slack interaction: connection binds org units without a bound tenant"
+            );
+            return Err(reject_forbidden(
+                "channel binds org units but has no bound tenant; failing closed",
+            ));
+        };
+        let channel_tenant = TenantContext::explicit(org_id, workspace_id, None);
+        let graph = state
+            .build_intra_tenant_authority_graph(&channel_tenant, Vec::new())
+            .await;
+        let principal = PrincipalRef::human_user(approval_identity.clone());
+        let now_ms = crate::now_ms();
+        let resolved_units = graph.resolved_unit_principals(&principal, now_ms);
+        let holds_bound_unit = graph.units.iter().any(|unit| {
+            unit.state.is_active()
+                && resolved_units.contains(&unit.principal_ref())
+                && connection.binds_org_unit(&unit.principal_ref().id, &unit.unit_id)
+        });
+        if !holds_bound_unit {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                user_id = %surface_user_id,
+                "rejecting Slack interaction outside the channel's bound departments"
+            );
+            return Err(reject_forbidden(
+                "user has no membership in the channel's bound departments",
+            ));
+        }
+    }
+    Ok(approval_identity)
+}
+
+/// GOV-B5c: if this connection is bound to a tenant, refuse to act on a run
+/// that belongs to a different tenant (prevents a channel acting cross-tenant
+/// by run id). An unbound connection (single-tenant/local) is unaffected.
+async fn guard_slack_run_tenant(
+    state: &AppState,
+    connection: &ResolvedSlackConnection,
+    approval_identity: &str,
+    run_id: &str,
+) -> Result<TenantContext, Response> {
+    let tenant_context = state
+        .get_automation_v2_run(run_id)
+        .await
+        .map(|run| run.tenant_context)
+        .unwrap_or_else(tandem_types::TenantContext::local_implicit);
+    if let Some((org_id, workspace_id)) = connection.bound_tenant() {
+        if tenant_context.org_id != org_id || tenant_context.workspace_id != workspace_id {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                run_id = %run_id,
+                "rejecting Slack interaction targeting a run outside the channel's bound tenant"
+            );
+            let channel_tenant = tandem_types::TenantContext::explicit_user_workspace(
+                org_id,
+                workspace_id,
+                None,
+                "slack",
+            );
+            if let Err(error) = crate::http::channel_interaction_audit::append_cross_tenant_denial(
+                state,
+                "slack",
+                approval_identity,
+                run_id,
+                channel_tenant,
+                &tenant_context,
+            )
+            .await
+            {
+                return Err(reject_forbidden(&format!(
+                    "channel denied; required denial receipt persistence failed: {error}"
+                )));
+            }
+            return Err(reject_forbidden("channel not bound to this run's tenant"));
+        }
+    }
+    Ok(tenant_context)
+}
+
+/// Build the outbound Slack client for a connection. `None` when the
+/// connection has no bot token.
+fn slack_channel_for_connection(connection: &ResolvedSlackConnection) -> Option<SlackChannel> {
+    let slack_config = SlackConfig {
+        bot_token: connection.bot_token.clone()?,
+        channel_id: connection.channel_id.clone(),
+        allowed_users: connection.allowed_users.clone(),
+        mention_only: connection.mention_only,
+        security_profile: connection.security_profile,
+    };
+    Some(match connection.api_base_url.clone() {
+        Some(api_base_url) => SlackChannel::new_with_api_base_url(slack_config, api_base_url),
+        None => SlackChannel::new(slack_config),
+    })
+}
+
+/// Handle a `view_submission` callback — today only the rework-reason modal.
+/// The submission carries no channel container; the connection binding rides
+/// in `private_metadata`, which this server set when it opened the modal and
+/// which Slack echoes back inside the signed payload.
+async fn handle_slack_view_submission(
+    state: &AppState,
+    connections: &[ResolvedSlackConnection],
+    payload: &Value,
+) -> Response {
+    if config_string(payload, "/view/callback_id").as_deref() != Some(SLACK_REWORK_CALLBACK_ID) {
+        // Unknown modal — ack so Slack closes it rather than erroring the UI.
+        return ok_empty();
+    }
+
+    // Slack view ids are unique per opened modal; dedup double-submits. Gate
+    // decisions remain the durable idempotency boundary after entries expire.
+    if let Some(view_id) = config_string(payload, "/view/id") {
+        let key = format!("view_submission:{view_id}");
+        let mut guard = dedup_ring().lock().expect("dedup mutex poisoned");
+        if !guard.record_new(&key) {
+            tracing::debug!(target: "tandem_server::slack_interactions", %key, "duplicate Slack view submission — already processed");
+            return ok_empty();
+        }
+    }
+
+    let Some(payload_team_id) =
+        config_string(payload, "/team/id").or_else(|| config_string(payload, "/team_id"))
+    else {
+        return reject_bad_request("Slack interaction payload missing team id");
+    };
+    let Some(payload_app_id) = config_string(payload, "/api_app_id") else {
+        return reject_bad_request("Slack interaction payload missing api_app_id");
+    };
+    let Some(user_id) = config_string(payload, "/user/id") else {
+        return reject_bad_request("payload missing user identification");
+    };
+
+    let metadata: Value = config_string(payload, "/view/private_metadata")
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let Some(run_id) = config_string(&metadata, "/automation_v2_run_id") else {
+        return reject_bad_request("rework submission missing automation_v2_run_id");
+    };
+    let Some(channel_id) = config_string(&metadata, "/channel_id") else {
+        return reject_bad_request("rework submission missing channel binding");
+    };
+
+    let Some(connection) = connections.iter().find(|connection| {
+        connection.team_id.as_deref() == Some(payload_team_id.as_str())
+            && connection.app_id.as_deref() == Some(payload_app_id.as_str())
+            && connection.channel_id == channel_id
+    }) else {
+        tracing::warn!(target: "tandem_server::slack_interactions", "rejecting Slack view submission outside configured installation");
+        return reject_forbidden("Slack interaction channel does not match configured channel");
+    };
+    let installation = SlackInstallationBinding {
+        team_id: payload_team_id,
+        app_id: payload_app_id,
+    };
+
+    let approval_identity =
+        match authorize_slack_approver(state, connection, &installation, &user_id).await {
+            Ok(identity) => identity,
+            Err(response) => return response,
+        };
+
+    let reason = config_string(
+        payload,
+        "/view/state/values/reason_block/reason_input/value",
+    )
+    .map(|value| value.trim().to_string())
+    .filter(|value| !value.is_empty());
+    let Some(reason) = reason else {
+        // Slack renders this exact shape as inline validation on the modal.
+        return ok_with_payload(json!({
+            "response_action": "errors",
+            "errors": {
+                "reason_block": "Add the feedback the workflow should use."
+            }
+        }));
+    };
+
+    let tenant_context =
+        match guard_slack_run_tenant(state, connection, &approval_identity, &run_id).await {
+            Ok(tenant_context) => tenant_context,
+            Err(response) => return response,
+        };
+
+    let input = crate::http::routines_automations::AutomationV2GateDecisionInput {
+        decision: "rework".to_string(),
+        reason: Some(reason),
+        approval_request_id: None,
+        transition_id: None,
+    };
+    let decider = crate::automation_v2::governance::GovernanceActorRef::human(
+        Some(approval_identity.clone()),
+        "slack",
+    );
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        tenant_context,
+        None,
+        run_id.clone(),
+        input,
+        decider,
+    )
+    .await;
+
+    match result {
+        Ok(_) => {
+            tracing::info!(
+                target: "tandem_server::slack_interactions",
+                run_id = %run_id,
+                user = %user_id,
+                "Slack rework modal decided gate"
+            );
+            // Empty 200 closes the modal.
+            ok_empty()
+        }
+        Err((status, body_json)) => {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                run_id = %run_id,
+                status = %status,
+                body = %body_json.0,
+                "rework gate-decide returned non-success"
+            );
+            // Returning >200 would make Slack show a generic modal error and
+            // invite retries of a decision that already resolved; surface the
+            // conflict inline instead.
+            ok_with_payload(json!({
+                "response_action": "errors",
+                "errors": {
+                    "reason_block": "This gate was already decided or could not accept rework."
+                }
             }))
         }
     }

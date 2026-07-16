@@ -573,3 +573,222 @@ async fn slack_interaction_requires_membership_in_bound_departments() {
         "gate must be decided by the bound-department approver"
     );
 }
+
+/// Re-patch the Slack channel config with a mock API base URL so outbound
+/// calls (views.open) hit the test mock instead of slack.com.
+async fn point_slack_at_mock(state: &AppState, api_base_url: &str) {
+    state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "signing_secret": "ct05-slack-secret",
+                    "team_id": SLACK_TEAM,
+                    "app_id": SLACK_APP,
+                    "channel_id": SLACK_CHANNEL,
+                    "allowed_users": [SLACK_USER],
+                    "bot_token": "xoxb-ct05-test",
+                    "api_base_url": api_base_url,
+                    "tenant": {
+                        "org_id": TENANT_A_ORG,
+                        "workspace_id": TENANT_A_WORKSPACE
+                    }
+                }
+            }
+        }))
+        .await
+        .expect("point slack at mock API");
+}
+
+fn slack_rework_click_request(run_id: &str, nonce: u64) -> Request<Body> {
+    let timestamp = chrono::Utc::now().timestamp();
+    let payload = json!({
+        "type": "block_actions",
+        "api_app_id": SLACK_APP,
+        "team": {"id": SLACK_TEAM},
+        "channel": {"id": SLACK_CHANNEL},
+        "container": {"channel_id": SLACK_CHANNEL},
+        "user": {"id": SLACK_USER},
+        "trigger_id": format!("trigger.{nonce}"),
+        "actions": [{
+            "action_id": "rework",
+            "action_ts": format!("{}.{}", timestamp, nonce),
+            "value": json!({
+                "correlation": {
+                    "automation_v2_run_id": run_id
+                }
+            }).to_string()
+        }]
+    });
+    let body = format!("payload={}", urlencoding::encode(&payload.to_string()));
+    let signature = sign_slack("ct05-slack-secret", timestamp, body.as_bytes());
+    Request::builder()
+        .method("POST")
+        .uri("/channels/slack/interactions")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("x-slack-request-timestamp", timestamp.to_string())
+        .header("x-slack-signature", signature)
+        .body(Body::from(body))
+        .expect("slack rework click request")
+}
+
+fn slack_view_submission_request(run_id: &str, view_id: &str, reason: &str) -> Request<Body> {
+    let timestamp = chrono::Utc::now().timestamp();
+    let private_metadata = json!({
+        "automation_v2_run_id": run_id,
+        "channel_id": SLACK_CHANNEL,
+    })
+    .to_string();
+    let payload = json!({
+        "type": "view_submission",
+        "api_app_id": SLACK_APP,
+        "team": {"id": SLACK_TEAM},
+        "user": {"id": SLACK_USER},
+        "view": {
+            "id": view_id,
+            "callback_id": "tandem_rework_v1",
+            "private_metadata": private_metadata,
+            "state": {
+                "values": {
+                    "reason_block": {
+                        "reason_input": {
+                            "type": "plain_text_input",
+                            "value": reason
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let body = format!("payload={}", urlencoding::encode(&payload.to_string()));
+    let signature = sign_slack("ct05-slack-secret", timestamp, body.as_bytes());
+    Request::builder()
+        .method("POST")
+        .uri("/channels/slack/interactions")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("x-slack-request-timestamp", timestamp.to_string())
+        .header("x-slack-signature", signature)
+        .body(Body::from(body))
+        .expect("slack view submission request")
+}
+
+#[tokio::test]
+async fn slack_rework_modal_round_trip_dispatches_single_rework_decision() {
+    let state = test_state().await;
+    let (_discord_signing_key, discord_public_key) = discord_keypair();
+    // Grants the Slack identity Approve capability via enrollment codes.
+    configure_bound_channels(&state, &discord_public_key).await;
+    let (api_base_url, slack_mock, mock_task) = super::slack_events::start_slack_api_mock().await;
+    point_slack_at_mock(&state, &api_base_url).await;
+
+    let run = tenant_a_awaiting_run(&state).await;
+    let app = app_router(state.clone());
+
+    // 1. Rework click: opens the reason modal, decides nothing.
+    let resp = app
+        .clone()
+        .oneshot(slack_rework_click_request(&run.run_id, 767_001))
+        .await
+        .expect("rework click response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let views = slack_mock.views_opened.lock().await;
+    assert_eq!(views.len(), 1, "rework click must open exactly one modal");
+    assert_eq!(
+        views[0].get("trigger_id").and_then(Value::as_str),
+        Some("trigger.767001")
+    );
+    assert_eq!(
+        views[0]
+            .pointer("/view/callback_id")
+            .and_then(Value::as_str),
+        Some("tandem_rework_v1")
+    );
+    let metadata: Value = views[0]
+        .pointer("/view/private_metadata")
+        .and_then(Value::as_str)
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .expect("modal private_metadata");
+    assert_eq!(
+        metadata.get("automation_v2_run_id").and_then(Value::as_str),
+        Some(run.run_id.as_str())
+    );
+    assert_eq!(
+        metadata.get("channel_id").and_then(Value::as_str),
+        Some(SLACK_CHANNEL)
+    );
+    drop(views);
+    assert_run_still_awaiting(&state, &run.run_id).await;
+
+    // 2. Submitting an empty reason returns Slack's inline-validation shape
+    //    and decides nothing.
+    let resp = app
+        .clone()
+        .oneshot(slack_view_submission_request(
+            &run.run_id,
+            "V767_EMPTY",
+            "   ",
+        ))
+        .await
+        .expect("empty-reason response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    let payload: Value = serde_json::from_slice(&body).expect("json response");
+    assert_eq!(
+        payload.get("response_action").and_then(Value::as_str),
+        Some("errors"),
+        "empty reason must surface inline modal validation"
+    );
+    assert_run_still_awaiting(&state, &run.run_id).await;
+
+    // 3. A real submission dispatches exactly one rework decision with the
+    //    collected reason.
+    let resp = app
+        .clone()
+        .oneshot(slack_view_submission_request(
+            &run.run_id,
+            "V767_REAL",
+            "Tighten the executive summary before resending.",
+        ))
+        .await
+        .expect("rework submission response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    let payload: Value = serde_json::from_slice(&body).expect("json response");
+    assert!(
+        payload.get("response_action").is_none(),
+        "successful submission must close the modal, got: {payload}"
+    );
+    let decided = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run present after rework");
+    assert!(
+        decided.checkpoint.awaiting_gate.is_none(),
+        "rework submission must decide the gate"
+    );
+
+    // 4. A duplicate submission (Slack double-fire) is dropped by the view-id
+    //    dedup and never double-decides.
+    let resp = app
+        .oneshot(slack_view_submission_request(
+            &run.run_id,
+            "V767_REAL",
+            "Tighten the executive summary before resending.",
+        ))
+        .await
+        .expect("duplicate submission response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    let payload: Value = serde_json::from_slice(&body).expect("json response");
+    assert!(
+        payload.get("response_action").is_none(),
+        "duplicate must be acked as a silent no-op, got: {payload}"
+    );
+    mock_task.abort();
+}

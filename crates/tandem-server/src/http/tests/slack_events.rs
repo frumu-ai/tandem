@@ -157,6 +157,7 @@ impl tandem_tools::Tool for SlackVisibleTool {
 #[derive(Clone, Default)]
 pub(super) struct SlackApiMock {
     pub(super) posts: Arc<Mutex<Vec<Value>>>,
+    pub(super) views_opened: Arc<Mutex<Vec<Value>>>,
     attempts: Arc<AtomicUsize>,
     auth_attempts: Arc<AtomicUsize>,
     bots_info_attempts: Arc<AtomicUsize>,
@@ -164,6 +165,14 @@ pub(super) struct SlackApiMock {
     pub(super) auth_app_id: Arc<Mutex<String>>,
     auth_is_bot: Arc<AtomicBool>,
     failures_remaining: Arc<AtomicUsize>,
+}
+
+async fn slack_views_open(
+    State(state): State<SlackApiMock>,
+    Json(payload): Json<Value>,
+) -> Response {
+    state.views_opened.lock().await.push(payload);
+    Json(json!({ "ok": true, "view": { "id": "V_MOCK" } })).into_response()
 }
 
 async fn slack_bots_info(
@@ -242,6 +251,7 @@ async fn start_slack_api_mock_with_failures(
         .route("/auth.test", get(slack_auth_test))
         .route("/bots.info", get(slack_bots_info))
         .route("/chat.postMessage", post(slack_post_message))
+        .route("/views.open", post(slack_views_open))
         .with_state(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
