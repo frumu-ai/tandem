@@ -651,8 +651,6 @@ fn automation_prompt_render_concrete_source_coverage(
         runtime_values,
     );
     let upstream_artifact_paths = automation_prompt_upstream_artifact_paths(upstream_inputs);
-    let automation_read_only_paths =
-        enforcement::automation_read_only_source_of_truth_files_for_automation(automation);
     let mut source_paths = Vec::new();
     source_paths.extend(read_only_paths.iter().cloned());
     source_paths.extend(explicit_input_files.iter().cloned());
@@ -666,7 +664,6 @@ fn automation_prompt_render_concrete_source_coverage(
     }
     paths.sort();
     paths.dedup();
-    read_only_paths.extend(automation_read_only_paths);
     read_only_paths.sort();
     read_only_paths.dedup();
     if paths.is_empty() {

@@ -793,6 +793,15 @@
     font-size: var(--font-size-micro);
   }
 
+  .tcp-webhook-scope-warning {
+    @apply rounded-md px-2.5 py-2;
+    font-size: var(--font-size-caption);
+    line-height: 1.45;
+    border: 1px solid color-mix(in srgb, var(--color-warning) 42%, transparent);
+    background: color-mix(in srgb, var(--color-warning) 10%, var(--color-surface-elevated) 90%);
+    color: color-mix(in srgb, var(--color-warning) 72%, var(--color-text) 28%);
+  }
+
   .tcp-list {
     @apply grid gap-3;
   }

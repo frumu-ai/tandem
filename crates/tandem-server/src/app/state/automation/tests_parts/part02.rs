@@ -705,6 +705,70 @@ fn capability_ids_connector_source_output_excludes_workspace_discover() {
 }
 
 #[test]
+fn capability_ids_exact_path_read_write_node_excludes_workspace_discover() {
+    let mut node = bare_node();
+    node.node_id = "draft_incident_update".to_string();
+    node.objective = "Use read on demo-output/context/incident-context.md, then write demo-output/drafts/incident-update.md.".to_string();
+    node.metadata = Some(json!({
+        "artifact": {
+            "path": "demo-output/drafts/incident-update.md",
+            "visible_in_run": true
+        },
+        "filesystem_policy": {
+            "read_paths": ["demo-output/context/incident-context.md"],
+            "write_paths": ["demo-output/drafts/incident-update.md"]
+        },
+        "required_tools": ["read", "write"],
+        "tool_allowlist": ["read", "write"]
+    }));
+
+    let caps = automation_tool_capability_ids(&node, "artifact_write");
+
+    assert!(caps.contains(&"workspace_read".to_string()));
+    assert!(caps.contains(&"artifact_write".to_string()));
+    assert!(
+        !caps.contains(&"workspace_discover".to_string()),
+        "an exact-path read/write node must not require an unrequested discovery tool: {caps:?}"
+    );
+}
+
+#[test]
+fn capability_ids_human_approval_excludes_artifact_write() {
+    let mut node = bare_node();
+    node.node_id = "human_approval".to_string();
+    node.objective = "Pause for approval, use no tools, and do not create, modify, or delete files.".to_string();
+    node.input_refs = vec![AutomationFlowInputRef {
+        from_step_id: "draft_incident_update".to_string(),
+        alias: "draft_for_review".to_string(),
+    }];
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "approval_gate".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "stage_kind": "Approval",
+        "approval": {
+            "allowed_decisions": ["Approve", "Reject"],
+            "require_explicit_decision": true
+        },
+        "builder": {
+            "task_class": "human_decision_gate"
+        },
+        "tool_allowlist": []
+    }));
+
+    let caps = automation_tool_capability_ids(&node, "artifact_write");
+
+    assert!(
+        !caps.contains(&"artifact_write".to_string()),
+        "human approval must not infer a write capability from negated file language: {caps:?}"
+    );
+}
+
+#[test]
 fn capability_ids_connector_source_input_ref_excludes_implicit_workspace_read() {
     let mut node = node_with_input_ref();
     node.objective =

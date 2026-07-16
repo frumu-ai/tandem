@@ -9,7 +9,7 @@ use crate::app::state::{
     AutomationWebhookTriggerUpdateInput, AutomationWebhookVerificationError,
 };
 use crate::automation_v2::types::{AutomationEnterpriseScope, AutomationWebhookSignatureScheme};
-use tandem_types::{ResourceKind, ResourceRef, ResourceScope};
+use tandem_types::{PrincipalRef, ResourceKind, ResourceRef, ResourceScope};
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
     TenantContext::explicit_user_workspace(org, workspace, None, "actor-a")
@@ -849,6 +849,44 @@ async fn webhook_queue_rejects_scoped_trigger_for_unscoped_automation() {
     );
     assert!(delivery.enterprise_scope.is_some());
     assert!(state.automation_v2_runs.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn webhook_queue_allows_owned_trigger_for_unscoped_automation() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-owned-trigger", &tenant_a).await;
+
+    let mut input = create_input("automation-owned-trigger", tenant_a.clone());
+    input.owner_principal = Some(PrincipalRef::human_user("actor-a"));
+    let created = state
+        .create_automation_webhook_trigger(input)
+        .await
+        .expect("create owned webhook trigger");
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-owned-trigger".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verified request");
+
+    let outcome = state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"ok": true}))
+        .await
+        .expect("queue outcome");
+    let run_id = match outcome {
+        AutomationWebhookQueueResult::Accepted { run, .. } => run.run_id,
+        other => panic!("expected accepted owned trigger, got {other:?}"),
+    };
+    assert!(state.automation_v2_runs.read().await.contains_key(&run_id));
 }
 
 #[tokio::test]

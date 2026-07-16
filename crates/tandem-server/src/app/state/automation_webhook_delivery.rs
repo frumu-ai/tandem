@@ -106,10 +106,8 @@ pub(crate) fn automation_webhook_scope_denial_reason(
 }
 
 fn webhook_trigger_requires_automation_scope(scope: &AutomationEnterpriseScope) -> bool {
-    scope.owner_principal.is_some()
-        || scope.owning_org_unit_id.is_some()
+    scope.owning_org_unit_id.is_some()
         || scope.resource_scope.is_some()
-        || scope.risk_tier.is_some()
         || scope.policy_version_id.is_some()
         || !scope.delegation_grant_ids.is_empty()
 }

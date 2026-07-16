@@ -699,7 +699,7 @@ export function AutomationWebhookManager({
             ) : null}
           </div>
           <div className="grid gap-1">
-            <label className="text-xs text-slate-400">Org unit</label>
+            <label className="text-xs text-slate-400">Enterprise org unit (optional)</label>
             <input
               className="tcp-input"
               value={createDraft.owningOrgUnitId}
@@ -711,6 +711,11 @@ export function AutomationWebhookManager({
               }
               placeholder="department-id"
             />
+            <div className="tcp-webhook-scope-warning" role="note">
+              <strong>Enterprise-scoped workflows only.</strong> Leave this blank unless the
+              workflow is assigned to the same enterprise org unit. Otherwise, webhook deliveries
+              will be rejected.
+            </div>
           </div>
           <div className="grid gap-1">
             <label className="text-xs text-slate-400">Data class</label>
@@ -1211,6 +1216,11 @@ export function AutomationWebhookManager({
                                 <div className="mt-1 text-xs text-slate-500">
                                   {formatTime(delivery.received_at_ms || delivery.receivedAtMs)}
                                 </div>
+                                {reason ? (
+                                  <div className="mt-1 text-xs text-red-300">
+                                    Reason: <code>{reason}</code>
+                                  </div>
+                                ) : null}
                               </div>
                               <span className={`tcp-badge ${statusBadgeClass(status)}`}>
                                 {formatLabel(status)}

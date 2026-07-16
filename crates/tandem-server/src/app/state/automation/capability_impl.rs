@@ -108,7 +108,8 @@ pub(crate) fn automation_tool_capability_ids(
         || (!connector_source_node && !upstream_synthesis_node && !node.input_refs.is_empty());
     let requires_workspace_discover = !connector_source_node
         && !upstream_synthesis_node
-        && (automation_node_required_output_path(node).is_some()
+        && ((automation_node_required_output_path(node).is_some()
+            && !required_tools.iter().any(|tool| tool == "read"))
             || automation_output_validator_kind(node)
                 == crate::AutomationOutputValidatorKind::ResearchBrief
             || required_tools

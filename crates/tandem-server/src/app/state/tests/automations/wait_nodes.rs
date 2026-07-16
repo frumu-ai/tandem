@@ -39,6 +39,34 @@ fn approval_wait_projects_to_the_existing_governed_gate_path() {
     );
 }
 
+#[test]
+fn planner_metadata_approval_projects_to_the_governed_gate_path() {
+    let mut node = AutomationNodeBuilder::new("human-approval").build();
+    node.objective = "Pause and require an explicit human decision.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "approval_gate".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({
+        "stage_kind": "Approval",
+        "approval": {
+            "allowed_decisions": ["Approve", "Reject"],
+            "require_explicit_decision": true
+        },
+        "builder": {
+            "task_class": "human_decision_gate"
+        }
+    }));
+
+    assert!(crate::app::state::is_automation_approval_node(&node));
+    let gate = crate::app::state::build_automation_pending_gate(&node).expect("pending gate");
+    assert_eq!(gate.decisions, vec!["Approve", "Reject"]);
+    assert_eq!(gate.instructions.as_deref(), Some(node.objective.as_str()));
+}
+
 #[tokio::test]
 async fn approval_resume_scheduler_outcome_settles_the_gate_before_requeue() {
     let state = ready_test_state().await;
