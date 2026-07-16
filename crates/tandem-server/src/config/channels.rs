@@ -261,6 +261,22 @@ impl ResolvedSlackConnection {
     pub fn is_open_to_all(&self) -> bool {
         self.allowed_users.iter().any(|entry| entry.trim() == "*")
     }
+
+    /// TAN-764: whether this connection narrows runs to bound departments.
+    pub fn binds_departments(&self) -> bool {
+        self.org_units.iter().any(|entry| !entry.trim().is_empty())
+    }
+
+    /// TAN-764: whether a specific organization unit is bound to this
+    /// connection. Entries match either the unit's principal id (e.g.
+    /// `department/engineering`) or its bare unit id (`engineering`) so
+    /// hand-written configs don't need to know the taxonomy prefix.
+    pub fn binds_org_unit(&self, unit_principal_id: &str, unit_id: &str) -> bool {
+        self.org_units.iter().any(|entry| {
+            let entry = entry.trim();
+            !entry.is_empty() && (entry == unit_principal_id || entry == unit_id)
+        })
+    }
 }
 
 fn raw_string(value: &Value, key: &str) -> Option<String> {
@@ -697,6 +713,32 @@ mod tests {
         let eng = find_slack_connection_by_channel(&effective, "C_ENG").unwrap();
         assert_eq!(eng.bot_token.as_deref(), Some("xoxb-shared"));
         assert!(find_slack_connection_by_channel(&effective, "C_NONE").is_none());
+    }
+
+    #[test]
+    fn binds_org_unit_matches_principal_or_bare_unit_id() {
+        let slack = json!({
+            "channel_id": "C1",
+            "org_units": ["department/sales", "engineering", "  "]
+        });
+        let connection = resolve_slack_connections(&slack).remove(0);
+        assert!(connection.binds_departments());
+        assert!(connection.binds_org_unit("department/sales", "sales"));
+        assert!(
+            connection.binds_org_unit("department/engineering", "engineering"),
+            "bare unit ids must match without the taxonomy prefix"
+        );
+        assert!(!connection.binds_org_unit("department/finance", "finance"));
+
+        let unbound = resolve_slack_connections(&json!({ "channel_id": "C1" })).remove(0);
+        assert!(!unbound.binds_departments());
+        let blank_only =
+            resolve_slack_connections(&json!({ "channel_id": "C1", "org_units": ["  "] }))
+                .remove(0);
+        assert!(
+            !blank_only.binds_departments(),
+            "whitespace-only entries must not count as a department binding"
+        );
     }
 
     #[test]

@@ -107,6 +107,19 @@ Semantics:
   Until per-run routing lands (TAN-764), multi-connection deployments that must
   not broadcast approvals across departments should set
   `"notify_approvals": false` on the channels that shouldn't receive them.
+- **Department binding (TAN-764).** `org_units` on a connection (or top-level,
+  inherited) binds the channel to departments. On signed Events ingress the
+  run's authority becomes the **intersection** of the sender's active org-unit
+  memberships and the channel's bound units — roles, grants, tool capabilities,
+  and the strict memory projection all derive from the intersected set, so the
+  channel can only narrow authority, never widen it. An empty intersection
+  fails closed with an audited denial naming both inputs; `run.started` audit
+  events record `channel_org_units` alongside the effective `org_units`.
+  Entries match a unit's principal id (`department/engineering`) or bare unit
+  id (`engineering`). On the interactions (approval button) path, a
+  department-bound connection additionally requires the approver to hold an
+  active membership in a bound unit; a department binding without a `tenant`
+  binding is a misconfiguration and fails closed.
 - **Diagnostics.** `GET /channels/config` includes a `connections` array for
   Slack with per-connection presence flags (`has_token`, `has_signing_secret`,
   `events_capable`, tenant/org-unit bindings) — never raw secrets.

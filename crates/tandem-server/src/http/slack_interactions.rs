@@ -284,6 +284,44 @@ pub(crate) async fn slack_interactions(
         return reject_rate_limited(rate_decision.retry_after_secs);
     }
 
+    // TAN-764: on a department-bound connection, approval authority must not
+    // exceed the channel's departmental scope — the approver needs an active
+    // membership in one of the bound units. A department binding without a
+    // tenant binding is a misconfiguration and fails closed (there is no
+    // authority graph to resolve memberships against).
+    if connection.binds_departments() {
+        let Some((org_id, workspace_id)) = connection.bound_tenant() else {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                user_id = %action.user_id,
+                "rejecting Slack interaction: connection binds org units without a bound tenant"
+            );
+            return reject_forbidden(
+                "channel binds org units but has no bound tenant; failing closed",
+            );
+        };
+        let channel_tenant = TenantContext::explicit(org_id, workspace_id, None);
+        let graph = state
+            .build_intra_tenant_authority_graph(&channel_tenant, Vec::new())
+            .await;
+        let principal = PrincipalRef::human_user(approval_identity.clone());
+        let now_ms = crate::now_ms();
+        let resolved_units = graph.resolved_unit_principals(&principal, now_ms);
+        let holds_bound_unit = graph.units.iter().any(|unit| {
+            unit.state.is_active()
+                && resolved_units.contains(&unit.principal_ref())
+                && connection.binds_org_unit(&unit.principal_ref().id, &unit.unit_id)
+        });
+        if !holds_bound_unit {
+            tracing::warn!(
+                target: "tandem_server::slack_interactions",
+                user_id = %action.user_id,
+                "rejecting Slack interaction outside the channel's bound departments"
+            );
+            return reject_forbidden("user has no membership in the channel's bound departments");
+        }
+    }
+
     let parsed_value = match parse_button_value(&action.value) {
         Ok(v) => v,
         Err(reason) => return reject_bad_request(&reason),

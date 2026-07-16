@@ -217,6 +217,33 @@ pub(super) async fn build_governed_slack_context(
         return Err("Slack user has no active organization-unit membership".to_string());
     }
 
+    // TAN-764: a department-bound connection narrows the run's authority to
+    // the intersection of the user's active units and the channel's bound
+    // units. The user's verified memberships stay authoritative — the channel
+    // can only narrow, never widen — and an empty intersection fails closed.
+    // Roles, grants, and capabilities below all derive from the intersected
+    // set, so both memory reach and the tool surface narrow with it.
+    let active_units = if !connection.binds_departments() {
+        active_units
+    } else {
+        let user_unit_ids = active_units
+            .iter()
+            .map(|unit| unit.principal_ref().id)
+            .collect::<Vec<_>>();
+        let intersected = active_units
+            .into_iter()
+            .filter(|unit| connection.binds_org_unit(&unit.principal_ref().id, &unit.unit_id))
+            .collect::<Vec<_>>();
+        if intersected.is_empty() {
+            return Err(format!(
+                "Slack user's organization units do not intersect the channel's bound org units (user: [{}]; channel: [{}])",
+                user_unit_ids.join(", "),
+                connection.org_units.join(", ")
+            ));
+        }
+        intersected
+    };
+
     let active_unit_principals = active_units
         .iter()
         .map(|unit| unit.principal_ref())
@@ -556,6 +583,7 @@ async fn process_governed_slack_event(
             "attempt": claim.attempt,
             "roles": verified.roles,
             "org_units": verified.org_units,
+            "channel_org_units": connection.org_units,
             "tool_capabilities": verified.capabilities,
             "grant_ids": verified.strict_projection.as_ref().map(|strict| {
                 strict.grants.iter().map(|grant| grant.grant_id.clone()).collect::<Vec<_>>()

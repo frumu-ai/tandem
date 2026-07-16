@@ -979,6 +979,156 @@ async fn multi_connection_events_route_to_their_own_channels() {
     mock_task.abort();
 }
 
+async fn configure_slack_events_with_bound_departments(
+    state: &AppState,
+    api_base_url: &str,
+    org_units: &[&str],
+) {
+    state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "signing_secret": SIGNING_SECRET,
+                    "events_enabled": true,
+                    "bot_token": "xoxb-governed-test",
+                    "channel_id": SLACK_CHANNEL,
+                    "team_id": SLACK_TEAM,
+                    "app_id": SLACK_APP,
+                    "allowed_users": [SLACK_USER],
+                    "api_base_url": api_base_url,
+                    "model_provider_id": "governed-slack-test",
+                    "model_id": "governed-slack-test-1",
+                    "security_profile": "trusted_team",
+                    "org_units": org_units,
+                    "tenant": {
+                        "org_id": ORG_ID,
+                        "workspace_id": WORKSPACE_ID
+                    }
+                }
+            }
+        }))
+        .await
+        .expect("configure department-bound Slack Events");
+}
+
+#[tokio::test]
+async fn department_bound_connection_narrows_run_authority_to_intersection() {
+    let state = test_state().await;
+    let (api_base_url, slack_mock, mock_task) = start_slack_api_mock().await;
+    // The user holds department/engineering AND role/engineer; the channel
+    // binds only the department, so the run must narrow to it.
+    configure_slack_events_with_bound_departments(
+        &state,
+        &api_base_url,
+        &["department/engineering"],
+    )
+    .await;
+    seed_governed_slack_identity(&state).await;
+    let provider = install_governed_slack_provider(&state, 0).await;
+    let app = app_router(state.clone());
+    let request_timestamp = chrono::Utc::now().timestamp();
+
+    let event = signed_slack_event_request(
+        "Ev-dept-narrow-1",
+        SLACK_USER,
+        "1800000000.410001",
+        None,
+        request_timestamp,
+    );
+    let response = app.oneshot(event).await.expect("narrowed response");
+    assert_eq!(response.status(), StatusCode::OK);
+    wait_for_posts(&slack_mock, 1).await;
+    wait_for_slack_tasks(&state).await;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+    let sessions = state.storage.list_sessions().await;
+    assert_eq!(sessions.len(), 1);
+    let verified = sessions[0]
+        .verified_tenant_context
+        .as_ref()
+        .expect("verified channel context");
+    assert_eq!(
+        verified.org_units,
+        vec!["department/engineering"],
+        "run authority must narrow to the intersection"
+    );
+    assert!(
+        verified.roles.is_empty(),
+        "role units outside the channel binding must not survive the intersection"
+    );
+    assert_eq!(
+        verified.capabilities,
+        vec!["mcp.github.*"],
+        "grants sourced from the bound department are kept"
+    );
+
+    let audit_tenant = TenantContext::explicit(ORG_ID, WORKSPACE_ID, None);
+    let audit = crate::audit::load_protected_audit_events_for_tenant(&state, &audit_tenant).await;
+    let run_started = audit
+        .iter()
+        .find(|event| event.event_type == "channel.slack.run.started")
+        .expect("run.started audit event");
+    assert_eq!(
+        run_started.payload.get("channel_org_units"),
+        Some(&json!(["department/engineering"])),
+        "receipts must show the channel's binding alongside the effective units"
+    );
+    assert_eq!(
+        run_started.payload.get("org_units"),
+        Some(&json!(["department/engineering"]))
+    );
+    mock_task.abort();
+}
+
+#[tokio::test]
+async fn department_bound_connection_fails_closed_on_disjoint_membership() {
+    let state = test_state().await;
+    let (api_base_url, slack_mock, mock_task) = start_slack_api_mock().await;
+    // The user is an engineering member; the channel binds sales only.
+    configure_slack_events_with_bound_departments(&state, &api_base_url, &["department/sales"])
+        .await;
+    seed_governed_slack_identity(&state).await;
+    let provider = install_governed_slack_provider(&state, 0).await;
+    let app = app_router(state.clone());
+    let request_timestamp = chrono::Utc::now().timestamp();
+
+    let event = signed_slack_event_request(
+        "Ev-dept-disjoint-1",
+        SLACK_USER,
+        "1800000000.420001",
+        None,
+        request_timestamp,
+    );
+    let response = app.oneshot(event).await.expect("disjoint response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        0,
+        "a disjoint membership must never dispatch a model run"
+    );
+    assert!(slack_mock.posts.lock().await.is_empty());
+
+    let audit_tenant = TenantContext::explicit(ORG_ID, WORKSPACE_ID, None);
+    let audit = crate::audit::load_protected_audit_events_for_tenant(&state, &audit_tenant).await;
+    let denial = audit
+        .iter()
+        .find(|event| event.event_type == "channel.slack.ingress.denied")
+        .expect("audited fail-closed denial");
+    let reason = denial
+        .payload
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        reason.contains("department/engineering") && reason.contains("department/sales"),
+        "denial must record both intersection inputs, got: {reason}"
+    );
+    mock_task.abort();
+}
+
 #[tokio::test]
 async fn signed_slack_senders_receive_only_their_private_prompt_memory() {
     const ALICE: &str = "U_ALICE";
