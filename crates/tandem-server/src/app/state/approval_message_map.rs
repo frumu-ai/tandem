@@ -51,6 +51,13 @@ pub struct ApprovalCallbackRecord {
 struct ApprovalMessageMapFile {
     #[serde(default)]
     messages: HashMap<String, ApprovalMessageRecord>,
+    /// Every card sent for a request, one entry per `(channel, recipient)`.
+    /// Approval fan-out can post the same request to several Slack
+    /// connections (TAN-763); decision updates must edit ALL of them, not
+    /// just the last-recorded card. `messages` keeps the most recent record
+    /// for backward compatibility with pre-existing files and readers.
+    #[serde(default)]
+    message_deliveries: HashMap<String, Vec<ApprovalMessageRecord>>,
     #[serde(default)]
     run_threads: HashMap<String, ApprovalMessageRecord>,
     #[serde(default)]
@@ -128,12 +135,35 @@ impl ApprovalMessageMap {
         if let Some(run_id) = run_id.map(str::trim).filter(|value| !value.is_empty()) {
             data.run_threads.insert(run_id.to_string(), record.clone());
         }
+        let deliveries = data
+            .message_deliveries
+            .entry(record.request_id.clone())
+            .or_default();
+        // One live card per (channel, recipient): a re-send (reminder)
+        // replaces its own prior entry rather than accumulating.
+        if let Some(existing) = deliveries.iter_mut().find(|existing| {
+            existing.channel == record.channel && existing.recipient == record.recipient
+        }) {
+            *existing = record.clone();
+        } else {
+            deliveries.push(record.clone());
+        }
         data.messages.insert(record.request_id.clone(), record);
         self.persist_locked(&data).await
     }
 
     pub async fn get(&self, request_id: &str) -> Option<ApprovalMessageRecord> {
         self.data.read().await.messages.get(request_id).cloned()
+    }
+
+    /// Every card sent for a request. Falls back to the legacy single-record
+    /// store for files written before `message_deliveries` existed.
+    pub async fn get_deliveries(&self, request_id: &str) -> Vec<ApprovalMessageRecord> {
+        let data = self.data.read().await;
+        match data.message_deliveries.get(request_id) {
+            Some(deliveries) if !deliveries.is_empty() => deliveries.clone(),
+            _ => data.messages.get(request_id).cloned().into_iter().collect(),
+        }
     }
 
     pub async fn get_thread_for_run(&self, run_id: &str) -> Option<ApprovalMessageRecord> {
@@ -271,6 +301,74 @@ mod tests {
         let record = loaded.get_thread_for_run("run-1").await.unwrap();
         assert_eq!(record.recipient, "C123");
         assert_eq!(record.message_id, "1700000000.000100");
+    }
+
+    fn sent_to(message_id: &str, recipient: &str) -> InteractiveCardSent {
+        InteractiveCardSent {
+            channel: "slack".to_string(),
+            message_id: message_id.to_string(),
+            recipient: recipient.to_string(),
+            thread_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn fanned_out_cards_are_all_retained_for_decision_updates() {
+        // PR #1910 review (P2): multi-connection fan-out posts one card per
+        // Slack channel; the map must retain every recipient so a decision
+        // can edit all of them, not just the last-recorded card.
+        let map = ApprovalMessageMap::ephemeral();
+        map.record_sent("req-fan", sent_to("1700000000.000100", "C_SALES"))
+            .await
+            .unwrap();
+        map.record_sent("req-fan", sent_to("1700000000.000200", "C_ENG"))
+            .await
+            .unwrap();
+
+        let deliveries = map.get_deliveries("req-fan").await;
+        assert_eq!(deliveries.len(), 2, "both fanned-out cards retained");
+        let recipients = deliveries
+            .iter()
+            .map(|record| record.recipient.as_str())
+            .collect::<Vec<_>>();
+        assert!(recipients.contains(&"C_SALES") && recipients.contains(&"C_ENG"));
+
+        // A re-send to the same (channel, recipient) replaces its own entry
+        // rather than accumulating a stale duplicate.
+        map.record_sent("req-fan", sent_to("1700000000.000300", "C_SALES"))
+            .await
+            .unwrap();
+        let deliveries = map.get_deliveries("req-fan").await;
+        assert_eq!(deliveries.len(), 2);
+        let sales = deliveries
+            .iter()
+            .find(|record| record.recipient == "C_SALES")
+            .unwrap();
+        assert_eq!(sales.message_id, "1700000000.000300");
+    }
+
+    #[tokio::test]
+    async fn get_deliveries_falls_back_to_legacy_single_record_files() {
+        // Files written before `message_deliveries` existed only carry the
+        // single-record `messages` store; deliveries must fall back to it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approval_message_map.json");
+        let legacy = serde_json::json!({
+            "messages": {
+                "req-legacy": {
+                    "request_id": "req-legacy",
+                    "channel": "slack",
+                    "recipient": "C123",
+                    "message_id": "1700000000.000100"
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        let map = ApprovalMessageMap::load_or_default(&path).await;
+        let deliveries = map.get_deliveries("req-legacy").await;
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].recipient, "C123");
     }
 
     #[tokio::test]

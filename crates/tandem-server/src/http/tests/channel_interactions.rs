@@ -722,12 +722,14 @@ async fn slack_rework_modal_round_trip_dispatches_single_rework_decision() {
     assert_run_still_awaiting(&state, &run.run_id).await;
 
     // 2. Submitting an empty reason returns Slack's inline-validation shape
-    //    and decides nothing.
+    //    and decides nothing. Slack keeps the SAME modal (same view id) open
+    //    for response_action: errors, so the id must not be burned here —
+    //    the corrected resubmit below reuses it (PR #1910 review, P2).
     let resp = app
         .clone()
         .oneshot(slack_view_submission_request(
             &run.run_id,
-            "V767_EMPTY",
+            "V767_MODAL",
             "   ",
         ))
         .await
@@ -744,13 +746,13 @@ async fn slack_rework_modal_round_trip_dispatches_single_rework_decision() {
     );
     assert_run_still_awaiting(&state, &run.run_id).await;
 
-    // 3. A real submission dispatches exactly one rework decision with the
-    //    collected reason.
+    // 3. The corrected resubmit — same view id as the rejected empty one —
+    //    dispatches exactly one rework decision with the collected reason.
     let resp = app
         .clone()
         .oneshot(slack_view_submission_request(
             &run.run_id,
-            "V767_REAL",
+            "V767_MODAL",
             "Tighten the executive summary before resending.",
         ))
         .await
@@ -778,7 +780,7 @@ async fn slack_rework_modal_round_trip_dispatches_single_rework_decision() {
     let resp = app
         .oneshot(slack_view_submission_request(
             &run.run_id,
-            "V767_REAL",
+            "V767_MODAL",
             "Tighten the executive summary before resending.",
         ))
         .await

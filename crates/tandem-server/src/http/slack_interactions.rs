@@ -166,8 +166,9 @@ pub(crate) async fn slack_interactions(
     body: Bytes,
 ) -> Response {
     let effective_config = state.config.get_effective_value().await;
-    let signing_secrets = slack_signing_secrets(&effective_config);
-    if signing_secrets.is_empty() {
+    let connections = slack_connections_from_effective_config(&effective_config);
+    let all_signing_secrets = slack_signing_secrets(&connections);
+    if all_signing_secrets.is_empty() {
         return reject_unauthorized("slack signing secret not configured");
     }
 
@@ -177,8 +178,27 @@ pub(crate) async fn slack_interactions(
     let timestamp = headers
         .get("x-slack-request-timestamp")
         .and_then(|v| v.to_str().ok());
-
     let now = chrono::Utc::now().timestamp();
+
+    // Parse before verifying ONLY to learn which installation the payload
+    // claims, so the HMAC binds to that installation's secret. Nothing acts
+    // on the payload until its signature verifies.
+    let parsed = parse_slack_interaction_body(&body);
+    let claimed_team = parsed.as_ref().ok().and_then(|payload| {
+        config_string(payload, "/team/id").or_else(|| config_string(payload, "/team_id"))
+    });
+    let claimed_app = parsed
+        .as_ref()
+        .ok()
+        .and_then(|payload| config_string(payload, "/api_app_id"));
+    let mut signing_secrets = slack_installation_signing_secrets(
+        &connections,
+        claimed_team.as_deref(),
+        claimed_app.as_deref(),
+    );
+    if signing_secrets.is_empty() {
+        signing_secrets = all_signing_secrets;
+    }
     if let Err(error) =
         verify_slack_signature_any(&body, signature, timestamp, &signing_secrets, now)
     {
@@ -186,12 +206,10 @@ pub(crate) async fn slack_interactions(
         return reject_unauthorized(&error);
     }
 
-    let payload = match parse_slack_interaction_body(&body) {
+    let payload = match parsed {
         Ok(payload) => payload,
         Err(reason) => return reject_bad_request(&reason),
     };
-
-    let connections = slack_connections_from_effective_config(&effective_config);
 
     // Modal submissions (the rework-reason round-trip) carry no `actions`
     // array or channel container — route them to their own handler.
@@ -557,17 +575,6 @@ async fn handle_slack_view_submission(
         return ok_empty();
     }
 
-    // Slack view ids are unique per opened modal; dedup double-submits. Gate
-    // decisions remain the durable idempotency boundary after entries expire.
-    if let Some(view_id) = config_string(payload, "/view/id") {
-        let key = format!("view_submission:{view_id}");
-        let mut guard = dedup_ring().lock().expect("dedup mutex poisoned");
-        if !guard.record_new(&key) {
-            tracing::debug!(target: "tandem_server::slack_interactions", %key, "duplicate Slack view submission — already processed");
-            return ok_empty();
-        }
-    }
-
     let Some(payload_team_id) =
         config_string(payload, "/team/id").or_else(|| config_string(payload, "/team_id"))
     else {
@@ -630,6 +637,21 @@ async fn handle_slack_view_submission(
             Ok(tenant_context) => tenant_context,
             Err(response) => return response,
         };
+
+    // Dedup double-submits by Slack view id — recorded only NOW, once the
+    // submission is fully valid and about to dispatch. Recording earlier
+    // would burn the id on a validation error (Slack keeps the same modal
+    // open for `response_action: errors`), so the user's corrected resubmit
+    // would be dropped as a duplicate. Gate decisions remain the durable
+    // idempotency boundary after entries expire.
+    if let Some(view_id) = config_string(payload, "/view/id") {
+        let key = format!("view_submission:{view_id}");
+        let mut guard = dedup_ring().lock().expect("dedup mutex poisoned");
+        if !guard.record_new(&key) {
+            tracing::debug!(target: "tandem_server::slack_interactions", %key, "duplicate Slack view submission — already processed");
+            return ok_empty();
+        }
+    }
 
     let input = crate::http::routines_automations::AutomationV2GateDecisionInput {
         decision: "rework".to_string(),
@@ -851,10 +873,42 @@ use axum::response::IntoResponse;
 /// empty result means "interactions/events are not enabled," never a silent
 /// allow. Typically one secret (per Slack app), but connections spanning
 /// installations may carry different ones.
-fn slack_signing_secrets(effective_config: &Value) -> Vec<String> {
-    let mut secrets = slack_connections_from_effective_config(effective_config)
-        .into_iter()
-        .filter_map(|connection| connection.signing_secret)
+fn slack_signing_secrets(connections: &[ResolvedSlackConnection]) -> Vec<String> {
+    let mut secrets = connections
+        .iter()
+        .filter_map(|connection| connection.signing_secret.clone())
+        .collect::<Vec<_>>();
+    secrets.sort();
+    secrets.dedup();
+    secrets
+}
+
+/// Signing secrets bound to one claimed installation `(team_id, api_app_id)`.
+///
+/// The signing secret is a Slack *app* credential, so a payload claiming
+/// installation B must verify against B's secret — never against another
+/// configured app's secret (that would break tenant/app isolation the moment
+/// one installation's secret is compromised). Returns an empty list when the
+/// claimed installation matches no configured connection or the matching
+/// connections carry no secret; callers then fall back to
+/// [`slack_signing_secrets`] so signed-but-unknown installations still reach
+/// the installation-mismatch rejection instead of a misleading signature
+/// error.
+fn slack_installation_signing_secrets(
+    connections: &[ResolvedSlackConnection],
+    team_id: Option<&str>,
+    app_id: Option<&str>,
+) -> Vec<String> {
+    let (Some(team_id), Some(app_id)) = (team_id, app_id) else {
+        return Vec::new();
+    };
+    let mut secrets = connections
+        .iter()
+        .filter(|connection| {
+            connection.team_id.as_deref() == Some(team_id)
+                && connection.app_id.as_deref() == Some(app_id)
+        })
+        .filter_map(|connection| connection.signing_secret.clone())
         .collect::<Vec<_>>();
     secrets.sort();
     secrets.dedup();
@@ -890,8 +944,9 @@ pub(crate) async fn slack_events(
     body: Bytes,
 ) -> Response {
     let effective_config = state.config.get_effective_value().await;
-    let signing_secrets = slack_signing_secrets(&effective_config);
-    if signing_secrets.is_empty() {
+    let connections = slack_connections_from_effective_config(&effective_config);
+    let all_signing_secrets = slack_signing_secrets(&connections);
+    if all_signing_secrets.is_empty() {
         audit_slack_denial(
             &state,
             &effective_config,
@@ -909,6 +964,30 @@ pub(crate) async fn slack_events(
         .get("x-slack-request-timestamp")
         .and_then(|v| v.to_str().ok());
     let now = chrono::Utc::now().timestamp();
+
+    // Parse before verifying ONLY to learn which installation the payload
+    // claims, so the HMAC binds to that installation's secret (a payload for
+    // connection B must never be admitted on connection A's secret). Nothing
+    // acts on the payload until its signature verifies.
+    let payload: Option<Value> = serde_json::from_slice(&body).ok();
+    let claimed_team = payload
+        .as_ref()
+        .and_then(|payload| slack_event_envelope_team_id(payload).ok());
+    let claimed_app = payload
+        .as_ref()
+        .and_then(|payload| config_string(payload, "/api_app_id"));
+    let mut signing_secrets = slack_installation_signing_secrets(
+        &connections,
+        claimed_team.as_deref(),
+        claimed_app.as_deref(),
+    );
+    if signing_secrets.is_empty() {
+        // No matching installation (or a payload without one, e.g. the
+        // url_verification handshake): any configured app's secret may vouch
+        // for the request; installation validation still rejects mismatches
+        // downstream before anything runs.
+        signing_secrets = all_signing_secrets;
+    }
     if let Err(error) =
         verify_slack_signature_any(&body, signature, timestamp, &signing_secrets, now)
     {
@@ -924,28 +1003,24 @@ pub(crate) async fn slack_events(
         return reject_forbidden(&error);
     }
 
-    let payload: Value = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(_) => {
-            audit_slack_denial(
-                &state,
-                &effective_config,
-                None,
-                "invalid Slack event JSON",
-                json!({}),
-            )
-            .await;
-            return reject_bad_request("invalid Slack event JSON");
-        }
+    let Some(payload) = payload else {
+        audit_slack_denial(
+            &state,
+            &effective_config,
+            None,
+            "invalid Slack event JSON",
+            json!({}),
+        )
+        .await;
+        return reject_bad_request("invalid Slack event JSON");
     };
 
     match payload.get("type").and_then(Value::as_str) {
         // Slack setup handshake: echo the challenge (signature already verified).
         Some("url_verification") => {
-            let events_enabled_anywhere =
-                slack_connections_from_effective_config(&effective_config)
-                    .iter()
-                    .any(|connection| connection.events_enabled);
+            let events_enabled_anywhere = connections
+                .iter()
+                .any(|connection| connection.events_enabled);
             if !events_enabled_anywhere {
                 audit_slack_denial(
                     &state,
