@@ -147,6 +147,12 @@ pub struct ChannelApprovalNotifier {
     recipient: String,
     channel: Arc<dyn Channel>,
     message_map: Option<Arc<ApprovalMessageMap>>,
+    /// Tenant this channel is bound to. When set, only approvals whose
+    /// `request.tenant` matches are delivered — a tenant-bound channel must
+    /// never receive another tenant's approval cards (or their action
+    /// previews). `None` keeps the legacy receive-all behavior for unbound
+    /// single-tenant deployments.
+    tenant_filter: Option<(String, String)>,
 }
 
 impl ChannelApprovalNotifier {
@@ -169,7 +175,13 @@ impl ChannelApprovalNotifier {
             recipient: recipient.into(),
             channel,
             message_map,
+            tenant_filter: None,
         }
+    }
+
+    pub fn with_tenant_filter(mut self, tenant: Option<(String, String)>) -> Self {
+        self.tenant_filter = tenant;
+        self
     }
 }
 
@@ -180,6 +192,14 @@ impl ApprovalNotifier for ChannelApprovalNotifier {
     }
 
     async fn notify(&self, request: &ApprovalRequest) -> Result<(), NotifierError> {
+        if let Some((org_id, workspace_id)) = self.tenant_filter.as_ref() {
+            if request.tenant.org_id != *org_id || request.tenant.workspace_id != *workspace_id {
+                // Not this channel's tenant. Skipping is a successful
+                // delivery decision, not an error — the request's own
+                // tenant's channels handle it.
+                return Ok(());
+            }
+        }
         if !self.channel.supports_interactive_cards() {
             return Err(NotifierError::Permanent(format!(
                 "{} channel does not support interactive cards",
@@ -370,6 +390,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(thread.message_id, "msg-1");
+    }
+
+    #[tokio::test]
+    async fn tenant_filtered_notifier_skips_other_tenants_and_delivers_its_own() {
+        let channel = Arc::new(FakeChannel {
+            supports_cards: true,
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let notifier = ChannelApprovalNotifier::new("fake", "C123", channel.clone())
+            .with_tenant_filter(Some(("org".to_string(), "workspace".to_string())));
+
+        // Matching tenant: delivered.
+        notifier.notify(&fake_request()).await.unwrap();
+        assert_eq!(channel.seen.lock().unwrap().len(), 1);
+
+        // Another tenant's approval: silently skipped, never posted.
+        let mut foreign = fake_request();
+        foreign.tenant.org_id = "other-org".to_string();
+        notifier.notify(&foreign).await.unwrap();
+        let mut foreign_workspace = fake_request();
+        foreign_workspace.tenant.workspace_id = "other-ws".to_string();
+        notifier.notify(&foreign_workspace).await.unwrap();
+        assert_eq!(
+            channel.seen.lock().unwrap().len(),
+            1,
+            "a tenant-bound channel must never receive another tenant's card"
+        );
     }
 
     #[tokio::test]

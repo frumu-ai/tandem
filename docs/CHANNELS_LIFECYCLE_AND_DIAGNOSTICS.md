@@ -116,9 +116,11 @@ Semantics:
   `channel_id`, one shared static identity).
 - **Approvals.** Every connection with `notify_approvals` enabled (the default)
   receives approval cards; card edits route by the recorded recipient channel.
-  Until per-run routing lands (TAN-764), multi-connection deployments that must
-  not broadcast approvals across departments should set
-  `"notify_approvals": false` on the channels that shouldn't receive them.
+  A tenant-bound connection only receives approvals whose request tenant
+  matches its binding, so tenant A's approval cards (and action previews)
+  never post into tenant B's channel. Within one tenant, departments that
+  must not see each other's approvals should set `"notify_approvals": false`
+  on the channels that shouldn't receive them.
 - **Department binding (TAN-764).** `org_units` on a connection (or top-level,
   inherited) binds the channel to departments. On signed Events ingress the
   run's authority becomes the **intersection** of the sender's active org-unit
@@ -159,12 +161,21 @@ Semantics:
   capability tier, so a department-bound enrollment immediately yields a
   working governed run. The Channel Connections page passes the sender's
   observed tenant automatically.
-- **Diagnostics.** `GET /channels/config` includes a `connections` array for
-  Slack with per-connection presence flags (`has_token`, `has_signing_secret`,
-  `events_capable`, tenant/org-unit bindings) — never raw secrets.
-- **Caveat.** `PUT /channels/slack` replaces the whole Slack object; clients
-  that don't echo `connections` will drop them. Hand-edit the config file or
-  include the full object when updating programmatically.
+- **Diagnostics.** `GET /channels/config` includes a `connections_summary`
+  array for Slack with per-connection presence flags (`has_token`,
+  `has_signing_secret`, `events_capable`, tenant/org-unit bindings) — never
+  raw secrets, and deliberately not under the real `connections` config key
+  so echoing the snapshot back through PUT can't clobber connection config.
+- **Updates.** `PUT /channels/slack` preserves stored governance fields the
+  sanitized snapshot omits (`signing_secret`, `team_id`/`app_id`,
+  `events_enabled`, `tenant`, `org_units`, `connections`,
+  `require_approval_step_up`, `api_base_url`, `notify_approvals`): a request
+  that leaves a key out inherits the stored value, while explicitly provided
+  values — including `"connections": []` — replace it.
+- **Approval fan-out tenancy.** A tenant-bound connection only receives its
+  own tenant's approval cards; requests from other tenants are skipped
+  before anything posts. Unbound connections keep the legacy receive-all
+  behavior for single-tenant deployments.
 
 ## Public demo security profile
 

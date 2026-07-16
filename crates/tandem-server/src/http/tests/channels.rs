@@ -267,6 +267,106 @@ async fn channels_put_preserves_existing_token_when_only_model_changes() {
     );
 }
 
+/// PR #1910 review: `GET /channels/config` exposes Slack connections only as
+/// a `connections_summary` (never under the real `connections` config key),
+/// and a PUT that echoes such a sanitized snapshot back must not wipe the
+/// stored installation identity, secrets, or per-connection bindings.
+#[tokio::test]
+async fn channels_put_echoing_sanitized_config_preserves_slack_connections() {
+    let state = test_state().await;
+    let _ = state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "bot_token": "xoxb-secret",
+                    "channel_id": "C_MAIN",
+                    "signing_secret": "shhh",
+                    "events_enabled": true,
+                    "team_id": "T1",
+                    "app_id": "A1",
+                    "tenant": { "org_id": "acme", "workspace_id": "hq" },
+                    "connections": [
+                        { "channel_id": "C_SALES", "org_units": ["sales"] }
+                    ]
+                }
+            }
+        }))
+        .await
+        .expect("patch project");
+    let app = app_router(state.clone());
+
+    // The config snapshot must carry the summary under a non-config key.
+    let config_req = Request::builder()
+        .method("GET")
+        .uri("/channels/config")
+        .body(Body::empty())
+        .expect("request");
+    let config_resp = app.clone().oneshot(config_req).await.expect("response");
+    let body = to_bytes(config_resp.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    let payload: Value = serde_json::from_slice(&body).expect("json body");
+    let slack = payload.get("slack").expect("slack entry");
+    assert!(
+        slack.get("connections").is_none(),
+        "the sanitized snapshot must not expose a `connections` config key"
+    );
+    let summary = slack
+        .get("connections_summary")
+        .and_then(Value::as_array)
+        .expect("connections_summary rows");
+    assert_eq!(summary.len(), 2, "top-level + per-connection entries");
+
+    // Echo a sanitized snapshot back (the Channels page Reconnect shape):
+    // no secrets, no connections, plus the summary key the server ignores.
+    let put_req = Request::builder()
+        .method("PUT")
+        .uri("/channels/slack")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "channel_id": "C_MAIN",
+                "allowed_users": ["*"],
+                "mention_only": false,
+                "connections_summary": summary,
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let put_resp = app.clone().oneshot(put_req).await.expect("response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let stored = state.config.get_project_value().await;
+    let slack = stored
+        .pointer("/channels/slack")
+        .expect("stored slack config");
+    assert_eq!(
+        slack.pointer("/signing_secret").and_then(Value::as_str),
+        Some("shhh"),
+        "echoed sanitized config must not wipe the signing secret"
+    );
+    assert_eq!(
+        slack.pointer("/team_id").and_then(Value::as_str),
+        Some("T1")
+    );
+    assert_eq!(
+        slack.pointer("/events_enabled").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        slack.pointer("/tenant/org_id").and_then(Value::as_str),
+        Some("acme")
+    );
+    assert_eq!(
+        slack
+            .pointer("/connections/0/channel_id")
+            .and_then(Value::as_str),
+        Some("C_SALES"),
+        "echoed sanitized config must not wipe per-connection entries"
+    );
+}
+
 #[tokio::test]
 async fn channels_verify_discord_without_token_returns_setup_hint() {
     let state = test_state().await;

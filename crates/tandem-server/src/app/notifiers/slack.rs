@@ -21,7 +21,18 @@ pub fn from_config_with_message_map(
     config: SlackConfig,
     message_map: Arc<ApprovalMessageMap>,
 ) -> SlackApprovalNotifier {
+    from_config_with_message_map_and_tenant(config, message_map, None)
+}
+
+/// TAN-764: a tenant-bound Slack connection only receives its own tenant's
+/// approval cards; `tenant` is the connection's `bound_tenant()`.
+pub fn from_config_with_message_map_and_tenant(
+    config: SlackConfig,
+    message_map: Arc<ApprovalMessageMap>,
+    tenant: Option<(String, String)>,
+) -> SlackApprovalNotifier {
     let recipient = config.channel_id.clone();
     let channel: Arc<dyn Channel> = Arc::new(SlackChannel::new(config));
     ChannelApprovalNotifier::new_with_message_map("slack", recipient, channel, Some(message_map))
+        .with_tenant_filter(tenant)
 }

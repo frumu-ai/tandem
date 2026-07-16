@@ -3,12 +3,15 @@
 // normalization logic without React.
 
 /**
- * Normalize the `slack.connections` summary from `GET /channels/config`
- * (per-connection presence flags added in TAN-763).
+ * Normalize the `slack.connections_summary` rows from `GET /channels/config`
+ * (per-connection presence flags added in TAN-763). The summary key is
+ * deliberately distinct from the real `connections` config key so clients
+ * echoing the snapshot back through PUT can't clobber connection config.
  */
 export function normalizeSlackConnections(config) {
   const slack = config && typeof config === "object" ? config.slack : null;
-  const rows = slack && Array.isArray(slack.connections) ? slack.connections : [];
+  const rows =
+    slack && Array.isArray(slack.connections_summary) ? slack.connections_summary : [];
   return rows
     .filter((row) => row && typeof row === "object")
     .map((row) => ({

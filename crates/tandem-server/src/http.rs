@@ -837,8 +837,11 @@ async fn run_approval_outbound(state: AppState, cancel: Arc<AtomicBool>) {
     if let Some(slack_value) = channels.get("slack") {
         // One notifier per resolved connection (TAN-763). Connections opt out
         // of approval fan-out via `notify_approvals: false`; the default keeps
-        // the legacy single-channel behavior. Until per-run routing lands
-        // (TAN-764), every opted-in connection receives every approval card.
+        // the legacy single-channel behavior. A tenant-bound connection only
+        // receives its own tenant's approval cards (TAN-764) — the notifier
+        // filters by `request.tenant`, so tenant A's approvals (and their
+        // action previews) never post into tenant B's channel. Unbound
+        // connections keep the legacy receive-all behavior.
         let connections = crate::config::channels::resolve_slack_connections(slack_value);
         let mut usable = 0usize;
         for connection in &connections {
@@ -859,9 +862,10 @@ async fn run_approval_outbound(state: AppState, cancel: Arc<AtomicBool>) {
                 security_profile: connection.security_profile,
             };
             notifiers.push(Arc::new(
-                crate::app::notifiers::slack::from_config_with_message_map(
+                crate::app::notifiers::slack::from_config_with_message_map_and_tenant(
                     slack_config,
                     message_map.clone(),
+                    connection.bound_tenant(),
                 ),
             ));
         }

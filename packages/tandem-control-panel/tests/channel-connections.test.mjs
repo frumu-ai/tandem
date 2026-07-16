@@ -13,7 +13,7 @@ import {
 test("normalizeSlackConnections maps config summary rows and drops blanks", () => {
   const rows = normalizeSlackConnections({
     slack: {
-      connections: [
+      connections_summary: [
         {
           channel_id: "C_SALES",
           team_id: "T1",

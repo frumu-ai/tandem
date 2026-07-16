@@ -164,7 +164,11 @@ fn normalize_channel_config_obj<'a>(
             );
             // Per-connection summary (TAN-763). Secrets are reported as
             // presence flags only, matching the top-level `token_masked`
-            // contract — never the raw values.
+            // contract — never the raw values. Deliberately NOT under the
+            // real `connections` config key: clients echo this snapshot back
+            // through `PUT /channels/slack` (the Channels page Reconnect),
+            // and a lossy summary deserialized as connection config would
+            // wipe per-connection secrets and tenant bindings.
             if let Some(cfg) = channel {
                 let connections =
                     crate::config::channels::resolve_slack_connections(&Value::Object(cfg.clone()))
@@ -186,7 +190,7 @@ fn normalize_channel_config_obj<'a>(
                             })
                         })
                         .collect::<Vec<_>>();
-                entry.insert("connections".to_string(), Value::Array(connections));
+                entry.insert("connections_summary".to_string(), Value::Array(connections));
             }
         }
         _ => {}
@@ -1136,6 +1140,34 @@ pub(super) async fn channels_put(
                 {
                     if let Some(existing) = existing_channel_id(spec) {
                         cfg.insert("channel_id".to_string(), Value::String(existing));
+                    }
+                }
+                // `GET /channels/config` returns a sanitized snapshot without
+                // these fields (secrets are presence flags, connections a
+                // summary). A client echoing that snapshot back — the
+                // Channels page Reconnect does — must not wipe the Slack
+                // installation identity, Events ingress, or per-connection /
+                // governance bindings. Absent keys inherit the stored value;
+                // explicitly provided values (including `[]`) still win.
+                const PRESERVED_SLACK_KEYS: [&str; 10] = [
+                    "signing_secret",
+                    "team_id",
+                    "app_id",
+                    "events_enabled",
+                    "tenant",
+                    "org_units",
+                    "connections",
+                    "require_approval_step_up",
+                    "api_base_url",
+                    "notify_approvals",
+                ];
+                if let Some(existing) = existing_channel_cfg(spec) {
+                    for key in PRESERVED_SLACK_KEYS {
+                        if !cfg.contains_key(key) {
+                            if let Some(value) = existing.get(key) {
+                                cfg.insert(key.to_string(), value.clone());
+                            }
+                        }
                     }
                 }
             }
