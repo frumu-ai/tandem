@@ -302,6 +302,52 @@ pub(super) async fn configure_slack_events_for_installation(
         .expect("configure Slack Events");
 }
 
+/// Configure two per-channel connections (TAN-763) sharing one installation:
+/// installation identity, signing secret, bot token, tenant, and model come
+/// from the top level; each connection sets its own channel + allowlist.
+async fn configure_slack_event_connections(
+    state: &AppState,
+    api_base_url: &str,
+    sales_channel: &str,
+    sales_user: &str,
+    eng_channel: &str,
+    eng_user: &str,
+) {
+    state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "signing_secret": SIGNING_SECRET,
+                    "events_enabled": true,
+                    "bot_token": "xoxb-governed-test",
+                    "team_id": SLACK_TEAM,
+                    "app_id": SLACK_APP,
+                    "api_base_url": api_base_url,
+                    "model_provider_id": "governed-slack-test",
+                    "model_id": "governed-slack-test-1",
+                    "security_profile": "trusted_team",
+                    "tenant": {
+                        "org_id": ORG_ID,
+                        "workspace_id": WORKSPACE_ID
+                    },
+                    "connections": [
+                        {
+                            "channel_id": sales_channel,
+                            "allowed_users": [sales_user]
+                        },
+                        {
+                            "channel_id": eng_channel,
+                            "allowed_users": [eng_user]
+                        }
+                    ]
+                }
+            }
+        }))
+        .await
+        .expect("configure Slack Events connections");
+}
+
 async fn seed_governed_slack_identity(state: &AppState) {
     seed_governed_slack_identity_with_tools(state, &["mcp.github.*"]).await;
 }
@@ -796,6 +842,140 @@ async fn signed_slack_events_run_with_governed_context_reuse_and_dedupe() {
             .count()
             >= 2
     );
+    mock_task.abort();
+}
+
+#[tokio::test]
+async fn multi_connection_events_route_to_their_own_channels() {
+    const SALES_CHANNEL: &str = "C_SALES";
+    const ENG_CHANNEL: &str = "C_ENG";
+    const SALES_USER: &str = "U_SALES";
+    const ENG_USER: &str = "U_ENG";
+
+    let state = test_state().await;
+    let (api_base_url, slack_mock, mock_task) = start_slack_api_mock().await;
+    configure_slack_event_connections(
+        &state,
+        &api_base_url,
+        SALES_CHANNEL,
+        SALES_USER,
+        ENG_CHANNEL,
+        ENG_USER,
+    )
+    .await;
+    seed_governed_slack_identity_for_user(&state, SALES_USER, &["mcp.crm.*"]).await;
+    seed_governed_slack_identity_for_user(&state, ENG_USER, &["mcp.github.*"]).await;
+    let provider = install_governed_slack_provider(&state, 0).await;
+    let app = app_router(state.clone());
+    let request_timestamp = chrono::Utc::now().timestamp();
+
+    // Each connection accepts its own channel's events and replies in place.
+    let sales_event = signed_slack_event_request_for_installation(
+        "Ev-conn-sales-1",
+        SALES_USER,
+        SALES_CHANNEL,
+        Some(SLACK_TEAM),
+        Some(SLACK_APP),
+        "1800000000.310001",
+        None,
+        request_timestamp,
+    );
+    let response = app
+        .clone()
+        .oneshot(sales_event)
+        .await
+        .expect("sales response");
+    assert_eq!(response.status(), StatusCode::OK);
+    wait_for_posts(&slack_mock, 1).await;
+
+    let eng_event = signed_slack_event_request_for_installation(
+        "Ev-conn-eng-1",
+        ENG_USER,
+        ENG_CHANNEL,
+        Some(SLACK_TEAM),
+        Some(SLACK_APP),
+        "1800000000.320001",
+        None,
+        request_timestamp,
+    );
+    let response = app.clone().oneshot(eng_event).await.expect("eng response");
+    assert_eq!(response.status(), StatusCode::OK);
+    wait_for_posts(&slack_mock, 2).await;
+    wait_for_slack_tasks(&state).await;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+
+    let posts = slack_mock.posts.lock().await;
+    assert_eq!(posts[0]["channel"], SALES_CHANNEL);
+    assert_eq!(posts[1]["channel"], ENG_CHANNEL);
+    drop(posts);
+
+    let mut scope_ids = state
+        .storage
+        .list_sessions()
+        .await
+        .into_iter()
+        .filter_map(|session| {
+            session
+                .source_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("scope_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    scope_ids.sort();
+    assert_eq!(
+        scope_ids,
+        vec![
+            format!("thread:{SLACK_TEAM}:{SLACK_APP}:{ENG_CHANNEL}:1800000000.320001"),
+            format!("thread:{SLACK_TEAM}:{SLACK_APP}:{SALES_CHANNEL}:1800000000.310001"),
+        ],
+        "each connection keys its own session scope"
+    );
+
+    // A sender authorized on one connection is NOT authorized on the other:
+    // per-connection allowlists must not pool.
+    let cross_connection = signed_slack_event_request_for_installation(
+        "Ev-conn-cross-1",
+        SALES_USER,
+        ENG_CHANNEL,
+        Some(SLACK_TEAM),
+        Some(SLACK_APP),
+        "1800000000.330001",
+        None,
+        request_timestamp,
+    );
+    let response = app
+        .clone()
+        .oneshot(cross_connection)
+        .await
+        .expect("cross-connection response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // A channel no connection claims stays rejected.
+    let unknown_channel = signed_slack_event_request_for_installation(
+        "Ev-conn-unknown-1",
+        SALES_USER,
+        "C_UNCONFIGURED",
+        Some(SLACK_TEAM),
+        Some(SLACK_APP),
+        "1800000000.340001",
+        None,
+        request_timestamp,
+    );
+    let response = app
+        .oneshot(unknown_channel)
+        .await
+        .expect("unknown channel response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        2,
+        "denied events must not dispatch model runs"
+    );
+    assert_eq!(slack_mock.posts.lock().await.len(), 2);
     mock_task.abort();
 }
 

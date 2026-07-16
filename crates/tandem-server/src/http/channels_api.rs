@@ -162,6 +162,32 @@ fn normalize_channel_config_obj<'a>(
                     .map(|value| Value::String(value.to_string()))
                     .unwrap_or(Value::Null),
             );
+            // Per-connection summary (TAN-763). Secrets are reported as
+            // presence flags only, matching the top-level `token_masked`
+            // contract — never the raw values.
+            if let Some(cfg) = channel {
+                let connections =
+                    crate::config::channels::resolve_slack_connections(&Value::Object(cfg.clone()))
+                        .into_iter()
+                        .map(|connection| {
+                            serde_json::json!({
+                                "channel_id": connection.channel_id,
+                                "team_id": connection.team_id,
+                                "app_id": connection.app_id,
+                                "has_token": connection.bot_token.is_some(),
+                                "has_signing_secret": connection.signing_secret.is_some(),
+                                "events_enabled": connection.events_enabled,
+                                "events_capable": connection.events_capable(),
+                                "mention_only": connection.mention_only,
+                                "notify_approvals": connection.notify_approvals,
+                                "tenant_org_id": connection.tenant_org_id,
+                                "tenant_workspace_id": connection.tenant_workspace_id,
+                                "org_units": connection.org_units,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                entry.insert("connections".to_string(), Value::Array(connections));
+            }
         }
         _ => {}
     }

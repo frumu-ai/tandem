@@ -48,8 +48,71 @@ The v1 surface remains `telegram`, `discord`, and `slack` in config under `chann
   - env fallback: `TANDEM_DISCORD_BOT_TOKEN`
 - Slack: `channels.slack`
   - required for startup: `bot_token`, `channel_id`
-  - optional: `allowed_users`, `mention_only`, `model_provider_id`, `model_id`, `security_profile`
+  - optional: `allowed_users`, `mention_only`, `model_provider_id`, `model_id`, `security_profile`,
+    `team_id`, `app_id`, `signing_secret`, `events_enabled`, `tenant`, `require_approval_step_up`,
+    `api_base_url`, `org_units`, `notify_approvals`, `connections`
   - env fallback: `TANDEM_SLACK_BOT_TOKEN`, `TANDEM_SLACK_CHANNEL_ID`
+
+## Slack channel connections (TAN-763)
+
+`channels.slack.connections` turns the Slack surface into a set of per-channel
+connections instead of a single bound channel. Each entry names a `channel_id`
+and may override any top-level field (`team_id`, `app_id`, `bot_token`,
+`signing_secret`, `events_enabled`, `tenant`, `allowed_users`, `mention_only`,
+`strict_kb_grounding`, `model_provider_id`/`model_id`, `security_profile`,
+`require_approval_step_up`, `api_base_url`, `org_units`, `notify_approvals`);
+anything unset inherits the top-level value, so a workspace-wide app declares
+its installation identity and secrets once:
+
+```json
+{
+  "channels": {
+    "slack": {
+      "bot_token": "xoxb-…",
+      "team_id": "T0123456789",
+      "app_id": "A0123456789",
+      "signing_secret": "…",
+      "events_enabled": true,
+      "tenant": { "org_id": "acme", "workspace_id": "hq" },
+      "connections": [
+        { "channel_id": "C_SALES", "allowed_users": ["U_SALES1", "U_SALES2"] },
+        { "channel_id": "C_ENG", "allowed_users": ["U_ENG1"] }
+      ]
+    }
+  }
+}
+```
+
+Semantics:
+
+- **Routing.** Signed Events and interaction callbacks resolve their connection
+  by the payload's `(team_id, api_app_id, channel_id)`. Events from a channel no
+  connection claims are rejected and audited, exactly like the legacy
+  single-channel mismatch.
+- **Legacy shape unchanged.** Without `connections`, the top-level object
+  resolves as one connection — behavior, error messages, and audits are
+  identical to before. When `connections` is present, a non-empty top-level
+  `channel_id` still defines a connection of its own (an entry with the same
+  `channel_id` overrides it).
+- **Per-connection authorization.** `allowed_users`, `security_profile`,
+  `require_approval_step_up`, and the `tenant` binding apply per connection;
+  a sender allowlisted in one channel has no standing in another.
+- **Poller exclusivity.** Any events-capable connection (`events_enabled` +
+  `signing_secret`) disables the legacy history poller for Slack entirely, so
+  the two ingress modes never double-process. The poller remains single-channel
+  (top-level `channel_id`) and carries no per-sender verified identity — see
+  TAN-762 before using it for anything governed.
+- **Approvals.** Every connection with `notify_approvals` enabled (the default)
+  receives approval cards; card edits route by the recorded recipient channel.
+  Until per-run routing lands (TAN-764), multi-connection deployments that must
+  not broadcast approvals across departments should set
+  `"notify_approvals": false` on the channels that shouldn't receive them.
+- **Diagnostics.** `GET /channels/config` includes a `connections` array for
+  Slack with per-connection presence flags (`has_token`, `has_signing_secret`,
+  `events_capable`, tenant/org-unit bindings) — never raw secrets.
+- **Caveat.** `PUT /channels/slack` replaces the whole Slack object; clients
+  that don't echo `connections` will drop them. Hand-edit the config file or
+  include the full object when updating programmatically.
 
 ## Public demo security profile
 

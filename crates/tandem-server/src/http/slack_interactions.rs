@@ -53,13 +53,10 @@ use tandem_types::{
 use tokio_util::sync::CancellationToken;
 
 use crate::app::rate_limit::{ChannelRateLimitKey, ChannelRateLimitKind};
-use crate::app::state::channel_user_capabilities::{
-    channel_requires_approval_step_up, channel_security_profile_from_config,
-};
 use crate::app::state::principals::channel_identity::{
-    channel_bound_tenant, channel_is_open_to_all, resolve_slack_user_for_installation,
-    ChannelIdentityResolution, ChannelKind,
+    channel_bound_tenant, resolve_slack_user_for_connection, ChannelIdentityResolution, ChannelKind,
 };
+use crate::config::channels::{slack_connections_from_effective_config, ResolvedSlackConnection};
 use crate::AppState;
 
 use claims::{
@@ -168,10 +165,11 @@ pub(crate) async fn slack_interactions(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let signing_secret = match read_slack_signing_secret(&state).await {
-        Some(secret) => secret,
-        None => return reject_unauthorized("slack signing secret not configured"),
-    };
+    let effective_config = state.config.get_effective_value().await;
+    let signing_secrets = slack_signing_secrets(&effective_config);
+    if signing_secrets.is_empty() {
+        return reject_unauthorized("slack signing secret not configured");
+    }
 
     let signature = headers
         .get("x-slack-signature")
@@ -181,9 +179,11 @@ pub(crate) async fn slack_interactions(
         .and_then(|v| v.to_str().ok());
 
     let now = chrono::Utc::now().timestamp();
-    if let Err(error) = verify_slack_signature(&body, signature, timestamp, &signing_secret, now) {
-        tracing::warn!(target: "tandem_server::slack_interactions", ?error, "rejecting unsigned/forged Slack interaction");
-        return reject_unauthorized(&error.to_string());
+    if let Err(error) =
+        verify_slack_signature_any(&body, signature, timestamp, &signing_secrets, now)
+    {
+        tracing::warn!(target: "tandem_server::slack_interactions", %error, "rejecting unsigned/forged Slack interaction");
+        return reject_unauthorized(&error);
     }
 
     let payload = match parse_slack_interaction_body(&body) {
@@ -191,9 +191,12 @@ pub(crate) async fn slack_interactions(
         Err(reason) => return reject_bad_request(&reason),
     };
 
-    let effective_config = state.config.get_effective_value().await;
-    let installation = match validate_slack_interaction_installation(&effective_config, &payload) {
-        Ok(installation) => installation,
+    let connections = slack_connections_from_effective_config(&effective_config);
+    let (installation, connection) = match validate_slack_interaction_installation(
+        &connections,
+        &payload,
+    ) {
+        Ok(matched) => matched,
         Err(reason) => {
             tracing::warn!(target: "tandem_server::slack_interactions", %reason, "rejecting Slack interaction outside configured installation");
             return reject_forbidden(&reason);
@@ -214,9 +217,10 @@ pub(crate) async fn slack_interactions(
         Err(reason) => return reject_bad_request(&reason),
     };
 
-    // CRITICAL: Authorize the user against the allowlist BEFORE dispatching.
-    let resolved_principal = match resolve_slack_user_for_installation(
-        &effective_config,
+    // CRITICAL: Authorize the user against the connection's allowlist BEFORE
+    // dispatching.
+    let resolved_principal = match resolve_slack_user_for_connection(
+        &connection.allowed_users,
         &installation.team_id,
         &installation.app_id,
         &action.user_id,
@@ -237,14 +241,13 @@ pub(crate) async fn slack_interactions(
     let approval_identity = resolved_principal.actor_id.unwrap_or_else(|| {
         slack_installation_identity(&installation.team_id, &installation.app_id, &action.user_id)
     });
-    let profile =
-        channel_security_profile_from_config(&effective_config, ChannelKind::Slack.as_str());
+    let profile = connection.security_profile;
     if !state
         .channel_user_can_approve(
             ChannelKind::Slack.as_str(),
             &approval_identity,
             profile,
-            channel_is_open_to_all(&effective_config, ChannelKind::Slack),
+            connection.is_open_to_all(),
         )
         .await
     {
@@ -257,7 +260,7 @@ pub(crate) async fn slack_interactions(
     }
     // GOV-B5b: on a channel that opts into step-up, an approval requires an active
     // per-identity step-up grant issued out-of-band by the control panel.
-    if channel_requires_approval_step_up(&effective_config, ChannelKind::Slack.as_str())
+    if connection.require_approval_step_up
         && !state
             .channel_step_up_active(ChannelKind::Slack.as_str(), &approval_identity)
             .await
@@ -328,12 +331,10 @@ pub(crate) async fn slack_interactions(
         .await
         .map(|run| run.tenant_context)
         .unwrap_or_else(tandem_types::TenantContext::local_implicit);
-    // GOV-B5c: if this channel is bound to a tenant, refuse to act on a run that
-    // belongs to a different tenant (prevents a channel acting cross-tenant by run
-    // id). An unbound channel (single-tenant/local) is unaffected.
-    if let Some((org_id, workspace_id)) =
-        channel_bound_tenant(&effective_config, ChannelKind::Slack)
-    {
+    // GOV-B5c: if this connection is bound to a tenant, refuse to act on a run
+    // that belongs to a different tenant (prevents a channel acting cross-tenant
+    // by run id). An unbound connection (single-tenant/local) is unaffected.
+    if let Some((org_id, workspace_id)) = connection.bound_tenant() {
         if tenant_context.org_id != org_id || tenant_context.workspace_id != workspace_id {
             tracing::warn!(
                 target: "tandem_server::slack_interactions",
@@ -577,13 +578,37 @@ fn ok_with_payload(value: Value) -> Response {
 
 use axum::response::IntoResponse;
 
-/// Read the configured Slack signing secret from `state.config`. Returns
-/// `None` when the channel is not configured or the secret field is empty —
-/// either case must be treated as "interactions are not enabled," not as a
-/// silent allow.
-async fn read_slack_signing_secret(state: &AppState) -> Option<String> {
-    let effective = state.config.get_effective_value().await;
-    config_string(&effective, "/channels/slack/signing_secret")
+/// Distinct signing secrets across every configured Slack connection. An
+/// empty result means "interactions/events are not enabled," never a silent
+/// allow. Typically one secret (per Slack app), but connections spanning
+/// installations may carry different ones.
+fn slack_signing_secrets(effective_config: &Value) -> Vec<String> {
+    let mut secrets = slack_connections_from_effective_config(effective_config)
+        .into_iter()
+        .filter_map(|connection| connection.signing_secret)
+        .collect::<Vec<_>>();
+    secrets.sort();
+    secrets.dedup();
+    secrets
+}
+
+/// Verify a Slack HMAC signature against every configured secret; success on
+/// the first match. Each candidate check is constant-time internally.
+fn verify_slack_signature_any(
+    body: &[u8],
+    signature: Option<&str>,
+    timestamp: Option<&str>,
+    secrets: &[String],
+    now: i64,
+) -> Result<(), String> {
+    let mut last_error = "slack signing secret not configured".to_string();
+    for secret in secrets {
+        match verify_slack_signature(body, signature, timestamp, secret, now) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = error.to_string(),
+        }
+    }
+    Err(last_error)
 }
 
 /// Slack Events API ingress. Slack's signature authenticates the event before a
@@ -596,20 +621,18 @@ pub(crate) async fn slack_events(
     body: Bytes,
 ) -> Response {
     let effective_config = state.config.get_effective_value().await;
-    let signing_secret = match config_string(&effective_config, "/channels/slack/signing_secret") {
-        Some(secret) => secret,
-        None => {
-            audit_slack_denial(
-                &state,
-                &effective_config,
-                None,
-                "slack signing secret not configured",
-                json!({}),
-            )
-            .await;
-            return reject_forbidden("slack signing secret not configured");
-        }
-    };
+    let signing_secrets = slack_signing_secrets(&effective_config);
+    if signing_secrets.is_empty() {
+        audit_slack_denial(
+            &state,
+            &effective_config,
+            None,
+            "slack signing secret not configured",
+            json!({}),
+        )
+        .await;
+        return reject_forbidden("slack signing secret not configured");
+    }
     let signature = headers
         .get("x-slack-signature")
         .and_then(|v| v.to_str().ok());
@@ -617,8 +640,10 @@ pub(crate) async fn slack_events(
         .get("x-slack-request-timestamp")
         .and_then(|v| v.to_str().ok());
     let now = chrono::Utc::now().timestamp();
-    if let Err(error) = verify_slack_signature(&body, signature, timestamp, &signing_secret, now) {
-        tracing::warn!(target: "tandem_server::slack_events", ?error, "rejecting unsigned/forged Slack event");
+    if let Err(error) =
+        verify_slack_signature_any(&body, signature, timestamp, &signing_secrets, now)
+    {
+        tracing::warn!(target: "tandem_server::slack_events", %error, "rejecting unsigned/forged Slack event");
         audit_slack_denial(
             &state,
             &effective_config,
@@ -627,7 +652,7 @@ pub(crate) async fn slack_events(
             json!({ "request_timestamp": timestamp }),
         )
         .await;
-        return reject_forbidden(&error.to_string());
+        return reject_forbidden(&error);
     }
 
     let payload: Value = match serde_json::from_slice(&body) {
@@ -648,11 +673,11 @@ pub(crate) async fn slack_events(
     match payload.get("type").and_then(Value::as_str) {
         // Slack setup handshake: echo the challenge (signature already verified).
         Some("url_verification") => {
-            if effective_config
-                .pointer("/channels/slack/events_enabled")
-                .and_then(Value::as_bool)
-                != Some(true)
-            {
+            let events_enabled_anywhere =
+                slack_connections_from_effective_config(&effective_config)
+                    .iter()
+                    .any(|connection| connection.events_enabled);
+            if !events_enabled_anywhere {
                 audit_slack_denial(
                     &state,
                     &effective_config,
@@ -683,10 +708,10 @@ async fn handle_slack_event_callback(
     effective_config: &Value,
     payload: &Value,
 ) -> Response {
-    if effective_config
-        .pointer("/channels/slack/events_enabled")
-        .and_then(Value::as_bool)
-        != Some(true)
+    let connections = slack_connections_from_effective_config(effective_config);
+    if !connections
+        .iter()
+        .any(|connection| connection.events_enabled)
     {
         audit_slack_denial(
             state,
@@ -698,7 +723,7 @@ async fn handle_slack_event_callback(
         .await;
         return reject_forbidden("slack events ingress not enabled");
     }
-    let installation = match validate_slack_event_installation(effective_config, payload) {
+    let installation = match validate_slack_event_installation(&connections, payload) {
         Ok(installation) => installation,
         Err(reason) => {
             tracing::warn!(target: "tandem_server::slack_events", %reason, "rejecting Slack event outside configured installation");
@@ -733,9 +758,18 @@ async fn handle_slack_event_callback(
         }
     };
 
-    let Some(configured_channel_id) =
-        config_string(&effective_config, "/channels/slack/channel_id")
-    else {
+    // Route the event to the connection bound to its `(team, app, channel)`.
+    let installation_connections = connections
+        .iter()
+        .filter(|connection| {
+            connection.team_id.as_deref() == Some(installation.team_id.as_str())
+                && connection.app_id.as_deref() == Some(installation.app_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    if installation_connections
+        .iter()
+        .all(|connection| connection.channel_id.is_empty())
+    {
         audit_slack_denial(
             state,
             &effective_config,
@@ -745,8 +779,12 @@ async fn handle_slack_event_callback(
         )
         .await;
         return reject_forbidden("slack channel id not configured");
-    };
-    if configured_channel_id != event.channel_id {
+    }
+    let Some(connection) = installation_connections
+        .into_iter()
+        .find(|connection| connection.channel_id == event.channel_id)
+        .cloned()
+    else {
         tracing::warn!(target: "tandem_server::slack_events", channel_id = %event.channel_id, "rejecting Slack event outside configured channel");
         audit_slack_denial(
             state,
@@ -762,8 +800,22 @@ async fn handle_slack_event_callback(
         )
         .await;
         return reject_forbidden("channel is not configured for this Slack app");
+    };
+    if !connection.events_enabled {
+        audit_slack_denial(
+            state,
+            &effective_config,
+            None,
+            "slack events ingress not enabled",
+            json!({
+                "event_id": event.event_id,
+                "slack_channel_id": event.channel_id,
+            }),
+        )
+        .await;
+        return reject_forbidden("slack events ingress not enabled");
     }
-    if config_string(&effective_config, "/channels/slack/bot_token").is_none() {
+    if connection.bot_token.is_none() {
         audit_slack_denial(
             state,
             &effective_config,
@@ -774,19 +826,15 @@ async fn handle_slack_event_callback(
         .await;
         return reject_forbidden("slack bot token not configured");
     }
-    let mention_only = effective_config
-        .pointer("/channels/slack/mention_only")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if mention_only
+    if connection.mention_only
         && event.event_type != "app_mention"
         && event.channel_type.as_deref() != Some("im")
     {
         return ok_empty();
     }
 
-    let request_principal = match resolve_slack_user_for_installation(
-        &effective_config,
+    let request_principal = match resolve_slack_user_for_connection(
+        &connection.allowed_users,
         &installation.team_id,
         &installation.app_id,
         &event.user_id,
@@ -826,6 +874,7 @@ async fn handle_slack_event_callback(
     let verified_tenant_context = match build_governed_slack_context(
         state,
         &effective_config,
+        &connection,
         &event,
         &installation,
         request_principal,
@@ -961,14 +1010,14 @@ async fn handle_slack_event_callback(
     }
 
     let task_state = state.clone();
-    let task_config = effective_config.clone();
+    let task_connection = connection.clone();
     let task_claim = claim.clone();
     let spawn_result = state
         .slack_event_tasks
         .spawn(move |cancel| async move {
             run_claimed_slack_event(
                 task_state,
-                task_config,
+                task_connection,
                 event,
                 installation,
                 verified_tenant_context,
@@ -1058,40 +1107,66 @@ async fn audit_slack_denial(
 }
 
 fn validate_slack_event_installation(
-    effective_config: &Value,
+    connections: &[ResolvedSlackConnection],
     payload: &Value,
 ) -> Result<SlackInstallationBinding, String> {
-    let expected_team_id = config_string(effective_config, "/channels/slack/team_id")
-        .ok_or_else(|| "slack events require a configured team_id".to_string())?;
-    let expected_app_id = config_string(effective_config, "/channels/slack/app_id")
-        .ok_or_else(|| "slack events require a configured app_id".to_string())?;
+    if !connections
+        .iter()
+        .any(|connection| connection.team_id.is_some())
+    {
+        return Err("slack events require a configured team_id".to_string());
+    }
+    if !connections
+        .iter()
+        .any(|connection| connection.app_id.is_some())
+    {
+        return Err("slack events require a configured app_id".to_string());
+    }
     let envelope_team_id = slack_event_envelope_team_id(payload)?;
     let envelope_app_id = config_string(payload, "/api_app_id")
         .ok_or_else(|| "Slack event envelope missing api_app_id".to_string())?;
 
-    if envelope_team_id != expected_team_id {
+    if !connections
+        .iter()
+        .any(|connection| connection.team_id.as_deref() == Some(envelope_team_id.as_str()))
+    {
         return Err("Slack event team_id does not match configured workspace".to_string());
     }
-    if envelope_app_id != expected_app_id {
+    if !connections.iter().any(|connection| {
+        connection.team_id.as_deref() == Some(envelope_team_id.as_str())
+            && connection.app_id.as_deref() == Some(envelope_app_id.as_str())
+    }) {
         return Err("Slack event api_app_id does not match configured app".to_string());
     }
 
     Ok(SlackInstallationBinding {
-        team_id: expected_team_id,
-        app_id: expected_app_id,
+        team_id: envelope_team_id,
+        app_id: envelope_app_id,
     })
 }
 
 fn validate_slack_interaction_installation(
-    effective_config: &Value,
+    connections: &[ResolvedSlackConnection],
     payload: &Value,
-) -> Result<SlackInstallationBinding, String> {
-    let expected_team_id = config_string(effective_config, "/channels/slack/team_id")
-        .ok_or_else(|| "slack interactions require a configured team_id".to_string())?;
-    let expected_app_id = config_string(effective_config, "/channels/slack/app_id")
-        .ok_or_else(|| "slack interactions require a configured app_id".to_string())?;
-    let expected_channel_id = config_string(effective_config, "/channels/slack/channel_id")
-        .ok_or_else(|| "slack interactions require a configured channel_id".to_string())?;
+) -> Result<(SlackInstallationBinding, ResolvedSlackConnection), String> {
+    if !connections
+        .iter()
+        .any(|connection| connection.team_id.is_some())
+    {
+        return Err("slack interactions require a configured team_id".to_string());
+    }
+    if !connections
+        .iter()
+        .any(|connection| connection.app_id.is_some())
+    {
+        return Err("slack interactions require a configured app_id".to_string());
+    }
+    if !connections
+        .iter()
+        .any(|connection| !connection.channel_id.is_empty())
+    {
+        return Err("slack interactions require a configured channel_id".to_string());
+    }
     let payload_team_id = config_string(payload, "/team/id")
         .or_else(|| config_string(payload, "/team_id"))
         .ok_or_else(|| "Slack interaction payload missing team id".to_string())?;
@@ -1107,24 +1182,40 @@ fn validate_slack_interaction_installation(
     channel_ids.sort();
     channel_ids.dedup();
     let payload_channel_id = match channel_ids.as_slice() {
-        [channel_id] => channel_id,
+        [channel_id] => channel_id.clone(),
         [] => return Err("Slack interaction payload missing channel id".to_string()),
         _ => return Err("Slack interaction payload has conflicting channel ids".to_string()),
     };
 
-    if payload_team_id != expected_team_id {
+    if !connections
+        .iter()
+        .any(|connection| connection.team_id.as_deref() == Some(payload_team_id.as_str()))
+    {
         return Err("Slack interaction team does not match configured workspace".to_string());
     }
-    if payload_app_id != expected_app_id {
+    let installation_connections = connections
+        .iter()
+        .filter(|connection| {
+            connection.team_id.as_deref() == Some(payload_team_id.as_str())
+                && connection.app_id.as_deref() == Some(payload_app_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    if installation_connections.is_empty() {
         return Err("Slack interaction app does not match configured app".to_string());
     }
-    if payload_channel_id != &expected_channel_id {
+    let Some(connection) = installation_connections
+        .into_iter()
+        .find(|connection| connection.channel_id == payload_channel_id)
+    else {
         return Err("Slack interaction channel does not match configured channel".to_string());
-    }
-    Ok(SlackInstallationBinding {
-        team_id: expected_team_id,
-        app_id: expected_app_id,
-    })
+    };
+    Ok((
+        SlackInstallationBinding {
+            team_id: payload_team_id,
+            app_id: payload_app_id,
+        },
+        connection.clone(),
+    ))
 }
 
 fn slack_event_envelope_team_id(payload: &Value) -> Result<String, String> {
@@ -1381,9 +1472,10 @@ mod tests {
                 "slack": { "team_id": "T1", "app_id": "A1" }
             }
         });
+        let connections = slack_connections_from_effective_config(&config);
         let payload = json!({ "team_id": "T1", "api_app_id": "A1" });
         assert_eq!(
-            validate_slack_event_installation(&config, &payload).unwrap(),
+            validate_slack_event_installation(&connections, &payload).unwrap(),
             SlackInstallationBinding {
                 team_id: "T1".to_string(),
                 app_id: "A1".to_string(),
@@ -1391,10 +1483,10 @@ mod tests {
         );
 
         let wrong_team = json!({ "team_id": "T2", "api_app_id": "A1" });
-        assert!(validate_slack_event_installation(&config, &wrong_team).is_err());
+        assert!(validate_slack_event_installation(&connections, &wrong_team).is_err());
         let wrong_app = json!({ "team_id": "T1", "api_app_id": "A2" });
-        assert!(validate_slack_event_installation(&config, &wrong_app).is_err());
-        assert!(validate_slack_event_installation(&config, &json!({})).is_err());
+        assert!(validate_slack_event_installation(&connections, &wrong_app).is_err());
+        assert!(validate_slack_event_installation(&connections, &json!({})).is_err());
     }
 
     #[test]
@@ -1404,13 +1496,14 @@ mod tests {
                 "slack": { "team_id": "T1", "app_id": "A1", "channel_id": "C1" }
             }
         });
+        let connections = slack_connections_from_effective_config(&config);
         let payload = json!({
             "team": { "id": "T1" },
             "api_app_id": "A1",
             "channel": { "id": "C1" },
             "container": { "channel_id": "C1" }
         });
-        assert!(validate_slack_interaction_installation(&config, &payload).is_ok());
+        assert!(validate_slack_interaction_installation(&connections, &payload).is_ok());
 
         for pointer in ["team", "app", "channel"] {
             let mut cross_installation = payload.clone();
@@ -1424,10 +1517,51 @@ mod tests {
                 _ => unreachable!(),
             }
             assert!(
-                validate_slack_interaction_installation(&config, &cross_installation).is_err(),
+                validate_slack_interaction_installation(&connections, &cross_installation).is_err(),
                 "cross-installation {pointer} must fail"
             );
         }
+    }
+
+    #[test]
+    fn slack_interaction_installation_resolves_per_connection() {
+        let config = json!({
+            "channels": {
+                "slack": {
+                    "team_id": "T1",
+                    "app_id": "A1",
+                    "allowed_users": ["U_SHARED"],
+                    "connections": [
+                        { "channel_id": "C_SALES", "allowed_users": ["U_SALES"] },
+                        { "channel_id": "C_ENG" }
+                    ]
+                }
+            }
+        });
+        let connections = slack_connections_from_effective_config(&config);
+        let payload = json!({
+            "team": { "id": "T1" },
+            "api_app_id": "A1",
+            "channel": { "id": "C_SALES" }
+        });
+        let (installation, connection) =
+            validate_slack_interaction_installation(&connections, &payload).unwrap();
+        assert_eq!(installation.team_id, "T1");
+        assert_eq!(connection.channel_id, "C_SALES");
+        assert_eq!(connection.allowed_users, vec!["U_SALES".to_string()]);
+
+        let eng_payload = json!({
+            "team": { "id": "T1" },
+            "api_app_id": "A1",
+            "channel": { "id": "C_ENG" }
+        });
+        let (_, eng_connection) =
+            validate_slack_interaction_installation(&connections, &eng_payload).unwrap();
+        assert_eq!(
+            eng_connection.allowed_users,
+            vec!["U_SHARED".to_string()],
+            "connections without their own allowlist inherit the top-level one"
+        );
     }
 
     #[test]

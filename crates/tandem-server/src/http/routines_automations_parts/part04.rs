@@ -1306,21 +1306,37 @@ async fn update_channel_approval_decision(
             let Some(slack_value) = effective.pointer("/channels/slack").cloned() else {
                 return Ok(());
             };
-            let cfg: crate::SlackConfigFile = serde_json::from_value(slack_value)?;
-            if cfg.bot_token.trim().is_empty() {
+            // Route by the recorded recipient so a card posted through a
+            // per-channel connection is edited with that connection's token;
+            // an unknown recipient falls back to the default (first) resolved
+            // connection, preserving the legacy single-channel behavior.
+            let connections = crate::config::channels::resolve_slack_connections(&slack_value);
+            let connection = connections
+                .iter()
+                .find(|connection| connection.channel_id == record.recipient)
+                .or_else(|| connections.first());
+            let Some(bot_token) = connection.and_then(|connection| connection.bot_token.clone())
+            else {
                 return Ok(());
-            }
+            };
+            let connection = connection.expect("connection is Some when bot_token is Some");
 
             let slack_config = tandem_channels::config::SlackConfig {
-                bot_token: cfg.bot_token,
+                bot_token,
                 channel_id: record.recipient.clone(),
                 allowed_users: crate::config::channels::normalize_allowed_users_or_wildcard(
-                    cfg.allowed_users,
+                    connection.allowed_users.clone(),
                 ),
-                mention_only: cfg.mention_only,
-                security_profile: cfg.security_profile,
+                mention_only: connection.mention_only,
+                security_profile: connection.security_profile,
             };
-            let channel = tandem_channels::slack::SlackChannel::new(slack_config);
+            let channel = match connection.api_base_url.clone() {
+                Some(api_base_url) => tandem_channels::slack::SlackChannel::new_with_api_base_url(
+                    slack_config,
+                    api_base_url,
+                ),
+                None => tandem_channels::slack::SlackChannel::new(slack_config),
+            };
             channel
                 .update_card_for_decision(
                     &card,

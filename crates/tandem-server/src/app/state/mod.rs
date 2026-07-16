@@ -653,13 +653,13 @@ async fn build_channels_config(
             security_profile: cfg.security_profile,
         })
     });
-    let slack_events_ingress_enabled = channels.slack.as_ref().is_some_and(|config| {
-        config.events_enabled
-            && config
-                .signing_secret
-                .as_deref()
-                .is_some_and(|secret| !secret.trim().is_empty())
-    });
+    // Signed Events ingress on ANY connection suppresses the legacy poller —
+    // the poller is single-channel and unauthenticated per-sender, so mixing
+    // the two ingress modes would double-process events (TAN-763).
+    let slack_events_ingress_enabled = channels
+        .slack
+        .as_ref()
+        .is_some_and(|config| config.has_events_capable_connection());
     let slack = (!slack_events_ingress_enabled)
         .then(|| channels.slack.clone())
         .flatten()
