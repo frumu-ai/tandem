@@ -179,6 +179,55 @@ async fn drain_webhook_inbox(state: &AppState) {
 }
 
 #[tokio::test]
+async fn public_automation_webhook_allows_configured_browser_preflight_headers() {
+    let state = test_state().await;
+    let response = app_router(state)
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/webhooks/automations/whpub_preflight")
+                .header("origin", "http://localhost:3000")
+                .header("access-control-request-method", "POST")
+                .header(
+                    "access-control-request-headers",
+                    "content-type,x-tandem-webhook-secret,x-tandem-webhook-signature,x-tandem-webhook-event-id",
+                )
+                .body(Body::empty())
+                .expect("preflight request"),
+        )
+        .await
+        .expect("preflight response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("http://localhost:3000")
+    );
+    let allowed_headers = response
+        .headers()
+        .get("access-control-allow-headers")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    for expected in [
+        "content-type",
+        "x-tandem-webhook-secret",
+        "x-tandem-webhook-signature",
+        "x-tandem-webhook-event-id",
+    ] {
+        assert!(
+            allowed_headers
+                .split(",")
+                .any(|value| value.trim() == expected),
+            "missing allowed preflight header {expected}: {allowed_headers}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn public_automation_webhook_accepts_signed_request_without_transport_auth() {
     let state = test_state().await;
     state.set_api_token(Some("tk_test".to_string())).await;
@@ -585,13 +634,24 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
         .await
         .expect("first response");
     assert_eq!(first.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
+
+    let original_run_id = {
+        let mut runs = state.automation_v2_runs.write().await;
+        assert_eq!(runs.len(), 1);
+        let (run_id, run) = runs.iter_mut().next().expect("original run");
+        run.status = crate::AutomationRunStatus::Cancelled;
+        run.updated_at_ms = now + 1;
+        run_id.clone()
+    };
+
     let second = app
         .oneshot(webhook_request(
             &created.trigger.public_path_token,
             Some(&created.secret),
             body,
             "evt-duplicate-renamed",
-            now + 1,
+            now + 2,
         ))
         .await
         .expect("second response");
@@ -631,6 +691,18 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
     assert_eq!(
         duplicate.duplicate_of_delivery_id.as_deref(),
         Some(accepted.delivery_id.as_str())
+    );
+    assert_eq!(
+        duplicate.dedupe_reason_code.as_deref(),
+        Some("duplicate_body_digest")
+    );
+    assert_eq!(
+        accepted.queued_run_id.as_deref(),
+        Some(original_run_id.as_str())
+    );
+    assert_eq!(
+        duplicate.duplicate_of_run_id.as_deref(),
+        Some(original_run_id.as_str())
     );
     assert_eq!(
         accepted

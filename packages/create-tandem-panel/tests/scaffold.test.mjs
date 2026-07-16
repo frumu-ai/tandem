@@ -51,4 +51,6 @@ test("scaffold creates a standalone editable app payload", async () => {
   assert.match(startRunner, /const REPO_ROOT = resolve\(__dirname, "\.\."\);/);
   assert.match(startRunner, /isPublicEngineAutomationWebhookPath/);
   assert.match(startRunner, /proxyPublicEngineAutomationWebhook/);
+  assert.match(startRunner, /\["POST", "OPTIONS"\]/);
+  assert.match(startRunner, /headers\.set\("x-forwarded-prefix", "\/api\/engine"\)/);
 });

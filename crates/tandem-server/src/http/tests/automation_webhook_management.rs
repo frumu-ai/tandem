@@ -320,6 +320,56 @@ async fn webhook_management_rejects_unsigned_dev_mode_without_server_flag() {
 }
 
 #[tokio::test]
+async fn webhook_management_uses_hosted_proxy_prefix_in_callback_urls() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    create_automation(&app, "auto-webhook-hosted-callback").await;
+
+    let mut request = tenant_request(
+        "POST",
+        "/automations/v2/auto-webhook-hosted-callback/webhook-triggers",
+        "org-a",
+        "workspace-a",
+        "actor-a",
+        Some(json!({
+            "name": "Hosted callback",
+            "provider": "custom",
+            "signature_scheme": "shared_secret_header_v1"
+        })),
+    );
+    request.headers_mut().insert(
+        "x-forwarded-host",
+        "test.tandem.ac".parse().expect("forwarded host"),
+    );
+    request.headers_mut().insert(
+        "x-forwarded-proto",
+        "https".parse().expect("forwarded proto"),
+    );
+    request.headers_mut().insert(
+        "x-forwarded-prefix",
+        "/api/engine".parse().expect("forwarded prefix"),
+    );
+
+    let response = app.oneshot(request).await.expect("create hosted webhook");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response_json(response).await;
+    let callback_path = payload
+        .pointer("/trigger/callback_path")
+        .and_then(Value::as_str)
+        .expect("callback path");
+    assert!(
+        callback_path.starts_with("/api/engine/webhooks/automations/whpub_"),
+        "unexpected hosted callback path: {callback_path}"
+    );
+    assert_eq!(
+        payload
+            .pointer("/trigger/callback_url")
+            .and_then(Value::as_str),
+        Some(format!("https://test.tandem.ac{callback_path}").as_str())
+    );
+}
+
+#[tokio::test]
 async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
     let state = test_state().await;
     let app = app_router(state.clone());

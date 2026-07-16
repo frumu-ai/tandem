@@ -495,10 +495,6 @@ fn trigger_display_name(trigger: &AutomationWebhookTriggerRecord) -> String {
     }
 }
 
-fn callback_path(trigger: &AutomationWebhookTriggerRecord) -> String {
-    format!("/webhooks/automations/{}", trigger.public_path_token)
-}
-
 fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
@@ -508,8 +504,19 @@ fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn callback_path(headers: &HeaderMap, trigger: &AutomationWebhookTriggerRecord) -> String {
+    let forwarded_prefix = header_string(headers, "x-forwarded-prefix")
+        .map(|value| value.trim_end_matches('/').to_string())
+        .filter(|value| value == "/api/engine")
+        .unwrap_or_default();
+    format!(
+        "{forwarded_prefix}/webhooks/automations/{}",
+        trigger.public_path_token
+    )
+}
+
 fn callback_url(headers: &HeaderMap, trigger: &AutomationWebhookTriggerRecord) -> String {
-    let path = callback_path(trigger);
+    let path = callback_path(headers, trigger);
     let host = header_string(headers, "x-forwarded-host").or_else(|| {
         headers
             .get(HOST)
@@ -627,8 +634,8 @@ fn trigger_value(
         "provider_metadata": provider_metadata(trigger),
         "providerMetadata": provider_metadata(trigger),
         "enabled": trigger.enabled,
-        "callback_path": callback_path(trigger),
-        "callbackPath": callback_path(trigger),
+        "callback_path": callback_path(headers, trigger),
+        "callbackPath": callback_path(headers, trigger),
         "callback_url": callback_url(headers, trigger),
         "callbackUrl": callback_url(headers, trigger),
         "tenant_label": format!("{} / {}", trigger.tenant_context.org_id, trigger.tenant_context.workspace_id),

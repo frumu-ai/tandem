@@ -63,6 +63,7 @@ test("control panel engine proxy strips browser agent headers", async (t) => {
         requestSource: String(req.headers["x-tandem-request-source"] || ""),
         auth: String(req.headers.authorization || ""),
         xToken: String(req.headers["x-tandem-token"] || ""),
+        forwardedPrefix: String(req.headers["x-forwarded-prefix"] || ""),
       });
 
       if (url.pathname === "/global/health") {
@@ -117,6 +118,7 @@ test("control panel engine proxy strips browser agent headers", async (t) => {
   assert.equal(forwarded?.xToken, engineToken);
   assert.equal(forwarded?.agentId, "");
   assert.equal(forwarded?.requestSource, "control_panel");
+  assert.equal(forwarded?.forwardedPrefix, "/api/engine");
 });
 
 test("control panel engine proxy forwards public origin for MCP OAuth", async (t) => {
@@ -285,6 +287,10 @@ test("control panel proxies automation webhooks without a panel session", async 
         eventId: String(req.headers["x-tandem-webhook-event-id"] || ""),
         forwardedHost: String(req.headers["x-forwarded-host"] || ""),
         forwardedProto: String(req.headers["x-forwarded-proto"] || ""),
+        forwardedPrefix: String(req.headers["x-forwarded-prefix"] || ""),
+        origin: String(req.headers.origin || ""),
+        requestedMethod: String(req.headers["access-control-request-method"] || ""),
+        requestedHeaders: String(req.headers["access-control-request-headers"] || ""),
         body,
       });
 
@@ -294,6 +300,17 @@ test("control panel proxies automation webhooks without a panel session", async 
         return;
       }
       if (url.pathname === "/webhooks/automations/whpub_test") {
+        if (req.method === "OPTIONS") {
+          res.writeHead(204, {
+            "access-control-allow-origin": String(req.headers.origin || ""),
+            "access-control-allow-methods": "POST, OPTIONS",
+            "access-control-allow-headers": String(
+              req.headers["access-control-request-headers"] || ""
+            ),
+          });
+          res.end();
+          return;
+        }
         res.writeHead(202, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, status: "accepted" }));
         return;
@@ -334,6 +351,8 @@ test("control panel proxies automation webhooks without a panel session", async 
       headers: {
         authorization: "Bearer browser-token-should-not-forward",
         "x-tandem-token": "browser-token-should-not-forward",
+        origin: "https://client.example",
+        "x-forwarded-prefix": "/caller-controlled",
         "x-tandem-webhook-signature": "t=123,v1=abc",
         "x-tandem-webhook-event-id": "evt-public-proxy",
       },
@@ -352,5 +371,38 @@ test("control panel proxies automation webhooks without a panel session", async 
   assert.equal(forwarded?.eventId, "evt-public-proxy");
   assert.equal(forwarded?.forwardedHost, "testing.tandem.ac");
   assert.equal(forwarded?.forwardedProto, "https");
+  assert.equal(forwarded?.forwardedPrefix, "/api/engine");
+  assert.equal(forwarded?.origin, "https://client.example");
   assert.equal(forwarded?.body, JSON.stringify({ ok: true }));
+
+  const preflight = await request(
+    baseUrl,
+    "/api/engine/webhooks/automations/whpub_test",
+    {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://client.example",
+        "access-control-request-method": "POST",
+        "access-control-request-headers":
+          "content-type,x-tandem-webhook-secret,x-tandem-webhook-event-id",
+      },
+    }
+  );
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "https://client.example");
+
+  const forwardedPreflight = seenRequests.find(
+    (row) => row.path === "/webhooks/automations/whpub_test" && row.method === "OPTIONS"
+  );
+  assert.equal(forwardedPreflight?.auth, "");
+  assert.equal(forwardedPreflight?.xToken, "");
+  assert.equal(forwardedPreflight?.cookie, "");
+  assert.equal(forwardedPreflight?.forwardedPrefix, "/api/engine");
+  assert.equal(forwardedPreflight?.origin, "https://client.example");
+  assert.equal(forwardedPreflight?.requestedMethod, "POST");
+  assert.equal(
+    forwardedPreflight?.requestedHeaders,
+    "content-type,x-tandem-webhook-secret,x-tandem-webhook-event-id"
+  );
+  assert.equal(forwardedPreflight?.body, "");
 });

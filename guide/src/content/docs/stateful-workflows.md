@@ -481,12 +481,16 @@ actually read, such as an authoritative connector lookup. With
 ### Send a standard signed event
 
 The public callback accepts JSON bodies up to 1 MiB. Standard Tandem HMAC signs
-the exact bytes of `<timestamp_ms>.<raw_json_body>`.
+the exact bytes of `<timestamp_ms>.<raw_json_body>`. Use the exact
+`callback_url` returned by Tandem. Hosted callbacks use
+`https://test.tandem.ac/api/engine/webhooks/...`; a direct local Engine uses
+`http://127.0.0.1:39731/webhooks/...`.
 
 ```bash
 export TANDEM_WEBHOOK_SECRET='store-this-outside-source-control'
-export CALLBACK_URL='https://engine.example.com/webhooks/automations/your-public-token'
-BODY='{"action":"review_requested","request_id":"review-123","summary":"Publish the approved operations update"}'
+export CALLBACK_URL="${CALLBACK_URL:-https://test.tandem.ac/api/engine/webhooks/automations/whpub_your_public_token}"
+EVENT_ID="review-$(date +%s)-$RANDOM"
+BODY="{\"action\":\"review_requested\",\"request_id\":\"$EVENT_ID\",\"occurrence_id\":\"$EVENT_ID\",\"summary\":\"Publish the approved operations update\"}"
 TIMESTAMP_MS="$(node -e 'process.stdout.write(Date.now().toString())')"
 SIGNATURE="$(BODY="$BODY" TIMESTAMP_MS="$TIMESTAMP_MS" node -e '
   const crypto = require("node:crypto");
@@ -501,12 +505,17 @@ SIGNATURE="$(BODY="$BODY" TIMESTAMP_MS="$TIMESTAMP_MS" node -e '
 curl -sS -X POST "$CALLBACK_URL" \
   -H 'content-type: application/json' \
   -H "X-Tandem-Webhook-Signature: t=$TIMESTAMP_MS,v1=$SIGNATURE" \
-  -H 'X-Tandem-Webhook-Event-ID: review-123' \
+  -H "X-Tandem-Webhook-Event-ID: $EVENT_ID" \
   --data-binary "$BODY"
 ```
 
 An HTTP `202 Accepted` means Tandem durably accepted the raw event for
-asynchronous processing. It does not mean a run or node completed.
+asynchronous processing. It does not mean a run or node completed, or even that
+a new run was created. An identical replay is recorded as a duplicate and keeps
+the original run correlation. Cancelling the original run does not reset webhook
+deduplication. Generate a new `EVENT_ID` and change the JSON body, as the example
+does, when you intentionally want another test run; then recompute the HMAC over
+the new exact body.
 
 ### Create and inspect through HTTP
 

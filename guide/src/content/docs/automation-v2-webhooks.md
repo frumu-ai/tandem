@@ -63,6 +63,64 @@ delivery by provider event ID, idempotency key, or body digest. See
 [Author durable wait nodes](../stateful-workflows/#author-durable-wait-nodes)
 for the complete schema and timeout rules.
 
+## Callback URLs, identifiers, and browser preflight
+
+Use the exact `callback_url` returned by the trigger management API or shown in
+the Control Panel. The public callback ends with the `whpub_...` public path
+token:
+
+- Direct local Engine: `http://127.0.0.1:39731/webhooks/automations/whpub_...`
+- Hosted through the Tandem Control Panel: `https://test.tandem.ac/api/engine/webhooks/automations/whpub_...`
+
+Do not substitute the trigger management ID into the callback path:
+
+- `whpub_...` is the public routing token used in the callback URL. It is not a
+  signing credential.
+- `whtr_...` identifies the trigger in authenticated management APIs.
+- `whsec_...` is secret signing material. Store it in a secret manager and send
+  it only in the configured signature or shared-secret header.
+
+Webhook delivery is designed primarily for server-to-server calls. `curl` does
+not enforce CORS. A browser sends an `OPTIONS` preflight before a cross-origin
+`POST`; the hosted proxy forwards that preflight to the Engine, and the Engine
+allows only origins configured by `TANDEM_CORS_ORIGINS`. Do not embed a
+`whsec_...` secret in public browser code. If a trusted internal browser client
+must send webhooks, add its exact origin to `TANDEM_CORS_ORIGINS` and keep the
+secret outside user-accessible JavaScript.
+
+### Shared-secret test request
+
+This example targets the hosted callback. For a direct local Engine, replace
+`CALLBACK_URL` with the local URL above.
+
+```bash
+read -rsp "Webhook secret (whsec_...): " TANDEM_WEBHOOK_SECRET
+printf "\n"
+
+CALLBACK_URL="https://test.tandem.ac/api/engine/webhooks/automations/whpub_your_public_token"
+EVENT_ID="manual-$(date +%s)-$RANDOM"
+BODY="{\"event\":\"customer.incident_reported\",\"occurrence_id\":\"$EVENT_ID\",\"customer_id\":\"acme-001\",\"summary\":\"Elevated 5xx errors affecting checkout\"}"
+
+curl --include --silent --show-error --fail-with-body \
+  --request POST \
+  "$CALLBACK_URL" \
+  --header "Content-Type: application/json" \
+  --header "X-Tandem-Webhook-Secret: $TANDEM_WEBHOOK_SECRET" \
+  --header "X-Tandem-Webhook-Event-ID: $EVENT_ID" \
+  --data-binary "$BODY"
+
+unset TANDEM_WEBHOOK_SECRET
+```
+
+An HTTP `202 Accepted` means the delivery was durably accepted for asynchronous
+processing. It does not guarantee that a new run was created. Tandem deduplicates
+replayed payloads by their idempotency claims, including the body digest. The
+same JSON body can therefore return `202` with delivery status `duplicate` and
+no second run. Cancelling or completing the original run does not clear that
+dedupe record. For a deliberate second test occurrence, change the JSON body
+(for example, generate a new `occurrence_id`) and recompute any body-based HMAC
+signature.
+
 ## Notion webhooks
 
 Tandem can receive [Notion](https://developers.notion.com/) webhooks directly for
@@ -200,7 +258,8 @@ fixed read-only provider lookup for node-visible guard decisions.
 
 | Method | Path                                                                           | Purpose                                                        |
 | ------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| `POST` | `/webhooks/automations/{public_path_token}`                                    | Public intake (verification handshake + signed events).        |
+| `POST`, `OPTIONS` | `/webhooks/automations/{public_path_token}`                         | Direct Engine public intake and browser preflight.              |
+| `POST`, `OPTIONS` | `/api/engine/webhooks/automations/{public_path_token}`              | Hosted Control Panel public intake and browser preflight.       |
 | `POST` | `/automations/v2/{id}/webhook-triggers`                                        | Create a webhook trigger (e.g. a `notion` trigger).            |
 | `POST` | `/automations/v2/{id}/webhook-triggers/{trigger_id}/reveal-verification-token` | One-time reveal of a Notion verification token (admin-scoped). |
 | `POST` | `/automations/v2/{id}/webhook-triggers/{trigger_id}/import-secret`             | Import/replace a Linear signing secret (admin-scoped).         |
