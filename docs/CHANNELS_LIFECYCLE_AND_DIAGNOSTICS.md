@@ -120,6 +120,20 @@ Semantics:
   department-bound connection additionally requires the approver to hold an
   active membership in a bound unit; a department binding without a `tenant`
   binding is a misconfiguration and fails closed.
+- **Sender discovery (TAN-765).** `GET /channels/slack/senders` aggregates
+  recently seen Slack senders from the protected audit ledger
+  (`channel.slack.ingress.accepted`/`.denied`): per sender it returns the
+  exact principal string (`channel:slack:{team}:{app}:{user}`), the channels
+  they were seen in, accepted/denied counts, the latest denial reason, and
+  whether the principal currently holds an active org-unit membership
+  (`mapped` + `org_units`). Admins map a sender by passing `principal` as
+  `member_id` to the enterprise membership API — no hand-composed ids.
+- **Department-binding enrollment (TAN-765).** `POST /channels/enroll`
+  (action `issue`) accepts `org_units` (bare unit id or `taxonomy/unit_id`);
+  unknown units fail at issue time. Redeeming the pairing code establishes
+  active org-unit memberships for the enrolled identity (persisted through
+  the governance store) in addition to the capability tier, so a
+  department-bound enrollment immediately yields a working governed run.
 - **Diagnostics.** `GET /channels/config` includes a `connections` array for
   Slack with per-connection presence flags (`has_token`, `has_signing_secret`,
   `events_capable`, tenant/org-unit bindings) — never raw secrets.

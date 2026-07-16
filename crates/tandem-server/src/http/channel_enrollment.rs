@@ -26,6 +26,10 @@ pub(crate) enum ChannelEnrollRequest {
         issued_by: Option<String>,
         #[serde(default)]
         pinned_workspace_id: Option<String>,
+        /// TAN-765: departments (org units, by bare id or `taxonomy/unit_id`)
+        /// the redeeming identity should become a member of.
+        #[serde(default)]
+        org_units: Vec<String>,
     },
     Confirm {
         pairing_code: String,
@@ -100,6 +104,7 @@ pub(crate) async fn channel_enroll(
             ttl_seconds,
             issued_by,
             pinned_workspace_id,
+            org_units,
         } => {
             if channel.trim().is_empty() || user_id.trim().is_empty() {
                 return enrollment_error(
@@ -107,7 +112,7 @@ pub(crate) async fn channel_enroll(
                     "channel and user_id are required",
                 );
             }
-            let enrollment = state
+            let enrollment = match state
                 .issue_channel_enrollment_code(
                     channel.trim().to_ascii_lowercase(),
                     user_id.trim().to_string(),
@@ -117,8 +122,15 @@ pub(crate) async fn channel_enroll(
                     pinned_workspace_id
                         .as_deref()
                         .and_then(tandem_core::normalize_workspace_path),
+                    org_units,
                 )
-                .await;
+                .await
+            {
+                Ok(enrollment) => enrollment,
+                // Unknown org-unit references fail at issue time so the
+                // operator sees the typo immediately (TAN-765).
+                Err(error) => return enrollment_error(StatusCode::BAD_REQUEST, &error.to_string()),
+            };
             Json(ChannelEnrollResponse::CodeIssued {
                 pairing_code: enrollment.code.clone(),
                 expires_at_ms: enrollment.expires_at_ms,
@@ -166,6 +178,7 @@ mod tests {
                 ttl_seconds: Some(60),
                 issued_by: Some("operator".to_string()),
                 pinned_workspace_id: Some("/workspace/acme".to_string()),
+                org_units: Vec::new(),
             }),
         )
         .await;

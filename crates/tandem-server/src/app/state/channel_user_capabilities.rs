@@ -25,6 +25,11 @@ pub struct ChannelUserCapabilityRecord {
     pub enrolled_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_workspace_id: Option<String>,
+    /// TAN-765: org units (departments) this enrollment established
+    /// memberships in, recorded for audit/display. The authoritative
+    /// membership rows live in the enterprise org-unit store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub org_units: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -48,6 +53,12 @@ pub struct ChannelEnrollmentCodeRecord {
     pub issued_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_workspace_id: Option<String>,
+    /// TAN-765: org units (departments) to bind on redemption. Entries match
+    /// a unit's bare id (`engineering`) or principal id
+    /// (`department/engineering`); redeeming establishes active org-unit
+    /// memberships for the enrolled identity, not just an approval tier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub org_units: Vec<String>,
 }
 
 impl From<CommandTier> for StoredCommandTier {
@@ -73,6 +84,7 @@ impl From<StoredCommandTier> for CommandTier {
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub async fn issue_channel_enrollment_code(
         &self,
         channel: impl Into<String>,
@@ -81,7 +93,13 @@ impl AppState {
         ttl_ms: Option<u64>,
         issued_by: Option<String>,
         pinned_workspace_id: Option<String>,
-    ) -> ChannelEnrollmentCodeRecord {
+        org_units: Vec<String>,
+    ) -> anyhow::Result<ChannelEnrollmentCodeRecord> {
+        let org_units = normalize_org_unit_refs(org_units);
+        // Fail fast on typos: every referenced unit must exist at issue time,
+        // so the operator learns immediately rather than the redeeming user
+        // hitting a dead code later.
+        self.resolve_org_unit_refs(&org_units).await?;
         let issued_at_ms = crate::now_ms();
         let expires_at_ms =
             issued_at_ms.saturating_add(ttl_ms.unwrap_or(DEFAULT_ENROLLMENT_TTL_MS));
@@ -101,12 +119,13 @@ impl AppState {
             expires_at_ms,
             issued_by,
             pinned_workspace_id,
+            org_units,
         };
         self.channel_enrollment_codes
             .write()
             .await
             .insert(code, record.clone());
-        record
+        Ok(record)
     }
 
     pub async fn confirm_channel_enrollment_code(
@@ -125,6 +144,14 @@ impl AppState {
             return Err(anyhow::anyhow!("pairing code expired"));
         }
 
+        // TAN-765: establish the department memberships BEFORE the capability
+        // grant so a failure here leaves no partial authority. The code is
+        // already consumed either way — a failed binding needs a fresh code.
+        if !pending.org_units.is_empty() {
+            self.grant_org_unit_memberships_for_principal(&pending.user_id, &pending.org_units)
+                .await?;
+        }
+
         let record = ChannelUserCapabilityRecord {
             channel: pending.channel,
             user_id: pending.user_id,
@@ -132,9 +159,115 @@ impl AppState {
             enrolled_at_ms: Some(crate::now_ms()),
             enrolled_by: enrolled_by.or(pending.issued_by),
             pinned_workspace_id: pending.pinned_workspace_id,
+            org_units: pending.org_units,
         };
         self.upsert_channel_user_capability(record.clone()).await?;
         Ok(record)
+    }
+
+    /// Resolve org-unit references (bare unit id or `taxonomy/unit_id`
+    /// principal id) against the enterprise org-unit store. Errors on any
+    /// unknown reference.
+    pub async fn resolve_org_unit_refs(
+        &self,
+        refs: &[String],
+    ) -> anyhow::Result<Vec<tandem_enterprise_contract::OrganizationUnit>> {
+        let units = self.enterprise.org_units.read().await;
+        refs.iter()
+            .map(|entry| {
+                let wanted = entry.trim();
+                units
+                    .values()
+                    .find(|unit| unit.unit_id == wanted || unit.principal_ref().id == wanted)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("unknown org unit: {wanted}"))
+            })
+            .collect()
+    }
+
+    /// TAN-765: establish active org-unit memberships for a principal (e.g. a
+    /// Slack identity `channel:slack:{team}:{app}:{user}`). Existing active
+    /// memberships are kept as-is; new rows persist through the governance
+    /// store. Returns the membership ids now in effect for the references.
+    pub async fn grant_org_unit_memberships_for_principal(
+        &self,
+        member_id: &str,
+        unit_refs: &[String],
+    ) -> anyhow::Result<Vec<String>> {
+        use tandem_types::{OrganizationUnitMembership, OrganizationUnitMembershipSource};
+
+        let member_id = member_id.trim();
+        anyhow::ensure!(!member_id.is_empty(), "member id must not be empty");
+        let units = self.resolve_org_unit_refs(unit_refs).await?;
+        let member = tandem_types::PrincipalRef::human_user(member_id);
+        let now_ms = crate::now_ms();
+
+        let mut effective_ids = Vec::new();
+        {
+            let mut registry = self.enterprise.org_unit_memberships.write().await;
+            for unit in units {
+                let unit_principal = unit.principal_ref();
+                if let Some(existing) = registry.values().find(|membership| {
+                    membership.state.is_active()
+                        && membership.unit.id == unit_principal.id
+                        && membership.member.id == member.id
+                        && membership.tenant_context.org_id == unit.tenant_context.org_id
+                        && membership.tenant_context.workspace_id
+                            == unit.tenant_context.workspace_id
+                }) {
+                    effective_ids.push(existing.membership_id.clone());
+                    continue;
+                }
+                let membership_id = format!(
+                    "enrollment-{}-{}",
+                    unit.unit_id,
+                    Uuid::new_v4()
+                        .simple()
+                        .to_string()
+                        .chars()
+                        .take(8)
+                        .collect::<String>()
+                );
+                let membership = OrganizationUnitMembership::active(
+                    membership_id.clone(),
+                    unit.tenant_context.clone(),
+                    unit_principal,
+                    member.clone(),
+                    OrganizationUnitMembershipSource::Direct,
+                    now_ms,
+                );
+                registry.insert(membership.membership_id.clone(), membership);
+                effective_ids.push(membership_id);
+            }
+            self.persist_enterprise_org_unit_memberships_locked(&registry)
+                .await?;
+        }
+        Ok(effective_ids)
+    }
+
+    /// Persist the org-unit membership registry through the governance store
+    /// (encryption-aware), mirroring how the store is loaded at startup.
+    async fn persist_enterprise_org_unit_memberships_locked(
+        &self,
+        registry: &HashMap<String, tandem_enterprise_contract::OrganizationUnitMembership>,
+    ) -> anyhow::Result<()> {
+        let records = registry
+            .iter()
+            .map(|(key, row)| {
+                crate::governance_store::GovernanceStoreFile::OrgUnitMemberships.json_record(
+                    key,
+                    row,
+                    &row.tenant_context,
+                    Some(&row.unit.id),
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        crate::governance_store::for_state(self)
+            .write_json_records(
+                crate::governance_store::GovernanceStoreFile::OrgUnitMemberships,
+                &records,
+            )
+            .await
     }
 
     pub async fn load_channel_user_capabilities(&self) -> anyhow::Result<()> {
@@ -291,6 +424,18 @@ fn normalize_enrollment_code(code: &str) -> String {
     code.trim().to_ascii_uppercase()
 }
 
+fn normalize_org_unit_refs(raw: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in raw {
+        let normalized = entry.trim().to_string();
+        if normalized.is_empty() || out.contains(&normalized) {
+            continue;
+        }
+        out.push(normalized);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +453,7 @@ mod tests {
                 enrolled_at_ms: Some(7),
                 enrolled_by: Some("admin".to_string()),
                 pinned_workspace_id: None,
+                org_units: Vec::new(),
             })
             .await
             .unwrap();
@@ -352,8 +498,10 @@ mod tests {
                 None,
                 Some("operator".to_string()),
                 Some("/workspace/acme".to_string()),
+                Vec::new(),
             )
-            .await;
+            .await
+            .expect("issue enrollment code");
         let record = state
             .confirm_channel_enrollment_code(&issued.code.to_ascii_lowercase(), None)
             .await
@@ -416,6 +564,7 @@ mod tests {
                 enrolled_at_ms: Some(1),
                 enrolled_by: Some("admin".to_string()),
                 pinned_workspace_id: None,
+                org_units: Vec::new(),
             })
             .await
             .unwrap();

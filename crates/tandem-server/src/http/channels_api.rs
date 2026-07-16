@@ -194,6 +194,165 @@ fn normalize_channel_config_obj<'a>(
     entry
 }
 
+/// One Slack sender observed on signed ingress, aggregated from the
+/// protected audit ledger (TAN-765). Gives admins the exact principal to map
+/// to a department without hand-composing `channel:slack:{team}:{app}:{user}`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SlackSenderSummary {
+    pub team_id: String,
+    pub app_id: String,
+    pub user_id: String,
+    /// The exact principal string the membership APIs expect as `member_id`.
+    pub principal: String,
+    /// Channels this sender was observed in (denials that predate channel
+    /// resolution may carry none).
+    pub channels: Vec<String>,
+    pub accepted_count: u64,
+    pub denied_count: u64,
+    pub last_seen_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_denial_reason: Option<String>,
+    /// Whether the principal currently holds at least one active org-unit
+    /// membership in the connection's bound tenant.
+    pub mapped: bool,
+    /// Active org-unit principal ids for this sender (empty when unmapped).
+    pub org_units: Vec<String>,
+    pub tenant_org_id: String,
+    pub tenant_workspace_id: String,
+}
+
+#[derive(Debug, Default)]
+struct SlackSenderAggregate {
+    channels: std::collections::BTreeSet<String>,
+    accepted_count: u64,
+    denied_count: u64,
+    last_seen_at_ms: u64,
+    last_denied_at_ms: u64,
+    last_denial_reason: Option<String>,
+}
+
+const SLACK_SENDERS_CAP: usize = 500;
+
+/// `GET /channels/slack/senders` — recently seen Slack senders per bound
+/// tenant, with mapped/unmapped department status (TAN-765). Data source is
+/// the protected audit ledger (`channel.slack.ingress.accepted` / `.denied`),
+/// so the fail-closed unmapped state is visible and actionable.
+pub(crate) async fn slack_senders(State(state): State<AppState>) -> Response {
+    let effective = state.config.get_effective_value().await;
+    let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
+    let mut tenants = connections
+        .iter()
+        .filter_map(|connection| connection.bound_tenant())
+        .collect::<Vec<_>>();
+    tenants.sort();
+    tenants.dedup();
+
+    let mut senders: Vec<SlackSenderSummary> = Vec::new();
+    for (org_id, workspace_id) in tenants {
+        let tenant =
+            tandem_types::TenantContext::explicit(org_id.clone(), workspace_id.clone(), None);
+        let events = crate::audit::load_protected_audit_events_for_tenant(&state, &tenant).await;
+
+        let mut aggregates: HashMap<(String, String, String), SlackSenderAggregate> =
+            HashMap::new();
+        for event in &events {
+            let (dims, denial_reason) = match event.event_type.as_str() {
+                "channel.slack.ingress.accepted" => {
+                    (event.payload.pointer("/dimensions").cloned(), None)
+                }
+                "channel.slack.ingress.denied" => (
+                    event.payload.pointer("/details").cloned(),
+                    event
+                        .payload
+                        .pointer("/reason")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                ),
+                _ => continue,
+            };
+            let Some(dims) = dims else { continue };
+            let field = |key: &str| {
+                dims.get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            };
+            let (Some(team_id), Some(app_id), Some(user_id)) = (
+                field("slack_team_id"),
+                field("slack_app_id"),
+                field("slack_user_id"),
+            ) else {
+                continue;
+            };
+            let aggregate = aggregates.entry((team_id, app_id, user_id)).or_default();
+            if let Some(channel_id) = field("slack_channel_id") {
+                aggregate.channels.insert(channel_id);
+            }
+            aggregate.last_seen_at_ms = aggregate.last_seen_at_ms.max(event.created_at_ms);
+            match denial_reason {
+                Some(reason) => {
+                    aggregate.denied_count += 1;
+                    if event.created_at_ms >= aggregate.last_denied_at_ms {
+                        aggregate.last_denied_at_ms = event.created_at_ms;
+                        aggregate.last_denial_reason = Some(reason);
+                    }
+                }
+                None => aggregate.accepted_count += 1,
+            }
+        }
+        if aggregates.is_empty() {
+            continue;
+        }
+
+        // Resolve mapped status against the tenant's authority graph once.
+        let graph = state
+            .build_intra_tenant_authority_graph(&tenant, Vec::new())
+            .await;
+        let now_ms = crate::now_ms();
+        for ((team_id, app_id, user_id), aggregate) in aggregates {
+            let principal = format!("channel:slack:{team_id}:{app_id}:{user_id}");
+            let principal_ref = tandem_types::PrincipalRef::human_user(principal.clone());
+            let resolved_units = graph.resolved_unit_principals(&principal_ref, now_ms);
+            let mut org_units = graph
+                .units
+                .iter()
+                .filter(|unit| {
+                    unit.state.is_active() && resolved_units.contains(&unit.principal_ref())
+                })
+                .map(|unit| unit.principal_ref().id)
+                .collect::<Vec<_>>();
+            org_units.sort();
+            org_units.dedup();
+            senders.push(SlackSenderSummary {
+                team_id,
+                app_id,
+                user_id,
+                principal,
+                channels: aggregate.channels.into_iter().collect(),
+                accepted_count: aggregate.accepted_count,
+                denied_count: aggregate.denied_count,
+                last_seen_at_ms: aggregate.last_seen_at_ms,
+                last_denial_reason: aggregate.last_denial_reason,
+                mapped: !org_units.is_empty(),
+                org_units,
+                tenant_org_id: org_id.clone(),
+                tenant_workspace_id: workspace_id.clone(),
+            });
+        }
+    }
+
+    senders.sort_by(|a, b| b.last_seen_at_ms.cmp(&a.last_seen_at_ms));
+    let truncated = senders.len() > SLACK_SENDERS_CAP;
+    senders.truncate(SLACK_SENDERS_CAP);
+
+    Json(serde_json::json!({
+        "senders": senders,
+        "truncated": truncated,
+    }))
+    .into_response()
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 struct ChannelSessionRecord {
     session_id: String,

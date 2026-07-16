@@ -138,8 +138,10 @@ async fn configure_bound_channels(state: &AppState, discord_public_key: &str) {
                 Some(60_000),
                 Some("ct05-test".to_string()),
                 None,
+                Vec::new(),
             )
-            .await;
+            .await
+            .expect("issue enrollment code");
         state
             .confirm_channel_enrollment_code(&code.code, Some("ct05-test".to_string()))
             .await

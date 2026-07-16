@@ -366,6 +366,50 @@ async fn seed_governed_slack_identity_with_tools(state: &AppState, tool_patterns
     seed_governed_slack_identity_for_user(state, SLACK_USER, tool_patterns).await;
 }
 
+/// Seed only the engineering department unit + grant — no memberships. Used
+/// by TAN-765 tests where the membership must come from enrollment.
+async fn seed_engineering_unit_and_grant(state: &AppState, tool_patterns: &[&str]) {
+    let now_ms = crate::now_ms();
+    let tenant = TenantContext::explicit(ORG_ID, WORKSPACE_ID, None);
+    let admin = PrincipalRef::human_user("admin");
+    let department = OrganizationUnit::active(
+        "engineering",
+        tenant.clone(),
+        "Engineering",
+        OrganizationUnitKind::Department,
+        admin,
+        now_ms,
+    )
+    .with_taxonomy_id("department");
+    let grant = OrganizationUnitAccessGrant::active(
+        "engineering-read",
+        tenant,
+        department.principal_ref(),
+        ResourceRef::new(ORG_ID, WORKSPACE_ID, ResourceKind::Workspace, WORKSPACE_ID),
+        now_ms,
+    )
+    .with_permissions(vec![AccessPermission::Read, AccessPermission::Execute])
+    .with_data_classes(vec![DataClass::Internal, DataClass::SourceCode])
+    .with_tool_patterns(
+        tool_patterns
+            .iter()
+            .map(|pattern| (*pattern).to_string())
+            .collect(),
+    );
+    state
+        .enterprise
+        .org_units
+        .write()
+        .await
+        .insert(department.unit_id.clone(), department);
+    state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .insert(grant.grant_id.clone(), grant);
+}
+
 async fn seed_governed_slack_identity_for_user(
     state: &AppState,
     user_id: &str,
@@ -687,6 +731,7 @@ async fn slack_capability_and_step_up_do_not_cross_installations() {
     state
         .upsert_channel_user_capability(
             crate::app::state::channel_user_capabilities::ChannelUserCapabilityRecord {
+                org_units: Vec::new(),
                 channel: "slack".to_string(),
                 user_id: first.to_string(),
                 max_tier: crate::app::state::channel_user_capabilities::StoredCommandTier::Approve,
@@ -1087,6 +1132,216 @@ async fn department_bound_connection_narrows_run_authority_to_intersection() {
     assert_eq!(
         run_started.payload.get("org_units"),
         Some(&json!(["department/engineering"]))
+    );
+    mock_task.abort();
+}
+
+#[tokio::test]
+async fn enrollment_code_with_department_binding_enables_governed_run() {
+    let state = test_state().await;
+    let (api_base_url, slack_mock, mock_task) = start_slack_api_mock().await;
+    configure_slack_events(&state, &api_base_url).await;
+    // Department + grant exist, but the sender has NO membership yet.
+    seed_engineering_unit_and_grant(&state, &["mcp.github.*"]).await;
+    let provider = install_governed_slack_provider(&state, 0).await;
+    let app = app_router(state.clone());
+    let request_timestamp = chrono::Utc::now().timestamp();
+
+    // Unmapped sender fails closed.
+    let before = signed_slack_event_request(
+        "Ev-enroll-before",
+        SLACK_USER,
+        "1800000000.510001",
+        None,
+        request_timestamp,
+    );
+    let response = app
+        .clone()
+        .oneshot(before)
+        .await
+        .expect("pre-enrollment response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
+    // Operator issues a pairing code carrying the department binding; the
+    // identity redeems it (TAN-765). An unknown unit fails at issue time.
+    let principal = format!("channel:slack:{SLACK_TEAM}:{SLACK_APP}:{SLACK_USER}");
+    assert!(
+        state
+            .issue_channel_enrollment_code(
+                "slack",
+                principal.clone(),
+                crate::app::state::channel_user_capabilities::StoredCommandTier::Approve,
+                Some(60_000),
+                Some("operator".to_string()),
+                None,
+                vec!["department/nonexistent".to_string()],
+            )
+            .await
+            .is_err(),
+        "unknown org unit must fail at issue time"
+    );
+    let code = state
+        .issue_channel_enrollment_code(
+            "slack",
+            principal.clone(),
+            crate::app::state::channel_user_capabilities::StoredCommandTier::Approve,
+            Some(60_000),
+            Some("operator".to_string()),
+            None,
+            vec!["department/engineering".to_string()],
+        )
+        .await
+        .expect("issue department-bound enrollment code");
+    let capability = state
+        .confirm_channel_enrollment_code(&code.code, None)
+        .await
+        .expect("confirm department-bound enrollment code");
+    assert_eq!(capability.org_units, vec!["department/engineering"]);
+    assert!(
+        state
+            .enterprise
+            .org_unit_memberships
+            .read()
+            .await
+            .values()
+            .any(|membership| {
+                membership.member.id == principal
+                    && membership.unit.id == "department/engineering"
+                    && membership.state.is_active()
+            }),
+        "confirming the code must establish the org-unit membership"
+    );
+
+    // The same sender now runs governed, scoped to the enrolled department.
+    let after = signed_slack_event_request(
+        "Ev-enroll-after",
+        SLACK_USER,
+        "1800000000.520001",
+        None,
+        request_timestamp,
+    );
+    let response = app.oneshot(after).await.expect("post-enrollment response");
+    assert_eq!(response.status(), StatusCode::OK);
+    wait_for_posts(&slack_mock, 1).await;
+    wait_for_slack_tasks(&state).await;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    let sessions = state.storage.list_sessions().await;
+    let verified = sessions[0]
+        .verified_tenant_context
+        .as_ref()
+        .expect("verified channel context");
+    assert_eq!(verified.org_units, vec!["department/engineering"]);
+    assert_eq!(verified.capabilities, vec!["mcp.github.*"]);
+    mock_task.abort();
+}
+
+#[tokio::test]
+async fn slack_senders_endpoint_surfaces_mapped_and_unmapped_identities() {
+    const UNMAPPED_USER: &str = "U_UNMAPPED";
+
+    let state = test_state().await;
+    let (api_base_url, slack_mock, mock_task) = start_slack_api_mock().await;
+    configure_slack_events_for_installation(
+        &state,
+        &api_base_url,
+        SLACK_TEAM,
+        SLACK_APP,
+        SLACK_CHANNEL,
+        &[SLACK_USER, UNMAPPED_USER],
+    )
+    .await;
+    seed_governed_slack_identity(&state).await;
+    let _provider = install_governed_slack_provider(&state, 0).await;
+    let app = app_router(state.clone());
+    let request_timestamp = chrono::Utc::now().timestamp();
+
+    // Mapped sender produces an accepted run; unmapped sender an audited
+    // fail-closed denial.
+    let accepted = signed_slack_event_request(
+        "Ev-senders-accepted",
+        SLACK_USER,
+        "1800000000.610001",
+        None,
+        request_timestamp,
+    );
+    let response = app
+        .clone()
+        .oneshot(accepted)
+        .await
+        .expect("accepted response");
+    assert_eq!(response.status(), StatusCode::OK);
+    wait_for_posts(&slack_mock, 1).await;
+    wait_for_slack_tasks(&state).await;
+
+    let denied = signed_slack_event_request(
+        "Ev-senders-denied",
+        UNMAPPED_USER,
+        "1800000000.620001",
+        None,
+        request_timestamp,
+    );
+    let response = app.clone().oneshot(denied).await.expect("denied response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/channels/slack/senders")
+        .body(Body::empty())
+        .expect("senders request");
+    let response = app.oneshot(request).await.expect("senders response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("senders body");
+    let payload: Value = serde_json::from_slice(&body).expect("senders json");
+    let senders = payload
+        .get("senders")
+        .and_then(Value::as_array)
+        .expect("senders array");
+
+    let mapped = senders
+        .iter()
+        .find(|row| row.get("user_id").and_then(Value::as_str) == Some(SLACK_USER))
+        .expect("mapped sender present");
+    assert_eq!(mapped.get("mapped"), Some(&json!(true)));
+    assert_eq!(
+        mapped.get("principal").and_then(Value::as_str),
+        Some(format!("channel:slack:{SLACK_TEAM}:{SLACK_APP}:{SLACK_USER}").as_str())
+    );
+    assert!(mapped
+        .get("org_units")
+        .and_then(Value::as_array)
+        .expect("mapped org units")
+        .iter()
+        .any(|unit| unit == "department/engineering"));
+    assert!(
+        mapped
+            .get("accepted_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            >= 1
+    );
+
+    let unmapped = senders
+        .iter()
+        .find(|row| row.get("user_id").and_then(Value::as_str) == Some(UNMAPPED_USER))
+        .expect("unmapped sender present — denials must be visible");
+    assert_eq!(unmapped.get("mapped"), Some(&json!(false)));
+    assert!(
+        unmapped
+            .get("denied_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            >= 1
+    );
+    assert!(
+        unmapped
+            .get("last_denial_reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("organization-unit membership"),
+        "unmapped denial reason must explain the fail-closed state"
     );
     mock_task.abort();
 }
