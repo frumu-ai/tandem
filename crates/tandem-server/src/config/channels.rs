@@ -462,6 +462,20 @@ impl SlackConfigFile {
             })
             .unwrap_or(false)
     }
+
+    /// TAN-762: true when any resolved connection carries a governed binding
+    /// — a bound tenant (GOV-B5c) or bound departments (TAN-764). Governed
+    /// Slack ingress is Events-only: the legacy poller carries no per-sender
+    /// verified identity, so a governed binding must never run through it.
+    pub fn has_governed_binding(&self) -> bool {
+        serde_json::to_value(self)
+            .map(|value| {
+                resolve_slack_connections(&value).iter().any(|connection| {
+                    connection.bound_tenant().is_some() || connection.binds_departments()
+                })
+            })
+            .unwrap_or(false)
+    }
 }
 
 pub fn normalize_allowed_users_or_wildcard(raw: Vec<String>) -> Vec<String> {
@@ -739,6 +753,38 @@ mod tests {
             !blank_only.binds_departments(),
             "whitespace-only entries must not count as a department binding"
         );
+    }
+
+    #[test]
+    fn governed_binding_detection_spans_connections() {
+        let tenant_bound: SlackConfigFile = serde_json::from_value(json!({
+            "channel_id": "C1",
+            "tenant": { "org_id": "acme", "workspace_id": "hq" }
+        }))
+        .unwrap();
+        assert!(tenant_bound.has_governed_binding());
+
+        let department_bound: SlackConfigFile = serde_json::from_value(json!({
+            "connections": [ { "channel_id": "C1", "org_units": ["department/sales"] } ]
+        }))
+        .unwrap();
+        assert!(department_bound.has_governed_binding());
+
+        let unbound: SlackConfigFile = serde_json::from_value(json!({
+            "bot_token": "xoxb-1",
+            "channel_id": "C1"
+        }))
+        .unwrap();
+        assert!(!unbound.has_governed_binding());
+
+        // A partial tenant (org without workspace) counts as unbound, matching
+        // bound_tenant() semantics.
+        let partial: SlackConfigFile = serde_json::from_value(json!({
+            "channel_id": "C1",
+            "tenant": { "org_id": "acme" }
+        }))
+        .unwrap();
+        assert!(!partial.has_governed_binding());
     }
 
     #[test]

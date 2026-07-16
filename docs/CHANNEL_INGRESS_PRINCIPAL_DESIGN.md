@@ -1,5 +1,19 @@
 # Channel Message Ingress → Verified Principal — Design (TAN-652)
 
+> **Resolution (TAN-762, 2026-07-16): converged on Events-only governed
+> ingress.** The signed Slack Events webhook (TAN-673, extended per-connection
+> by TAN-763/TAN-764) is the production message-ingress path: it resolves a
+> per-sender `VerifiedTenantContext` server-side, which is Option B below
+> realized at the webhook boundary — Slack's request signature plays the role
+> of the non-spoofable channel credential. The legacy poller/dispatcher path
+> was **not** hardened (neither Option A nor B was wired into it); instead it
+> is now confined to ungoverned local polling — a Slack config carrying a
+> tenant or department binding fails closed at listener startup unless it is
+> events-capable (`app/state/mod.rs`, warn code
+> `slack_governed_requires_events`). Option A (per-sender signed assertions)
+> remains the sketch to revisit only if a poller-style transport ever needs
+> governed identity, e.g. behind a webhook-hostile network.
+
 How an inbound Slack (or Discord/Telegram) **message** becomes a verified
 principal + tenant context on the engine, so the governed memory/tool filters
 actually engage for a channel-originated run. This is the "hard part" of the

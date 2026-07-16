@@ -51,6 +51,84 @@ async fn channel_runtime_config_filters_partial_channel_entries() {
 }
 
 #[tokio::test]
+async fn governed_slack_config_without_events_never_starts_the_poller() {
+    // TAN-762 (convergence): governed Slack ingress is Events-only. A config
+    // that binds a tenant or departments but has no signed-events capability
+    // must fail closed rather than run those bindings through the ungoverned
+    // legacy poller.
+    let state = crate::test_support::test_state().await;
+
+    let governed: crate::config::channels::ChannelsConfigFile = serde_json::from_value(json!({
+        "slack": {
+            "bot_token": "xoxb-governed",
+            "channel_id": "C_GOVERNED",
+            "allowed_users": ["U1"],
+            "tenant": { "org_id": "acme", "workspace_id": "hq" }
+        }
+    }))
+    .expect("governed slack config");
+    let runtime = build_channels_config(&state, &governed).await;
+    assert!(
+        runtime.is_none() || runtime.as_ref().is_some_and(|cfg| cfg.slack.is_none()),
+        "tenant-bound Slack without events capability must not start the poller"
+    );
+
+    let department_bound: crate::config::channels::ChannelsConfigFile =
+        serde_json::from_value(json!({
+            "slack": {
+                "bot_token": "xoxb-governed",
+                "channel_id": "C_GOVERNED",
+                "allowed_users": ["U1"],
+                "org_units": ["department/sales"]
+            }
+        }))
+        .expect("department-bound slack config");
+    let runtime = build_channels_config(&state, &department_bound).await;
+    assert!(
+        runtime.is_none() || runtime.as_ref().is_some_and(|cfg| cfg.slack.is_none()),
+        "department-bound Slack without events capability must not start the poller"
+    );
+
+    // Regression: an unbound local config keeps the poller.
+    let local: crate::config::channels::ChannelsConfigFile = serde_json::from_value(json!({
+        "slack": {
+            "bot_token": "xoxb-local",
+            "channel_id": "C_LOCAL",
+            "allowed_users": ["U1"]
+        }
+    }))
+    .expect("local slack config");
+    let runtime = build_channels_config(&state, &local)
+        .await
+        .expect("local slack poller should be runnable");
+    assert_eq!(
+        runtime.slack.as_ref().map(|cfg| cfg.channel_id.as_str()),
+        Some("C_LOCAL"),
+        "unbound local Slack polling must keep working"
+    );
+
+    // Regression: an events-capable governed config also never builds the
+    // poller (signed ingress serves it instead).
+    let governed_events: crate::config::channels::ChannelsConfigFile =
+        serde_json::from_value(json!({
+            "slack": {
+                "bot_token": "xoxb-governed",
+                "channel_id": "C_GOVERNED",
+                "allowed_users": ["U1"],
+                "signing_secret": "shh",
+                "events_enabled": true,
+                "tenant": { "org_id": "acme", "workspace_id": "hq" }
+            }
+        }))
+        .expect("governed events slack config");
+    let runtime = build_channels_config(&state, &governed_events).await;
+    assert!(
+        runtime.is_none() || runtime.as_ref().is_some_and(|cfg| cfg.slack.is_none()),
+        "events-capable Slack must be served by signed ingress, not the poller"
+    );
+}
+
+#[tokio::test]
 async fn server_context_installs_deny_capable_policy_and_real_ledger() {
     let state = crate::test_support::test_state().await;
     state

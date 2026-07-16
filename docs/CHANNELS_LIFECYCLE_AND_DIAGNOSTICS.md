@@ -102,11 +102,16 @@ Semantics:
 - **Per-connection authorization.** `allowed_users`, `security_profile`,
   `require_approval_step_up`, and the `tenant` binding apply per connection;
   a sender allowlisted in one channel has no standing in another.
-- **Poller exclusivity.** Any events-capable connection (`events_enabled` +
-  `signing_secret`) disables the legacy history poller for Slack entirely, so
-  the two ingress modes never double-process. The poller remains single-channel
-  (top-level `channel_id`) and carries no per-sender verified identity — see
-  TAN-762 before using it for anything governed.
+- **Governed Slack is Events-only (TAN-762, converged).** Any events-capable
+  connection (`events_enabled` + `signing_secret`) disables the legacy history
+  poller for Slack entirely, so the two ingress modes never double-process.
+  Beyond that, a Slack config that carries a governed binding — a `tenant`
+  binding (GOV-B5c) or `org_units` departments (TAN-764) — **fails closed**
+  when it is not events-capable: the poller refuses to start (warn code
+  `slack_governed_requires_events`) rather than running those bindings
+  through an ingress path with no per-sender verified identity. The poller
+  remains available only for unbound local/demo polling (single top-level
+  `channel_id`, one shared static identity).
 - **Approvals.** Every connection with `notify_approvals` enabled (the default)
   receives approval cards; card edits route by the recorded recipient channel.
   Until per-run routing lands (TAN-764), multi-connection deployments that must
