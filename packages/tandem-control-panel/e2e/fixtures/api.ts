@@ -96,6 +96,7 @@ function responseFor(path: string, method: string): unknown {
   }
   if (path === "/api/engine/browser/status") return { installed: false, ready: false };
   if (path === "/api/engine/channels/config" || path === "/api/engine/channels/status") return {};
+  if (path === "/api/engine/channels/slack/senders") return { senders: [], truncated: false };
   if (path === "/api/engine/mcp") return { servers: [] };
   if (path === "/api/engine/mcp/tools") return [];
   if (path === "/api/engine/mcp/catalog") return { servers: [] };

@@ -31,7 +31,12 @@ the registry-backed channel implementation.
   - Validate `{name}` against the registry.
   - Unknown names return `404`.
 - `POST /channels/{name}/verify`
-  - Currently supports Discord verify checks.
+  - Discord: token/gateway/intent checks.
+  - Slack (TAN-766): verifies every resolved connection against the live
+    installation — `auth.test` token check, team binding, and (when `app_id`
+    is configured) `bots.info` app binding — returning per-connection
+    `{channel_id, ok, token_ok, team_ok, app_ok, error}` rows plus an
+    aggregate `ok`.
   - Unknown channel names or unsupported channels return `404`.
 
 ## Built-in config keys (backward compatible)

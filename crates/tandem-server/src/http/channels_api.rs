@@ -587,8 +587,159 @@ pub(super) async fn channels_verify(
 
     match spec.name {
         "discord" => Ok(Json(discord_channel_verify(&state, &payload).await)),
+        "slack" => Ok(Json(slack_channel_verify(&state).await)),
         _ => Err(StatusCode::NOT_FOUND),
     }
+}
+
+/// Verify every configured Slack connection against the live installation
+/// (TAN-766): the bot token must authenticate (`auth.test`), belong to the
+/// connection's `team_id`, and — when `app_id` is configured — to the same
+/// Slack app (`bots.info`). Mirrors the runtime outbound binding check, but
+/// runs from config alone so the panel can verify before any event arrives.
+async fn slack_channel_verify(state: &AppState) -> Value {
+    let effective = state.config.get_effective_value().await;
+    let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
+    if connections.is_empty() {
+        return json!({
+            "ok": false,
+            "channel": "slack",
+            "connections": [],
+            "hints": ["Configure channels.slack (bot_token, channel_id) before verifying."],
+        });
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    let client = match client {
+        Ok(client) => client,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "channel": "slack",
+                "connections": [],
+                "hints": [format!("HTTP client construction failed: {error}")],
+            });
+        }
+    };
+
+    let mut rows = Vec::new();
+    let mut all_ok = true;
+    for connection in &connections {
+        let row = slack_connection_verify(&client, connection).await;
+        if row.get("ok") != Some(&Value::Bool(true)) {
+            all_ok = false;
+        }
+        rows.push(row);
+    }
+    json!({
+        "ok": all_ok,
+        "channel": "slack",
+        "connections": rows,
+    })
+}
+
+async fn slack_connection_verify(
+    client: &reqwest::Client,
+    connection: &crate::config::channels::ResolvedSlackConnection,
+) -> Value {
+    let base = json!({
+        "channel_id": connection.channel_id,
+        "team_id": connection.team_id,
+        "app_id": connection.app_id,
+        "events_capable": connection.events_capable(),
+    });
+    let mut row = base;
+    let Some(bot_token) = connection.bot_token.as_deref() else {
+        row["ok"] = json!(false);
+        row["error"] = json!("bot token not configured");
+        return row;
+    };
+    let api_base_url = connection
+        .api_base_url
+        .clone()
+        .unwrap_or_else(|| "https://slack.com/api".to_string());
+    let api_base_url = api_base_url.trim_end_matches('/');
+
+    let auth = match client
+        .get(format!("{api_base_url}/auth.test"))
+        .bearer_auth(bot_token)
+        .send()
+        .await
+    {
+        Ok(response) => match response.json::<Value>().await {
+            Ok(body) => body,
+            Err(error) => {
+                row["ok"] = json!(false);
+                row["error"] = json!(format!("Slack auth.test response was not JSON: {error}"));
+                return row;
+            }
+        },
+        Err(error) => {
+            row["ok"] = json!(false);
+            row["error"] = json!(format!("Slack auth.test request failed: {error}"));
+            return row;
+        }
+    };
+    if auth.get("ok") != Some(&Value::Bool(true)) {
+        row["ok"] = json!(false);
+        row["error"] = json!(format!(
+            "Slack auth.test rejected bot token: {}",
+            auth.get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ));
+        return row;
+    }
+    row["token_ok"] = json!(true);
+
+    let auth_team = auth.get("team_id").and_then(Value::as_str);
+    if let Some(expected_team) = connection.team_id.as_deref() {
+        let team_ok = auth_team == Some(expected_team);
+        row["team_ok"] = json!(team_ok);
+        if !team_ok {
+            row["ok"] = json!(false);
+            row["error"] = json!(format!(
+                "bot token belongs to team {}, expected {expected_team}",
+                auth_team.unwrap_or("unknown")
+            ));
+            return row;
+        }
+    }
+
+    if let Some(expected_app) = connection.app_id.as_deref() {
+        let Some(bot_id) = auth.get("bot_id").and_then(Value::as_str) else {
+            row["ok"] = json!(false);
+            row["error"] = json!("Slack auth.test token is not a bot identity");
+            return row;
+        };
+        let bots_info = match client
+            .get(format!("{api_base_url}/bots.info"))
+            .bearer_auth(bot_token)
+            .query(&[("bot", bot_id)])
+            .send()
+            .await
+        {
+            Ok(response) => response.json::<Value>().await.unwrap_or_default(),
+            Err(error) => {
+                row["ok"] = json!(false);
+                row["error"] = json!(format!("Slack bots.info request failed: {error}"));
+                return row;
+            }
+        };
+        let app_ok = bots_info.get("ok") == Some(&Value::Bool(true))
+            && bots_info.pointer("/bot/app_id").and_then(Value::as_str) == Some(expected_app);
+        row["app_ok"] = json!(app_ok);
+        if !app_ok {
+            row["ok"] = json!(false);
+            row["error"] = json!("bot token belongs to a different Slack app");
+            return row;
+        }
+    }
+
+    row["ok"] = json!(true);
+    row
 }
 
 const DISCORD_FLAG_GATEWAY_PRESENCE: u64 = 1 << 12;

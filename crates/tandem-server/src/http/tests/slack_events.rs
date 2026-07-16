@@ -1347,6 +1347,68 @@ async fn slack_senders_endpoint_surfaces_mapped_and_unmapped_identities() {
 }
 
 #[tokio::test]
+async fn slack_verify_reports_per_connection_binding_state() {
+    let state = test_state().await;
+    let (api_base_url, slack_mock, mock_task) = start_slack_api_mock().await;
+    configure_slack_events(&state, &api_base_url).await;
+    let app = app_router(state.clone());
+
+    // Healthy binding: token authenticates and belongs to the configured
+    // team + app.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/channels/slack/verify")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .expect("verify request");
+    let response = app.clone().oneshot(request).await.expect("verify response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("verify body");
+    let payload: Value = serde_json::from_slice(&body).expect("verify json");
+    assert_eq!(payload.get("ok"), Some(&json!(true)));
+    let rows = payload
+        .get("connections")
+        .and_then(Value::as_array)
+        .expect("connection rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("channel_id"), Some(&json!(SLACK_CHANNEL)));
+    assert_eq!(rows[0].get("ok"), Some(&json!(true)));
+    assert_eq!(rows[0].get("token_ok"), Some(&json!(true)));
+    assert_eq!(rows[0].get("team_ok"), Some(&json!(true)));
+    assert_eq!(rows[0].get("app_ok"), Some(&json!(true)));
+
+    // Token drifting to another workspace flips the connection (and the
+    // aggregate) to not-ok with an explanatory error.
+    *slack_mock.auth_team_id.lock().await = "T_OTHER".to_string();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/channels/slack/verify")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .expect("verify request");
+    let response = app.oneshot(request).await.expect("drifted verify response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("drifted verify body");
+    let payload: Value = serde_json::from_slice(&body).expect("drifted verify json");
+    assert_eq!(payload.get("ok"), Some(&json!(false)));
+    let rows = payload
+        .get("connections")
+        .and_then(Value::as_array)
+        .expect("drifted rows");
+    assert_eq!(rows[0].get("team_ok"), Some(&json!(false)));
+    assert!(rows[0]
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .contains("T_OTHER"));
+    mock_task.abort();
+}
+
+#[tokio::test]
 async fn department_bound_connection_fails_closed_on_disjoint_membership() {
     let state = test_state().await;
     let (api_base_url, slack_mock, mock_task) = start_slack_api_mock().await;
