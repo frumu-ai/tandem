@@ -560,6 +560,231 @@ async fn slack_senders_endpoint_surfaces_mapped_and_unmapped_identities() {
 }
 
 #[tokio::test]
+async fn denials_are_audited_under_a_connection_bound_tenant() {
+    let state = test_state().await;
+    let (api_base_url, _slack_mock, mock_task) = start_slack_api_mock().await;
+    // The tenant lives ONLY on the connection entry — no top-level binding.
+    // Fail-closed denials must still land in the protected audit ledger so
+    // the unmapped sender stays discoverable via /channels/slack/senders.
+    state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "signing_secret": SIGNING_SECRET,
+                    "events_enabled": true,
+                    "bot_token": "xoxb-governed-test",
+                    "team_id": SLACK_TEAM,
+                    "app_id": SLACK_APP,
+                    "api_base_url": api_base_url,
+                    "model_provider_id": "governed-slack-test",
+                    "model_id": "governed-slack-test-1",
+                    "security_profile": "trusted_team",
+                    "connections": [
+                        {
+                            "channel_id": SLACK_CHANNEL,
+                            "allowed_users": [SLACK_USER],
+                            "tenant": {
+                                "org_id": ORG_ID,
+                                "workspace_id": WORKSPACE_ID
+                            }
+                        }
+                    ]
+                }
+            }
+        }))
+        .await
+        .expect("configure connection-tenant Slack Events");
+    let provider = install_governed_slack_provider(&state, 0).await;
+    let app = app_router(state.clone());
+    let request_timestamp = chrono::Utc::now().timestamp();
+
+    // Allowlisted but holding no org-unit membership: denied in governed
+    // identity resolution — the exact denial an operator must be able to see.
+    let denied = signed_slack_event_request(
+        "Ev-conn-tenant-denied",
+        SLACK_USER,
+        "1800000000.710001",
+        None,
+        request_timestamp,
+    );
+    let response = app.clone().oneshot(denied).await.expect("denied response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
+    let audit_tenant = TenantContext::explicit(ORG_ID, WORKSPACE_ID, None);
+    let audit = crate::audit::load_protected_audit_events_for_tenant(&state, &audit_tenant).await;
+    assert!(
+        audit
+            .iter()
+            .any(|event| event.event_type == "channel.slack.ingress.denied"),
+        "the denial must be audited under the connection's bound tenant"
+    );
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/channels/slack/senders")
+        .body(Body::empty())
+        .expect("senders request");
+    let response = app.oneshot(request).await.expect("senders response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("senders body");
+    let payload: Value = serde_json::from_slice(&body).expect("senders json");
+    let row = payload
+        .get("senders")
+        .and_then(Value::as_array)
+        .expect("senders array")
+        .iter()
+        .find(|row| row.get("user_id").and_then(Value::as_str) == Some(SLACK_USER))
+        .cloned()
+        .expect("denied sender must be discoverable with a connection-only tenant");
+    assert_eq!(row.get("mapped"), Some(&json!(false)));
+    assert!(
+        row.get("denied_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            >= 1
+    );
+    mock_task.abort();
+}
+
+#[tokio::test]
+async fn sender_mapping_is_computed_against_each_channels_department_binding() {
+    const SALES_CHANNEL: &str = "C_SALES_MAP";
+    const ENG_CHANNEL: &str = "C_ENG_MAP";
+
+    let state = test_state().await;
+    let (api_base_url, slack_mock, mock_task) = start_slack_api_mock().await;
+    state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "signing_secret": SIGNING_SECRET,
+                    "events_enabled": true,
+                    "bot_token": "xoxb-governed-test",
+                    "team_id": SLACK_TEAM,
+                    "app_id": SLACK_APP,
+                    "api_base_url": api_base_url,
+                    "model_provider_id": "governed-slack-test",
+                    "model_id": "governed-slack-test-1",
+                    "security_profile": "trusted_team",
+                    "tenant": {
+                        "org_id": ORG_ID,
+                        "workspace_id": WORKSPACE_ID
+                    },
+                    "connections": [
+                        {
+                            "channel_id": ENG_CHANNEL,
+                            "allowed_users": [SLACK_USER],
+                            "org_units": ["engineering"]
+                        },
+                        {
+                            "channel_id": SALES_CHANNEL,
+                            "allowed_users": [SLACK_USER],
+                            "org_units": ["sales"]
+                        }
+                    ]
+                }
+            }
+        }))
+        .await
+        .expect("configure department-bound connections");
+    // The sender holds an engineering membership only.
+    seed_governed_slack_identity(&state).await;
+    let provider = install_governed_slack_provider(&state, 0).await;
+    let app = app_router(state.clone());
+    let request_timestamp = chrono::Utc::now().timestamp();
+
+    // The engineering-bound channel accepts the engineering member…
+    let accepted = signed_slack_event_request_for_installation(
+        "Ev-perch-eng",
+        SLACK_USER,
+        ENG_CHANNEL,
+        Some(SLACK_TEAM),
+        Some(SLACK_APP),
+        "1800000000.810001",
+        None,
+        request_timestamp,
+    );
+    let response = app.clone().oneshot(accepted).await.expect("eng response");
+    assert_eq!(response.status(), StatusCode::OK);
+    wait_for_posts(&slack_mock, 1).await;
+    wait_for_slack_tasks(&state).await;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+    // …and the sales-bound channel fails the same sender closed.
+    let denied = signed_slack_event_request_for_installation(
+        "Ev-perch-sales",
+        SLACK_USER,
+        SALES_CHANNEL,
+        Some(SLACK_TEAM),
+        Some(SLACK_APP),
+        "1800000000.820001",
+        None,
+        request_timestamp,
+    );
+    let response = app.clone().oneshot(denied).await.expect("sales response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // Sender discovery must not let the engineering membership mask the
+    // sales-channel gap: mapped is per observed channel, not tenant-wide.
+    let request = Request::builder()
+        .method("GET")
+        .uri("/channels/slack/senders")
+        .body(Body::empty())
+        .expect("senders request");
+    let response = app.oneshot(request).await.expect("senders response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("senders body");
+    let payload: Value = serde_json::from_slice(&body).expect("senders json");
+    let row = payload
+        .get("senders")
+        .and_then(Value::as_array)
+        .expect("senders array")
+        .iter()
+        .find(|row| row.get("user_id").and_then(Value::as_str) == Some(SLACK_USER))
+        .cloned()
+        .expect("sender present");
+    assert_eq!(
+        row.get("mapped"),
+        Some(&json!(false)),
+        "an engineering membership must not mask the sales-channel denial"
+    );
+    assert!(
+        row.get("last_denial_reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("do not intersect"),
+        "the intersection denial reason must stay visible"
+    );
+    let access = row
+        .get("channel_access")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("channel_access rows");
+    let by_channel = |channel: &str| {
+        access
+            .iter()
+            .find(|entry| entry.get("channel_id").and_then(Value::as_str) == Some(channel))
+            .cloned()
+            .unwrap_or_else(|| panic!("channel_access row for {channel}"))
+    };
+    let sales = by_channel(SALES_CHANNEL);
+    assert_eq!(sales.get("mapped"), Some(&json!(false)));
+    assert_eq!(sales.get("bound_org_units"), Some(&json!(["sales"])));
+    assert_eq!(sales.get("configured"), Some(&json!(true)));
+    let eng = by_channel(ENG_CHANNEL);
+    assert_eq!(eng.get("mapped"), Some(&json!(true)));
+    assert_eq!(eng.get("bound_org_units"), Some(&json!(["engineering"])));
+    mock_task.abort();
+}
+
+#[tokio::test]
 async fn slack_verify_reports_per_connection_binding_state() {
     let state = test_state().await;
     let (api_base_url, slack_mock, mock_task) = start_slack_api_mock().await;

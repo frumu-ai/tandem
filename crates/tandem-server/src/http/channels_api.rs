@@ -212,13 +212,32 @@ pub struct SlackSenderSummary {
     pub last_seen_at_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_denial_reason: Option<String>,
-    /// Whether the principal currently holds at least one active org-unit
-    /// membership in the connection's bound tenant.
+    /// Whether the principal holds at least one active org-unit membership
+    /// AND satisfies the department binding of every configured channel they
+    /// were observed in — a sender denied by a department-bound channel they
+    /// don't belong to is NOT mapped, even if they hold memberships elsewhere.
     pub mapped: bool,
     /// Active org-unit principal ids for this sender (empty when unmapped).
     pub org_units: Vec<String>,
+    /// Per-observed-channel mapping state, so admins can see which channel's
+    /// department binding a sender still needs.
+    pub channel_access: Vec<SlackSenderChannelAccess>,
     pub tenant_org_id: String,
     pub tenant_workspace_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SlackSenderChannelAccess {
+    pub channel_id: String,
+    /// Departments the connection binds (empty = unbound channel).
+    pub bound_org_units: Vec<String>,
+    /// Whether this sender passes this channel's department gate: for a
+    /// department-bound channel, an active membership in a bound unit; for an
+    /// unbound channel, any active membership.
+    pub mapped: bool,
+    /// False when no configured connection currently claims this channel
+    /// (e.g. denials recorded before the channel was removed from config).
+    pub configured: bool,
 }
 
 #[derive(Debug, Default)]
@@ -314,16 +333,71 @@ pub(crate) async fn slack_senders(State(state): State<AppState>) -> Response {
             let principal = format!("channel:slack:{team_id}:{app_id}:{user_id}");
             let principal_ref = tandem_types::PrincipalRef::human_user(principal.clone());
             let resolved_units = graph.resolved_unit_principals(&principal_ref, now_ms);
-            let mut org_units = graph
+            let active_units = graph
                 .units
                 .iter()
                 .filter(|unit| {
                     unit.state.is_active() && resolved_units.contains(&unit.principal_ref())
                 })
-                .map(|unit| unit.principal_ref().id)
+                .map(|unit| (unit.principal_ref().id, unit.unit_id.clone()))
+                .collect::<Vec<_>>();
+            let mut org_units = active_units
+                .iter()
+                .map(|(principal_id, _)| principal_id.clone())
                 .collect::<Vec<_>>();
             org_units.sort();
             org_units.dedup();
+            let has_membership = !org_units.is_empty();
+
+            // Mapping is per channel: a department-bound channel only counts
+            // as mapped when the sender belongs to one of ITS bound units
+            // (the same gate the run-time intersection enforces), so a
+            // sales-bound denial is not masked by an engineering membership.
+            let channel_access = aggregate
+                .channels
+                .iter()
+                .map(|channel_id| {
+                    let connection = connections.iter().find(|connection| {
+                        connection.channel_id == *channel_id
+                            && connection.team_id.as_deref() == Some(team_id.as_str())
+                            && connection.app_id.as_deref() == Some(app_id.as_str())
+                            && connection.bound_tenant()
+                                == Some((org_id.clone(), workspace_id.clone()))
+                    });
+                    let Some(connection) = connection else {
+                        return SlackSenderChannelAccess {
+                            channel_id: channel_id.clone(),
+                            bound_org_units: Vec::new(),
+                            mapped: false,
+                            configured: false,
+                        };
+                    };
+                    let bound_org_units = connection
+                        .org_units
+                        .iter()
+                        .map(|entry| entry.trim().to_string())
+                        .filter(|entry| !entry.is_empty())
+                        .collect::<Vec<_>>();
+                    let mapped = if connection.binds_departments() {
+                        active_units.iter().any(|(principal_id, unit_id)| {
+                            connection.binds_org_unit(principal_id, unit_id)
+                        })
+                    } else {
+                        has_membership
+                    };
+                    SlackSenderChannelAccess {
+                        channel_id: channel_id.clone(),
+                        bound_org_units,
+                        mapped,
+                        configured: true,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mapped = has_membership
+                && channel_access
+                    .iter()
+                    .filter(|access| access.configured)
+                    .all(|access| access.mapped);
             senders.push(SlackSenderSummary {
                 team_id,
                 app_id,
@@ -334,8 +408,9 @@ pub(crate) async fn slack_senders(State(state): State<AppState>) -> Response {
                 denied_count: aggregate.denied_count,
                 last_seen_at_ms: aggregate.last_seen_at_ms,
                 last_denial_reason: aggregate.last_denial_reason,
-                mapped: !org_units.is_empty(),
+                mapped,
                 org_units,
+                channel_access,
                 tenant_org_id: org_id.clone(),
                 tenant_workspace_id: workspace_id.clone(),
             });

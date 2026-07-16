@@ -6,6 +6,7 @@ import {
   normalizeSlackSenders,
   parseOrgUnitsInput,
   senderTone,
+  unmappedBoundChannels,
   verifyResultsByChannel,
 } from "../src/pages/channelConnectionsModel.mjs";
 
@@ -78,6 +79,54 @@ test("normalizeSlackSenders keeps principals and counts", () => {
   assert.equal(rows[0].acceptedCount, 2);
   assert.equal(rows[0].deniedCount, 1);
   assert.match(rows[0].lastDenialReason, /organization-unit membership/);
+  assert.deepEqual(rows[0].channelAccess, []);
+});
+
+test("normalizeSlackSenders keeps per-channel access rows", () => {
+  const rows = normalizeSlackSenders({
+    senders: [
+      {
+        user_id: "U1",
+        principal: "channel:slack:T1:A1:U1",
+        mapped: false,
+        org_units: ["department/engineering"],
+        channel_access: [
+          {
+            channel_id: "C_SALES",
+            bound_org_units: ["sales"],
+            mapped: false,
+            configured: true,
+          },
+          { channel_id: "C_ENG", bound_org_units: ["engineering"], mapped: true },
+          { channel_id: "" },
+        ],
+      },
+    ],
+  });
+  assert.equal(rows[0].channelAccess.length, 2);
+  assert.deepEqual(rows[0].channelAccess[0], {
+    channelId: "C_SALES",
+    boundOrgUnits: ["sales"],
+    mapped: false,
+    configured: true,
+  });
+  assert.equal(rows[0].channelAccess[1].configured, true);
+});
+
+test("unmappedBoundChannels surfaces only actionable department gaps", () => {
+  const gaps = unmappedBoundChannels({
+    channelAccess: [
+      { channelId: "C_SALES", boundOrgUnits: ["sales"], mapped: false, configured: true },
+      { channelId: "C_ENG", boundOrgUnits: ["engineering"], mapped: true, configured: true },
+      { channelId: "C_OPEN", boundOrgUnits: [], mapped: false, configured: true },
+      { channelId: "C_GONE", boundOrgUnits: ["ops"], mapped: false, configured: false },
+    ],
+  });
+  assert.deepEqual(
+    gaps.map((entry) => entry.channelId),
+    ["C_SALES"],
+  );
+  assert.deepEqual(unmappedBoundChannels({}), []);
 });
 
 test("senderTone flags unmapped denials as errors", () => {

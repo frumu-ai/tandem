@@ -135,9 +135,17 @@ Semantics:
   (`channel.slack.ingress.accepted`/`.denied`): per sender it returns the
   exact principal string (`channel:slack:{team}:{app}:{user}`), the channels
   they were seen in, accepted/denied counts, the latest denial reason, and
-  whether the principal currently holds an active org-unit membership
-  (`mapped` + `org_units`). Admins map a sender by passing `principal` as
-  `member_id` to the enterprise membership API — no hand-composed ids.
+  mapping state. `mapped` is computed **per observed channel**
+  (`channel_access[]` rows carry `channel_id`, `bound_org_units`, `mapped`,
+  `configured`): a department-bound channel counts as mapped only when the
+  sender belongs to one of *its* bound units — the same gate the run-time
+  intersection enforces — so an engineering membership never masks a
+  sales-channel denial. Denial audits are attributed to the matched
+  connection's bound tenant (falling back to the top-level binding, then to
+  the single unambiguous tenant across connections), so senders stay
+  discoverable when `tenant` lives only on `connections[]` entries. Admins
+  map a sender by passing `principal` as `member_id` to the enterprise
+  membership API — no hand-composed ids.
 - **Department-binding enrollment (TAN-765).** `POST /channels/enroll`
   (action `issue`) accepts `org_units` (bare unit id or `taxonomy/unit_id`);
   unknown units fail at issue time. Redeeming the pairing code establishes

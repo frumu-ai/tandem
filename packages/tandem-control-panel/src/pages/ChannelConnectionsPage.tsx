@@ -10,6 +10,7 @@ import {
   normalizeSlackSenders,
   parseOrgUnitsInput,
   senderTone,
+  unmappedBoundChannels,
   verifyResultsByChannel,
 } from "./channelConnectionsModel.mjs";
 
@@ -206,6 +207,12 @@ export function ChannelConnectionsPage({ client, api, toast, navigate }: AppPage
                   Channels: {sender.channels.length ? sender.channels.join(", ") : "—"} ·
                   Departments: {sender.orgUnits.length ? sender.orgUnits.join(", ") : "none"}
                 </div>
+                {unmappedBoundChannels(sender).map((entry) => (
+                  <div key={entry.channelId} className="mt-1 text-xs text-amber-400">
+                    Needs a membership in {entry.boundOrgUnits.join(" or ")} for channel{" "}
+                    {entry.channelId}
+                  </div>
+                ))}
                 {!sender.mapped && sender.lastDenialReason ? (
                   <div className="mt-1 text-xs text-amber-400">{sender.lastDenialReason}</div>
                 ) : null}

@@ -61,6 +61,18 @@ export function normalizeSlackSenders(payload) {
       orgUnits: Array.isArray(row.org_units)
         ? row.org_units.map((unit) => String(unit)).filter(Boolean)
         : [],
+      channelAccess: Array.isArray(row.channel_access)
+        ? row.channel_access
+            .filter((entry) => entry && typeof entry === "object" && entry.channel_id)
+            .map((entry) => ({
+              channelId: String(entry.channel_id),
+              boundOrgUnits: Array.isArray(entry.bound_org_units)
+                ? entry.bound_org_units.map((unit) => String(unit)).filter(Boolean)
+                : [],
+              mapped: Boolean(entry.mapped),
+              configured: entry.configured !== false,
+            }))
+        : [],
       tenantOrgId: row.tenant_org_id ? String(row.tenant_org_id) : "",
       tenantWorkspaceId: row.tenant_workspace_id ? String(row.tenant_workspace_id) : "",
     }))
@@ -72,6 +84,18 @@ export function senderTone(sender) {
   if (sender.mapped) return "ok";
   if (sender.deniedCount > 0) return "err";
   return "warn";
+}
+
+/**
+ * Which department-bound channels this sender is still locked out of —
+ * the actionable gap behind an unmapped badge (TAN-765). Each row names the
+ * channel and the units an admin could map the sender into.
+ */
+export function unmappedBoundChannels(sender) {
+  const rows = Array.isArray(sender && sender.channelAccess) ? sender.channelAccess : [];
+  return rows.filter(
+    (entry) => entry.configured && !entry.mapped && entry.boundOrgUnits.length > 0,
+  );
 }
 
 /** Index `POST /channels/slack/verify` rows by channel id. */
