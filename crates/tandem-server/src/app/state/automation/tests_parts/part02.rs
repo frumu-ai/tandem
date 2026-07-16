@@ -2,6 +2,64 @@
 // Licensed under the Business Source License 1.1
 
 #[test]
+fn automation_prompt_includes_sanitized_webhook_trigger_context() {
+    let mut automation = automation_with_output_targets(Vec::new(), Vec::new());
+    automation.metadata = Some(json!({
+        "automation_webhook": {
+            "provider": "generic",
+            "provider_event_kind": "customer.incident_reported",
+            "provider_event_id": "incident-demo-1",
+            "trust": "untrusted_external_webhook",
+            "preview": {
+                "event": "customer.incident_reported",
+                "event_id": "incident-demo-1",
+                "customer_name": "ACME",
+                "service": "Payments API",
+                "summary": "Elevated 5xx errors affecting checkout"
+            }
+        }
+    }));
+    let node = bare_node();
+    let agent = AutomationAgentProfile {
+        agent_id: "agent-demo".to_string(),
+        template_id: None,
+        display_name: "Demo Agent".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: AutomationAgentToolPolicy {
+            allowlist: Vec::new(),
+            denylist: Vec::new(),
+        },
+        mcp_policy: AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+            allowed_connections: Vec::new(),
+        },
+        approval_policy: None,
+    };
+
+    let prompt = render_automation_v2_prompt(
+        &automation,
+        "/tmp/workspace",
+        "run-demo",
+        &node,
+        1,
+        &agent,
+        &[],
+        &[],
+        None,
+        None,
+        None,
+    );
+
+    assert!(prompt.contains("Run Trigger Context:"));
+    assert!(prompt.contains("\"customer_name\": \"ACME\""));
+    assert!(prompt.contains("\"service\": \"Payments API\""));
+    assert!(prompt.contains("untrusted external data"));
+}
+
+#[test]
 fn intermediate_nodes_cannot_treat_live_output_targets_as_input_files() {
     let mut gather = bare_node();
     gather.node_id = "gather_fintech_candidates".to_string();

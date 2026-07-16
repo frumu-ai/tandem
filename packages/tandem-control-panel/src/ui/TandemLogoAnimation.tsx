@@ -93,10 +93,10 @@ export function TandemLogoAnimation({
   const id = useId().replace(/:/g, "");
   const compact = mode === "compact";
   const baseFill = compact
-    ? "color-mix(in srgb, white 86%, var(--color-surface-elevated) 14%)"
+    ? "var(--tcp-logo-compact-base, color-mix(in srgb, white 86%, var(--color-surface-elevated) 14%))"
     : "color-mix(in srgb, white 78%, var(--color-surface-elevated) 22%)";
   const glowFilter = compact
-    ? "drop-shadow(0 0 10px rgba(245, 158, 11, 0.22))"
+    ? "var(--tcp-logo-compact-glow, drop-shadow(0 0 10px rgba(245, 158, 11, 0.22)))"
     : "drop-shadow(0 0 18px rgba(245, 158, 11, 0.34))";
   const diagonalA = ["topLeft", "bottomRight"];
   const diagonalB = ["topRight", "bottomLeft"];
@@ -143,9 +143,30 @@ export function TandemLogoAnimation({
       >
         <defs>
           <radialGradient id={`${id}-core`} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="rgba(251,191,36,0.98)" />
-            <stop offset="55%" stopColor="rgba(245,158,11,0.62)" />
-            <stop offset="100%" stopColor="rgba(245,158,11,0)" />
+            <stop
+              offset="0%"
+              stopColor={
+                compact
+                  ? "var(--tcp-logo-compact-core, rgba(251,191,36,0.98))"
+                  : "rgba(251,191,36,0.98)"
+              }
+            />
+            <stop
+              offset="55%"
+              stopColor={
+                compact
+                  ? "var(--tcp-logo-compact-core-mid, rgba(245,158,11,0.62))"
+                  : "rgba(245,158,11,0.62)"
+              }
+            />
+            <stop
+              offset="100%"
+              stopColor={
+                compact
+                  ? "var(--tcp-logo-compact-core-clear, rgba(245,158,11,0))"
+                  : "rgba(245,158,11,0)"
+              }
+            />
           </radialGradient>
         </defs>
 
@@ -165,6 +186,7 @@ export function TandemLogoAnimation({
           {QUADRANTS.map((quadrant) => (
             <path
               key={`base-${quadrant.key}`}
+              className="tcp-logo-base"
               d={quadrant.d}
               style={{
                 fill: baseFill,
@@ -196,7 +218,15 @@ export function TandemLogoAnimation({
             }
           >
             {QUADRANTS.filter((quadrant) => diagonalA.includes(quadrant.key)).map((quadrant) => (
-              <path key={`spin-a-${quadrant.key}`} d={quadrant.d} fill="rgba(245, 158, 11, 0.9)" />
+              <path
+                key={`spin-a-${quadrant.key}`}
+                d={quadrant.d}
+                fill={
+                  compact
+                    ? "var(--tcp-logo-compact-accent-a, rgba(245, 158, 11, 0.9))"
+                    : "rgba(245, 158, 11, 0.9)"
+                }
+              />
             ))}
           </motion.g>
 
@@ -205,7 +235,7 @@ export function TandemLogoAnimation({
               transformBox: "fill-box",
               transformOrigin: "50% 50%",
               filter: compact
-                ? "drop-shadow(0 0 9px rgba(255, 230, 170, 0.18))"
+                ? "var(--tcp-logo-compact-highlight-glow, drop-shadow(0 0 9px rgba(255, 230, 170, 0.18)))"
                 : "drop-shadow(0 0 14px rgba(255, 230, 170, 0.22))",
             }}
             animate={
@@ -234,7 +264,11 @@ export function TandemLogoAnimation({
               <path
                 key={`spin-b-${quadrant.key}`}
                 d={quadrant.d}
-                fill="rgba(255, 243, 199, 0.82)"
+                fill={
+                  compact
+                    ? "var(--tcp-logo-compact-accent-b, rgba(255, 243, 199, 0.82))"
+                    : "rgba(255, 243, 199, 0.82)"
+                }
               />
             ))}
           </motion.g>
@@ -266,9 +300,11 @@ export function TandemLogoAnimation({
             height={compact ? "60" : "80"}
             rx={compact ? "6" : "8"}
             style={{
-              fill: compact ? "rgba(255, 243, 199, 0.76)" : "rgba(255, 243, 199, 0.9)",
+              fill: compact
+                ? "var(--tcp-logo-compact-center, rgba(255, 243, 199, 0.76))"
+                : "rgba(255, 243, 199, 0.9)",
               filter: compact
-                ? "drop-shadow(0 0 10px rgba(245, 158, 11, 0.22))"
+                ? "var(--tcp-logo-compact-center-glow, drop-shadow(0 0 10px rgba(245, 158, 11, 0.22)))"
                 : "drop-shadow(0 0 16px rgba(245, 158, 11, 0.42))",
               transformBox: "fill-box",
               transformOrigin: "50% 50%",

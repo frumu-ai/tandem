@@ -55,6 +55,10 @@ docs/internal/
 # Test coverage
 coverage/
 
+# Playwright artifacts
+playwright-report/
+test-results/
+
 # Python bytecode
 __pycache__/
 *.pyc

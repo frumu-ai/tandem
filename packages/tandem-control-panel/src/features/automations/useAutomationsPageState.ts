@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 export type ActiveTab = "create" | "calendar" | "list" | "running";
 export type CreateMode = "simple" | "advanced" | "composer";
@@ -28,6 +28,20 @@ function composerEnabledFromStorage() {
   }
 }
 
+function automationRunIdFromHash() {
+  if (typeof window === "undefined") return "";
+  const [, query = ""] = String(window.location.hash || "").split("?");
+  return String(new URLSearchParams(query).get("run") || "").trim();
+}
+
+function replaceAutomationRunHash(runId: string) {
+  if (typeof window === "undefined") return;
+  const route = String(window.location.hash || "").replace(/^#\//, "").split("?")[0];
+  if (route !== "automations") return;
+  const hash = runId ? `#/automations?run=${encodeURIComponent(runId)}` : "#/automations";
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${hash}`);
+}
+
 function initialCreateMode(isComposerEnabled: boolean) {
   if (!isComposerEnabled) return "simple" as const;
   if (typeof window === "undefined") return "simple" as const;
@@ -42,14 +56,29 @@ function initialCreateMode(isComposerEnabled: boolean) {
 
 export function useAutomationsPageState() {
   const [tab, setTab] = useState<ActiveTab>(() =>
-    findComposerEnabledFromUrl() ? "create" : "calendar"
+    automationRunIdFromHash() ? "running" : findComposerEnabledFromUrl() ? "create" : "calendar"
   );
   const [createMode, setCreateMode] = useState<CreateMode>(() =>
     initialCreateMode(composerEnabledFromStorage() || findComposerEnabledFromUrl())
   );
-  const [selectedRunId, setSelectedRunId] = useState<string>("");
+  const [selectedRunId, setSelectedRunIdState] = useState<string>(automationRunIdFromHash);
+  const setSelectedRunId = useCallback((runId: string) => {
+    const normalized = String(runId || "").trim();
+    setSelectedRunIdState(normalized);
+    replaceAutomationRunHash(normalized);
+  }, []);
   const [advancedEditAutomation, setAdvancedEditAutomation] = useState<any | null>(null);
   const isComposerEnabled = composerEnabledFromStorage() || findComposerEnabledFromUrl();
+
+  useEffect(() => {
+    const syncRunFromHash = () => {
+      const runId = automationRunIdFromHash();
+      setSelectedRunIdState(runId);
+      if (runId) setTab("running");
+    };
+    window.addEventListener("hashchange", syncRunFromHash);
+    return () => window.removeEventListener("hashchange", syncRunFromHash);
+  }, []);
 
   useEffect(() => {
     try {

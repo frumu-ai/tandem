@@ -2,6 +2,22 @@
 // Licensed under the Business Source License 1.1
 
 #[test]
+fn no_work_handoff_is_not_treated_as_rich_upstream_research_evidence() {
+    let output = json!({
+        "content": {
+            "text": "{\"has_work\":false,\"summary\":\"Unsupported webhook source\",\"items\":[],\"audit_events\":[]}\n{\"status\":\"completed\"}"
+        },
+        "artifact_validation": {
+            "read_paths": ["README.md", "package.json"],
+            "citation_count": 0,
+            "citations": []
+        }
+    });
+
+    assert!(automation_output_reports_no_actionable_work(&output));
+}
+
+#[test]
 fn mcp_contract_summary_extracts_required_args_and_example() {
     let schema = ToolSchema::new(
         "mcp.notion.notion_search",

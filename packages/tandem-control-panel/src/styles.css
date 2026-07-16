@@ -26,6 +26,24 @@
     --color-text-subtle: #8795aa;
     --color-glass: rgba(18, 18, 26, 0.8);
     --color-glass-border: rgba(255, 255, 255, 0.1);
+    --tcp-overlay-backdrop: rgb(0 0 0 / 56%);
+    --tcp-overlay-backdrop: color-mix(
+      in srgb,
+      var(--color-background) 18%,
+      rgb(0 0 0 / 54%)
+    );
+    --tcp-overlay-backdrop-soft: rgb(0 0 0 / 24%);
+    --tcp-overlay-backdrop-soft: color-mix(
+      in srgb,
+      var(--color-background) 10%,
+      rgb(0 0 0 / 24%)
+    );
+    --tcp-overlay-backdrop-strong: rgb(0 0 0 / 72%);
+    --tcp-overlay-backdrop-strong: color-mix(
+      in srgb,
+      var(--color-background) 12%,
+      rgb(0 0 0 / 72%)
+    );
     --font-sans: "Inter", system-ui, -apple-system, sans-serif;
     --font-display: "Rubik", "Inter", system-ui, -apple-system, sans-serif;
     --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -443,27 +461,27 @@
   }
 
   .tcp-incident-monitor-pill.watching {
-    color: color-mix(in srgb, var(--color-primary) 76%, white 24%);
+    color: color-mix(in srgb, var(--color-primary) 76%, var(--color-text) 24%);
     border-color: var(--tcp-hover-border-primary);
   }
 
   .tcp-incident-monitor-pill.incidents {
-    color: color-mix(in srgb, var(--color-error) 76%, white 24%);
+    color: color-mix(in srgb, var(--color-error) 76%, var(--color-text) 24%);
     border-color: color-mix(in srgb, var(--color-error) 42%, transparent);
     background: color-mix(in srgb, var(--color-error) 24%, var(--color-surface-elevated) 76%);
   }
 
   .tcp-incident-monitor-pill.blocked {
-    color: color-mix(in srgb, var(--color-warning) 76%, white 24%);
+    color: color-mix(in srgb, var(--color-warning) 76%, var(--color-text) 24%);
     border-color: color-mix(in srgb, var(--color-warning) 42%, transparent);
   }
 
   .tcp-incident-monitor-pill.paused {
-    color: color-mix(in srgb, var(--color-text-muted) 86%, white 14%);
+    color: color-mix(in srgb, var(--color-text-muted) 86%, var(--color-text) 14%);
   }
 
   .tcp-incident-monitor-pill.ready {
-    color: color-mix(in srgb, var(--color-success) 76%, white 24%);
+    color: color-mix(in srgb, var(--color-success) 76%, var(--color-text) 24%);
     border-color: color-mix(in srgb, var(--color-success) 34%, transparent);
   }
 
@@ -477,7 +495,7 @@
     font-size: var(--font-size-caption);
     font-weight: 800;
     letter-spacing: 0.02em;
-    color: color-mix(in srgb, var(--color-warning) 70%, white 30%);
+    color: color-mix(in srgb, var(--color-warning) 70%, var(--color-text) 30%);
     border: 1px solid color-mix(in srgb, var(--color-warning) 48%, transparent);
     background: color-mix(in srgb, var(--color-warning) 22%, var(--color-surface-elevated) 78%);
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warning) 8%, transparent);
@@ -580,15 +598,15 @@
   }
 
   .tcp-status-pulse.ok {
-    color: color-mix(in srgb, var(--color-success) 76%, white 24%);
+    color: color-mix(in srgb, var(--color-success) 76%, var(--color-text) 24%);
   }
 
   .tcp-status-pulse.warn {
-    color: color-mix(in srgb, var(--color-warning) 76%, white 24%);
+    color: color-mix(in srgb, var(--color-warning) 76%, var(--color-text) 24%);
   }
 
   .tcp-status-pulse.live {
-    color: color-mix(in srgb, var(--color-primary) 78%, white 22%);
+    color: color-mix(in srgb, var(--color-primary) 78%, var(--color-text) 22%);
   }
 
   .tcp-status-pulse.info {
@@ -621,12 +639,18 @@
   }
 
   .tcp-input {
-    @apply w-full rounded-none px-3 py-1.5 text-sm leading-tight placeholder:text-slate-400 focus:ring-2;
+    @apply w-full rounded-none px-3 py-1.5 text-sm leading-tight focus:ring-2;
     min-height: 2.25rem;
     border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
     background: color-mix(in srgb, var(--color-surface-elevated) 88%, #000 12%);
     color: var(--color-text);
     --tw-ring-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+  }
+
+  .tcp-input::placeholder,
+  .tcp-select::placeholder {
+    color: var(--color-text-subtle);
+    opacity: 1;
   }
 
   select.tcp-input,
@@ -708,16 +732,28 @@
     @apply inline-flex items-center gap-1 rounded-none border px-2.5 py-0.5 text-xs font-medium;
   }
 
-  .tcp-badge-ok {
-    @apply tcp-badge border-lime-600/60 text-lime-300;
+  .tcp-badge-ok,
+  .tcp-badge-success {
+    @apply tcp-badge;
+    border-color: color-mix(in srgb, var(--color-success) 52%, transparent);
+    background: color-mix(in srgb, var(--color-success) 8%, var(--color-surface-elevated));
+    color: color-mix(in srgb, var(--color-success) 78%, var(--color-text) 22%);
   }
 
-  .tcp-badge-warn {
-    @apply tcp-badge border-amber-600/60 text-amber-300;
+  .tcp-badge-warn,
+  .tcp-badge-warning {
+    @apply tcp-badge;
+    border-color: color-mix(in srgb, var(--color-warning) 52%, transparent);
+    background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface-elevated));
+    color: color-mix(in srgb, var(--color-warning) 78%, var(--color-text) 22%);
   }
 
-  .tcp-badge-err {
-    @apply tcp-badge border-rose-600/60 text-rose-300;
+  .tcp-badge-err,
+  .tcp-badge-error {
+    @apply tcp-badge;
+    border-color: color-mix(in srgb, var(--color-error) 52%, transparent);
+    background: color-mix(in srgb, var(--color-error) 8%, var(--color-surface-elevated));
+    color: color-mix(in srgb, var(--color-error) 78%, var(--color-text) 22%);
   }
 
   .tcp-badge-info {
@@ -727,7 +763,10 @@
   }
 
   .tcp-badge-blocked {
-    @apply tcp-badge border-indigo-400/60 text-indigo-300;
+    @apply tcp-badge;
+    border-color: color-mix(in srgb, var(--color-primary) 52%, transparent);
+    background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface-elevated));
+    color: color-mix(in srgb, var(--color-primary) 78%, var(--color-text) 22%);
   }
 
   .tcp-badge-ghost {
@@ -800,7 +839,8 @@
   }
 
   .toast-ok {
-    @apply border-lime-700 text-lime-300;
+    border-color: color-mix(in srgb, var(--color-success) 52%, transparent);
+    color: color-mix(in srgb, var(--color-success) 78%, var(--color-text) 22%);
   }
 
   .toast-info {
@@ -809,11 +849,13 @@
   }
 
   .toast-warn {
-    @apply border-amber-700 text-amber-300;
+    border-color: color-mix(in srgb, var(--color-warning) 52%, transparent);
+    color: color-mix(in srgb, var(--color-warning) 78%, var(--color-text) 22%);
   }
 
   .toast-err {
-    @apply border-rose-700 text-rose-300;
+    border-color: color-mix(in srgb, var(--color-error) 52%, transparent);
+    color: color-mix(in srgb, var(--color-error) 78%, var(--color-text) 22%);
   }
 
   .tcp-empty-state {
@@ -1659,7 +1701,7 @@ svg.lucide-loader-circle,
   place-items: center;
   padding: 1rem;
   overflow-y: auto;
-  background: rgba(3, 7, 18, 0.42);
+  background: var(--tcp-overlay-backdrop);
 }
 
 @media (max-width: 640px) {
@@ -1674,7 +1716,22 @@ svg.lucide-loader-circle,
   position: absolute;
   inset: 0;
   z-index: 0;
-  background: rgba(2, 6, 16, 0.32);
+  background: var(--tcp-overlay-backdrop-soft);
+}
+
+.tcp-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  overflow-y: auto;
+  background: var(--tcp-overlay-backdrop);
+}
+
+.tcp-theme-overlay {
+  background: var(--tcp-overlay-backdrop-strong);
 }
 
 .tcp-confirm-dialog {
@@ -1764,6 +1821,27 @@ svg.lucide-loader-circle,
   .workflow-editor-tabs button {
     min-width: 0;
     flex: 1;
+  }
+}
+
+.tcp-run-detail-modal {
+  width: min(100rem, 96vw);
+  max-width: min(100rem, 96vw);
+  height: min(92vh, 72rem);
+  max-height: calc(100vh - 1rem);
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 0;
+}
+
+@media (max-width: 640px) {
+  .tcp-run-detail-modal {
+    width: calc(100vw - 0.5rem);
+    max-width: calc(100vw - 0.5rem);
+    height: calc(100dvh - 0.5rem);
+    max-height: calc(100dvh - 0.5rem);
   }
 }
 
@@ -1868,7 +1946,7 @@ svg.lucide-loader-circle,
   display: grid;
   place-items: center;
   padding: 1rem;
-  background: rgba(3, 7, 18, 0.72);
+  background: var(--tcp-overlay-backdrop-strong);
 }
 
 .tcp-doc-dialog {
@@ -2347,7 +2425,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
     border: 1px solid color-mix(in srgb, var(--color-primary) 48%, transparent);
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface) 88%);
-    color: color-mix(in srgb, var(--color-primary) 78%, white 22%);
+    color: color-mix(in srgb, var(--color-primary) 78%, var(--color-text) 22%);
   }
 
   .chat-workflow-eyebrow,
@@ -2389,19 +2467,19 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   .chat-workflow-badge.draft,
   .chat-workflow-badge.warning {
     border-color: color-mix(in srgb, var(--color-warning) 45%, transparent);
-    color: color-mix(in srgb, var(--color-warning) 75%, white 25%);
+    color: color-mix(in srgb, var(--color-warning) 75%, var(--color-text) 25%);
   }
 
   .chat-workflow-badge.materialized,
   .chat-workflow-badge.success,
   .chat-workflow-badge.published {
     border-color: color-mix(in srgb, var(--color-success) 42%, transparent);
-    color: color-mix(in srgb, var(--color-success) 75%, white 25%);
+    color: color-mix(in srgb, var(--color-success) 75%, var(--color-text) 25%);
   }
 
   .chat-workflow-badge.danger {
     border-color: color-mix(in srgb, var(--color-error) 52%, transparent);
-    color: color-mix(in srgb, var(--color-error) 75%, white 25%);
+    color: color-mix(in srgb, var(--color-error) 75%, var(--color-text) 25%);
   }
 
   .chat-workflow-description {
@@ -2416,12 +2494,12 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
     align-items: center;
     gap: 0.4rem;
     margin: 0.625rem 0.75rem 0;
-    color: color-mix(in srgb, var(--color-primary) 72%, white 28%);
+    color: color-mix(in srgb, var(--color-primary) 72%, var(--color-text) 28%);
     font-size: var(--font-size-xs);
   }
 
   .chat-workflow-activity.failed {
-    color: color-mix(in srgb, var(--color-error) 76%, white 24%);
+    color: color-mix(in srgb, var(--color-error) 76%, var(--color-text) 24%);
   }
 
   .chat-workflow-flow {
@@ -2468,7 +2546,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-workflow-stage-label strong {
-    color: color-mix(in srgb, var(--color-primary) 74%, white 26%);
+    color: color-mix(in srgb, var(--color-primary) 74%, var(--color-text) 26%);
     font-weight: 600;
   }
 
@@ -2500,7 +2578,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 
   .chat-workflow-node-kind {
     text-transform: uppercase;
-    color: color-mix(in srgb, var(--color-primary) 75%, white 25%);
+    color: color-mix(in srgb, var(--color-primary) 75%, var(--color-text) 25%);
   }
 
   .chat-workflow-node-objective {
@@ -2544,11 +2622,11 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-workflow-notice.blocker {
-    color: color-mix(in srgb, var(--color-error) 76%, white 24%);
+    color: color-mix(in srgb, var(--color-error) 76%, var(--color-text) 24%);
   }
 
   .chat-workflow-notice.warning {
-    color: color-mix(in srgb, var(--color-warning) 76%, white 24%);
+    color: color-mix(in srgb, var(--color-warning) 76%, var(--color-text) 24%);
   }
 
   .chat-workflow-details {
@@ -2633,7 +2711,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
     border: 1px solid color-mix(in srgb, var(--color-error) 42%, transparent);
     border-radius: var(--radius-sm);
     padding: 0.6rem 0.75rem;
-    color: color-mix(in srgb, var(--color-error) 76%, white 24%);
+    color: color-mix(in srgb, var(--color-error) 76%, var(--color-text) 24%);
     font-size: var(--font-size-xs);
   }
 
@@ -3531,6 +3609,67 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 #view [class*="border-sky-"],
 #view [class*="border-blue-"] {
   border-color: var(--tcp-hover-border-primary) !important;
+}
+
+/* Legacy Tailwind semantic utilities were authored for dark surfaces. Keep
+   Porcelain readable until those call sites are fully migrated to theme tokens. */
+html[data-theme="porcelain"] #app [class*="text-amber-"],
+html[data-theme="porcelain"] #app [class*="text-yellow-"],
+html[data-theme="porcelain"] #app [class*="text-orange-"],
+html[data-theme="porcelain"] #view [class*="text-amber-"],
+html[data-theme="porcelain"] #view [class*="text-yellow-"],
+html[data-theme="porcelain"] #view [class*="text-orange-"] {
+  color: color-mix(in srgb, var(--color-warning) 82%, var(--color-text) 18%) !important;
+}
+
+html[data-theme="porcelain"] #app [class*="text-lime-"],
+html[data-theme="porcelain"] #app [class*="text-green-"],
+html[data-theme="porcelain"] #app [class*="text-emerald-"],
+html[data-theme="porcelain"] #view [class*="text-lime-"],
+html[data-theme="porcelain"] #view [class*="text-green-"],
+html[data-theme="porcelain"] #view [class*="text-emerald-"] {
+  color: color-mix(in srgb, var(--color-success) 82%, var(--color-text) 18%) !important;
+}
+
+html[data-theme="porcelain"] #app [class*="text-indigo-"],
+html[data-theme="porcelain"] #app [class*="text-violet-"],
+html[data-theme="porcelain"] #app [class*="text-purple-"],
+html[data-theme="porcelain"] #view [class*="text-indigo-"],
+html[data-theme="porcelain"] #view [class*="text-violet-"],
+html[data-theme="porcelain"] #view [class*="text-purple-"] {
+  color: color-mix(in srgb, var(--color-primary) 82%, var(--color-text) 18%) !important;
+}
+
+html[data-theme="porcelain"] #app .text-white,
+html[data-theme="porcelain"] #view .text-white {
+  color: var(--color-text) !important;
+}
+
+html[data-theme="porcelain"] #app [class*="border-white"],
+html[data-theme="porcelain"] #view [class*="border-white"] {
+  border-color: color-mix(in srgb, var(--color-border) 88%, transparent) !important;
+}
+
+html[data-theme="porcelain"] #app [class*="bg-black"],
+html[data-theme="porcelain"] #view [class*="bg-black"] {
+  background: color-mix(in srgb, var(--color-surface-elevated) 88%, transparent) !important;
+}
+
+html[data-theme="porcelain"] .tcp-btn-primary {
+  color: #ffffff;
+}
+
+html[data-theme="porcelain"] .tcp-loading-logo {
+  --tcp-logo-compact-base: #1e3a8a;
+  --tcp-logo-compact-accent-a: #1d4ed8;
+  --tcp-logo-compact-accent-b: #1e40af;
+  --tcp-logo-compact-core: rgb(37 99 235 / 92%);
+  --tcp-logo-compact-core-mid: rgb(29 78 216 / 58%);
+  --tcp-logo-compact-core-clear: rgb(29 78 216 / 0%);
+  --tcp-logo-compact-center: #1e3a8a;
+  --tcp-logo-compact-glow: drop-shadow(0 0 8px rgb(30 64 175 / 24%));
+  --tcp-logo-compact-highlight-glow: drop-shadow(0 0 7px rgb(29 78 216 / 18%));
+  --tcp-logo-compact-center-glow: drop-shadow(0 0 8px rgb(30 64 175 / 24%));
 }
 
 .wire-line-active {

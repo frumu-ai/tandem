@@ -19,6 +19,20 @@ const primaryRoutes = [
 
 const wcagTags = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
+test("Porcelain automation builder has readable text contrast", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("tandem.themeId", "porcelain");
+  });
+  await page.goto("/#/automations");
+  await waitForRoute(page, "automations");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "porcelain");
+  const results = await new AxeBuilder({ page })
+    .include('[data-testid="route-outlet"]')
+    .withRules(["color-contrast"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+});
+
 test("application shell and rendered dashboard have no WCAG A/AA violations", async ({ page }) => {
   await page.goto("/#/dashboard");
   await waitForRoute(page, "dashboard");
