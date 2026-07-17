@@ -1006,10 +1006,27 @@ pub(crate) async fn slack_events(
     match payload.get("type").and_then(Value::as_str) {
         // Slack setup handshake: echo the challenge (signature already verified).
         Some("url_verification") => {
-            let events_enabled_anywhere = connections
-                .iter()
-                .any(|connection| connection.events_enabled);
-            if !events_enabled_anywhere {
+            // The handshake carries no team/app claim, so readiness is
+            // scoped to the installations whose signing secret actually
+            // signed THIS request: an interactions-only app must not get
+            // its Events URL accepted just because a different app on the
+            // shared endpoint has events enabled — its callbacks would
+            // then be rejected by the per-connection events gate while
+            // setup looked successful.
+            let events_enabled_for_signer = connections.iter().any(|connection| {
+                connection.events_enabled
+                    && connection.signing_secret.as_ref().is_some_and(|secret| {
+                        verify_slack_signature_any(
+                            &body,
+                            signature,
+                            timestamp,
+                            std::slice::from_ref(secret),
+                            now,
+                        )
+                        .is_ok()
+                    })
+            });
+            if !events_enabled_for_signer {
                 audit_slack_denial(
                     &state,
                     &effective_config,

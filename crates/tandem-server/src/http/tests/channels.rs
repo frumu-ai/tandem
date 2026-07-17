@@ -593,7 +593,84 @@ async fn channels_put_migrating_installation_does_not_carry_secrets() {
     );
 }
 
-/// PR #1910 review: a fresh multi-connection config that carries channel_id
+/// PR #1910 review: a migrating save that stays valid through a
+/// self-declared connection must REVOKE the stored top-level bot token —
+/// deleting it from the keystore — or injection would resurrect the old
+/// app's token under the new installation identity on the next read.
+#[tokio::test]
+async fn channels_put_migrating_installation_revokes_stored_top_level_token() {
+    let state = test_state().await;
+    let _ = state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "bot_token": "xoxb-top",
+                    "channel_id": "C_MAIN",
+                    "team_id": "T1",
+                    "app_id": "A_OLD",
+                    "connections": [
+                        {
+                            "channel_id": "C_SALES",
+                            "team_id": "T2",
+                            "app_id": "A2",
+                            "bot_token": "xoxb-sales"
+                        }
+                    ]
+                }
+            }
+        }))
+        .await
+        .expect("patch project");
+    let app = app_router(state.clone());
+
+    // Sanity: the stored top-level token is injected into the effective config.
+    let effective = state.config.get_effective_value().await;
+    assert_eq!(
+        effective
+            .pointer("/channels/slack/bot_token")
+            .and_then(Value::as_str),
+        Some("xoxb-top")
+    );
+
+    // Migrate the installation without a new token: the save stays valid
+    // because C_SALES self-declares its installation and token.
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/channels/slack")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "channel_id": "C_MAIN",
+                "team_id": "T1",
+                "app_id": "A_NEW",
+                "allowed_users": []
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let effective = state.config.get_effective_value().await;
+    assert!(
+        effective
+            .pointer("/channels/slack/bot_token")
+            .and_then(Value::as_str)
+            .is_none_or(|token| token.trim().is_empty()),
+        "the old installation's stored token must not resurface under the new identity"
+    );
+    let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
+    assert!(
+        connections
+            .iter()
+            .any(|connection| connection.channel_id == "C_SALES"
+                && connection.bot_token.as_deref() == Some("xoxb-sales")),
+        "the self-declared connection keeps its own credentials"
+    );
+}
+
+// PR #1910 review: a fresh multi-connection config that carries channel_id
 /// and bot_token only inside `connections[]` is a valid save — startability
 /// is judged on the resolved connections, not the legacy top-level fields.
 #[tokio::test]

@@ -523,6 +523,19 @@ fn hoist_persisted_secrets(value: &mut Value) -> anyhow::Result<()> {
         // credential. An ABSENT field is the normal state of an
         // already-stripped config and leaves the stored secret alone.
         if let Some(cfg) = channels.get_mut("slack").and_then(|v| v.as_object_mut()) {
+            // The top-level slack bot token follows the same explicit-clear
+            // rule: a save that migrates the installation identity without a
+            // new token persists `bot_token: ""`, and the stored token must
+            // be DELETED — otherwise injection would resurrect the old
+            // app's token under the new installation on the next read.
+            if let Some(provided) = cfg.get("bot_token").or_else(|| cfg.get("botToken")) {
+                let token = provided.as_str().map(str::trim).unwrap_or_default();
+                if token.is_empty() && !channel_has_runtime_secret("slack") {
+                    if let Some(secret_id) = channel_secret_store_id("slack") {
+                        let _ = crate::delete_provider_auth(&secret_id);
+                    }
+                }
+            }
             if let Some(provided) = cfg
                 .get("signing_secret")
                 .or_else(|| cfg.get("signingSecret"))

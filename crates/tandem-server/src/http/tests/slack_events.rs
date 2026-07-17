@@ -980,6 +980,80 @@ async fn slack_events_accept_standard_signed_url_verification_payload() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
+/// PR #1910 review (P3): the url_verification handshake carries no team/app
+/// claim, so readiness must be judged for the installation whose signing
+/// secret signed the request — an interactions-only app must not get its
+/// Events URL accepted just because a different app on the shared endpoint
+/// has events enabled.
+#[tokio::test]
+async fn slack_url_verification_is_scoped_to_events_enabled_installations() {
+    let state = test_state().await;
+    let _ = state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "team_id": "T_EVENTS",
+                    "app_id": "A_EVENTS",
+                    "signing_secret": "events-secret",
+                    "events_enabled": true,
+                    "connections": [
+                        { "channel_id": "C_EVENTS", "bot_token": "xoxb-events" },
+                        {
+                            "channel_id": "C_INTERACTIONS",
+                            "team_id": "T_IX",
+                            "app_id": "A_IX",
+                            "bot_token": "xoxb-ix",
+                            "signing_secret": "interactions-secret",
+                            "events_enabled": false
+                        }
+                    ]
+                }
+            }
+        }))
+        .await
+        .expect("patch project");
+    let app = app_router(state);
+    let now = chrono::Utc::now().timestamp();
+    let handshake = |secret: &str, challenge: &str| {
+        let body = json!({
+            "token": "legacy-verification-token",
+            "challenge": challenge,
+            "type": "url_verification"
+        })
+        .to_string();
+        let signature = sign_slack_event(secret, now, body.as_bytes());
+        Request::builder()
+            .method("POST")
+            .uri("/channels/slack/events")
+            .header("content-type", "application/json")
+            .header("x-slack-request-timestamp", now.to_string())
+            .header("x-slack-signature", signature)
+            .body(Body::from(body))
+            .expect("Slack URL verification request")
+    };
+
+    // Signed by the events-enabled installation: challenge echoed.
+    let response = app
+        .clone()
+        .oneshot(handshake("events-secret", "events-ok"))
+        .await
+        .expect("events-app URL verification response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("URL verification body");
+    assert_eq!(body.as_ref(), b"events-ok");
+
+    // Signed by the interactions-only installation: setup must fail instead
+    // of accepting an Events URL whose callbacks would then be rejected.
+    let response = app
+        .oneshot(handshake("interactions-secret", "ix-denied"))
+        .await
+        .expect("interactions-app URL verification response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn slack_events_reject_unauthorized_or_unmapped_senders_without_dispatch() {
     let state = test_state().await;
