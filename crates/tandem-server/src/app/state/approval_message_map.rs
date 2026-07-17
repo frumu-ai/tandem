@@ -22,6 +22,15 @@ pub struct ApprovalMessageRecord {
     pub message_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
+    /// Slack installation `(team_id, app_id)` that posted the card. Two
+    /// installations can share a channel-id string, so decision updates must
+    /// route by the full binding — editing app B's message with app A's bot
+    /// token fails or edits the wrong card. Absent on legacy records and
+    /// non-Slack channels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
 }
 
 impl ApprovalMessageRecord {
@@ -32,7 +41,16 @@ impl ApprovalMessageRecord {
             recipient: sent.recipient,
             message_id: sent.message_id,
             thread_id: sent.thread_id,
+            team_id: None,
+            app_id: None,
         }
+    }
+
+    pub fn with_installation(mut self, installation: Option<(String, String)>) -> Self {
+        let (team_id, app_id) = installation.unzip();
+        self.team_id = team_id;
+        self.app_id = app_id;
+        self
     }
 }
 
@@ -101,7 +119,20 @@ impl ApprovalMessageMap {
         request: &tandem_types::ApprovalRequest,
         sent: InteractiveCardSent,
     ) -> anyhow::Result<()> {
-        let record = ApprovalMessageRecord::from_sent(request.request_id.clone(), sent);
+        self.record_approval_sent_via(request, sent, None).await
+    }
+
+    /// Record a sent approval card together with the Slack installation
+    /// `(team_id, app_id)` that posted it, so decision updates can route by
+    /// the full binding when channel-id strings collide across installations.
+    pub async fn record_approval_sent_via(
+        &self,
+        request: &tandem_types::ApprovalRequest,
+        sent: InteractiveCardSent,
+        installation: Option<(String, String)>,
+    ) -> anyhow::Result<()> {
+        let record = ApprovalMessageRecord::from_sent(request.request_id.clone(), sent)
+            .with_installation(installation);
         self.record_message(record, Some(request.run_id.as_str()))
             .await
     }
@@ -139,10 +170,15 @@ impl ApprovalMessageMap {
             .message_deliveries
             .entry(record.request_id.clone())
             .or_default();
-        // One live card per (channel, recipient): a re-send (reminder)
-        // replaces its own prior entry rather than accumulating.
+        // One live card per (channel, installation, recipient): a re-send
+        // (reminder) replaces its own prior entry rather than accumulating,
+        // while two installations sharing a channel-id string keep separate
+        // cards.
         if let Some(existing) = deliveries.iter_mut().find(|existing| {
-            existing.channel == record.channel && existing.recipient == record.recipient
+            existing.channel == record.channel
+                && existing.recipient == record.recipient
+                && existing.team_id == record.team_id
+                && existing.app_id == record.app_id
         }) {
             *existing = record.clone();
         } else {
@@ -310,6 +346,64 @@ mod tests {
             recipient: recipient.to_string(),
             thread_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn deliveries_are_keyed_by_installation_when_channel_ids_collide() {
+        // PR #1910 review (P2): two installations can share a channel-id
+        // string. Their cards must be retained separately (keyed by the
+        // full installation binding) and a re-send through the SAME
+        // installation must still replace its own prior entry.
+        let map = ApprovalMessageMap::ephemeral();
+        let request = request("run-collide");
+        map.record_approval_sent_via(
+            &request,
+            sent_to("100.1", "C_SHARED"),
+            Some(("T_A".to_string(), "A_A".to_string())),
+        )
+        .await
+        .unwrap();
+        map.record_approval_sent_via(
+            &request,
+            sent_to("100.2", "C_SHARED"),
+            Some(("T_B".to_string(), "A_B".to_string())),
+        )
+        .await
+        .unwrap();
+
+        let deliveries = map.get_deliveries(&request.request_id).await;
+        assert_eq!(
+            deliveries.len(),
+            2,
+            "cards from two installations sharing a channel id must both survive"
+        );
+        assert_eq!(deliveries[0].team_id.as_deref(), Some("T_A"));
+        assert_eq!(deliveries[1].team_id.as_deref(), Some("T_B"));
+
+        // A reminder re-send through installation A replaces only A's card.
+        map.record_approval_sent_via(
+            &request,
+            sent_to("100.3", "C_SHARED"),
+            Some(("T_A".to_string(), "A_A".to_string())),
+        )
+        .await
+        .unwrap();
+        let deliveries = map.get_deliveries(&request.request_id).await;
+        assert_eq!(deliveries.len(), 2);
+        assert_eq!(
+            deliveries
+                .iter()
+                .find(|record| record.team_id.as_deref() == Some("T_A"))
+                .map(|record| record.message_id.as_str()),
+            Some("100.3")
+        );
+        assert_eq!(
+            deliveries
+                .iter()
+                .find(|record| record.team_id.as_deref() == Some("T_B"))
+                .map(|record| record.message_id.as_str()),
+            Some("100.2")
+        );
     }
 
     #[tokio::test]

@@ -100,14 +100,32 @@ async fn update_single_channel_approval_card(
             let Some(slack_value) = effective.pointer("/channels/slack").cloned() else {
                 return Ok(());
             };
-            // Route by the recorded recipient so a card posted through a
-            // per-channel connection is edited with that connection's token;
-            // an unknown recipient falls back to the default (first) resolved
-            // connection, preserving the legacy single-channel behavior.
+            // Route by the recorded recipient AND the installation that
+            // posted the card (channel-id strings can collide across
+            // installations — editing app B's message with app A's token
+            // fails or edits the wrong card). Legacy records without an
+            // installation fall back to recipient-only matching, and an
+            // unknown recipient to the default (first) resolved connection,
+            // preserving the legacy single-channel behavior.
             let connections = crate::config::channels::resolve_slack_connections(&slack_value);
             let connection = connections
                 .iter()
-                .find(|connection| connection.channel_id == record.recipient)
+                .find(|connection| {
+                    connection.channel_id == record.recipient
+                        && record
+                            .team_id
+                            .as_deref()
+                            .is_none_or(|team| connection.team_id.as_deref() == Some(team))
+                        && record
+                            .app_id
+                            .as_deref()
+                            .is_none_or(|app| connection.app_id.as_deref() == Some(app))
+                })
+                .or_else(|| {
+                    connections
+                        .iter()
+                        .find(|connection| connection.channel_id == record.recipient)
+                })
                 .or_else(|| connections.first());
             let Some(bot_token) = connection.and_then(|connection| connection.bot_token.clone())
             else {

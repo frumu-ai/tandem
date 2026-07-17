@@ -861,11 +861,13 @@ async fn run_approval_outbound(state: AppState, cancel: Arc<AtomicBool>) {
                 mention_only: connection.mention_only,
                 security_profile: connection.security_profile,
             };
+            let installation = connection.team_id.clone().zip(connection.app_id.clone());
             notifiers.push(Arc::new(
                 crate::app::notifiers::slack::from_config_with_message_map_and_tenant(
                     slack_config,
                     message_map.clone(),
                     connection.bound_tenant(),
+                    installation,
                 ),
             ));
         }

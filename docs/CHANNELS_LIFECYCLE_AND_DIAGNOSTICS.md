@@ -115,7 +115,10 @@ Semantics:
   remains available only for unbound local/demo polling (single top-level
   `channel_id`, one shared static identity).
 - **Approvals.** Every connection with `notify_approvals` enabled (the default)
-  receives approval cards; card edits route by the recorded recipient channel.
+  receives approval cards; card edits route by the recorded recipient channel
+  AND the Slack installation `(team_id, app_id)` that posted the card, so
+  channel-id strings colliding across installations never edit the wrong
+  message with the wrong bot token.
   A tenant-bound connection only receives approvals whose request tenant
   matches its binding, so tenant A's approval cards (and action previews)
   never post into tenant B's channel. Within one tenant, departments that
@@ -126,8 +129,10 @@ Semantics:
   run's authority becomes the **intersection** of the sender's active org-unit
   memberships and the channel's bound units — roles, grants, tool capabilities,
   and the strict memory projection all derive from the intersected set, so the
-  channel can only narrow authority, never widen it. An empty intersection
-  fails closed with an audited denial naming both inputs; `run.started` audit
+  channel can only narrow authority, never widen it. Direct (personal,
+  non-unit-sourced) grants are dropped on department-bound channels — a
+  personal engineering grant never rides into a sales-bound channel. An empty
+  intersection fails closed with an audited denial naming both inputs; `run.started` audit
   events record `channel_org_units` alongside the effective `org_units`.
   Entries match a unit's principal id (`department/engineering`) or bare unit
   id (`engineering`). On the interactions (approval button) path, a

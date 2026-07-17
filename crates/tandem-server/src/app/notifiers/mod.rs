@@ -153,6 +153,10 @@ pub struct ChannelApprovalNotifier {
     /// previews). `None` keeps the legacy receive-all behavior for unbound
     /// single-tenant deployments.
     tenant_filter: Option<(String, String)>,
+    /// Slack installation `(team_id, app_id)` this notifier posts through,
+    /// recorded on each sent card so decision updates route back through the
+    /// same installation even when channel-id strings collide.
+    installation: Option<(String, String)>,
 }
 
 impl ChannelApprovalNotifier {
@@ -176,11 +180,17 @@ impl ChannelApprovalNotifier {
             channel,
             message_map,
             tenant_filter: None,
+            installation: None,
         }
     }
 
     pub fn with_tenant_filter(mut self, tenant: Option<(String, String)>) -> Self {
         self.tenant_filter = tenant;
+        self
+    }
+
+    pub fn with_installation(mut self, installation: Option<(String, String)>) -> Self {
+        self.installation = installation;
         self
     }
 }
@@ -232,7 +242,7 @@ impl ApprovalNotifier for ChannelApprovalNotifier {
                     })?;
             }
             message_map
-                .record_approval_sent(request, sent)
+                .record_approval_sent_via(request, sent, self.installation.clone())
                 .await
                 .map_err(|err| {
                     NotifierError::Transient(format!("failed to persist approval message: {err}"))

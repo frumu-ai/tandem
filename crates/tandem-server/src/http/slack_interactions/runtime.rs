@@ -262,17 +262,11 @@ pub(super) async fn build_governed_slack_context(
     roles.sort();
     roles.dedup();
 
-    let mut grants = graph
-        .effective_grants(&principal, now_ms)
-        .into_iter()
-        .filter(|grant| {
-            grant
-                .source_principal
-                .as_ref()
-                .map(|source| active_unit_principals.contains(source))
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
+    let mut grants = narrow_grants_to_channel_authority(
+        graph.effective_grants(&principal, now_ms),
+        &active_unit_principals,
+        connection.binds_departments(),
+    );
     grants.sort_by(|left, right| left.grant_id.cmp(&right.grant_id));
     let capabilities = capabilities_from_grants(&grants);
     let authority_chain = AuthorityChain::from_request(request_principal);
@@ -342,6 +336,27 @@ pub(super) async fn build_governed_slack_context(
         verified.capabilities = capabilities_from_grants(&strict.grants);
     }
     Ok(verified)
+}
+
+/// TAN-764: which effective grants a channel-scoped run may carry.
+/// Unit-sourced grants survive only when their source unit is in the
+/// (possibly intersected) active set. A grant without a source unit is
+/// DIRECT (personal) authority — a department-bound channel narrows the run
+/// to the intersected units only, so a personal engineering grant must not
+/// ride into a sales-bound channel; direct grants survive only on unbound
+/// connections.
+fn narrow_grants_to_channel_authority(
+    grants: Vec<tandem_types::ScopedGrant>,
+    active_unit_principals: &[PrincipalRef],
+    binds_departments: bool,
+) -> Vec<tandem_types::ScopedGrant> {
+    grants
+        .into_iter()
+        .filter(|grant| match grant.source_principal.as_ref() {
+            Some(source) => active_unit_principals.contains(source),
+            None => !binds_departments,
+        })
+        .collect()
 }
 
 fn capabilities_from_grants(grants: &[tandem_types::ScopedGrant]) -> Vec<String> {
@@ -1153,4 +1168,63 @@ async fn verify_slack_bot_binding(
         "Slack bot token belongs to a different app"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tandem_types::{GrantSource, ScopedGrant};
+
+    fn unit_grant(id: &str, unit: &PrincipalRef) -> ScopedGrant {
+        ScopedGrant::new(
+            id,
+            PrincipalRef::human_user("channel:slack:T1:A1:U1"),
+            ResourceRef::new("org", "ws", ResourceKind::Workspace, "ws"),
+            GrantSource::OrganizationUnitMembership,
+        )
+        .with_source_principal(unit.clone())
+    }
+
+    fn direct_grant(id: &str) -> ScopedGrant {
+        ScopedGrant::new(
+            id,
+            PrincipalRef::human_user("channel:slack:T1:A1:U1"),
+            ResourceRef::new("org", "ws", ResourceKind::Workspace, "ws"),
+            GrantSource::Direct,
+        )
+    }
+
+    #[test]
+    fn department_bound_channels_drop_direct_grants() {
+        let sales = PrincipalRef::organization_unit("department/sales");
+        let engineering = PrincipalRef::organization_unit("department/engineering");
+        let intersected = vec![sales.clone()];
+        let grants = vec![
+            unit_grant("sales-grant", &sales),
+            unit_grant("eng-grant", &engineering),
+            direct_grant("personal-grant"),
+        ];
+
+        let narrowed = narrow_grants_to_channel_authority(grants.clone(), &intersected, true);
+        assert_eq!(
+            narrowed
+                .iter()
+                .map(|grant| grant.grant_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sales-grant"],
+            "a department-bound channel must carry only grants sourced from \
+             the intersected units — never direct (personal) grants"
+        );
+
+        // Unbound connections keep the legacy behavior: direct grants stay,
+        // unit grants still require an active source unit.
+        let unbound = narrow_grants_to_channel_authority(grants, &intersected, false);
+        assert_eq!(
+            unbound
+                .iter()
+                .map(|grant| grant.grant_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sales-grant", "personal-grant"]
+        );
+    }
 }
