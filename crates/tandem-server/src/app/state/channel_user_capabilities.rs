@@ -386,7 +386,11 @@ impl AppState {
         &self,
         record: ChannelUserCapabilityRecord,
     ) -> anyhow::Result<()> {
-        let key = channel_user_capability_key(&record.channel, &record.user_id);
+        // Tenant-scoped grants live under a tenant-aware key so the same
+        // Slack principal can hold separate grants in several tenants —
+        // enrolling for tenant B must never clobber tenant A's grant.
+        // Untenanted (legacy/global) grants keep the legacy key.
+        let key = capability_storage_key(&record);
         self.channel_user_capabilities
             .write()
             .await
@@ -431,14 +435,27 @@ impl AppState {
         channel_tenant: Option<(&str, &str)>,
     ) -> bool {
         // An explicit per-identity capability grant is authoritative — including a
-        // deliberate downgrade below `Approve`.
-        let key = channel_user_capability_key(channel, user_id);
-        if let Some(record) = self.channel_user_capabilities.read().await.get(&key) {
-            // A tenant-scoped grant applies ONLY on connections bound to the
-            // same tenant: a code issued for tenant A must not confer
-            // approval authority in tenant B's channels. A grant that does
-            // not apply here is treated as absent (the fallback logic below
-            // still runs); legacy untenanted grants stay channel-global.
+        // deliberate downgrade below `Approve`. A tenant-scoped grant applies
+        // ONLY on connections bound to the same tenant: a code issued for
+        // tenant A must not confer approval authority in tenant B's channels,
+        // and separate tenants' grants coexist under tenant-aware keys. A
+        // grant that does not apply here is treated as absent (the fallback
+        // logic below still runs); untenanted grants stay channel-global.
+        let capabilities = self.channel_user_capabilities.read().await;
+        if let Some((org_id, workspace_id)) = channel_tenant {
+            if let Some(record) = capabilities.get(&tenant_scoped_capability_key(
+                channel,
+                user_id,
+                org_id,
+                workspace_id,
+            )) {
+                return CommandTier::from(record.max_tier) >= CommandTier::Approve;
+            }
+        }
+        if let Some(record) = capabilities.get(&channel_user_capability_key(channel, user_id)) {
+            // Records written before tenant-aware keys may carry a tenant
+            // under the legacy key: honor their scope without assuming the
+            // storage location.
             let record_tenant = record
                 .tenant_org_id
                 .as_deref()
@@ -447,6 +464,7 @@ impl AppState {
                 return CommandTier::from(record.max_tier) >= CommandTier::Approve;
             }
         }
+        drop(capabilities);
         // GOV-B5a: with no explicit grant, fall back to the channel security profile
         // ONLY on a non-open channel, where the hand-picked `allowed_users` list is a
         // deliberate identity-trust decision by the operator. On a wildcard-open (`*`)
@@ -505,6 +523,37 @@ pub fn channel_user_capability_key(channel: &str, user_id: &str) -> String {
         channel.trim().to_ascii_lowercase(),
         user_id.trim().to_ascii_lowercase()
     )
+}
+
+/// Storage key for a tenant-scoped capability: distinct per tenant so the
+/// same principal's grants in different tenants coexist instead of the
+/// latest enrollment overwriting the previous tenant's grant.
+fn tenant_scoped_capability_key(
+    channel: &str,
+    user_id: &str,
+    org_id: &str,
+    workspace_id: &str,
+) -> String {
+    format!(
+        "{}@{}/{}",
+        channel_user_capability_key(channel, user_id),
+        org_id.trim(),
+        workspace_id.trim(),
+    )
+}
+
+/// Where a capability record is stored: tenant-aware for tenant-scoped
+/// grants, the legacy `channel:user` key otherwise.
+fn capability_storage_key(record: &ChannelUserCapabilityRecord) -> String {
+    match (
+        record.tenant_org_id.as_deref(),
+        record.tenant_workspace_id.as_deref(),
+    ) {
+        (Some(org_id), Some(workspace_id)) => {
+            tenant_scoped_capability_key(&record.channel, &record.user_id, org_id, workspace_id)
+        }
+        _ => channel_user_capability_key(&record.channel, &record.user_id),
+    }
 }
 
 /// GOV-B5b: whether a channel requires an active per-identity step-up before an
@@ -627,6 +676,57 @@ mod tests {
                     ChannelSecurityProfile::PublicDemo,
                     true,
                     None,
+                )
+                .await
+        );
+
+        // A second enrollment for another tenant COEXISTS with the first —
+        // it must not overwrite tenant A's grant.
+        state
+            .upsert_channel_user_capability(ChannelUserCapabilityRecord {
+                channel: "slack".to_string(),
+                user_id: "U-tenant-a".to_string(),
+                max_tier: StoredCommandTier::Approve,
+                enrolled_at_ms: Some(2),
+                enrolled_by: Some("admin".to_string()),
+                pinned_workspace_id: None,
+                org_units: Vec::new(),
+                tenant_org_id: Some("other".to_string()),
+                tenant_workspace_id: Some("ops".to_string()),
+            })
+            .await
+            .unwrap();
+        assert!(
+            state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    Some(("acme", "hq")),
+                )
+                .await,
+            "enrolling for tenant B must not clobber tenant A's grant"
+        );
+        assert!(
+            state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    Some(("other", "ops")),
+                )
+                .await
+        );
+        assert!(
+            !state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    Some(("third", "hq")),
                 )
                 .await
         );
