@@ -164,6 +164,24 @@ export function parseSlackAllowedUsers(input) {
     .filter(Boolean);
 }
 
+/**
+ * Faithful equality for Slack allowlists (string input or stored array).
+ * Blank/[] (deny-all) and ["*"] (open-to-all) are DIFFERENT values — a
+ * dirty-check that conflates them keeps Save disabled for exactly the
+ * deny-all ↔ open-to-all toggle `parseSlackAllowedUsers` exists to protect.
+ */
+export function sameSlackAllowedUsers(left, right) {
+  const normalize = (input) => {
+    const values = Array.isArray(input) ? input : String(input || "").split(",");
+    return Array.from(
+      new Set(values.map((value) => String(value || "").trim()).filter(Boolean)),
+    ).sort();
+  };
+  const a = normalize(left);
+  const b = normalize(right);
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
 /** Comma-separated org-unit input → trimmed, deduped list. */
 export function parseOrgUnitsInput(raw) {
   const seen = new Set();

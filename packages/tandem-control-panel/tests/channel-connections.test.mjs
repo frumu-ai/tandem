@@ -7,6 +7,7 @@ import {
   normalizeSlackSenders,
   parseOrgUnitsInput,
   parseSlackAllowedUsers,
+  sameSlackAllowedUsers,
   senderRowKey,
   senderTone,
   unmappedBoundChannels,
@@ -210,6 +211,18 @@ test("parseSlackAllowedUsers keeps a blank field deny-all", () => {
   assert.deepEqual(parseSlackAllowedUsers(undefined), []);
   assert.deepEqual(parseSlackAllowedUsers("*"), ["*"]);
   assert.deepEqual(parseSlackAllowedUsers(" U1 , U2 ,, "), ["U1", "U2"]);
+});
+
+test("sameSlackAllowedUsers keeps deny-all and open-to-all distinct", () => {
+  // Blank/[] (deny-all) vs ["*"] (open-to-all) must compare UNEQUAL so the
+  // Settings dirty-check enables Save for exactly that toggle.
+  assert.equal(sameSlackAllowedUsers("", ["*"]), false);
+  assert.equal(sameSlackAllowedUsers("*", []), false);
+  assert.equal(sameSlackAllowedUsers("", []), true);
+  assert.equal(sameSlackAllowedUsers("*", ["*"]), true);
+  assert.equal(sameSlackAllowedUsers(" U1 , U2 ", ["U2", "U1"]), true);
+  assert.equal(sameSlackAllowedUsers("U1, U1", ["U1"]), true);
+  assert.equal(sameSlackAllowedUsers("U1", ["U2"]), false);
 });
 
 test("parseOrgUnitsInput trims, drops empties, and dedups", () => {
