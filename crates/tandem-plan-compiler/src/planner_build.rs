@@ -444,7 +444,7 @@ where
                             let detail = format!(
                                 "workflow plan produced {} step(s) but the decomposition profile requires at least {} phase-aligned step(s)",
                                 plan.steps.len(),
-                                decomposition_profile.recommended_phase_count
+                                workflow_plan_minimum_step_count(&decomposition_profile)
                             );
                             host.warn(&format!(
                                 "workflow planner llm output rejected for being too flat: {detail}"
@@ -620,7 +620,17 @@ fn workflow_plan_is_too_flat_for_profile(
     profile: &crate::decomposition::WorkflowDecompositionProfile,
     step_count: usize,
 ) -> bool {
-    profile.requires_phased_dag && step_count < usize::from(profile.recommended_phase_count)
+    profile.requires_phased_dag && step_count < workflow_plan_minimum_step_count(profile)
+}
+
+fn workflow_plan_minimum_step_count(
+    profile: &crate::decomposition::WorkflowDecompositionProfile,
+) -> usize {
+    usize::from(
+        profile
+            .recommended_min_leaf_tasks
+            .max(profile.recommended_phase_count),
+    )
 }
 
 fn workflow_plan_exceeds_profile_budget(
@@ -1166,13 +1176,13 @@ mod tests {
     use tandem_workflows::plan_package::AutomationV2ScheduleType;
 
     #[test]
-    fn phased_profile_accepts_one_leaf_step_per_recommended_phase() {
+    fn moderate_profile_requires_its_three_leaf_task_minimum() {
         let profile = crate::decomposition::WorkflowDecompositionProfile {
-            complexity_score: 45,
-            tier: crate::decomposition::WorkflowDecompositionTier::Complex,
+            complexity_score: 30,
+            tier: crate::decomposition::WorkflowDecompositionTier::Moderate,
             recommended_min_leaf_tasks: 3,
             recommended_max_leaf_tasks: 8,
-            recommended_phase_count: 3,
+            recommended_phase_count: 2,
             requires_phased_dag: true,
             signals: vec!["unit_test".to_string()],
             guidance: vec![],

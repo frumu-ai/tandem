@@ -241,9 +241,16 @@ function RunObservabilityPanel({
           </Toolbar>
         </div>
 
-        {!selectedRow ? (
+        {!selectedRow && loading ? (
           <div className="flex min-h-0 flex-1 items-center justify-center p-4">
             <LoadingState title="Loading selected run" />
+          </div>
+        ) : !selectedRow ? (
+          <div className="p-4">
+            <EmptyState
+              title="Run unavailable"
+              text={error || "This run is no longer available or cannot be loaded."}
+            />
           </div>
         ) : selectedRow.source === "context" ? (
           <div className="p-4 text-sm text-tcp-text-secondary">
@@ -440,12 +447,13 @@ export function StatefulRunsPage({
   const summary = useMemo(() => summarizeStatefulRuns(rows), [rows]);
   const selectedRow = useMemo(
     () =>
-      filteredRows.find((row: any) => `${row.source}:${row.id}` === selectedRunKey) ||
-      filteredRows.find((row: any) => row.id === selectedRunIdHint || row.canonicalId === selectedRunIdHint) ||
+      rows.find((row: any) => `${row.source}:${row.id}` === selectedRunKey) ||
+      rows.find((row: any) => row.id === selectedRunIdHint || row.canonicalId === selectedRunIdHint) ||
       null,
-    [filteredRows, selectedRunIdHint, selectedRunKey]
+    [rows, selectedRunIdHint, selectedRunKey]
   );
-  const selectedObservabilityRunId = selectedRow?.observabilityRunId || selectedRow?.id || "";
+  const selectedObservabilityRunId =
+    selectedRow?.observabilityRunId || selectedRow?.id || selectedRunIdHint;
   const detailQuery = useQuery({
     queryKey: ["stateful-runs", "observability", selectedObservabilityRunId],
     queryFn: () =>
@@ -459,6 +467,22 @@ export function StatefulRunsPage({
     () => buildRunObservabilityDetail(detailQuery.data && !detailQuery.data.error ? detailQuery.data : {}),
     [detailQuery.data]
   );
+  const detailRow = useMemo(() => {
+    if (selectedRow || !detailQuery.data || detailQuery.data.error || !selectedRunIdHint) {
+      return selectedRow;
+    }
+    return {
+      id: detail.runId || selectedRunIdHint,
+      canonicalId: detail.runId || selectedRunIdHint,
+      observabilityRunId: detail.runId || selectedRunIdHint,
+      source: "workflow",
+      title: `${detail.kind || "Workflow"} run`,
+      statusGroup: detail.status,
+      statusLabel: detail.statusLabel,
+      phase: detail.phase,
+      currentWait: detail.currentWait?.label || "",
+    };
+  }, [detail, detailQuery.data, selectedRow, selectedRunIdHint]);
   const loading = runsQuery.isLoading && !runsQuery.data;
   const errors = runsQuery.data?.errors ?? [];
   const selectRow = (rowKey: string, row: any) => {
@@ -645,11 +669,14 @@ export function StatefulRunsPage({
 
       <RunObservabilityPanel
         open={detailOpen}
-        selectedRow={selectedRow}
+        selectedRow={detailRow}
         detail={detail}
-        loading={detailQuery.isLoading && !detailQuery.data && selectedRow?.source !== "context"}
+        loading={
+          (runsQuery.isLoading && !runsQuery.data) ||
+          (detailQuery.isLoading && !detailQuery.data && selectedRow?.source !== "context")
+        }
         error={detailQuery.data?.error || ""}
-        onOpen={() => selectedRow && openRunDestination(selectedRow, navigate)}
+        onOpen={() => detailRow && openRunDestination(detailRow, navigate)}
         onClose={closeDetail}
       />
     </div>

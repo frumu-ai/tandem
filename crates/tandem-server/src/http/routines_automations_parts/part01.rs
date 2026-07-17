@@ -492,6 +492,40 @@ fn automation_v2_run_has_run_level_completion_assertion(
         })
 }
 
+fn automation_v2_run_level_completion_recovery_node_ids(
+    automation: &crate::AutomationV2Spec,
+) -> std::collections::HashSet<String> {
+    let output_capable = automation
+        .flow
+        .nodes
+        .iter()
+        .filter(|node| {
+            crate::app::state::automation::automation_node_can_access_declared_output_targets(
+                automation,
+                node,
+            )
+        })
+        .map(|node| node.node_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    if !output_capable.is_empty() {
+        return output_capable;
+    }
+
+    let dependency_ids = automation
+        .flow
+        .nodes
+        .iter()
+        .flat_map(|node| node.depends_on.iter().cloned())
+        .collect::<std::collections::HashSet<_>>();
+    automation
+        .flow
+        .nodes
+        .iter()
+        .filter(|node| !dependency_ids.contains(&node.node_id))
+        .map(|node| node.node_id.clone())
+        .collect()
+}
+
 fn automation_v2_recoverable_failure_node_id(run: &crate::AutomationV2RunRecord) -> Option<String> {
     run.checkpoint
         .last_failure

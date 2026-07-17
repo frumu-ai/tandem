@@ -1501,7 +1501,12 @@ pub(super) async fn automations_v2_run_recover(
         if let Some(failure_node_id) = automation_v2_recoverable_failure_node_id(&current) {
             roots.insert(failure_node_id);
         }
-        if roots.is_empty() && !run_level_completion_assertion {
+        if roots.is_empty() && run_level_completion_assertion {
+            roots.extend(automation_v2_run_level_completion_recovery_node_ids(
+                &automation,
+            ));
+        }
+        if roots.is_empty() {
             return Err((
                 StatusCode::CONFLICT,
                 Json(

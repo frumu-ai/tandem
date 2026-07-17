@@ -80,7 +80,7 @@ async fn automations_v2_run_recover_uses_completion_assertion_node_detail() {
 }
 
 #[tokio::test]
-async fn automations_v2_run_recover_preserves_nodes_for_run_level_deliverable_assertion() {
+async fn automations_v2_run_recover_resets_terminal_node_for_run_level_deliverable_assertion() {
     let state = test_state().await;
     let app = app_router(state.clone());
     let automation =
@@ -135,12 +135,27 @@ async fn automations_v2_run_recover_preserves_nodes_for_run_level_deliverable_as
         .await
         .expect("run after recover");
     assert_eq!(recovered.status, crate::AutomationRunStatus::Queued);
-    assert_eq!(recovered.checkpoint.completed_nodes.len(), 4);
-    assert!(recovered.checkpoint.pending_nodes.is_empty());
-    for node_id in ["research", "analysis", "draft", "publish"] {
+    for node_id in ["research", "analysis", "draft"] {
+        assert!(recovered
+            .checkpoint
+            .completed_nodes
+            .iter()
+            .any(|completed| completed == node_id));
         assert!(recovered.checkpoint.node_outputs.contains_key(node_id));
         assert_eq!(recovered.checkpoint.node_attempts.get(node_id), Some(&1));
     }
+    assert!(!recovered
+        .checkpoint
+        .completed_nodes
+        .iter()
+        .any(|node_id| node_id == "publish"));
+    assert!(recovered
+        .checkpoint
+        .pending_nodes
+        .iter()
+        .any(|node_id| node_id == "publish"));
+    assert!(!recovered.checkpoint.node_outputs.contains_key("publish"));
+    assert!(!recovered.checkpoint.node_attempts.contains_key("publish"));
     assert!(recovered
         .checkpoint
         .lifecycle_history
