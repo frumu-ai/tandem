@@ -320,7 +320,17 @@ pub(crate) fn automation_node_requires_email_delivery(node: &AutomationFlowNode)
     ]
     .iter()
     .any(|needle| objective.contains(needle));
-    if !automation_node_is_outbound_action(node) && !contains_phrase {
+    let contains_explicit_email_action = [
+        "create a gmail draft",
+        "create gmail draft",
+        "create a draft email",
+        "create draft email",
+        "draft the email",
+        "gmail_send",
+    ]
+    .iter()
+    .any(|needle| objective.contains(needle));
+    if !automation_node_is_outbound_action(node) && !contains_explicit_email_action {
         return false;
     }
     automation_node_delivery_target(node).is_some() || contains_phrase

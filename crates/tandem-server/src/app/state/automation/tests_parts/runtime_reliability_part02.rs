@@ -75,6 +75,21 @@ fn approval_gates_are_not_outbound_actions() {
 }
 
 #[test]
+fn approval_gate_reviewing_draft_email_does_not_require_delivery_receipt() {
+    let mut node = bare_node();
+    node.objective = "Approve the draft email before delivery.".to_string();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "approval_gate".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::ReviewDecision),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+
+    assert!(!automation_node_requires_email_delivery(&node));
+}
+
+#[test]
 fn gated_local_publications_are_not_outbound_actions() {
     let mut node = bare_node();
     node.node_id = "publish_approved_update".to_string();
