@@ -9,7 +9,7 @@ import { Icon, type IconName } from "../ui/Icon";
 type RunsSurface = "runs" | "webhooks" | "approvals" | "recovery";
 
 const RUNS_SURFACES: Array<{ id: RunsSurface; label: string; icon: IconName }> = [
-  { id: "runs", label: "Runs", icon: "activity" },
+  { id: "runs", label: "Runs", icon: "list-checks" },
   { id: "webhooks", label: "Webhooks", icon: "webhook" },
   { id: "approvals", label: "Approvals", icon: "shield-check" },
   { id: "recovery", label: "Recovery", icon: "life-buoy" },

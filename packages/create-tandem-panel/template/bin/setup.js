@@ -1508,7 +1508,11 @@ async function proxyPublicEngineOAuthCallback(req, res) {
   for (const [key, value] of Object.entries(req.headers)) {
     if (!value) continue;
     const lower = key.toLowerCase();
-    if (["host", "content-length", "cookie", "authorization", "x-tandem-token"].includes(lower)) {
+    if (
+      ["host", "content-length", "cookie", "authorization", "x-tandem-token", "x-forwarded-prefix"].includes(
+        lower
+      )
+    ) {
       continue;
     }
     if (Array.isArray(value)) headers.set(key, value.join(", "));
@@ -1598,9 +1602,9 @@ async function proxyPublicEngineAutomationWebhook(req, res) {
         "content-length",
         "cookie",
         "authorization",
-        "origin",
         "referer",
         "x-tandem-token",
+        "x-forwarded-prefix",
       ].includes(lower)
     ) {
       continue;
@@ -1625,14 +1629,17 @@ async function proxyPublicEngineAutomationWebhook(req, res) {
     if (forwardedHost) headers.set("x-forwarded-host", forwardedHost);
     if (forwardedProto) headers.set("x-forwarded-proto", forwardedProto);
   }
+  headers.set("x-forwarded-prefix", "/api/engine");
+
+  const hasBody = !["GET", "HEAD", "OPTIONS"].includes(req.method || "GET");
 
   let upstream;
   try {
     upstream = await fetch(targetUrl, {
       method: req.method,
       headers,
-      body: req,
-      duplex: "half",
+      body: hasBody ? req : undefined,
+      duplex: hasBody ? "half" : undefined,
     });
   } catch (e) {
     sendJson(res, 502, {
@@ -1686,7 +1693,11 @@ async function proxyEngineRequest(req, res, session) {
   for (const [key, value] of Object.entries(req.headers)) {
     if (!value) continue;
     const lower = key.toLowerCase();
-    if (["host", "content-length", "cookie", "authorization", "x-tandem-token"].includes(lower)) {
+    if (
+      ["host", "content-length", "cookie", "authorization", "x-tandem-token", "x-forwarded-prefix"].includes(
+        lower
+      )
+    ) {
       continue;
     }
     if (Array.isArray(value)) headers.set(key, value.join(", "));
@@ -1694,6 +1705,24 @@ async function proxyEngineRequest(req, res, session) {
   }
   headers.set("authorization", `Bearer ${session.token}`);
   headers.set("x-tandem-token", session.token);
+  headers.set("x-forwarded-prefix", "/api/engine");
+  if (PANEL_PUBLIC_URL) {
+    try {
+      const parsed = new URL(PANEL_PUBLIC_URL);
+      headers.set("x-forwarded-host", parsed.host);
+      headers.set("x-forwarded-proto", parsed.protocol.replace(/:$/, "") || "https");
+    } catch {}
+  } else {
+    const forwardedHost = String(req.headers["x-forwarded-host"] || req.headers.host || "")
+      .split(",")[0]
+      .trim();
+    const forwardedProto =
+      String(req.headers["x-forwarded-proto"] || "")
+        .split(",")[0]
+        .trim() || (req.socket && req.socket.encrypted ? "https" : "http");
+    if (forwardedHost) headers.set("x-forwarded-host", forwardedHost);
+    if (forwardedProto) headers.set("x-forwarded-proto", forwardedProto);
+  }
 
   const hasBody = !["GET", "HEAD"].includes(req.method || "GET");
 
@@ -4682,13 +4711,17 @@ async function handleApi(req, res) {
     return handleFilesApi(req, res, session);
   }
 
+  if (
+    ["POST", "OPTIONS"].includes(req.method || "") &&
+    isPublicEngineAutomationWebhookPath(pathname)
+  ) {
+    await proxyPublicEngineAutomationWebhook(req, res);
+    return true;
+  }
+
   if (pathname.startsWith("/api/engine")) {
     if (isPublicEngineOAuthCallbackPath(pathname)) {
       await proxyPublicEngineOAuthCallback(req, res);
-      return true;
-    }
-    if (req.method === "POST" && isPublicEngineAutomationWebhookPath(pathname)) {
-      await proxyPublicEngineAutomationWebhook(req, res);
       return true;
     }
     const session = requireSession(req, res);

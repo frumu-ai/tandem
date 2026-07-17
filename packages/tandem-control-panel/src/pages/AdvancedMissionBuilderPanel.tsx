@@ -1323,7 +1323,7 @@ export function AdvancedMissionBuilderPanel({
       ) : null}
 
       {showGuide ? (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+        <div className="tcp-theme-overlay fixed inset-0 z-50 flex items-start justify-center p-4 backdrop-blur-sm">
           <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-950 p-5 shadow-2xl">
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>

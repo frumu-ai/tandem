@@ -2830,9 +2830,9 @@ async function proxyPublicEngineAutomationWebhook(req, res) {
         "content-length",
         "cookie",
         "authorization",
-        "origin",
         "referer",
         "x-tandem-token",
+        "x-forwarded-prefix",
       ].includes(lower)
     ) {
       continue;
@@ -2843,14 +2843,17 @@ async function proxyPublicEngineAutomationWebhook(req, res) {
 
   if (forwarded.host) headers.set("x-forwarded-host", forwarded.host);
   if (forwarded.proto) headers.set("x-forwarded-proto", forwarded.proto);
+  headers.set("x-forwarded-prefix", "/api/engine");
+
+  const hasBody = !["GET", "HEAD", "OPTIONS"].includes(req.method || "GET");
 
   let upstream;
   try {
     upstream = await fetch(targetUrl, {
       method: req.method,
       headers,
-      body: req,
-      duplex: "half",
+      body: hasBody ? req : undefined,
+      duplex: hasBody ? "half" : undefined,
     });
   } catch (e) {
     sendJson(res, 502, {
@@ -2982,6 +2985,7 @@ async function proxyEngineRequest(req, res, session) {
         "origin",
         "referer",
         "x-tandem-token",
+        "x-forwarded-prefix",
         "x-tandem-agent-id",
         "x-tandem-agent-ancestor-ids",
         "x-tandem-control-panel-agent-mode",
@@ -3004,6 +3008,7 @@ async function proxyEngineRequest(req, res, session) {
   }
   if (forwardedHost) headers.set("x-forwarded-host", forwardedHost);
   if (forwardedProto) headers.set("x-forwarded-proto", forwardedProto);
+  headers.set("x-forwarded-prefix", "/api/engine");
   if (targetPath.startsWith("/mcp/") && forwarded.base) {
     headers.set("origin", forwarded.base);
     headers.set("referer", `${forwarded.base}/`);
@@ -6317,13 +6322,17 @@ async function handleApi(req, res) {
     return handleWorkspaceFilesApi(req, res, session);
   }
 
+  if (
+    ["POST", "OPTIONS"].includes(req.method || "") &&
+    isPublicEngineAutomationWebhookPath(pathname)
+  ) {
+    await proxyPublicEngineAutomationWebhook(req, res);
+    return true;
+  }
+
   if (pathname.startsWith("/api/engine")) {
     if (isPublicEngineOAuthCallbackPath(pathname)) {
       await proxyPublicEngineOAuthCallback(req, res);
-      return true;
-    }
-    if (req.method === "POST" && isPublicEngineAutomationWebhookPath(pathname)) {
-      await proxyPublicEngineAutomationWebhook(req, res);
       return true;
     }
     const session = requireSession(req, res);

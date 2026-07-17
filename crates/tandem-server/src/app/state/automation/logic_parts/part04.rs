@@ -166,6 +166,21 @@ pub(crate) fn validate_automation_artifact_output_with_context(
     });
     let verified_output_for_restore = verified_output.clone();
     let mut accepted_output = verified_output;
+    if let Some(required_status_marker) = automation_node_required_status_marker(node) {
+        if accepted_output
+            .as_ref()
+            .is_some_and(|(_, text)| !text.contains(required_status_marker))
+        {
+            let reason = format!(
+                "artifact is missing required status marker `{}`",
+                required_status_marker
+            );
+            unmet_requirements.push("required_status_marker_missing".to_string());
+            semantic_block_reason = Some(reason.clone());
+            rejected_reason = Some(reason);
+            accepted_output = None;
+        }
+    }
     let verified_output_nonterminal_status = accepted_output
         .as_ref()
         .and_then(|(_, text)| automation_artifact_json_status_is_nonterminal(text));
@@ -2273,6 +2288,9 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         && !unmet_requirements
             .iter()
             .any(|value| value == "output_schema_invalid")
+        && !unmet_requirements
+            .iter()
+            .any(|value| value == "required_status_marker_missing")
     {
         if let Some((path, text)) = verified_output_for_restore {
             accepted_output = Some((path.clone(), text.clone()));

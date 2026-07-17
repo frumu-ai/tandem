@@ -1544,8 +1544,14 @@ pub(crate) fn wrap_automation_node_output_with_automation(
         .workspace_root
         .as_deref()
         .unwrap_or(session.directory.as_str());
-    let read_only_source_of_truth_names =
+    let mut read_only_source_of_truth_names =
         enforcement::automation_read_only_source_of_truth_name_variants_for_automation(automation);
+    read_only_source_of_truth_names.extend(
+        enforcement::automation_node_read_only_source_of_truth_name_variants(
+            node,
+            Some(workspace_root),
+        ),
+    );
     let structured_source_material = automation_structured_handoff_source_material(session);
     let mut structured_handoff =
         if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson {

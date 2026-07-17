@@ -367,7 +367,11 @@ export function LoadingState({
       aria-live="polite"
     >
       <div className="grid justify-items-center gap-3">
-        <TandemLogoAnimation mode="compact" className="h-14 w-14" title={title} />
+        <TandemLogoAnimation
+          mode="compact"
+          className="tcp-loading-logo h-14 w-14"
+          title={title}
+        />
         <div>
           <div className="text-sm font-medium text-tcp-text-primary">{title}</div>
           {text ? <p className="tcp-subtle mt-1 text-xs">{text}</p> : null}

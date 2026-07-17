@@ -17,7 +17,7 @@ export const ROUTES = [
   ["orchestrator", "Task Board", "workflow"],
   ["files", "Files", "folder"],
   ["memory", "Memory", "database"],
-  ["runs", "Runs", "activity"],
+  ["runs", "Runs", "list-checks"],
   ["control-loop", "Control Loop", "radar"],
   ["slack-receipts", "Slack Receipts", "file-check-2"],
   ["channel-connections", "Channel Connections", "message-circle"],

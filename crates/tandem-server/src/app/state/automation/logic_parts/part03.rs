@@ -1234,6 +1234,38 @@ fn automation_output_contains_missing_external_citations(output: &Value) -> bool
         && !text.contains("https://")
 }
 
+fn automation_value_reports_no_work_outcome(value: &Value) -> bool {
+    [
+        value.get("has_work"),
+        value.pointer("/content/has_work"),
+        value.pointer("/output/has_work"),
+        value.pointer("/structured_handoff/has_work"),
+        value.pointer("/content/structured_handoff/has_work"),
+        value.pointer("/output/structured_handoff/has_work"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|flag| flag.as_bool() == Some(false))
+}
+
+pub(crate) fn automation_output_reports_no_actionable_work(output: &Value) -> bool {
+    if automation_value_reports_no_work_outcome(output) {
+        return true;
+    }
+    [
+        "/content/text",
+        "/content/raw_assistant_text",
+        "/content/raw_text",
+        "/output/content/text",
+        "/output/content/raw_assistant_text",
+        "/output/content/raw_text",
+    ]
+    .into_iter()
+    .filter_map(|pointer| output.pointer(pointer).and_then(Value::as_str))
+    .filter_map(extract_structured_handoff_json)
+    .any(|handoff| automation_value_reports_no_work_outcome(&handoff))
+}
+
 async fn collect_automation_upstream_research_evidence(
     state: &AppState,
     automation: &AutomationV2Spec,
@@ -1260,6 +1292,9 @@ async fn collect_automation_upstream_research_evidence(
         let Some(output) = run.checkpoint.node_outputs.get(&upstream_node_id) else {
             continue;
         };
+        if automation_output_reports_no_actionable_work(output) {
+            continue;
+        }
         evidence.notion_identity_unconfirmed |=
             automation_output_contains_unconfirmed_notion_identity(output);
         evidence.external_citations_missing |=

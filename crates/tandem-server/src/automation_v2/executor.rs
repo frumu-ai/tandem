@@ -12,6 +12,7 @@ use crate::automation_v2::types::{AutomationRunStatus, AutomationStopKind};
 use crate::util::time::now_ms;
 
 include!("executor_helpers.rs");
+include!("executor_triage.rs");
 include!("executor_recovery.rs");
 include!("executor_retry_policy.rs");
 
@@ -653,30 +654,6 @@ fn relax_yolo_non_safety_blocker_output(
     true
 }
 
-/// Returns `true` when a node should be skipped entirely because an upstream
-/// node that is marked as a triage gate found no work.
-///
-/// The triage node signals this by having `metadata.triage_gate == true` in
-/// the automation spec, and outputting `has_work:false` either directly in
-/// `content` or in the structured artifact handoff under
-/// `content.structured_handoff`.
-/// When skipped, downstream nodes are also unconditionally skipped via the
-/// same check (`should_skip_due_to_triage_gate` is called for every pending
-/// node each loop iteration after the triage output lands).
-fn triage_output_has_work(output: &serde_json::Value) -> Option<bool> {
-    output
-        .get("content")
-        .and_then(|content| {
-            content.get("has_work").or_else(|| {
-                content
-                    .get("structured_handoff")
-                    .and_then(|handoff| handoff.get("has_work"))
-            })
-        })
-        .and_then(serde_json::Value::as_bool)
-        .or_else(|| output.get("has_work").and_then(serde_json::Value::as_bool))
-}
-
 fn should_skip_due_to_triage_gate(
     node: &crate::automation_v2::types::AutomationFlowNode,
     node_outputs: &std::collections::HashMap<String, serde_json::Value>,
@@ -1127,16 +1104,19 @@ pub async fn run_automation_v2_run(
             .await;
         return;
     }
-    if let Err(error) =
-        crate::app::state::clear_automation_declared_outputs(&state, &automation, &run.run_id).await
-    {
-        let _ = state
-            .update_automation_v2_run(&run.run_id, |row| {
-                row.status = AutomationRunStatus::Failed;
-                row.detail = Some(error.to_string());
-            })
-            .await;
-        return;
+    if automation_run_needs_initial_output_cleanup(&run) {
+        if let Err(error) =
+            crate::app::state::clear_automation_declared_outputs(&state, &automation, &run.run_id)
+                .await
+        {
+            let _ = state
+                .update_automation_v2_run(&run.run_id, |row| {
+                    row.status = AutomationRunStatus::Failed;
+                    row.detail = Some(error.to_string());
+                })
+                .await;
+            return;
+        }
     }
     let max_parallel = automation
         .execution

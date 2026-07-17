@@ -11,6 +11,7 @@ pub(crate) fn is_automation_approval_node(node: &AutomationFlowNode) -> bool {
             node.effective_wait(),
             Some(tandem_automation::AutomationWaitSpec::Approval { .. })
         )
+        || automation_node_uses_metadata_approval_gate(node)
 }
 
 pub(crate) fn automation_guardrail_failure(
@@ -1407,8 +1408,7 @@ pub(crate) fn build_automation_pending_gate(
     let (instructions, decisions, rework_targets, expiry_policy) =
         if let Some(parts) = crate::app::state::explicit_automation_wait_gate_parts(node) {
             parts
-        } else {
-            let gate = node.gate.as_ref()?;
+        } else if let Some(gate) = node.gate.as_ref() {
             (
                 gate.instructions.clone(),
                 gate.decisions.clone(),
@@ -1417,6 +1417,8 @@ pub(crate) fn build_automation_pending_gate(
                     .clone()
                     .or_else(|| automation_gate_expiry_policy_from_node_metadata(node)),
             )
+        } else {
+            metadata_automation_gate_parts(node)?
         };
     Some(AutomationPendingGate {
         node_id: node.node_id.clone(),
@@ -1433,12 +1435,7 @@ pub(crate) fn build_automation_pending_gate(
         rework_targets,
         requested_at_ms: now_ms(),
         upstream_node_ids: node.depends_on.clone(),
-        metadata: node
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("approval"))
-            .and_then(|approval| approval.get("metadata"))
-            .cloned(),
+        metadata: automation_pending_gate_metadata(node),
         expiry_policy,
     })
 }

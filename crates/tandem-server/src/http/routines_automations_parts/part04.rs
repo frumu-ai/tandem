@@ -1295,12 +1295,19 @@ pub(super) async fn automations_v2_run_recover(
     let runtime_context_failure = current.status == AutomationRunStatus::Failed
         && current.detail.as_deref()
             == Some("runtime context partition missing for automation run");
+    let run_level_completion_assertion =
+        automation_v2_run_has_run_level_completion_assertion(&current);
     let reset_nodes = if current.status == AutomationRunStatus::Failed {
         let mut roots = blocked_node_ids
             .into_iter()
             .collect::<std::collections::HashSet<_>>();
         if let Some(failure_node_id) = automation_v2_recoverable_failure_node_id(&current) {
             roots.insert(failure_node_id);
+        }
+        if roots.is_empty() && run_level_completion_assertion {
+            roots.extend(automation_v2_run_level_completion_recovery_node_ids(
+                &automation,
+            ));
         }
         if roots.is_empty() {
             return Err((
@@ -1339,7 +1346,8 @@ pub(super) async fn automations_v2_run_recover(
                 .any(|node| node.node_id == *node_id)
         })
         .collect::<std::collections::HashSet<_>>();
-    let reason = if current.status == AutomationRunStatus::Paused {
+    let recovering_from_pause = current.status == AutomationRunStatus::Paused;
+    let reason = if recovering_from_pause {
         reason_or_default(input.reason, "recovered from paused state by operator")
     } else {
         reason_or_default(input.reason, "recovered by operator")
@@ -1388,7 +1396,7 @@ pub(super) async fn automations_v2_run_recover(
             }
             crate::record_automation_lifecycle_event(
                 run,
-                if reset_nodes.is_empty() {
+                if reset_nodes.is_empty() && recovering_from_pause {
                     "run_recovered_from_pause"
                 } else {
                     "run_recovered"

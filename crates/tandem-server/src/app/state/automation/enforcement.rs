@@ -522,12 +522,12 @@ pub(crate) fn automation_read_only_source_of_truth_files_for_automation(
     files
 }
 
-pub(crate) fn automation_read_only_source_of_truth_name_variants_for_automation(
-    automation: &AutomationV2Spec,
+fn automation_read_only_source_name_variants(
+    files: Vec<String>,
+    workspace_root: Option<&str>,
 ) -> std::collections::HashSet<String> {
     let mut names = std::collections::HashSet::<String>::new();
-    let workspace_root = automation.workspace_root.as_deref();
-    for path in automation_read_only_source_of_truth_files_for_automation(automation) {
+    for path in files {
         let trimmed = path.trim();
         if trimmed.is_empty() {
             continue;
@@ -554,11 +554,30 @@ pub(crate) fn automation_read_only_source_of_truth_name_variants_for_automation(
     names
 }
 
+pub(crate) fn automation_read_only_source_of_truth_name_variants_for_automation(
+    automation: &AutomationV2Spec,
+) -> std::collections::HashSet<String> {
+    automation_read_only_source_name_variants(
+        automation_read_only_source_of_truth_files_for_automation(automation),
+        automation.workspace_root.as_deref(),
+    )
+}
+
 pub(crate) fn automation_node_read_only_source_of_truth_files(
     node: &AutomationFlowNode,
 ) -> Vec<String> {
     let combined = automation_node_workspace_intent_text(node);
     automation_read_only_file_tokens(&combined)
+}
+
+pub(crate) fn automation_node_read_only_source_of_truth_name_variants(
+    node: &AutomationFlowNode,
+    workspace_root: Option<&str>,
+) -> std::collections::HashSet<String> {
+    automation_read_only_source_name_variants(
+        automation_node_read_only_source_of_truth_files(node),
+        workspace_root,
+    )
 }
 
 pub(crate) fn automation_node_required_source_read_paths_for_automation(
@@ -568,7 +587,8 @@ pub(crate) fn automation_node_required_source_read_paths_for_automation(
     runtime_values: Option<&AutomationPromptRuntimeValues>,
 ) -> Vec<String> {
     let combined = automation_node_workspace_intent_text_with_runtime(node, runtime_values);
-    let mut files = automation_read_only_file_tokens(&combined);
+    let mut files = automation_read_only_source_of_truth_files_for_automation(automation);
+    files.extend(automation_read_only_file_tokens(&combined));
     files.extend(
         automation_node_legacy_builder(node)
             .and_then(|builder| builder.get("input_files"))
@@ -580,15 +600,11 @@ pub(crate) fn automation_node_required_source_read_paths_for_automation(
             .filter(|value| !value.is_empty())
             .map(|value| super::automation_runtime_placeholder_replace(value, runtime_values)),
     );
-    files.extend(
-        automation_read_only_source_of_truth_files_for_automation(automation)
-            .into_iter()
-            .map(|value| super::automation_runtime_placeholder_replace(&value, runtime_values)),
-    );
     files.sort();
     files.dedup();
     let mut normalized = files
         .into_iter()
+        .map(|path| super::automation_runtime_placeholder_replace(&path, runtime_values))
         .filter_map(|path| super::normalize_workspace_display_path(workspace_root, &path))
         .collect::<Vec<_>>();
     normalized.sort();
@@ -903,6 +919,7 @@ pub(crate) fn automation_node_output_enforcement(
     }
 
     if !code_patch_contract
+        && validator_kind != crate::AutomationOutputValidatorKind::ReviewDecision
         && !connector_backed_source_node
         && enforcement
             .required_tools

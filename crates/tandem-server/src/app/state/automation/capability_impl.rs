@@ -106,9 +106,16 @@ pub(crate) fn automation_tool_capability_ids(
                 .any(|tool| tool.starts_with("mcp.")));
     let requires_workspace_read = required_tools.iter().any(|tool| tool == "read")
         || (!connector_source_node && !upstream_synthesis_node && !node.input_refs.is_empty());
+    let has_declared_workspace_read_paths = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.pointer("/filesystem_policy/read_paths"))
+        .and_then(Value::as_array)
+        .is_some_and(|paths| !paths.is_empty());
     let requires_workspace_discover = !connector_source_node
         && !upstream_synthesis_node
-        && (automation_node_required_output_path(node).is_some()
+        && ((automation_node_required_output_path(node).is_some()
+            && !has_declared_workspace_read_paths)
             || automation_output_validator_kind(node)
                 == crate::AutomationOutputValidatorKind::ResearchBrief
             || required_tools

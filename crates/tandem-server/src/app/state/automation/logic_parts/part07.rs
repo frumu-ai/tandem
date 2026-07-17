@@ -797,11 +797,61 @@ pub(crate) fn automation_node_is_terminal_for_automation(
     })
 }
 
+fn automation_node_declared_publication_targets(node: &AutomationFlowNode) -> Vec<String> {
+    let mut targets = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.pointer("/artifact/path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| vec![value.to_string()])
+        .unwrap_or_default();
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
+fn automation_normalized_output_target_path(
+    automation: &AutomationV2Spec,
+    path: &str,
+) -> String {
+    let trimmed = path.trim().trim_matches('`');
+    let normalized = trimmed
+        .strip_prefix("file://")
+        .unwrap_or(trimmed)
+        .trim()
+        .replace('\\', "/");
+    automation
+        .workspace_root
+        .as_deref()
+        .and_then(|root| normalize_workspace_display_path(root, &normalized))
+        .unwrap_or(normalized)
+        .to_ascii_lowercase()
+}
+
+fn automation_node_owns_declared_output_target(
+    automation: &AutomationV2Spec,
+    node: &AutomationFlowNode,
+    target: &str,
+) -> bool {
+    let target = automation_normalized_output_target_path(automation, target);
+    automation_node_declared_publication_targets(node)
+        .iter()
+        .any(|path| automation_normalized_output_target_path(automation, path) == target)
+}
+
 pub(crate) fn automation_node_can_access_declared_output_targets(
     automation: &AutomationV2Spec,
     node: &AutomationFlowNode,
 ) -> bool {
     if automation_node_publish_spec(node).is_some() {
+        return true;
+    }
+    if automation.output_targets
+        .iter()
+        .any(|target| automation_node_owns_declared_output_target(automation, node, target))
+    {
         return true;
     }
     automation_node_is_terminal_for_automation(automation, node)
@@ -1171,6 +1221,9 @@ pub(crate) fn automation_node_must_write_files_for_automation(
             true
         })
         .collect::<Vec<_>>();
+    files.retain(|path| {
+        !automation_node_owns_declared_output_target(automation, node, path)
+    });
     if !automation_node_can_access_declared_output_targets(automation, node) {
         let blocked_targets = automation_declared_output_target_aliases(automation, runtime_values);
         files.retain(|path| {
@@ -1533,7 +1586,20 @@ pub(crate) fn publish_automation_verified_outputs(
             node.node_id
         );
     }
-    let publications = automation_output_target_publish_specs(&automation.output_targets)
+    let all_specs = automation_output_target_publish_specs(&automation.output_targets);
+    let owned_specs = all_specs
+        .iter()
+        .filter(|spec| {
+            automation_node_owns_declared_output_target(automation, node, &spec.path)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let specs = if owned_specs.is_empty() {
+        all_specs
+    } else {
+        owned_specs
+    };
+    let publications = specs
         .into_iter()
         .map(|spec| {
             publish_automation_verified_output(

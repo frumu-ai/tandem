@@ -217,6 +217,13 @@ fn automation_wide_read_only_rules_filter_later_node_write_targets() {
     assert!(must_write_files
         .iter()
         .any(|path| path == "daily_results_2026-04-15.md"));
+    let guard_paths = automation_read_only_source_guard_paths_for_node(
+        &automation,
+        &write_node,
+        "/home/evan/job-hunt",
+        Some(&runtime_values("2026-04-15", "1049", "2026-04-15 10:49")),
+    );
+    assert!(guard_paths.iter().any(|path| path == "RESUME.md"));
 }
 
 #[test]

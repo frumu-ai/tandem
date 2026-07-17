@@ -63,6 +63,10 @@ fn workflow_plan_teaching_library_sections() -> String {
         "- objections: call out missing inputs, unsafe assumptions, or missing connectors\n",
         "- proof points: cite evidence sources, validation checks, or artifacts that will prove success\n",
         "- connector-backed work: prefer the selected MCP inventory for source-specific systems such as Reddit, GitHub issues, Slack, or Jira, and clarify when no relevant connector is available\n",
+        "- generic webhook work: treat the sanitized `automation_webhook.preview` in Run Trigger Context as an allowed runtime input; a payload does not need a GitHub, Linear, or other connector identifier to be actionable\n",
+        "  - inspect the generic webhook body directly and use connectors only when the user requested enrichment or the payload includes a concrete external reference that must be resolved\n",
+        "  - when the payload contains the requested message or event, set has_work=true and preserve the relevant fields in the structured handoff instead of rejecting the source as unsupported\n",
+        "  - for an explicitly requested draft-before-write approval flow, use a compact inspect-and-draft -> Approval -> write DAG when three stages are sufficient; do not add filler collection, review, or audit stages\n",
         "- code changes: prefer `code_patch` plus an inspect -> patch -> apply -> test -> repair loop, and reserve `write` for brand-new files\n",
         "- recap and synthesis files: prefer `report_markdown`, `structured_json`, or `text_summary` for markdown/json/text deliverables even when they merge prior findings into a final artifact\n",
             "- monitor-pattern plans: when the user describes a recurring awareness task (checking email, watching for changes, monitoring a data source, scanning for new items), generate a triage-first plan\n",
@@ -89,6 +93,9 @@ mod tests {
         assert!(sections.contains("explain: summarize the plan"));
         assert!(sections.contains("proof points"));
         assert!(sections.contains("connector-backed work"));
+        assert!(sections.contains("generic webhook work"));
+        assert!(sections.contains("automation_webhook.preview"));
+        assert!(sections.contains("inspect-and-draft -> Approval -> write"));
         assert!(sections.contains("connector database writers"));
         assert!(sections.contains("Notion database-row writes"));
         assert!(sections.contains("code_patch"));

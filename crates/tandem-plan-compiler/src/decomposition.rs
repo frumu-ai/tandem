@@ -442,7 +442,7 @@ pub fn derive_workflow_decomposition_profile(
         } else {
             match complexity_score {
                 0..=24 => (WorkflowDecompositionTier::Simple, 1, 4, 1),
-                25..=44 => (WorkflowDecompositionTier::Moderate, 4, 8, 2),
+                25..=44 => (WorkflowDecompositionTier::Moderate, 3, 8, 2),
                 45..=69 => (WorkflowDecompositionTier::Complex, 6, 8, 3),
                 _ => (WorkflowDecompositionTier::VeryComplex, 6, 8, 4),
             }
@@ -454,7 +454,7 @@ pub fn derive_workflow_decomposition_profile(
             "A single phase is acceptable when the work has one evidence source and one output.".to_string(),
         ],
         WorkflowDecompositionTier::Moderate => vec![
-            "Target 4-8 generated leaf tasks.".to_string(),
+            "Target 3-8 generated leaf tasks, and preserve an explicit request for a compact three-stage workflow.".to_string(),
             "Split discovery from synthesis or delivery when they are separate responsibilities.".to_string(),
         ],
         WorkflowDecompositionTier::Complex => vec![
@@ -605,7 +605,7 @@ mod tests {
         assert_eq!(simple.tier, WorkflowDecompositionTier::Simple);
         assert!(simple.complexity_score < complex.complexity_score);
         assert!(complex.requires_phased_dag);
-        assert!(complex.recommended_min_leaf_tasks >= 4);
+        assert!(complex.recommended_min_leaf_tasks >= 3);
         assert!(complex.recommended_max_leaf_tasks <= 8);
         assert!(complex.recommended_phase_count >= 2);
         assert!(complex
@@ -616,6 +616,23 @@ mod tests {
             .signals
             .iter()
             .any(|signal| signal == "connector_backed_sources"));
+    }
+
+    #[test]
+    fn moderate_generic_webhook_workflow_allows_three_leaf_tasks() {
+        let profile = derive_workflow_decomposition_profile(
+            "Inspect a generic webhook message and draft the complete contents of a small test code file from that payload. Then ask for explicit human approval before the final implementation stage writes only the approved file. Keep this workflow deliberately compact and do not add unrelated research, review, audit, or reporting stages.",
+            &[],
+            &["tests/webhook-demo.txt".to_string()],
+            false,
+        );
+
+        assert_eq!(profile.tier, WorkflowDecompositionTier::Moderate);
+        assert_eq!(profile.recommended_min_leaf_tasks, 3);
+        assert!(profile
+            .guidance
+            .iter()
+            .any(|line| line.contains("compact three-stage workflow")));
     }
 
     #[test]

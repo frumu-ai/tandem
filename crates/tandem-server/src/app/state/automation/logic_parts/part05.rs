@@ -2145,6 +2145,23 @@ pub(crate) async fn execute_automation_v2_node(
         return Ok(output);
     }
     let runtime_values = automation_prompt_runtime_values(run.started_at_ms);
+    let mut prompt_automation = automation.clone();
+    if let Some(webhook_context) = run
+        .automation_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.metadata.as_ref())
+        .and_then(|metadata| metadata.get("automation_webhook"))
+        .cloned()
+    {
+        let metadata = prompt_automation.metadata.get_or_insert_with(|| json!({}));
+        if !metadata.is_object() {
+            *metadata = json!({});
+        }
+        metadata
+            .as_object_mut()
+            .expect("automation metadata normalized to an object")
+            .insert("automation_webhook".to_string(), webhook_context);
+    }
     let write_policy = automation_session_write_policy_for_node(
         automation,
         node,
@@ -2295,7 +2312,7 @@ pub(crate) async fn execute_automation_v2_node(
         state.event_bus.publish(boundary_event);
     }
     let mut prompt = render_automation_v2_prompt_with_options(
-        automation,
+        &prompt_automation,
         &workspace_root,
         run_id,
         node,
@@ -2342,7 +2359,7 @@ pub(crate) async fn execute_automation_v2_node(
             );
         } else {
             prompt = render_automation_v2_prompt_with_options(
-                automation,
+                &prompt_automation,
                 &workspace_root,
                 run_id,
                 node,

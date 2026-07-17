@@ -253,6 +253,8 @@ function deliveryReason(delivery: any) {
   return safeString(
     delivery?.rejection_reason_code ||
       delivery?.rejectionReasonCode ||
+      delivery?.dedupe_reason_code ||
+      delivery?.dedupeReasonCode ||
       delivery?.verification_reason_code ||
       delivery?.verificationReasonCode
   );
@@ -267,7 +269,9 @@ function deliveryRunId(delivery: any) {
     delivery?.queued_run_id ||
       delivery?.queuedRunID ||
       delivery?.woken_run_id ||
-      delivery?.wokenRunID
+      delivery?.wokenRunID ||
+      delivery?.duplicate_of_run_id ||
+      delivery?.duplicateOfRunID
   );
 }
 
@@ -695,7 +699,7 @@ export function AutomationWebhookManager({
             ) : null}
           </div>
           <div className="grid gap-1">
-            <label className="text-xs text-slate-400">Org unit</label>
+            <label className="text-xs text-slate-400">Enterprise org unit (optional)</label>
             <input
               className="tcp-input"
               value={createDraft.owningOrgUnitId}
@@ -707,6 +711,11 @@ export function AutomationWebhookManager({
               }
               placeholder="department-id"
             />
+            <div className="tcp-webhook-scope-warning" role="note">
+              <strong>Enterprise-scoped workflows only.</strong> Leave this blank unless the
+              workflow is assigned to the same enterprise org unit. Otherwise, webhook deliveries
+              will be rejected.
+            </div>
           </div>
           <div className="grid gap-1">
             <label className="text-xs text-slate-400">Data class</label>
@@ -1166,7 +1175,7 @@ export function AutomationWebhookManager({
                   <div>
                     <div className="text-sm font-semibold text-slate-100">Recent deliveries</div>
                     <div className="text-xs text-slate-500">
-                      {deliveries.length} visible for this trigger
+                      {deliveries.length} visible. HTTP 202 confirms intake; duplicates do not start a new run.
                     </div>
                   </div>
                   <button
@@ -1184,7 +1193,11 @@ export function AutomationWebhookManager({
                     {deliveries.map((delivery) => {
                       const id = deliveryId(delivery);
                       const status = safeString(delivery.status) || "received";
+                      const isDuplicate = status.toLowerCase() === "duplicate";
                       const runId = deliveryRunId(delivery);
+                      const duplicateOfDeliveryId = safeString(
+                        delivery.duplicate_of_delivery_id || delivery.duplicateOfDeliveryID
+                      );
                       const providerEventId = safeString(
                         delivery.provider_event_id || delivery.providerEventID
                       );
@@ -1203,6 +1216,11 @@ export function AutomationWebhookManager({
                                 <div className="mt-1 text-xs text-slate-500">
                                   {formatTime(delivery.received_at_ms || delivery.receivedAtMs)}
                                 </div>
+                                {reason ? (
+                                  <div className="mt-1 text-xs text-red-300">
+                                    Reason: <code>{reason}</code>
+                                  </div>
+                                ) : null}
                               </div>
                               <span className={`tcp-badge ${statusBadgeClass(status)}`}>
                                 {formatLabel(status)}
@@ -1223,13 +1241,24 @@ export function AutomationWebhookManager({
                               <div>
                                 reason: <code>{reason || "n/a"}</code>
                               </div>
+                              {isDuplicate ? (
+                                <div className="md:col-span-2 text-amber-200">
+                                  Accepted as a duplicate. No new run was created; Tandem kept the
+                                  original run correlation.
+                                </div>
+                              ) : null}
+                              {duplicateOfDeliveryId ? (
+                                <div>
+                                  original delivery: <code>{duplicateOfDeliveryId}</code>
+                                </div>
+                              ) : null}
                               {selectedProviderIsLinear ? (
                                 <div>
                                   Linear delivery: <code>{providerEventId || id || "n/a"}</code>
                                 </div>
                               ) : null}
                               <div>
-                                run:{" "}
+                                {isDuplicate ? "original run" : "run"}:{" "}
                                 {runId ? (
                                   <button
                                     type="button"

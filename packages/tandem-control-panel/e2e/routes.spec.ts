@@ -61,6 +61,14 @@ test("route inventory has no duplicate registrations", () => {
   expect(Object.keys(routeIdentity).sort()).toEqual(canonicalRoutes.sort());
 });
 
+test("runs and goal operations use distinct navigation icons", () => {
+  const runsIcon = APP_ROUTES.find(([id]) => id === "runs")?.[2];
+  const goalOperationsIcon = APP_ROUTES.find(([id]) => id === "goal-operations")?.[2];
+  expect(runsIcon).toBeTruthy();
+  expect(goalOperationsIcon).toBeTruthy();
+  expect(runsIcon).not.toBe(goalOperationsIcon);
+});
+
 for (const routeId of canonicalRoutes) {
   test(`${routeId} renders its route identity without browser or icon errors`, async ({ page }) => {
     const browserErrors: string[] = [];

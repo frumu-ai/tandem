@@ -414,27 +414,32 @@ where
                                     };
                                 }
                                 let compacted_count = plan.steps.len();
-                                let detail = format!(
-                                    "Planner compacted {original_step_count} generated tasks into {compacted_count} runnable workflow steps."
-                                );
-                                host.warn(&format!(
-                                    "workflow planner llm output compacted to generated task budget: {detail}"
-                                ));
-                                let diagnostics = planner_diagnostics(
-                                    Some("task_budget_compacted"),
-                                    Some(detail.clone()),
-                                    Some(workflow_plan_decomposition_observation_with_task_budget(
-                                        &decomposition_profile,
-                                        &plan,
-                                        Some(report),
-                                    )),
-                                );
-                                return PlannerBuildResult {
-                                    plan,
-                                    assistant_text: payload.assistant_text.or(Some(detail.clone())),
-                                    clarifier: Value::Null,
-                                    planner_diagnostics: diagnostics,
-                                };
+                                if !workflow_plan_is_too_flat_for_profile(
+                                    &decomposition_profile,
+                                    compacted_count,
+                                ) {
+                                    let detail = format!(
+                                        "Planner compacted {original_step_count} generated tasks into {compacted_count} runnable workflow steps."
+                                    );
+                                    host.warn(&format!(
+                                        "workflow planner llm output compacted to generated task budget: {detail}"
+                                    ));
+                                    let diagnostics = planner_diagnostics(
+                                        Some("task_budget_compacted"),
+                                        Some(detail.clone()),
+                                        Some(workflow_plan_decomposition_observation_with_task_budget(
+                                            &decomposition_profile,
+                                            &plan,
+                                            Some(report),
+                                        )),
+                                    );
+                                    return PlannerBuildResult {
+                                        plan,
+                                        assistant_text: payload.assistant_text.or(Some(detail.clone())),
+                                        clarifier: Value::Null,
+                                        planner_diagnostics: diagnostics,
+                                    };
+                                }
                             }
                         }
                         if workflow_plan_is_too_flat_for_profile(
@@ -442,9 +447,9 @@ where
                             plan.steps.len(),
                         ) {
                             let detail = format!(
-                                "workflow plan produced {} step(s) but the decomposition profile recommends more than {} phase(s)",
+                                "workflow plan produced {} step(s) but the decomposition profile requires at least {} phase-aligned step(s)",
                                 plan.steps.len(),
-                                decomposition_profile.recommended_phase_count
+                                workflow_plan_minimum_step_count(&decomposition_profile)
                             );
                             host.warn(&format!(
                                 "workflow planner llm output rejected for being too flat: {detail}"
@@ -620,7 +625,17 @@ fn workflow_plan_is_too_flat_for_profile(
     profile: &crate::decomposition::WorkflowDecompositionProfile,
     step_count: usize,
 ) -> bool {
-    profile.requires_phased_dag && step_count <= usize::from(profile.recommended_phase_count)
+    profile.requires_phased_dag && step_count < workflow_plan_minimum_step_count(profile)
+}
+
+fn workflow_plan_minimum_step_count(
+    profile: &crate::decomposition::WorkflowDecompositionProfile,
+) -> usize {
+    usize::from(
+        profile
+            .recommended_min_leaf_tasks
+            .max(profile.recommended_phase_count),
+    )
 }
 
 fn workflow_plan_exceeds_profile_budget(
@@ -1164,6 +1179,23 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tandem_workflows::plan_package::AutomationV2ScheduleType;
+
+    #[test]
+    fn moderate_profile_requires_its_three_leaf_task_minimum() {
+        let profile = crate::decomposition::WorkflowDecompositionProfile {
+            complexity_score: 30,
+            tier: crate::decomposition::WorkflowDecompositionTier::Moderate,
+            recommended_min_leaf_tasks: 3,
+            recommended_max_leaf_tasks: 8,
+            recommended_phase_count: 2,
+            requires_phased_dag: true,
+            signals: vec!["unit_test".to_string()],
+            guidance: vec![],
+        };
+
+        assert!(!workflow_plan_is_too_flat_for_profile(&profile, 3));
+        assert!(workflow_plan_is_too_flat_for_profile(&profile, 2));
+    }
 
     #[test]
     fn planner_payload_unknown_action_with_plan_resolves_to_build() {

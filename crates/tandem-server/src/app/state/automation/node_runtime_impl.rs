@@ -1397,8 +1397,15 @@ pub(crate) fn automation_node_default_output_path(node: &AutomationFlowNode) -> 
         _ => "json",
     };
     let task_kind = automation_node_task_kind(node);
-    let default_enabled =
-        !automation_node_is_outbound_action(node) && task_kind.as_deref() != Some("delivery");
+    let planner_publication_target = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.pointer("/artifact/path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    let default_enabled = planner_publication_target
+        || (!automation_node_is_outbound_action(node) && task_kind.as_deref() != Some("delivery"));
     if !default_enabled {
         return None;
     }

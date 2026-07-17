@@ -2,6 +2,90 @@
 // Licensed under the Business Source License 1.1
 
 #[test]
+fn artifact_required_status_marker_is_declared_by_metadata() {
+    let mut node = bare_node();
+    node.metadata = Some(json!({"artifact": {"required_status_marker": "Status: Approved"}}));
+
+    assert_eq!(
+        automation_node_required_status_marker(&node),
+        Some("Status: Approved")
+    );
+}
+
+#[test]
+fn artifact_validation_rejects_missing_required_status_marker() {
+    let mut node = bare_node();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "report_markdown".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.metadata = Some(json!({"artifact": {"required_status_marker": "Status: Approved"}}));
+    let session = Session::new(Some("marker validation".to_string()), None);
+    let snapshot = std::collections::BTreeSet::new();
+    let (accepted, validation, _) = validate_automation_artifact_output(
+        &node,
+        &session,
+        "/tmp",
+        "{\"status\":\"completed\"}",
+        &json!({
+            "requested_tools": ["write"],
+            "executed_tools": ["write"],
+            "verified_output_materialized_by_current_attempt": true
+        }),
+        None,
+        Some((
+            ".tandem/artifacts/n1.md".to_string(),
+            "# Publication\n\nStatus: Withheld\n\n## Evidence\n\nApproval evidence was unavailable, so publication was not completed.".to_string(),
+        )),
+        &snapshot,
+    );
+
+    assert!(accepted.is_none());
+    assert!(validation["unmet_requirements"]
+        .as_array()
+        .expect("unmet requirements")
+        .iter()
+        .any(|value| value == "required_status_marker_missing"));
+}
+
+#[test]
+fn no_work_handoff_is_not_treated_as_rich_upstream_research_evidence() {
+    let output = json!({
+        "content": {
+            "text": "{\"has_work\":false,\"summary\":\"Unsupported webhook source\",\"items\":[],\"audit_events\":[]}\n{\"status\":\"completed\"}"
+        },
+        "artifact_validation": {
+            "read_paths": ["README.md", "package.json"],
+            "citation_count": 0,
+            "citations": []
+        }
+    });
+
+    assert!(automation_output_reports_no_actionable_work(&output));
+}
+
+#[test]
+fn nested_no_work_row_does_not_mark_the_whole_output_empty() {
+    let output = json!({
+        "has_work": true,
+        "items": [
+            {"id": "actionable", "has_work": true},
+            {"id": "not-actionable", "has_work": false}
+        ],
+        "artifact_validation": {
+            "read_paths": ["README.md"],
+            "citation_count": 1,
+            "citations": ["README.md"]
+        }
+    });
+
+    assert!(!automation_output_reports_no_actionable_work(&output));
+}
+
+#[test]
 fn mcp_contract_summary_extracts_required_args_and_example() {
     let schema = ToolSchema::new(
         "mcp.notion.notion_search",

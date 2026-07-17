@@ -48,6 +48,21 @@ fn build_cors_layer() -> CorsLayer {
             HeaderName::from_static("x-tandem-workspace-id"),
             HeaderName::from_static("x-tandem-actor-id"),
             HeaderName::from_static("x-tandem-request-source"),
+            HeaderName::from_static("x-tandem-webhook-signature"),
+            HeaderName::from_static("x-tandem-signature"),
+            HeaderName::from_static("x-tandem-webhook-secret"),
+            HeaderName::from_static("x-tandem-webhook-event-id"),
+            HeaderName::from_static("x-webhook-event-id"),
+            HeaderName::from_static("x-github-delivery"),
+            HeaderName::from_static("x-hub-signature-256"),
+            HeaderName::from_static("x-notion-signature"),
+            HeaderName::from_static("linear-signature"),
+            HeaderName::from_static("x-tandem-origin-action-id"),
+            HeaderName::from_static("x-tandem-origin-run-id"),
+            HeaderName::from_static("x-tandem-origin-node-id"),
+            HeaderName::from_static("x-tandem-origin-idempotency-key"),
+            HeaderName::from_static("x-tandem-origin-resource-id"),
+            HeaderName::from_static("x-tandem-allow-self-feedback"),
         ])
 }
 

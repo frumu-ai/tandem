@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Badge, LoadingState, PanelCard, Toolbar } from "../../ui/index.tsx";
 import { EmptyState } from "../../pages/ui";
@@ -117,9 +117,18 @@ function selectedRunIdFromHash() {
 }
 
 function replaceRunSelectionHash(runId: string) {
-  if (typeof window === "undefined" || !runId) return;
-  const hash = `#/runs?run=${encodeURIComponent(runId)}`;
+  if (typeof window === "undefined") return;
+  const hash = runId ? `#/runs?run=${encodeURIComponent(runId)}` : "#/runs";
   window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${hash}`);
+}
+
+function openRunDestination(row: any, navigate: RunsProps["navigate"]) {
+  const runId = String(row?.id || "").trim();
+  if (row?.source === "context" || !runId) {
+    navigate(row?.route || "orchestrator");
+    return;
+  }
+  window.location.hash = `#/automations?run=${encodeURIComponent(runId)}`;
 }
 
 async function runObservabilityPayload(api: RunsProps["api"], runId: string) {
@@ -181,61 +190,83 @@ function DetailRecords({ title, rows, emptyText }: { title: string; rows: any[];
 }
 
 function RunObservabilityPanel({
+  open,
   selectedRow,
   detail,
   loading,
   error,
   onOpen,
+  onClose,
 }: {
+  open: boolean;
   selectedRow: any;
   detail: any;
   loading: boolean;
   error: string;
   onOpen: () => void;
+  onClose: () => void;
 }) {
-  if (!selectedRow) {
-    return (
-      <PanelCard title="Run Detail" subtitle="Select a run to inspect durable state." fullHeight>
-        <EmptyState title="No run selected" text="Run details will appear here." />
-      </PanelCard>
-    );
-  }
-
-  if (selectedRow.source === "context") {
-    return (
-      <PanelCard title="Run Detail" subtitle={selectedRow.title} fullHeight>
-        <div className="space-y-3 text-sm text-tcp-text-secondary">
-          <p>Context run details are available from the Orchestrator surface.</p>
-          <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={onOpen}>
-            <Icon name="external-link" />
-            Open
-          </button>
-        </div>
-      </PanelCard>
-    );
-  }
+  if (!open) return null;
 
   return (
-    <PanelCard
-      title="Run Detail"
-      subtitle={selectedRow.title}
-      fullHeight
-      actions={
-        <Toolbar>
-          <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={onOpen}>
-            <Icon name="external-link" />
-            Open
-          </button>
-        </Toolbar>
-      }
-    >
-      {loading ? (
-        <LoadingState title="Loading run detail" />
-      ) : error ? (
-        <EmptyState title="Detail unavailable" text={error} />
-      ) : (
-        <div className="min-h-0 space-y-4 overflow-auto pr-1">
-          <div className="grid gap-3 sm:grid-cols-2">
+    <div className="tcp-confirm-overlay" role="presentation" onMouseDown={onClose}>
+      <div
+        className="tcp-confirm-dialog tcp-run-detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="run-detail-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-white/10 px-4 py-3">
+          <div className="min-w-0">
+            <h2 id="run-detail-title" className="tcp-title">Run Detail</h2>
+            <p className="tcp-subtle mt-1 break-words">{selectedRow?.title || "Loading selected run"}</p>
+          </div>
+          <Toolbar>
+            {selectedRow ? (
+              <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={onOpen}>
+                <Icon name="external-link" />
+                {selectedRow.source === "context" ? "Open task board" : "Open debugger"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="tcp-icon-btn"
+              aria-label="Close run detail"
+              title="Close run detail"
+              onClick={onClose}
+            >
+              <Icon name="x" />
+            </button>
+          </Toolbar>
+        </div>
+
+        {!selectedRow && loading ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-4">
+            <LoadingState title="Loading selected run" />
+          </div>
+        ) : !selectedRow ? (
+          <div className="p-4">
+            <EmptyState
+              title="Run unavailable"
+              text={error || "This run is no longer available or cannot be loaded."}
+            />
+          </div>
+        ) : selectedRow.source === "context" ? (
+          <div className="p-4 text-sm text-tcp-text-secondary">
+            Context run details are available from the Task Board.
+          </div>
+        ) : loading ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-4">
+            <LoadingState title="Loading run detail" />
+          </div>
+        ) : error ? (
+          <div className="p-4">
+            <EmptyState title="Detail unavailable" text={error} />
+          </div>
+        ) : (
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <div>
               <div className="tcp-text-caption uppercase tracking-wide text-tcp-text-muted">Status</div>
               <div className="mt-1 flex items-center gap-2">
@@ -333,7 +364,56 @@ function RunObservabilityPanel({
           <DetailRecords title="Protected Audit" rows={detail.protectedAuditEvents || []} emptyText="No protected audit rows." />
         </div>
       )}
-    </PanelCard>
+      </div>
+    </div>
+  );
+}
+
+function RunField({
+  label,
+  children,
+  className = "",
+}: {
+  label: string;
+  children: any;
+  className?: string;
+}) {
+  return (
+    <div className={`min-w-0 ${className}`.trim()}>
+      <dt className="tcp-text-micro uppercase tracking-wide text-tcp-text-muted">{label}</dt>
+      <dd className="mt-1 min-w-0 break-words text-xs text-tcp-text-secondary">{children}</dd>
+    </div>
+  );
+}
+
+function RunScope({ row }: { row: any }) {
+  return (
+    <div className="grid gap-1">
+      <span className="break-words">{row.orgUnitName || row.orgUnitId || "Tenant scoped"}</span>
+      <span className="break-all font-mono tcp-text-caption text-tcp-text-muted">
+        {row.resourceLabel || row.resourceId || "n/a"}
+      </span>
+      <span className="flex min-w-0 flex-wrap gap-1">
+        {row.policyVersion ? (
+          <span className="rounded border border-white/10 px-1.5 py-0.5 tcp-text-micro text-tcp-text-muted">
+            {row.policyVersion}
+          </span>
+        ) : null}
+        {row.dataClasses?.map((dataClass: string) => (
+          <span
+            key={dataClass}
+            className="rounded border border-white/10 px-1.5 py-0.5 tcp-text-micro text-tcp-text-muted"
+          >
+            {dataClass}
+          </span>
+        ))}
+        {row.knowledgeSourceCount ? (
+          <span className="rounded border border-white/10 px-1.5 py-0.5 tcp-text-micro text-tcp-text-muted">
+            {row.knowledgeSourceCount} src
+          </span>
+        ) : null}
+      </span>
+    </div>
   );
 }
 
@@ -346,6 +426,7 @@ export function StatefulRunsPage({
 }: StatefulRunsPageProps) {
   const [selectedRunKey, setSelectedRunKey] = useState("");
   const [selectedRunIdHint, setSelectedRunIdHint] = useState(selectedRunIdFromHash);
+  const [detailOpen, setDetailOpen] = useState(() => Boolean(selectedRunIdFromHash()));
   const runsQuery = useQuery({
     queryKey: ["stateful-runs", "list"],
     queryFn: () => runListPayload({ api, client }),
@@ -366,34 +447,66 @@ export function StatefulRunsPage({
   const summary = useMemo(() => summarizeStatefulRuns(rows), [rows]);
   const selectedRow = useMemo(
     () =>
-      filteredRows.find((row: any) => `${row.source}:${row.id}` === selectedRunKey) ||
-      filteredRows.find((row: any) => row.id === selectedRunIdHint || row.canonicalId === selectedRunIdHint) ||
-      filteredRows[0] ||
+      rows.find((row: any) => `${row.source}:${row.id}` === selectedRunKey) ||
+      rows.find((row: any) => row.id === selectedRunIdHint || row.canonicalId === selectedRunIdHint) ||
       null,
-    [filteredRows, selectedRunIdHint, selectedRunKey]
+    [rows, selectedRunIdHint, selectedRunKey]
   );
-  const selectedObservabilityRunId = selectedRow?.observabilityRunId || selectedRow?.id || "";
+  const selectedObservabilityRunId =
+    selectedRow?.observabilityRunId || selectedRow?.id || selectedRunIdHint;
   const detailQuery = useQuery({
     queryKey: ["stateful-runs", "observability", selectedObservabilityRunId],
     queryFn: () =>
       runObservabilityPayload(api, selectedObservabilityRunId).catch((error: any) => ({
         error: errorText(error),
       })),
-    enabled: Boolean(selectedObservabilityRunId && selectedRow?.source !== "context"),
+    enabled: Boolean(detailOpen && selectedObservabilityRunId && selectedRow?.source !== "context"),
     refetchInterval: 10000,
   });
   const detail = useMemo(
     () => buildRunObservabilityDetail(detailQuery.data && !detailQuery.data.error ? detailQuery.data : {}),
     [detailQuery.data]
   );
+  const detailRow = useMemo(() => {
+    if (selectedRow || !detailQuery.data || detailQuery.data.error || !selectedRunIdHint) {
+      return selectedRow;
+    }
+    return {
+      id: detail.runId || selectedRunIdHint,
+      canonicalId: detail.runId || selectedRunIdHint,
+      observabilityRunId: detail.runId || selectedRunIdHint,
+      source: "workflow",
+      title: `${detail.kind || "Workflow"} run`,
+      statusGroup: detail.status,
+      statusLabel: detail.statusLabel,
+      phase: detail.phase,
+      currentWait: detail.currentWait?.label || "",
+    };
+  }, [detail, detailQuery.data, selectedRow, selectedRunIdHint]);
   const loading = runsQuery.isLoading && !runsQuery.data;
   const errors = runsQuery.data?.errors ?? [];
   const selectRow = (rowKey: string, row: any) => {
-    const runId = row?.canonicalId || row?.id || "";
+    const runId = row?.id || row?.canonicalId || "";
     setSelectedRunKey(rowKey);
     setSelectedRunIdHint(runId);
+    setDetailOpen(true);
     replaceRunSelectionHash(runId);
   };
+  const closeDetail = () => {
+    setDetailOpen(false);
+    setSelectedRunKey("");
+    setSelectedRunIdHint("");
+    replaceRunSelectionHash("");
+  };
+
+  useEffect(() => {
+    if (!detailOpen) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeDetail();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [detailOpen]);
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_1fr] gap-4">
@@ -447,160 +560,125 @@ export function StatefulRunsPage({
         </div>
       </PanelCard>
 
-      <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(24rem,0.65fr)]">
-        <PanelCard
-          title="Run List"
-          subtitle={`${filteredRows.length} of ${rows.length} runs`}
-          fullHeight
-        >
-          {loading ? (
-            <LoadingState title="Loading runs" />
-          ) : filteredRows.length ? (
-            <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10">
-              <table className="w-full min-w-[1380px] table-fixed text-left text-xs">
-                <thead className="sticky top-0 z-10 bg-black/80 tcp-text-caption uppercase text-tcp-text-muted backdrop-blur">
-                  <tr>
-                    <th className="w-[20rem] px-3 py-2 font-medium">Run</th>
-                    <th className="w-[8rem] px-3 py-2 font-medium">Status</th>
-                    <th className="w-[10rem] px-3 py-2 font-medium">Phase</th>
-                    <th className="w-[9rem] px-3 py-2 font-medium">Trigger</th>
-                    <th className="w-[13rem] px-3 py-2 font-medium">Tenant</th>
-                    <th className="w-[17rem] px-3 py-2 font-medium">Scope</th>
-                    <th className="w-[15rem] px-3 py-2 font-medium">Workspace</th>
-                    <th className="w-[14rem] px-3 py-2 font-medium">Wait</th>
-                    <th className="w-[12rem] px-3 py-2 font-medium">Retry</th>
-                    <th className="w-[10rem] px-3 py-2 font-medium">Updated</th>
-                    <th className="w-[9rem] px-3 py-2 font-medium"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/8">
-                  {filteredRows.map((row: any) => {
-                    const rowKey = `${row.source}:${row.id}`;
-                    const selected = rowKey === `${selectedRow?.source}:${selectedRow?.id}`;
-                    return (
-                      <tr
-                        key={rowKey}
-                        className={`align-top hover:bg-white/[0.03] ${selected ? "bg-white/[0.045]" : ""}`}
-                        onClick={() => selectRow(rowKey, row)}
-                      >
-                        <td className="px-3 py-3">
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium text-tcp-text-primary">{row.title}</div>
-                            <div className="mt-1 flex min-w-0 flex-wrap gap-2 tcp-text-caption text-tcp-text-muted">
-                              <span className="font-mono">{row.id}</span>
-                              <span>{row.sourceLabel}</span>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <Badge tone={badgeTone(row.statusGroup)}>{row.statusLabel}</Badge>
-                        </td>
-                        <td className="px-3 py-3 text-tcp-text-secondary">{row.phase}</td>
-                        <td className="px-3 py-3 text-tcp-text-secondary">{row.triggerSource}</td>
-                        <td className="px-3 py-3">
-                          <div className="truncate text-tcp-text-secondary">{row.tenantOrg}</div>
-                          <div className="truncate tcp-text-caption text-tcp-text-muted">{row.tenantWorkspace}</div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="min-h-[4.25rem] rounded-md border border-white/10 bg-white/[0.025] px-2.5 py-2">
-                            <div className="truncate text-tcp-text-secondary">
-                              {row.orgUnitName || row.orgUnitId || "Tenant scoped"}
-                            </div>
-                            <div className="mt-1 truncate font-mono tcp-text-caption text-tcp-text-muted">
-                              {row.resourceLabel || row.resourceId || "n/a"}
-                            </div>
-                            <div className="mt-1 flex min-w-0 flex-wrap gap-1">
-                              {row.policyVersion ? (
-                                <span className="rounded border border-white/10 px-1.5 py-0.5 tcp-text-micro text-tcp-text-muted">
-                                  {row.policyVersion}
-                                </span>
-                              ) : null}
-                              {row.dataClasses?.slice(0, 2).map((dataClass: string) => (
-                                <span
-                                  key={dataClass}
-                                  className="rounded border border-white/10 px-1.5 py-0.5 tcp-text-micro text-tcp-text-muted"
-                                >
-                                  {dataClass}
-                                </span>
-                              ))}
-                              {row.knowledgeSourceCount ? (
-                                <span className="rounded border border-white/10 px-1.5 py-0.5 tcp-text-micro text-tcp-text-muted">
-                                  {row.knowledgeSourceCount} src
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="truncate font-mono tcp-text-caption text-tcp-text-secondary">
-                            {row.workspace || "n/a"}
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="line-clamp-2 text-tcp-text-secondary">{row.currentWait || "n/a"}</div>
-                          {row.waitDetail ? (
-                            <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">{row.waitDetail}</div>
-                          ) : null}
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="truncate text-tcp-text-secondary">{row.retryState}</div>
-                          {row.retryDetail ? (
-                            <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">{row.retryDetail}</div>
-                          ) : null}
-                        </td>
-                        <td className="px-3 py-3 text-tcp-text-secondary">
-                          {formatRunTimestamp(row.updatedAtMs)}
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="flex gap-1">
-                            <button
-                              type="button"
-                              aria-label="Inspect run detail"
-                              className="tcp-btn h-7 px-2 text-xs"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                selectRow(rowKey, row);
-                              }}
-                              title="Inspect run detail"
-                            >
-                              <Icon name="search" />
-                            </button>
-                            <button
-                              type="button"
-                              aria-label={`Open ${row.sourceLabel.toLowerCase()} view`}
-                              className="tcp-btn h-7 px-2 text-xs"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                navigate(row.route);
-                              }}
-                              title={`Open ${row.sourceLabel.toLowerCase()} view`}
-                            >
-                              <Icon name="external-link" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <EmptyState
-              title={rows.length ? "No matching runs" : "No runs yet"}
-              text={rows.length ? "Try another filter." : "Run activity will appear here."}
-            />
-          )}
-        </PanelCard>
+      <PanelCard
+        title="Run List"
+        subtitle={`${filteredRows.length} of ${rows.length} runs`}
+        fullHeight
+      >
+        {loading ? (
+          <LoadingState title="Loading runs" />
+        ) : filteredRows.length ? (
+          <div
+            data-testid="run-list"
+            className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-white/10"
+          >
+            <div className="divide-y divide-white/8">
+              {filteredRows.map((row: any) => {
+                const rowKey = `${row.source}:${row.id}`;
+                const selected = rowKey === `${selectedRow?.source}:${selectedRow?.id}`;
+                return (
+                  <article
+                    key={rowKey}
+                    className={`min-w-0 p-3 transition-colors hover:bg-white/[0.03] sm:p-4 ${
+                      selected ? "bg-white/[0.045]" : ""
+                    }`}
+                  >
+                    <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="break-words text-sm font-medium text-tcp-text-primary">
+                          {row.title}
+                        </div>
+                        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 tcp-text-caption text-tcp-text-muted">
+                          <span className="break-all font-mono">{row.id}</span>
+                          <span>{row.sourceLabel}</span>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 gap-1">
+                        <button
+                          type="button"
+                          aria-label={`Inspect run detail for ${row.title}`}
+                          className="tcp-icon-btn"
+                          onClick={() => selectRow(rowKey, row)}
+                          title="Inspect run detail"
+                        >
+                          <Icon name="panel-right-open" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Open ${row.sourceLabel.toLowerCase()} view for ${row.title}`}
+                          className="tcp-icon-btn"
+                          onClick={() => openRunDestination(row, navigate)}
+                          title={row.source === "context" ? "Open task board" : "Open run debugger"}
+                        >
+                          <Icon name="external-link" />
+                        </button>
+                      </div>
+                    </div>
 
-        <RunObservabilityPanel
-          selectedRow={selectedRow}
-          detail={detail}
-          loading={detailQuery.isLoading && !detailQuery.data && selectedRow?.source !== "context"}
-          error={detailQuery.data?.error || ""}
-          onOpen={() => selectedRow && navigate(selectedRow.route)}
-        />
-      </div>
+                    <dl className="mt-4 grid min-w-0 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-8">
+                      <RunField label="Status">
+                        <Badge tone={badgeTone(row.statusGroup)}>{row.statusLabel}</Badge>
+                      </RunField>
+                      <RunField label="Phase">{row.phase || "n/a"}</RunField>
+                      <RunField label="Trigger">{row.triggerSource || "n/a"}</RunField>
+                      <RunField label="Tenant">
+                        <span className="grid gap-0.5">
+                          <span>{row.tenantOrg || "local"}</span>
+                          <span className="text-tcp-text-muted">{row.tenantWorkspace || "local"}</span>
+                          {row.tenantDeployment ? (
+                            <span className="text-tcp-text-muted">{row.tenantDeployment}</span>
+                          ) : null}
+                        </span>
+                      </RunField>
+                      <RunField label="Scope" className="sm:col-span-2 lg:col-span-2 2xl:col-span-2">
+                        <RunScope row={row} />
+                      </RunField>
+                      <RunField label="Workspace">
+                        <span className="break-all font-mono tcp-text-caption">{row.workspace || "n/a"}</span>
+                      </RunField>
+                      <RunField label="Wait">
+                        <span className="grid gap-0.5">
+                          <span>{row.currentWait || "n/a"}</span>
+                          {row.waitDetail ? (
+                            <span className="text-tcp-text-muted">{row.waitDetail}</span>
+                          ) : null}
+                        </span>
+                      </RunField>
+                      <RunField label="Retry">
+                        <span className="grid gap-0.5">
+                          <span>{row.retryState || "n/a"}</span>
+                          {row.retryDetail ? (
+                            <span className="text-tcp-text-muted">{row.retryDetail}</span>
+                          ) : null}
+                        </span>
+                      </RunField>
+                      <RunField label="Updated">{formatRunTimestamp(row.updatedAtMs)}</RunField>
+                    </dl>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <EmptyState
+            title={rows.length ? "No matching runs" : "No runs yet"}
+            text={rows.length ? "Try another filter." : "Run activity will appear here."}
+          />
+        )}
+      </PanelCard>
+
+      <RunObservabilityPanel
+        open={detailOpen}
+        selectedRow={detailRow}
+        detail={detail}
+        loading={
+          (runsQuery.isLoading && !runsQuery.data && !detailQuery.data) ||
+          (detailQuery.isLoading && !detailQuery.data && selectedRow?.source !== "context")
+        }
+        error={detailQuery.data?.error || ""}
+        onOpen={() => detailRow && openRunDestination(detailRow, navigate)}
+        onClose={closeDetail}
+      />
     </div>
   );
 }

@@ -33,6 +33,53 @@ enum CompletionDeliverableState {
 struct CompletionDeliverableRequirement {
     path: String,
     owner_node_id: Option<String>,
+    requires_run_evidence: bool,
+}
+
+fn completion_output_target_is_local_file(path: &str) -> bool {
+    let path = path.trim();
+    let trimmed = path
+        .strip_prefix("file://")
+        .unwrap_or(path)
+        .trim();
+    !trimmed.is_empty() && !trimmed.contains("://")
+}
+
+fn completion_output_target_matches_webhook_event(
+    automation: &crate::AutomationV2Spec,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    path: &str,
+) -> bool {
+    let run_webhook = run
+        .automation_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.metadata.as_ref())
+        .and_then(|metadata| metadata.get("automation_webhook"));
+    let live_webhook = automation
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("automation_webhook"));
+    let Some(webhook) = run_webhook.or(live_webhook) else {
+        return false;
+    };
+    [
+        webhook.get("provider_event_kind"),
+        webhook.get("providerEventKind"),
+        webhook.pointer("/preview/event"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    .any(|event| event.trim() == path.trim())
+}
+
+fn automation_run_needs_initial_output_cleanup(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+) -> bool {
+    run.checkpoint.node_attempts.is_empty()
+        && run.checkpoint.node_outputs.is_empty()
+        && run.checkpoint.completed_nodes.is_empty()
+        && run.checkpoint.gate_history.is_empty()
 }
 
 fn completion_artifact_is_substantive(path: &str, text: &str) -> Result<(), String> {
@@ -73,6 +120,18 @@ fn completion_artifact_is_substantive(path: &str, text: &str) -> Result<(), Stri
     }
 }
 
+fn completion_node_was_skipped(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    node_id: &str,
+) -> bool {
+    run.checkpoint
+        .node_outputs
+        .get(node_id)
+        .and_then(|output| output.get("status"))
+        .and_then(Value::as_str)
+        .is_some_and(|status| status.eq_ignore_ascii_case("skipped"))
+}
+
 fn completion_required_deliverables(
     automation: &crate::AutomationV2Spec,
     run: &crate::automation_v2::types::AutomationV2RunRecord,
@@ -90,11 +149,34 @@ fn completion_required_deliverables(
             &run.run_id,
             started_at_ms,
         ) {
-            owner_by_path.insert(path.clone(), node.node_id.clone());
-            requirements.push(CompletionDeliverableRequirement {
-                path,
-                owner_node_id: Some(node.node_id.clone()),
-            });
+            owner_by_path.insert(
+                normalize_completion_path_for_compare(&path),
+                node.node_id.clone(),
+            );
+            if !completion_node_was_skipped(run, &node.node_id) {
+                requirements.push(CompletionDeliverableRequirement {
+                    path,
+                    owner_node_id: Some(node.node_id.clone()),
+                    requires_run_evidence: false,
+                });
+            }
+        }
+        if let Some(path) = node
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/artifact/path"))
+            .and_then(Value::as_str)
+            .map(|path| {
+                crate::app::state::automation::automation_runtime_placeholder_replace(
+                    path,
+                    Some(&runtime_values),
+                )
+            })
+        {
+            let normalized = normalize_completion_path_for_compare(&path);
+            if !normalized.is_empty() {
+                owner_by_path.insert(normalized, node.node_id.clone());
+            }
         }
     }
     for target in &automation.output_targets {
@@ -103,20 +185,47 @@ fn completion_required_deliverables(
             Some(&runtime_values),
         );
         let path = path.trim().to_string();
-        if path.is_empty() {
+        if path.is_empty()
+            || completion_output_target_matches_webhook_event(automation, run, &path)
+            || !completion_output_target_is_local_file(&path)
+        {
             continue;
         }
-        let owner_node_id = owner_by_path.get(&path).cloned();
+        let path = path
+            .strip_prefix("file://")
+            .unwrap_or(&path)
+            .trim()
+            .to_string();
+        let owner_node_id = owner_by_path
+            .get(&normalize_completion_path_for_compare(&path))
+            .cloned();
+        if owner_node_id
+            .as_deref()
+            .is_some_and(|node_id| completion_node_was_skipped(run, node_id))
+        {
+            continue;
+        }
         requirements.push(CompletionDeliverableRequirement {
             path,
             owner_node_id,
+            requires_run_evidence: true,
         });
     }
-    let mut seen = std::collections::HashSet::new();
-    requirements
-        .into_iter()
-        .filter(|requirement| seen.insert(requirement.path.clone()))
-        .collect()
+    let mut deduplicated = Vec::<CompletionDeliverableRequirement>::new();
+    for requirement in requirements {
+        if let Some(existing) = deduplicated
+            .iter_mut()
+            .find(|existing| existing.path == requirement.path)
+        {
+            existing.requires_run_evidence |= requirement.requires_run_evidence;
+            if existing.owner_node_id.is_none() {
+                existing.owner_node_id = requirement.owner_node_id;
+            }
+        } else {
+            deduplicated.push(requirement);
+        }
+    }
+    deduplicated
 }
 
 fn repairable_completion_owner(
@@ -297,7 +406,7 @@ fn completion_output_value_references_path(value: &Value, target: &str) -> bool 
     false
 }
 
-fn completion_unowned_output_target_has_run_evidence(
+fn completion_output_target_has_run_evidence(
     run: &crate::automation_v2::types::AutomationV2RunRecord,
     path: &str,
 ) -> bool {
@@ -318,15 +427,25 @@ fn assert_completion_deliverables(
         state => return state,
     }
     for requirement in completion_required_deliverables(automation, run) {
-        if requirement.owner_node_id.is_none()
-            && !completion_unowned_output_target_has_run_evidence(run, &requirement.path)
+        if requirement.requires_run_evidence
+            && !completion_output_target_has_run_evidence(run, &requirement.path)
         {
-            return CompletionDeliverableState::Failed {
-                detail: format!(
-                    "automation run deliverable `{}` lacks current-run output evidence",
-                    requirement.path
-                ),
-            };
+            let detail = format!(
+                "automation run deliverable `{}` lacks current-run output evidence",
+                requirement.path
+            );
+            if let Some(node_id) = repairable_completion_owner(
+                automation,
+                run,
+                requirement.owner_node_id.as_deref(),
+            ) {
+                return CompletionDeliverableState::Repair(CompletionDeliverableRepair {
+                    node_id,
+                    path: requirement.path,
+                    detail,
+                });
+            }
+            return CompletionDeliverableState::Failed { detail };
         }
         let resolved = match crate::app::state::automation::resolve_automation_output_path(
             workspace_root,

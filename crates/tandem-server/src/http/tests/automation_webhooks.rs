@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
+include!("automation_webhooks_preflight.rs");
+
 use super::*;
 use crate::app::state::{
     automation_webhook_signature_header,
@@ -585,13 +587,24 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
         .await
         .expect("first response");
     assert_eq!(first.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
+
+    let original_run_id = {
+        let mut runs = state.automation_v2_runs.write().await;
+        assert_eq!(runs.len(), 1);
+        let (run_id, run) = runs.iter_mut().next().expect("original run");
+        run.status = crate::AutomationRunStatus::Cancelled;
+        run.updated_at_ms = now + 1;
+        run_id.clone()
+    };
+
     let second = app
         .oneshot(webhook_request(
             &created.trigger.public_path_token,
             Some(&created.secret),
             body,
             "evt-duplicate-renamed",
-            now + 1,
+            now + 2,
         ))
         .await
         .expect("second response");
@@ -631,6 +644,18 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
     assert_eq!(
         duplicate.duplicate_of_delivery_id.as_deref(),
         Some(accepted.delivery_id.as_str())
+    );
+    assert_eq!(
+        duplicate.dedupe_reason_code.as_deref(),
+        Some("duplicate_body_digest")
+    );
+    assert_eq!(
+        accepted.queued_run_id.as_deref(),
+        Some(original_run_id.as_str())
+    );
+    assert_eq!(
+        duplicate.duplicate_of_run_id.as_deref(),
+        Some(original_run_id.as_str())
     );
     assert_eq!(
         accepted

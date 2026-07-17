@@ -946,6 +946,36 @@ The Notion page should include:
     }
 
     #[test]
+    fn infer_explicit_output_targets_ignores_webhook_event_identifiers() {
+        let prompt = "Create a workflow triggered by an authenticated webhook event named customer.incident_reported. Create demo-output/context/incident-context.md and publish demo-output/approved/incident-update.md.";
+
+        let targets = infer_explicit_output_targets(prompt);
+
+        assert_eq!(
+            targets,
+            vec![
+                "demo-output/approved/incident-update.md".to_string(),
+                "demo-output/context/incident-context.md".to_string(),
+            ]
+        );
+        assert!(!targets.iter().any(|target| target == "customer.incident_reported"));
+    }
+
+    #[test]
+    fn infer_explicit_output_targets_ignores_quoted_webhook_event_identifiers() {
+        for prompt in [
+            "Create a workflow triggered by a webhook event named \u{60}customer.incident_reported\u{60}. Create demo-output/incident.md.",
+            "Create a workflow triggered by webhook event type: \u{22}customer.incident_reported\u{22}. Create demo-output/incident.md.",
+            "Create a workflow triggered by a webhook event named “customer.incident_reported”. Create demo-output/incident.md.",
+            "Create a workflow triggered by webhook event customer.incident_reported. Create demo-output/incident.md.",
+        ] {
+            let targets = infer_explicit_output_targets(prompt);
+
+            assert_eq!(targets, vec!["demo-output/incident.md".to_string()]);
+        }
+    }
+
+    #[test]
     fn infer_explicit_output_targets_extracts_bare_filenames_from_write_clauses() {
         let prompt = "Read RESUME.md as the source of truth for skills. If resume_overview.md does not exist, create it. Create or append to daily_results_2026-04-15.md in the workspace root and keep the source-of-truth file untouched.";
 
@@ -956,6 +986,22 @@ The Notion page should include:
             vec![
                 "daily_results_2026-04-15.md".to_string(),
                 "resume_overview.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn infer_explicit_output_targets_accepts_unlisted_file_extensions() {
+        let prompt = "Create Cargo.lock. Generate schema.graphql. Write terraform.tfvars.";
+
+        let targets = infer_explicit_output_targets(prompt);
+
+        assert_eq!(
+            targets,
+            vec![
+                "Cargo.lock".to_string(),
+                "schema.graphql".to_string(),
+                "terraform.tfvars".to_string(),
             ]
         );
     }
