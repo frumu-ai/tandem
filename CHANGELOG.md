@@ -44,12 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate decision with the collected reason on `view_submission`, with inline
   validation for empty reasons, dedupe only after validation, and UTF-8
   decoding of free-form input. (#1910)
-- Added keystore-backed Slack credential storage: top-level and
-  per-connection bot tokens and signing secrets hoist into the OS keystore
-  under installation-keyed ids, are stripped from plaintext config, and are
-  injected into the effective config at read time. Explicit clears revoke
+- Added keystore-backed Slack credential storage: bot tokens and signing
+  secrets hoist into the OS keystore — the top-level signing secret and all
+  per-connection credentials under installation-keyed ids, the top-level
+  bot token under the shared legacy id — are stripped from plaintext
+  config, and are injected into the effective config at read time.
+  Explicitly clearing a signing secret or per-connection credential revokes
   the stored secret; removing a connection or deleting the channel purges
-  its stored credentials. (#1910)
+  its stored credentials; the top-level bot token is rotated by saving a
+  new value and revoked automatically on installation migration. (#1910)
 - Added a redesigned Runs view: distinct Runs icon, responsive
   single-column run list, large on-demand Run Detail modal, and
   run-specific debugger deep links, with modal backdrops and loading
@@ -60,12 +63,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Governed Slack ingress is now Events-only: a config carrying a tenant or
-  department binding that is not events-capable fails closed at listener
-  startup instead of running governed bindings through the unauthenticated
-  legacy poller. Unbound configs — including unbound events-capable ones —
-  keep the poller, and Slack URL verification is scoped to the installation
-  whose signing secret signed the handshake. (#1910)
+- Governed Slack ingress is now Events-only: a config that carries a tenant
+  or department binding but no signed-events capability anywhere fails
+  closed at listener startup instead of running governed bindings through
+  the unauthenticated legacy poller. Fully unbound configs (no governed
+  binding on any connection) — including unbound events-capable ones — keep
+  the poller; these startup gates are config-global, so mixing a governed
+  binding with events capability suppresses the poller for the whole
+  channel. Slack URL verification is scoped to the installation whose
+  signing secret signed the handshake. (#1910)
 - Slack allowlists are now stored faithfully: an empty allowlist means
   deny-all on signed ingress, no save path synthesizes a `"*"` wildcard,
   and opening a channel to everyone requires explicitly entering `*`.

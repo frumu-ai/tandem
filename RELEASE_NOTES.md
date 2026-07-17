@@ -65,25 +65,32 @@ so emoji and non-Latin text survive intact.
 
 ### Governed Slack Is Events-Only
 
-A Slack config carrying a tenant or department binding that is not
-events-capable now fails closed at listener startup instead of running
-governed bindings through the unauthenticated legacy poller. The poller
-remains for unbound local configs — including unbound events-capable ones,
-which keep poller ingress rather than losing both paths — and Slack URL
-verification handshakes are scoped to the installation whose signing secret
-actually signed the request.
+A Slack config that carries a tenant or department binding but no
+signed-events capability anywhere now fails closed at listener startup
+instead of running governed bindings through the unauthenticated legacy
+poller. The poller remains for fully unbound configs — ones with no
+governed binding on any connection — including unbound events-capable
+configs, which keep poller ingress rather than losing both paths. These
+startup gates are evaluated for the config as a whole: once a config mixes
+a governed binding with events capability, the poller is suppressed for
+the whole channel. Slack URL verification handshakes are scoped to the
+installation whose signing secret actually signed the request.
 
 ### Slack Credential Lifecycle Hardening
 
-Slack credentials never persist in plaintext config. Top-level and
-per-connection bot tokens and signing secrets hoist into the OS keystore
-under installation-keyed ids, are stripped from the on-disk file, and are
-injected back into the effective config at read time. Explicitly clearing a
-field revokes the stored secret; removing a connection or deleting the
-channel purges its stored credentials; and a save that migrates the Slack
-team/app identity never carries the old installation's secrets — it must
-supply fresh credentials or it is rejected, so a compromised or rotated
-credential cannot silently resurface under a new identity. Slack allowlists
+Slack credentials never persist in plaintext config. Bot tokens and signing
+secrets hoist into the OS keystore — the top-level signing secret and all
+per-connection credentials under installation-keyed ids, the top-level bot
+token under the shared legacy id — are stripped from the on-disk file, and
+are injected back into the effective config at read time. Explicitly
+clearing a signing secret or a per-connection credential revokes the stored
+secret; removing a connection or deleting the channel purges its stored
+credentials. The top-level bot token is rotated by saving a new value, and
+a save that migrates the Slack team/app identity never carries the old
+installation's secrets — it must supply fresh credentials or it is
+rejected, and the old stored token is revoked in the process, so a
+compromised or rotated credential cannot silently resurface under a new
+identity. Slack allowlists
 are stored faithfully: an empty allowlist means deny-all on signed ingress,
 and opening a channel to everyone requires an operator to explicitly enter
 `*` — no save path synthesizes the wildcard. This surface absorbed 24 rounds
