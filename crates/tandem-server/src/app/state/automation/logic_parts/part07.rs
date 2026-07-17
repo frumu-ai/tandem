@@ -1173,10 +1173,7 @@ pub(crate) fn automation_node_must_write_files_for_automation(
     runtime_values: Option<&AutomationPromptRuntimeValues>,
 ) -> Vec<String> {
     let read_only_names =
-        enforcement::automation_node_read_only_source_of_truth_name_variants(
-            node,
-            automation.workspace_root.as_deref(),
-        );
+        enforcement::automation_read_only_source_of_truth_name_variants_for_automation(automation);
     let mut declared_files = automation_node_must_write_files(node);
     declared_files.extend(
         super::prompting_impl::automation_node_declared_artifacts_to_create(node, runtime_values),

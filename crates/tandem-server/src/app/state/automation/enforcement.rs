@@ -581,13 +581,14 @@ pub(crate) fn automation_node_read_only_source_of_truth_name_variants(
 }
 
 pub(crate) fn automation_node_required_source_read_paths_for_automation(
-    _automation: &AutomationV2Spec,
+    automation: &AutomationV2Spec,
     node: &AutomationFlowNode,
     workspace_root: &str,
     runtime_values: Option<&AutomationPromptRuntimeValues>,
 ) -> Vec<String> {
     let combined = automation_node_workspace_intent_text_with_runtime(node, runtime_values);
-    let mut files = automation_read_only_file_tokens(&combined);
+    let mut files = automation_read_only_source_of_truth_files_for_automation(automation);
+    files.extend(automation_read_only_file_tokens(&combined));
     files.extend(
         automation_node_legacy_builder(node)
             .and_then(|builder| builder.get("input_files"))
@@ -603,6 +604,7 @@ pub(crate) fn automation_node_required_source_read_paths_for_automation(
     files.dedup();
     let mut normalized = files
         .into_iter()
+        .map(|path| super::automation_runtime_placeholder_replace(&path, runtime_values))
         .filter_map(|path| super::normalize_workspace_display_path(workspace_root, &path))
         .collect::<Vec<_>>();
     normalized.sort();
