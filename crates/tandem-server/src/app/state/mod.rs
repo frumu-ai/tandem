@@ -653,14 +653,38 @@ async fn build_channels_config(
             security_profile: cfg.security_profile,
         })
     });
-    let slack_events_ingress_enabled = channels.slack.as_ref().is_some_and(|config| {
-        config.events_enabled
-            && config
-                .signing_secret
-                .as_deref()
-                .is_some_and(|secret| !secret.trim().is_empty())
-    });
-    let slack = (!slack_events_ingress_enabled)
+    let slack_events_ingress_enabled = channels
+        .slack
+        .as_ref()
+        .is_some_and(|config| config.has_events_capable_connection());
+    let slack_has_governed_binding = channels
+        .slack
+        .as_ref()
+        .is_some_and(|config| config.has_governed_binding());
+    // Signed Events ingress suppresses the legacy poller — the poller is
+    // single-channel and unauthenticated per-sender, so mixing the two
+    // ingress modes would double-process events (TAN-763). But Events only
+    // serve GOVERNED (tenant-bound) connections; an events-capable config
+    // with no governed binding anywhere would otherwise have no working
+    // ingress at all (Events reject unbound connections), so unbound
+    // configs stay on the poller.
+    let slack_poller_suppressed = slack_events_ingress_enabled && slack_has_governed_binding;
+    // TAN-762 (convergence): governed Slack is Events-only. A config that
+    // binds a tenant or departments but is not events-capable must FAIL
+    // CLOSED — never silently run those bindings through the ungoverned
+    // poller, where every sender would share one static identity.
+    let slack_governed_without_events = !slack_events_ingress_enabled && slack_has_governed_binding;
+    if slack_governed_without_events {
+        tracing::warn!(
+            target: "tandem_server::channels",
+            code = "slack_governed_requires_events",
+            "channels.slack carries a tenant/department binding but is not events-capable; \
+             refusing to start the ungoverned legacy poller (TAN-762). Set events_enabled and \
+             signing_secret to serve governed Slack ingress, or remove the bindings for \
+             ungoverned local polling."
+        );
+    }
+    let slack = (!slack_poller_suppressed && !slack_governed_without_events)
         .then(|| channels.slack.clone())
         .flatten()
         .and_then(|cfg| {

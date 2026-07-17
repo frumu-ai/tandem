@@ -346,6 +346,19 @@ fn strip_persisted_secrets(value: &mut Value) {
                     cfg.remove("botToken");
                 }
             }
+            // The Slack signing secret (top-level and per-connection,
+            // TAN-763) is hoisted to the secret store just like bot tokens —
+            // no Slack credential may persist in the plaintext config file.
+            if let Some(cfg) = channels.get_mut("slack").and_then(|v| v.as_object_mut()) {
+                cfg.remove("signing_secret");
+                cfg.remove("signingSecret");
+            }
+            for entry in slack_connection_entries(channels) {
+                entry.remove("bot_token");
+                entry.remove("botToken");
+                entry.remove("signing_secret");
+                entry.remove("signingSecret");
+            }
         }
 
         let Some(providers) = root.get_mut("providers").and_then(|v| v.as_object_mut()) else {
@@ -358,6 +371,122 @@ fn strip_persisted_secrets(value: &mut Value) {
             cfg.remove("api_key");
             cfg.remove("apiKey");
         }
+    }
+}
+
+/// Mutable views of every object entry under `channels.slack.connections`.
+fn slack_connection_entries(
+    channels: &mut serde_json::Map<String, Value>,
+) -> Vec<&mut serde_json::Map<String, Value>> {
+    channels
+        .get_mut("slack")
+        .and_then(|v| v.as_object_mut())
+        .and_then(|cfg| cfg.get_mut("connections"))
+        .and_then(|v| v.as_array_mut())
+        .map(|entries| {
+            entries
+                .iter_mut()
+                .filter_map(Value::as_object_mut)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The raw installation identity `(team, app)` declared on a
+/// `channels.slack` object (or one of its connection entries).
+fn slack_raw_installation(
+    map: &serde_json::Map<String, Value>,
+) -> (Option<String>, Option<String>) {
+    let raw = |keys: [&str; 2]| {
+        keys.iter()
+            .find_map(|key| map.get(*key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    (
+        raw(["team_id", "workspace_id"]),
+        raw(["app_id", "api_app_id"]),
+    )
+}
+
+/// Stable secret-store id for one Slack connection entry's credential. Keyed
+/// by the entry's RESOLVED installation — its own (team, app) or, when the
+/// entry inherits them, the top-level values — plus the channel id. A secret
+/// is an installation credential: migrating the top-level app A → B changes
+/// an inheriting entry's id, so B never resurrects A's stored secret; the
+/// entry resolves secretless and fails closed until B's own secret is set.
+fn slack_connection_secret_store_id(
+    entry: &serde_json::Map<String, Value>,
+    field: &str,
+    top_team: Option<&str>,
+    top_app: Option<&str>,
+) -> String {
+    let (entry_team, entry_app) = slack_raw_installation(entry);
+    let team = entry_team.as_deref().or(top_team).unwrap_or("-");
+    let app = entry_app.as_deref().or(top_app).unwrap_or("-");
+    let channel_id = entry
+        .get("channel_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-");
+    // The provider-auth store normalizes ids to lowercase; match it so
+    // store and lookup agree.
+    format!("channel::slack::connection::{team}::{app}::{channel_id}::{field}").to_ascii_lowercase()
+}
+
+const SLACK_CONNECTION_SECRET_FIELDS: [(&str, &str); 2] = [
+    ("bot_token", "botToken"),
+    ("signing_secret", "signingSecret"),
+];
+
+/// Prefix of every stored top-level `channels.slack.signing_secret`. The
+/// full id is keyed by the configured installation (`::{team}::{app}`
+/// suffix): a signing secret is an app credential, so migrating the config
+/// from app A to app B must NOT inject A's stored secret as B's — the new
+/// identity resolves secretless and fails closed until its own secret is
+/// entered.
+pub const SLACK_SIGNING_SECRET_STORE_PREFIX: &str = "channel::slack::signing_secret";
+
+/// Installation-keyed secret-store id for the top-level Slack signing
+/// secret of this raw `channels.slack` object.
+fn slack_signing_secret_store_id(cfg: &serde_json::Map<String, Value>) -> String {
+    let (team, app) = slack_raw_installation(cfg);
+    let team = team.as_deref().unwrap_or("-");
+    let app = app.as_deref().unwrap_or("-");
+    format!("{SLACK_SIGNING_SECRET_STORE_PREFIX}::{team}::{app}").to_ascii_lowercase()
+}
+
+/// Prefix of every per-connection Slack credential in the secret store.
+pub const SLACK_CONNECTION_SECRET_PREFIX: &str = "channel::slack::connection::";
+
+/// Secret-store ids for one raw `connections[]` entry's credentials
+/// (bot token + signing secret), resolved against its `channels.slack`
+/// object for inherited installation identity. Used by removal paths to
+/// purge stored secrets for connections that no longer exist in config.
+pub fn slack_connection_secret_ids(
+    slack_cfg: &serde_json::Map<String, Value>,
+    entry: &serde_json::Map<String, Value>,
+) -> [String; 2] {
+    let (team, app) = slack_raw_installation(slack_cfg);
+    [
+        slack_connection_secret_store_id(entry, "bot_token", team.as_deref(), app.as_deref()),
+        slack_connection_secret_store_id(entry, "signing_secret", team.as_deref(), app.as_deref()),
+    ]
+}
+
+/// Delete every stored Slack credential — the top-level signing secret and
+/// all per-connection entries. Called when the Slack channel is deleted so
+/// a later re-add cannot silently resurrect revoked credentials.
+pub fn purge_slack_channel_secrets() {
+    let stored = crate::load_provider_auth();
+    for id in stored.keys().filter(|key| {
+        key.starts_with(SLACK_CONNECTION_SECRET_PREFIX)
+            || key.starts_with(SLACK_SIGNING_SECRET_STORE_PREFIX)
+    }) {
+        let _ = crate::delete_provider_auth(id);
     }
 }
 
@@ -383,6 +512,73 @@ fn hoist_persisted_secrets(value: &mut Value) -> anyhow::Result<()> {
             }
             if let Some(secret_id) = channel_secret_store_id(channel) {
                 crate::set_provider_auth(&secret_id, &token)?;
+            }
+        }
+        // Slack credentials (the top-level signing secret and per-connection
+        // credentials, TAN-763) hoist alongside the top-level token so
+        // `strip_persisted_secrets` can remove them from the plaintext file
+        // without losing them. An EXPLICITLY cleared field (present but
+        // empty, or null) is a revocation: the stored secret is deleted so
+        // injection cannot silently resurrect a rotated or compromised
+        // credential. An ABSENT field is the normal state of an
+        // already-stripped config and leaves the stored secret alone.
+        if let Some(cfg) = channels.get_mut("slack").and_then(|v| v.as_object_mut()) {
+            // The top-level slack bot token follows the same explicit-clear
+            // rule: a save that migrates the installation identity without a
+            // new token persists `bot_token: ""`, and the stored token must
+            // be DELETED — otherwise injection would resurrect the old
+            // app's token under the new installation on the next read.
+            if let Some(provided) = cfg.get("bot_token").or_else(|| cfg.get("botToken")) {
+                let token = provided.as_str().map(str::trim).unwrap_or_default();
+                if token.is_empty() && !channel_has_runtime_secret("slack") {
+                    if let Some(secret_id) = channel_secret_store_id("slack") {
+                        let _ = crate::delete_provider_auth(&secret_id);
+                    }
+                }
+            }
+            if let Some(provided) = cfg
+                .get("signing_secret")
+                .or_else(|| cfg.get("signingSecret"))
+            {
+                let secret = provided
+                    .as_str()
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .to_string();
+                let secret_id = slack_signing_secret_store_id(cfg);
+                if secret.is_empty() {
+                    let _ = crate::delete_provider_auth(&secret_id);
+                } else {
+                    crate::set_provider_auth(&secret_id, &secret)?;
+                }
+            }
+        }
+        let (top_team, top_app) = channels
+            .get("slack")
+            .and_then(Value::as_object)
+            .map(slack_raw_installation)
+            .unwrap_or((None, None));
+        for entry in slack_connection_entries(channels) {
+            for (field, alias) in SLACK_CONNECTION_SECRET_FIELDS {
+                let Some(provided) = entry.get(field).or_else(|| entry.get(alias)) else {
+                    continue;
+                };
+                let secret = provided
+                    .as_str()
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .to_string();
+                let secret_id = slack_connection_secret_store_id(
+                    entry,
+                    field,
+                    top_team.as_deref(),
+                    top_app.as_deref(),
+                );
+                if secret.is_empty() {
+                    let _ = crate::delete_provider_auth(&secret_id);
+                } else {
+                    crate::set_provider_auth(&secret_id, &secret)?;
+                }
             }
         }
     }
@@ -521,6 +717,56 @@ fn inject_stored_channel_secrets(value: &mut Value) {
         };
         if !token.trim().is_empty() {
             cfg.insert("bot_token".to_string(), Value::String(token.clone()));
+        }
+    }
+    // Slack signing secrets (top-level and per-connection) come back from
+    // the secret store the same way bot tokens do, so the effective config
+    // resolves connections exactly as if the secrets were still in the file.
+    if let Some(cfg) = channels.get_mut("slack").and_then(|v| v.as_object_mut()) {
+        let already_present = cfg
+            .get("signing_secret")
+            .or_else(|| cfg.get("signingSecret"))
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
+        if !already_present {
+            // Installation-keyed lookup: a config whose team/app changed
+            // resolves a DIFFERENT id, so the previous app's secret is never
+            // injected as the new app's — it fails closed instead.
+            let secret_id = slack_signing_secret_store_id(cfg);
+            if let Some(secret) = secrets.get(&secret_id) {
+                if !secret.trim().is_empty() {
+                    cfg.insert("signing_secret".to_string(), Value::String(secret.clone()));
+                }
+            }
+        }
+    }
+    let (top_team, top_app) = channels
+        .get("slack")
+        .and_then(Value::as_object)
+        .map(slack_raw_installation)
+        .unwrap_or((None, None));
+    for entry in slack_connection_entries(channels) {
+        for (field, alias) in SLACK_CONNECTION_SECRET_FIELDS {
+            let already_present = entry
+                .get(field)
+                .or_else(|| entry.get(alias))
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty());
+            if already_present {
+                continue;
+            }
+            let secret_id = slack_connection_secret_store_id(
+                entry,
+                field,
+                top_team.as_deref(),
+                top_app.as_deref(),
+            );
+            let Some(secret) = secrets.get(&secret_id) else {
+                continue;
+            };
+            if !secret.trim().is_empty() {
+                entry.insert(field.to_string(), Value::String(secret.clone()));
+            }
         }
     }
 }
@@ -1128,6 +1374,199 @@ mod tests {
         );
         let _ = crate::delete_provider_auth("channel::slack::bot_token");
 
+        let _ = fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn scrub_persisted_secrets_covers_slack_connection_credentials() {
+        // PR #1910 review (P1): per-connection Slack credentials must be
+        // hoisted to the secret store and stripped from the plaintext file
+        // exactly like top-level tokens — and injected back on read so the
+        // effective config resolves connections unchanged.
+        let _guard = provider_auth_test_guard().await;
+        let path = unique_temp_file("scrub-connections");
+        let original = json!({
+            "channels": {
+                "slack": {
+                    "team_id": "T1",
+                    "app_id": "A1",
+                    "signing_secret": "shh-top-level",
+                    "connections": [
+                        {
+                            "channel_id": "C_SALES",
+                            "bot_token": "xoxb-sales",
+                            "signing_secret": "shh-sales"
+                        },
+                        {
+                            "channel_id": "C_ENG",
+                            "team_id": "T2",
+                            "app_id": "A2",
+                            "bot_token": "xoxb-eng"
+                        }
+                    ]
+                }
+            },
+            "providers": {}
+        });
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&original).expect("serialize"),
+        )
+        .await
+        .expect("write");
+
+        let mut loaded =
+            serde_json::from_str::<Value>(&fs::read_to_string(&path).await.expect("read before"))
+                .expect("parse");
+        scrub_persisted_secrets(&mut loaded, Some(&path))
+            .await
+            .expect("scrub");
+
+        // On disk: no credential survives — neither the top-level signing
+        // secret nor any connection entry's.
+        let persisted =
+            serde_json::from_str::<Value>(&fs::read_to_string(&path).await.expect("read after"))
+                .expect("parse persisted");
+        assert!(
+            persisted
+                .pointer("/channels/slack/signing_secret")
+                .is_none(),
+            "the top-level signing secret must not persist in plaintext"
+        );
+        let entries = persisted
+            .pointer("/channels/slack/connections")
+            .and_then(Value::as_array)
+            .expect("connections persisted");
+        for entry in entries {
+            let entry = entry.as_object().expect("entry object");
+            assert!(
+                !entry.contains_key("bot_token") && !entry.contains_key("signing_secret"),
+                "per-connection credentials must not persist in plaintext: {entry:?}"
+            );
+        }
+
+        // In the secret store: each credential under its own id.
+        let stored = crate::load_provider_auth();
+        assert_eq!(
+            stored
+                .get("channel::slack::signing_secret::t1::a1")
+                .map(String::as_str),
+            Some("shh-top-level")
+        );
+        assert_eq!(
+            stored
+                .get("channel::slack::connection::t1::a1::c_sales::bot_token")
+                .map(String::as_str),
+            Some("xoxb-sales")
+        );
+        assert_eq!(
+            stored
+                .get("channel::slack::connection::t1::a1::c_sales::signing_secret")
+                .map(String::as_str),
+            Some("shh-sales")
+        );
+        assert_eq!(
+            stored
+                .get("channel::slack::connection::t2::a2::c_eng::bot_token")
+                .map(String::as_str),
+            Some("xoxb-eng")
+        );
+
+        // Injection restores the credentials for the effective config.
+        let mut rehydrated = persisted.clone();
+        inject_stored_channel_secrets(&mut rehydrated);
+        assert_eq!(
+            rehydrated.pointer("/channels/slack/signing_secret"),
+            Some(&json!("shh-top-level"))
+        );
+        assert_eq!(
+            rehydrated.pointer("/channels/slack/connections/0/bot_token"),
+            Some(&json!("xoxb-sales"))
+        );
+        assert_eq!(
+            rehydrated.pointer("/channels/slack/connections/0/signing_secret"),
+            Some(&json!("shh-sales"))
+        );
+        assert_eq!(
+            rehydrated.pointer("/channels/slack/connections/1/bot_token"),
+            Some(&json!("xoxb-eng"))
+        );
+
+        // A config migrated to a DIFFERENT app identity must not inherit the
+        // previous app's stored signing secret — the id is keyed by the
+        // installation, so the new identity resolves secretless.
+        let mut migrated = json!({
+            "channels": {
+                "slack": {
+                    "team_id": "T1",
+                    "app_id": "A_NEW",
+                    "connections": [ { "channel_id": "C_SALES" } ]
+                }
+            }
+        });
+        inject_stored_channel_secrets(&mut migrated);
+        assert!(
+            migrated.pointer("/channels/slack/signing_secret").is_none(),
+            "a changed app identity must not inject the previous app's secret"
+        );
+        assert!(
+            migrated
+                .pointer("/channels/slack/connections/0/signing_secret")
+                .is_none(),
+            "an inheriting connection must not receive the previous app's secret either"
+        );
+        assert!(
+            migrated
+                .pointer("/channels/slack/connections/0/bot_token")
+                .is_none(),
+            "an inheriting connection must not receive the previous app's bot token either"
+        );
+
+        // An EXPLICIT clear (present-but-empty field) revokes the stored
+        // secret — injection must not silently resurrect a rotated or
+        // compromised credential.
+        let mut cleared = json!({
+            "channels": {
+                "slack": {
+                    "team_id": "T1",
+                    "app_id": "A1",
+                    "signing_secret": "",
+                    "connections": [
+                        { "channel_id": "C_SALES", "bot_token": "", "signing_secret": "" }
+                    ]
+                }
+            }
+        });
+        scrub_persisted_secrets(&mut cleared, Some(&path))
+            .await
+            .expect("scrub cleared");
+        let stored = crate::load_provider_auth();
+        assert!(
+            !stored.contains_key("channel::slack::connection::t1::a1::c_sales::bot_token"),
+            "clearing the field must delete the stored secret"
+        );
+        assert!(!stored.contains_key("channel::slack::connection::t1::a1::c_sales::signing_secret"));
+        assert!(
+            !stored.contains_key("channel::slack::signing_secret::t1::a1"),
+            "clearing the top-level signing secret must delete the stored secret"
+        );
+        let mut rehydrated = cleared.clone();
+        inject_stored_channel_secrets(&mut rehydrated);
+        assert!(
+            rehydrated
+                .pointer("/channels/slack/connections/0/bot_token")
+                .is_none(),
+            "a cleared credential must not be injected back"
+        );
+
+        for id in [
+            "channel::slack::connection::t1::a1::c_sales::bot_token",
+            "channel::slack::connection::t1::a1::c_sales::signing_secret",
+            "channel::slack::connection::t2::a2::c_eng::bot_token",
+            "channel::slack::signing_secret::t1::a1",
+        ] {
+            let _ = crate::delete_provider_auth(id);
+        }
         let _ = fs::remove_file(&path).await;
     }
 

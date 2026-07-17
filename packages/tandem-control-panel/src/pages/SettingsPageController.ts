@@ -32,6 +32,7 @@ import type { NavigationVisibility } from "../app/navigation";
 import type { RouteId } from "../app/routes";
 import type { IconName } from "../ui/Icon";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
+import { parseSlackAllowedUsers, sameSlackAllowedUsers } from "./channelConnectionsModel.mjs";
 
 type BrowserBlockingIssue = {
   code?: string;
@@ -463,6 +464,12 @@ type ChannelConfigRow = {
   model_id?: string;
   style_profile?: string;
   security_profile?: string;
+  // Slack-only snapshot fields (TAN-763): installation identity, signing
+  // secret presence, and the per-connection summary rows.
+  team_id?: string;
+  app_id?: string;
+  has_signing_secret?: boolean;
+  connections_summary?: unknown[];
 };
 
 type ChannelStatusRow = {
@@ -1094,9 +1101,14 @@ function normalizeChannelAllowedUsers(input: string[] | string | null | undefine
 }
 
 function sameChannelAllowedUsers(
+  channel: string,
   left: string[] | string | null | undefined,
   right: string[] | string | null | undefined
 ) {
+  // Slack allowlists are faithful: blank (deny-all) and "*" (open-to-all)
+  // are different values, and the dirty check must see them as such or the
+  // Save button never enables for exactly that toggle.
+  if (channel === "slack") return sameSlackAllowedUsers(left, right);
   const a = normalizeChannelAllowedUsers(left).slice().sort();
   const b = normalizeChannelAllowedUsers(right).slice().sort();
   if (a.length !== b.length) return false;
@@ -1107,10 +1119,17 @@ export function channelConfigHasSavedSettings(
   channel: string,
   config: ChannelConfigRow | null | undefined
 ) {
-  const row = config && typeof config === "object" ? config : {};
+  const row: ChannelConfigRow = config && typeof config === "object" ? config : {};
   const allowedUsers = normalizeChannelAllowedUsers(row.allowed_users);
   return (
     !!row.has_token ||
+    // Connection-only Slack configs keep everything in `connections[]`
+    // (reported as `connections_summary`) with no top-level channel or
+    // token — they are saved settings all the same, so Remove must enable.
+    (Array.isArray(row.connections_summary) && row.connections_summary.length > 0) ||
+    !!row.has_signing_secret ||
+    !!String(row.team_id || "").trim() ||
+    !!String(row.app_id || "").trim() ||
     allowedUsers.some((user) => user !== "*") ||
     !!row.mention_only ||
     !!row.strict_kb_grounding ||
@@ -1131,7 +1150,7 @@ export function channelDraftMatchesConfig(
   const savedDraft = normalizeChannelDraft(channel, config);
   return (
     !String(draft.botToken || "").trim() &&
-    sameChannelAllowedUsers(draft.allowedUsers, savedDraft.allowedUsers) &&
+    sameChannelAllowedUsers(channel, draft.allowedUsers, savedDraft.allowedUsers) &&
     !!draft.mentionOnly === !!savedDraft.mentionOnly &&
     !!draft.strictKbGrounding === !!savedDraft.strictKbGrounding &&
     String(draft.guildId || "").trim() === String(savedDraft.guildId || "").trim() &&
@@ -2660,7 +2679,12 @@ export function useSettingsPageController({
       const modelProviderId = String(draft.modelProviderId || "").trim();
       const modelId = String(draft.modelId || "").trim();
       const payload: Record<string, unknown> = {
-        allowed_users: parseAllowedUsers(draft.allowedUsers),
+        // Slack allowlists are faithful: a blank field means deny-all on
+        // signed ingress and must not be widened to "*" by a routine save.
+        allowed_users:
+          channel === "slack"
+            ? parseSlackAllowedUsers(draft.allowedUsers)
+            : parseAllowedUsers(draft.allowedUsers),
         mention_only: !!draft.mentionOnly,
         strict_kb_grounding: !!draft.strictKbGrounding,
         security_profile: String(draft.securityProfile || "operator").trim() || "operator",
@@ -2677,7 +2701,15 @@ export function useSettingsPageController({
       }
       if (channel === "slack") {
         const channelId = String(draft.channelId || "").trim();
-        if (!channelId && !(channelsConfigQuery.data as any)?.slack?.channel_id) {
+        // Connection-only configs carry their channels in
+        // `connections[]` (reported as `connections_summary`) with no
+        // top-level channel_id; the server accepts and starts them, so
+        // the save guard must not demand a legacy channel ID for them.
+        const slackSnapshot = (channelsConfigQuery.data as any)?.slack;
+        const hasConnections =
+          Array.isArray(slackSnapshot?.connections_summary) &&
+          slackSnapshot.connections_summary.length > 0;
+        if (!channelId && !slackSnapshot?.channel_id && !hasConnections) {
           throw new Error("Slack channel ID is required.");
         }
         if (channelId) payload.channel_id = channelId;

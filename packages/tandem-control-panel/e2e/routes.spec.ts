@@ -30,6 +30,7 @@ const routeIdentity: Record<string, string> = {
   runs: "Runs",
   "control-loop": "Control Loop",
   "slack-receipts": "Slack Receipts",
+  "channel-connections": "Slack channel connections",
   approvals: "Approvals Inbox",
   settings: "Settings",
   channels: "Channels",

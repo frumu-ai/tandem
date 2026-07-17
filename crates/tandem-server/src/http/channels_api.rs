@@ -162,10 +162,297 @@ fn normalize_channel_config_obj<'a>(
                     .map(|value| Value::String(value.to_string()))
                     .unwrap_or(Value::Null),
             );
+            // The generic entry above synthesizes a "*" wildcard for a
+            // missing allowlist — right for the poller-era channels, wrong
+            // for Slack: signed Events ingress treats a missing/empty
+            // `allowed_users` as DENY-ALL (`resolve_slack_connections`).
+            // Report the stored value faithfully so a client echoing this
+            // snapshot back can never widen deny-all into open-to-all.
+            entry.insert(
+                "allowed_users".to_string(),
+                Value::Array(
+                    channel
+                        .and_then(|cfg| cfg.get("allowed_users"))
+                        .and_then(Value::as_array)
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(|value| Value::String(value.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                ),
+            );
+            // Per-connection summary (TAN-763). Secrets are reported as
+            // presence flags only, matching the top-level `token_masked`
+            // contract — never the raw values. Deliberately NOT under the
+            // real `connections` config key: clients echo this snapshot back
+            // through `PUT /channels/slack` (the Channels page Reconnect),
+            // and a lossy summary deserialized as connection config would
+            // wipe per-connection secrets and tenant bindings.
+            if let Some(cfg) = channel {
+                let connections =
+                    crate::config::channels::resolve_slack_connections(&Value::Object(cfg.clone()))
+                        .into_iter()
+                        .map(|connection| {
+                            serde_json::json!({
+                                "channel_id": connection.channel_id,
+                                "team_id": connection.team_id,
+                                "app_id": connection.app_id,
+                                "has_token": connection.bot_token.is_some(),
+                                "has_signing_secret": connection.signing_secret.is_some(),
+                                "events_enabled": connection.events_enabled,
+                                "events_capable": connection.events_capable(),
+                                "mention_only": connection.mention_only,
+                                "notify_approvals": connection.notify_approvals,
+                                "tenant_org_id": connection.tenant_org_id,
+                                "tenant_workspace_id": connection.tenant_workspace_id,
+                                "org_units": connection.org_units,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                entry.insert("connections_summary".to_string(), Value::Array(connections));
+            }
         }
         _ => {}
     }
     entry
+}
+
+/// One Slack sender observed on signed ingress, aggregated from the
+/// protected audit ledger (TAN-765). Gives admins the exact principal to map
+/// to a department without hand-composing `channel:slack:{team}:{app}:{user}`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SlackSenderSummary {
+    pub team_id: String,
+    pub app_id: String,
+    pub user_id: String,
+    /// The exact principal string the membership APIs expect as `member_id`.
+    pub principal: String,
+    /// Channels this sender was observed in (denials that predate channel
+    /// resolution may carry none).
+    pub channels: Vec<String>,
+    pub accepted_count: u64,
+    pub denied_count: u64,
+    pub last_seen_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_denial_reason: Option<String>,
+    /// Whether the principal holds at least one active org-unit membership
+    /// AND satisfies the department binding of every configured channel they
+    /// were observed in — a sender denied by a department-bound channel they
+    /// don't belong to is NOT mapped, even if they hold memberships elsewhere.
+    pub mapped: bool,
+    /// Active org-unit principal ids for this sender (empty when unmapped).
+    pub org_units: Vec<String>,
+    /// Per-observed-channel mapping state, so admins can see which channel's
+    /// department binding a sender still needs.
+    pub channel_access: Vec<SlackSenderChannelAccess>,
+    pub tenant_org_id: String,
+    pub tenant_workspace_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SlackSenderChannelAccess {
+    pub channel_id: String,
+    /// Departments the connection binds (empty = unbound channel).
+    pub bound_org_units: Vec<String>,
+    /// Whether this sender passes this channel's department gate: for a
+    /// department-bound channel, an active membership in a bound unit; for an
+    /// unbound channel, any active membership.
+    pub mapped: bool,
+    /// False when no configured connection currently claims this channel
+    /// (e.g. denials recorded before the channel was removed from config).
+    pub configured: bool,
+}
+
+#[derive(Debug, Default)]
+struct SlackSenderAggregate {
+    channels: std::collections::BTreeSet<String>,
+    accepted_count: u64,
+    denied_count: u64,
+    last_seen_at_ms: u64,
+    last_denied_at_ms: u64,
+    last_denial_reason: Option<String>,
+}
+
+const SLACK_SENDERS_CAP: usize = 500;
+
+/// `GET /channels/slack/senders` — recently seen Slack senders per bound
+/// tenant, with mapped/unmapped department status (TAN-765). Data source is
+/// the protected audit ledger (`channel.slack.ingress.accepted` / `.denied`),
+/// so the fail-closed unmapped state is visible and actionable.
+pub(crate) async fn slack_senders(State(state): State<AppState>) -> Response {
+    let effective = state.config.get_effective_value().await;
+    let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
+    let mut tenants = connections
+        .iter()
+        .filter_map(|connection| connection.bound_tenant())
+        .collect::<Vec<_>>();
+    tenants.sort();
+    tenants.dedup();
+
+    let mut senders: Vec<SlackSenderSummary> = Vec::new();
+    for (org_id, workspace_id) in tenants {
+        let tenant =
+            tandem_types::TenantContext::explicit(org_id.clone(), workspace_id.clone(), None);
+        let events = crate::audit::load_protected_audit_events_for_tenant(&state, &tenant).await;
+
+        let mut aggregates: HashMap<(String, String, String), SlackSenderAggregate> =
+            HashMap::new();
+        for event in &events {
+            let (dims, denial_reason) = match event.event_type.as_str() {
+                "channel.slack.ingress.accepted" => {
+                    (event.payload.pointer("/dimensions").cloned(), None)
+                }
+                "channel.slack.ingress.denied" => (
+                    event.payload.pointer("/details").cloned(),
+                    event
+                        .payload
+                        .pointer("/reason")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                ),
+                _ => continue,
+            };
+            let Some(dims) = dims else { continue };
+            let field = |key: &str| {
+                dims.get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            };
+            let (Some(team_id), Some(app_id), Some(user_id)) = (
+                field("slack_team_id"),
+                field("slack_app_id"),
+                field("slack_user_id"),
+            ) else {
+                continue;
+            };
+            let aggregate = aggregates.entry((team_id, app_id, user_id)).or_default();
+            if let Some(channel_id) = field("slack_channel_id") {
+                aggregate.channels.insert(channel_id);
+            }
+            aggregate.last_seen_at_ms = aggregate.last_seen_at_ms.max(event.created_at_ms);
+            match denial_reason {
+                Some(reason) => {
+                    aggregate.denied_count += 1;
+                    if event.created_at_ms >= aggregate.last_denied_at_ms {
+                        aggregate.last_denied_at_ms = event.created_at_ms;
+                        aggregate.last_denial_reason = Some(reason);
+                    }
+                }
+                None => aggregate.accepted_count += 1,
+            }
+        }
+        if aggregates.is_empty() {
+            continue;
+        }
+
+        // Resolve mapped status against the tenant's authority graph once.
+        let graph = state
+            .build_intra_tenant_authority_graph(&tenant, Vec::new())
+            .await;
+        let now_ms = crate::now_ms();
+        for ((team_id, app_id, user_id), aggregate) in aggregates {
+            let principal = format!("channel:slack:{team_id}:{app_id}:{user_id}");
+            let principal_ref = tandem_types::PrincipalRef::human_user(principal.clone());
+            let resolved_units = graph.resolved_unit_principals(&principal_ref, now_ms);
+            let active_units = graph
+                .units
+                .iter()
+                .filter(|unit| {
+                    unit.state.is_active() && resolved_units.contains(&unit.principal_ref())
+                })
+                .map(|unit| (unit.principal_ref().id, unit.unit_id.clone()))
+                .collect::<Vec<_>>();
+            let mut org_units = active_units
+                .iter()
+                .map(|(principal_id, _)| principal_id.clone())
+                .collect::<Vec<_>>();
+            org_units.sort();
+            org_units.dedup();
+            let has_membership = !org_units.is_empty();
+
+            // Mapping is per channel: a department-bound channel only counts
+            // as mapped when the sender belongs to one of ITS bound units
+            // (the same gate the run-time intersection enforces), so a
+            // sales-bound denial is not masked by an engineering membership.
+            let channel_access = aggregate
+                .channels
+                .iter()
+                .map(|channel_id| {
+                    let connection = connections.iter().find(|connection| {
+                        connection.channel_id == *channel_id
+                            && connection.team_id.as_deref() == Some(team_id.as_str())
+                            && connection.app_id.as_deref() == Some(app_id.as_str())
+                            && connection.bound_tenant()
+                                == Some((org_id.clone(), workspace_id.clone()))
+                    });
+                    let Some(connection) = connection else {
+                        return SlackSenderChannelAccess {
+                            channel_id: channel_id.clone(),
+                            bound_org_units: Vec::new(),
+                            mapped: false,
+                            configured: false,
+                        };
+                    };
+                    let bound_org_units = connection
+                        .org_units
+                        .iter()
+                        .map(|entry| entry.trim().to_string())
+                        .filter(|entry| !entry.is_empty())
+                        .collect::<Vec<_>>();
+                    let mapped = if connection.binds_departments() {
+                        active_units.iter().any(|(principal_id, unit_id)| {
+                            connection.binds_org_unit(principal_id, unit_id)
+                        })
+                    } else {
+                        has_membership
+                    };
+                    SlackSenderChannelAccess {
+                        channel_id: channel_id.clone(),
+                        bound_org_units,
+                        mapped,
+                        configured: true,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mapped = has_membership
+                && channel_access
+                    .iter()
+                    .filter(|access| access.configured)
+                    .all(|access| access.mapped);
+            senders.push(SlackSenderSummary {
+                team_id,
+                app_id,
+                user_id,
+                principal,
+                channels: aggregate.channels.into_iter().collect(),
+                accepted_count: aggregate.accepted_count,
+                denied_count: aggregate.denied_count,
+                last_seen_at_ms: aggregate.last_seen_at_ms,
+                last_denial_reason: aggregate.last_denial_reason,
+                mapped,
+                org_units,
+                channel_access,
+                tenant_org_id: org_id.clone(),
+                tenant_workspace_id: workspace_id.clone(),
+            });
+        }
+    }
+
+    senders.sort_by(|a, b| b.last_seen_at_ms.cmp(&a.last_seen_at_ms));
+    let truncated = senders.len() > SLACK_SENDERS_CAP;
+    senders.truncate(SLACK_SENDERS_CAP);
+
+    Json(serde_json::json!({
+        "senders": senders,
+        "truncated": truncated,
+    }))
+    .into_response()
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -402,8 +689,159 @@ pub(super) async fn channels_verify(
 
     match spec.name {
         "discord" => Ok(Json(discord_channel_verify(&state, &payload).await)),
+        "slack" => Ok(Json(slack_channel_verify(&state).await)),
         _ => Err(StatusCode::NOT_FOUND),
     }
+}
+
+/// Verify every configured Slack connection against the live installation
+/// (TAN-766): the bot token must authenticate (`auth.test`), belong to the
+/// connection's `team_id`, and — when `app_id` is configured — to the same
+/// Slack app (`bots.info`). Mirrors the runtime outbound binding check, but
+/// runs from config alone so the panel can verify before any event arrives.
+async fn slack_channel_verify(state: &AppState) -> Value {
+    let effective = state.config.get_effective_value().await;
+    let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
+    if connections.is_empty() {
+        return json!({
+            "ok": false,
+            "channel": "slack",
+            "connections": [],
+            "hints": ["Configure channels.slack (bot_token, channel_id) before verifying."],
+        });
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    let client = match client {
+        Ok(client) => client,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "channel": "slack",
+                "connections": [],
+                "hints": [format!("HTTP client construction failed: {error}")],
+            });
+        }
+    };
+
+    let mut rows = Vec::new();
+    let mut all_ok = true;
+    for connection in &connections {
+        let row = slack_connection_verify(&client, connection).await;
+        if row.get("ok") != Some(&Value::Bool(true)) {
+            all_ok = false;
+        }
+        rows.push(row);
+    }
+    json!({
+        "ok": all_ok,
+        "channel": "slack",
+        "connections": rows,
+    })
+}
+
+async fn slack_connection_verify(
+    client: &reqwest::Client,
+    connection: &crate::config::channels::ResolvedSlackConnection,
+) -> Value {
+    let base = json!({
+        "channel_id": connection.channel_id,
+        "team_id": connection.team_id,
+        "app_id": connection.app_id,
+        "events_capable": connection.events_capable(),
+    });
+    let mut row = base;
+    let Some(bot_token) = connection.bot_token.as_deref() else {
+        row["ok"] = json!(false);
+        row["error"] = json!("bot token not configured");
+        return row;
+    };
+    let api_base_url = connection
+        .api_base_url
+        .clone()
+        .unwrap_or_else(|| "https://slack.com/api".to_string());
+    let api_base_url = api_base_url.trim_end_matches('/');
+
+    let auth = match client
+        .get(format!("{api_base_url}/auth.test"))
+        .bearer_auth(bot_token)
+        .send()
+        .await
+    {
+        Ok(response) => match response.json::<Value>().await {
+            Ok(body) => body,
+            Err(error) => {
+                row["ok"] = json!(false);
+                row["error"] = json!(format!("Slack auth.test response was not JSON: {error}"));
+                return row;
+            }
+        },
+        Err(error) => {
+            row["ok"] = json!(false);
+            row["error"] = json!(format!("Slack auth.test request failed: {error}"));
+            return row;
+        }
+    };
+    if auth.get("ok") != Some(&Value::Bool(true)) {
+        row["ok"] = json!(false);
+        row["error"] = json!(format!(
+            "Slack auth.test rejected bot token: {}",
+            auth.get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ));
+        return row;
+    }
+    row["token_ok"] = json!(true);
+
+    let auth_team = auth.get("team_id").and_then(Value::as_str);
+    if let Some(expected_team) = connection.team_id.as_deref() {
+        let team_ok = auth_team == Some(expected_team);
+        row["team_ok"] = json!(team_ok);
+        if !team_ok {
+            row["ok"] = json!(false);
+            row["error"] = json!(format!(
+                "bot token belongs to team {}, expected {expected_team}",
+                auth_team.unwrap_or("unknown")
+            ));
+            return row;
+        }
+    }
+
+    if let Some(expected_app) = connection.app_id.as_deref() {
+        let Some(bot_id) = auth.get("bot_id").and_then(Value::as_str) else {
+            row["ok"] = json!(false);
+            row["error"] = json!("Slack auth.test token is not a bot identity");
+            return row;
+        };
+        let bots_info = match client
+            .get(format!("{api_base_url}/bots.info"))
+            .bearer_auth(bot_token)
+            .query(&[("bot", bot_id)])
+            .send()
+            .await
+        {
+            Ok(response) => response.json::<Value>().await.unwrap_or_default(),
+            Err(error) => {
+                row["ok"] = json!(false);
+                row["error"] = json!(format!("Slack bots.info request failed: {error}"));
+                return row;
+            }
+        };
+        let app_ok = bots_info.get("ok") == Some(&Value::Bool(true))
+            && bots_info.pointer("/bot/app_id").and_then(Value::as_str) == Some(expected_app);
+        row["app_ok"] = json!(app_ok);
+        if !app_ok {
+            row["ok"] = json!(false);
+            row["error"] = json!("bot token belongs to a different Slack app");
+            return row;
+        }
+    }
+
+    row["ok"] = json!(true);
+    row
 }
 
 const DISCORD_FLAG_GATEWAY_PRESENCE: u64 = 1 << 12;
@@ -708,12 +1146,13 @@ pub(super) async fn channels_put(
             channels_obj.insert(spec.config_key.to_string(), json!(cfg));
         }
         "slack" => {
+            let mut slack_identity_unchanged = true;
             if let Some(cfg) = input.as_object_mut() {
-                if cfg
+                let bot_token_provided = cfg
                     .get("bot_token")
                     .and_then(Value::as_str)
-                    .is_none_or(|v| v.trim().is_empty())
-                {
+                    .is_some_and(|v| !v.trim().is_empty());
+                if !bot_token_provided {
                     if let Some(existing) = existing_bot_token(spec) {
                         cfg.insert("bot_token".to_string(), Value::String(existing));
                     }
@@ -727,22 +1166,183 @@ pub(super) async fn channels_put(
                         cfg.insert("channel_id".to_string(), Value::String(existing));
                     }
                 }
+                // Connection-only configs have no top-level channel: GET
+                // reports `channel_id: null`, and a client echoing that
+                // snapshot back must not 400 on `SlackConfigFile` expecting a
+                // string before the preserved `connections[]` can make the
+                // config startable.
+                if cfg.get("channel_id").is_some_and(Value::is_null) {
+                    cfg.remove("channel_id");
+                }
+                // `GET /channels/config` returns a sanitized snapshot without
+                // these fields (secrets are presence flags, connections a
+                // summary). A client echoing that snapshot back — the
+                // Channels page Reconnect does — must not wipe the Slack
+                // installation identity, Events ingress, or per-connection /
+                // governance bindings. Absent keys inherit the stored value;
+                // explicitly provided values (including `[]`) still win.
+                const PRESERVED_SLACK_KEYS: [&str; 9] = [
+                    "team_id",
+                    "app_id",
+                    "events_enabled",
+                    "tenant",
+                    "org_units",
+                    "require_approval_step_up",
+                    "api_base_url",
+                    "notify_approvals",
+                    "allowed_users",
+                ];
+                if let Some(existing) = existing_channel_cfg(spec) {
+                    for key in PRESERVED_SLACK_KEYS {
+                        if !cfg.contains_key(key) {
+                            if let Some(value) = existing.get(key) {
+                                cfg.insert(key.to_string(), value.clone());
+                            }
+                        }
+                    }
+                    // Secret-BEARING keys are identity-gated: `existing`
+                    // comes from the effective config, so it carries
+                    // keystore-injected secrets. Carrying them into a save
+                    // that CHANGES team/app would re-hoist app A's
+                    // credentials under app B's installation ids and defeat
+                    // the fail-closed migration semantics.
+                    let installation = |map: &serde_json::Map<String, Value>| {
+                        let raw = |keys: [&str; 2]| {
+                            keys.iter()
+                                .find_map(|key| map.get(*key))
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_ascii_lowercase)
+                        };
+                        (
+                            raw(["team_id", "workspace_id"]),
+                            raw(["app_id", "api_app_id"]),
+                        )
+                    };
+                    let identity_unchanged = installation(cfg) == installation(existing);
+                    slack_identity_unchanged = identity_unchanged;
+                    if identity_unchanged && !cfg.contains_key("signing_secret") {
+                        if let Some(value) = existing.get("signing_secret") {
+                            cfg.insert("signing_secret".to_string(), value.clone());
+                        }
+                    }
+                    // The bot token filled above is the OLD installation's:
+                    // a save that migrates team/app must supply its own
+                    // token (or carry self-declared connections) rather
+                    // than resolve the new installation with the old app's
+                    // credentials — delivery would fail closed on binding
+                    // checks while the save looked usable.
+                    if !identity_unchanged && !bot_token_provided {
+                        cfg.remove("bot_token");
+                    }
+                    if !cfg.contains_key("connections") {
+                        if let Some(Value::Array(entries)) = existing.get("connections") {
+                            let preserved = entries
+                                .iter()
+                                .map(|entry| {
+                                    let Some(entry) = entry.as_object() else {
+                                        return entry.clone();
+                                    };
+                                    let mut entry = entry.clone();
+                                    // An entry that self-declares BOTH team
+                                    // and app keeps its resolved identity
+                                    // regardless of the top level; anything
+                                    // inheriting resolves under the NEW
+                                    // identity, so its old secrets must not
+                                    // ride along.
+                                    let (entry_team, entry_app) = installation(&entry);
+                                    let self_declared = entry_team.is_some() && entry_app.is_some();
+                                    if !identity_unchanged && !self_declared {
+                                        entry.remove("bot_token");
+                                        entry.remove("botToken");
+                                        entry.remove("signing_secret");
+                                        entry.remove("signingSecret");
+                                    }
+                                    Value::Object(entry)
+                                })
+                                .collect::<Vec<_>>();
+                            cfg.insert("connections".to_string(), Value::Array(preserved));
+                        }
+                    }
+                }
+                // Still absent (nothing provided, nothing stored): pin the
+                // allowlist to an explicit empty list so SlackConfigFile's
+                // legacy `default_allow_all` serde default cannot turn a
+                // fresh save into an open-to-all signed-ingress config.
+                if !cfg.contains_key("allowed_users") {
+                    cfg.insert("allowed_users".to_string(), Value::Array(Vec::new()));
+                }
             }
             let mut cfg: SlackConfigFile =
                 serde_json::from_value(input).map_err(|_| StatusCode::BAD_REQUEST)?;
-            cfg.allowed_users = crate::normalize_allowed_users_or_wildcard(cfg.allowed_users);
+            // Unlike telegram/discord, the Slack allowlist is stored
+            // faithfully — NOT normalized to a "*" wildcard. Signed Events
+            // ingress treats a missing/empty allowlist as deny-all, so
+            // persisting a synthesized wildcard would silently open every
+            // inheriting connection; the poller/notifier paths still
+            // normalize at use time, keeping legacy behavior. Opening a
+            // channel to everyone requires an explicit `["*"]`.
+            cfg.allowed_users = cfg
+                .allowed_users
+                .into_iter()
+                .map(|user| user.trim().to_string())
+                .filter(|user| !user.is_empty())
+                .collect();
             cfg.model_provider_id = trim_optional_string(cfg.model_provider_id);
             cfg.model_id = trim_optional_string(cfg.model_id);
-            if cfg.bot_token.trim().is_empty() {
+            if cfg.bot_token.trim().is_empty() && slack_identity_unchanged {
                 cfg.bot_token = existing_bot_token(spec).unwrap_or_default();
             }
             if cfg.channel_id.trim().is_empty() {
                 cfg.channel_id = existing_channel_id(spec).unwrap_or_default();
             }
-            if (cfg.bot_token.trim().is_empty() || cfg.channel_id.trim().is_empty())
-                && !channel_is_connected(spec)
-            {
+            // Startability is judged on the RESOLVED connections, not the
+            // legacy top-level fields: a config that carries channel_id and
+            // bot_token only inside `connections[]` is just as valid as the
+            // single-channel shape (entries inherit unset fields, so the
+            // legacy shape reduces to the same check).
+            let resolved =
+                crate::config::channels::resolve_slack_connections(&serde_json::json!(cfg));
+            let has_usable_connection = resolved.iter().any(|connection| {
+                !connection.channel_id.is_empty()
+                    && connection
+                        .bot_token
+                        .as_deref()
+                        .is_some_and(|token| !token.trim().is_empty())
+            });
+            if !has_usable_connection && !channel_is_connected(spec) {
                 return Err(StatusCode::BAD_REQUEST);
+            }
+            // Purge stored credentials for connections this save REMOVES:
+            // a binding dropped from `connections[]` must not keep a live
+            // keystore entry that would silently resurrect its credentials
+            // if the same (team, app, channel) binding is ever re-added.
+            // Layer-safe because PUT replaces only the project-level object.
+            let new_slack_value = serde_json::json!(cfg);
+            let empty_map = serde_json::Map::new();
+            let new_slack_obj = new_slack_value.as_object().unwrap_or(&empty_map);
+            let kept_ids: std::collections::HashSet<String> = new_slack_obj
+                .get("connections")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_object)
+                .flat_map(|entry| tandem_core::slack_connection_secret_ids(new_slack_obj, entry))
+                .collect();
+            if let Some(previous_obj) = channels_obj.get(spec.config_key).and_then(Value::as_object)
+            {
+                if let Some(previous_entries) =
+                    previous_obj.get("connections").and_then(Value::as_array)
+                {
+                    for entry in previous_entries.iter().filter_map(Value::as_object) {
+                        for id in tandem_core::slack_connection_secret_ids(previous_obj, entry) {
+                            if !kept_ids.contains(&id) {
+                                let _ = tandem_core::delete_provider_auth(&id);
+                            }
+                        }
+                    }
+                }
             }
             channels_obj.insert(spec.config_key.to_string(), json!(cfg));
         }
@@ -769,6 +1369,12 @@ pub(super) async fn channels_delete(
     };
     if let Some(secret_id) = tandem_core::channel_secret_store_id(spec.name) {
         let _ = tandem_core::delete_provider_auth(&secret_id);
+    }
+    if spec.name == "slack" {
+        // Deleting the channel revokes ALL its stored credentials — the
+        // top-level signing secret and every per-connection entry — so a
+        // later re-add cannot silently resurrect them from the keystore.
+        tandem_core::purge_slack_channel_secrets();
     }
     let mut project = state.config.get_project_value().await;
     let Some(root) = project.as_object_mut() else {

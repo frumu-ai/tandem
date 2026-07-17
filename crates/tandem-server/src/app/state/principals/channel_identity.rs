@@ -123,6 +123,40 @@ pub fn resolve_slack_user_for_installation(
     }
 }
 
+/// Resolve a Slack user against one resolved channel connection's allowlist.
+///
+/// Multi-connection variant of [`resolve_slack_user_for_installation`]: the
+/// caller has already located the `(team, app, channel)` connection, so the
+/// allowlist is the connection's own (per-connection `allowed_users` falling
+/// back to the top-level list during resolution). Deny-by-default on an empty
+/// list is preserved.
+pub fn resolve_slack_user_for_connection(
+    allowed_users: &[String],
+    team_id: &str,
+    app_id: &str,
+    surface_user_id: &str,
+) -> ChannelIdentityResolution {
+    let team_id = team_id.trim();
+    let app_id = app_id.trim();
+    let user_id = surface_user_id.trim();
+    if team_id.is_empty() || app_id.is_empty() || user_id.is_empty() {
+        return ChannelIdentityResolution::Denied {
+            kind: ChannelKind::Slack,
+            user_id: user_id.to_string(),
+        };
+    }
+    if !user_is_allowed(allowed_users, user_id) {
+        return ChannelIdentityResolution::Denied {
+            kind: ChannelKind::Slack,
+            user_id: user_id.to_string(),
+        };
+    }
+    ChannelIdentityResolution::Resolved(RequestPrincipal {
+        actor_id: Some(format!("channel:slack:{team_id}:{app_id}:{user_id}")),
+        source: "channel:slack".to_string(),
+    })
+}
+
 /// GOV-B5a: a channel is "open" when its `allowed_users` admits everyone via the
 /// `*` wildcard. On such a channel, being allowed to *talk* must not imply approval
 /// authority — approval there requires an explicit per-identity capability grant.

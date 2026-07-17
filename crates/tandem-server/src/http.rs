@@ -835,37 +835,30 @@ async fn run_approval_outbound(state: AppState, cancel: Arc<AtomicBool>) {
 
     let mut notifiers: Vec<Arc<dyn crate::app::approval_outbound::ApprovalNotifier>> = Vec::new();
     if let Some(slack_value) = channels.get("slack") {
-        match serde_json::from_value::<SlackConfigFile>(slack_value.clone()) {
-            Ok(cfg) if !cfg.bot_token.trim().is_empty() && !cfg.channel_id.trim().is_empty() => {
-                let slack_config = tandem_channels::config::SlackConfig {
-                    bot_token: cfg.bot_token,
-                    channel_id: cfg.channel_id,
-                    allowed_users: crate::config::channels::normalize_allowed_users_or_wildcard(
-                        cfg.allowed_users,
-                    ),
-                    mention_only: cfg.mention_only,
-                    security_profile: cfg.security_profile,
-                };
-                notifiers.push(Arc::new(
-                    crate::app::notifiers::slack::from_config_with_message_map(
-                        slack_config,
-                        message_map.clone(),
-                    ),
-                ));
-            }
-            Ok(_) => {
-                tracing::warn!(
-                    target: "tandem_server::approval_outbound",
-                    "Slack approval notifier disabled because bot_token or channel_id is empty"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "tandem_server::approval_outbound",
-                    %error,
-                    "Slack approval notifier disabled because config could not be parsed"
-                );
-            }
+        // One notifier per resolved connection (TAN-763). Connections opt out
+        // of approval fan-out via `notify_approvals: false`; the default keeps
+        // the legacy single-channel behavior. A tenant-bound connection only
+        // receives its own tenant's approval cards (TAN-764) — the notifier
+        // filters by `request.tenant`, so tenant A's approvals (and their
+        // action previews) never post into tenant B's channel. Unbound
+        // connections keep the legacy receive-all behavior.
+        let connections = crate::config::channels::resolve_slack_connections(slack_value);
+        let mut usable = 0usize;
+        for connection in &connections {
+            let Some(notifier) = crate::app::notifiers::slack::from_resolved_connection(
+                connection,
+                message_map.clone(),
+            ) else {
+                continue;
+            };
+            usable += 1;
+            notifiers.push(Arc::new(notifier));
+        }
+        if usable == 0 {
+            tracing::warn!(
+                target: "tandem_server::approval_outbound",
+                "Slack approval notifier disabled because no connection has a bot_token, channel_id, and notify_approvals enabled"
+            );
         }
     }
     if let Some(discord_value) = channels.get("discord") {

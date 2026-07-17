@@ -16,3 +16,4 @@ include!("routines_automations_parts/part05.rs");
 include!("routines_automations_parts/part02.rs");
 include!("routines_automations_parts/part04.rs");
 include!("routines_automations_parts/part03.rs");
+include!("routines_automations_parts/part08.rs");

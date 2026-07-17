@@ -230,6 +230,20 @@ pub struct InteractiveCardReasonPrompt {
     pub submit_label: String,
 }
 
+impl InteractiveCardReasonPrompt {
+    /// The standard rework-reason prompt copy, shared by approval-card
+    /// construction and the server-side rework modal so the two surfaces
+    /// never drift.
+    pub fn default_rework() -> Self {
+        Self {
+            modal_title: "Request rework".to_string(),
+            field_label: "What should change before this can be approved?".to_string(),
+            field_placeholder: Some("Add the feedback the workflow should use.".to_string()),
+            submit_label: "Send rework".to_string(),
+        }
+    }
+}
+
 /// Returned from `Channel::send_card` to give the dispatcher / engine a handle
 /// for later in-place edits ("Approved by @alice at 14:32") and threaded
 /// status updates.

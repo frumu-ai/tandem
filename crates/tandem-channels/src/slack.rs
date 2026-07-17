@@ -200,6 +200,35 @@ impl SlackChannel {
         Some(path.to_string_lossy().to_string())
     }
 
+    /// Open a modal via `views.open` (e.g. the rework-reason prompt). The
+    /// payload carries the interaction's `trigger_id`, which Slack only
+    /// honors for a few seconds after the click — callers must invoke this
+    /// before acking the interaction.
+    pub async fn open_view(&self, payload: &serde_json::Value) -> anyhow::Result<()> {
+        let resp = self
+            .http_client()
+            .post(self.api_url("views.open"))
+            .bearer_auth(&self.bot_token)
+            .json(payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("Slack views.open failed ({status}): {body_text}");
+        }
+        // Slack returns HTTP 200 for most app-level errors; check `"ok"`.
+        let parsed: serde_json::Value = serde_json::from_str(&body_text).unwrap_or_default();
+        if parsed.get("ok") != Some(&serde_json::Value::Bool(true)) {
+            let err = parsed
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown");
+            anyhow::bail!("Slack views.open error: {err}");
+        }
+        Ok(())
+    }
+
     pub async fn update_card_for_decision(
         &self,
         card: &InteractiveCard,

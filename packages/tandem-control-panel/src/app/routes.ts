@@ -29,6 +29,7 @@ export type RouteId =
   | "runs"
   | "control-loop"
   | "slack-receipts"
+  | "channel-connections"
   | "approvals"
   | "settings"
   | "packs-detail"

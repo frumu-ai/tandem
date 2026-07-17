@@ -37,6 +37,10 @@ const CodingWorkflowsPage = lazyNamed(
   "CodingWorkflowsPage"
 );
 const ChannelsPage = lazyNamed(() => import("../pages/ChannelsPage"), "ChannelsPage");
+const ChannelConnectionsPage = lazyNamed(
+  () => import("../pages/ChannelConnectionsPage"),
+  "ChannelConnectionsPage"
+);
 const PacksPage = lazyNamed(() => import("../pages/PacksPage"), "PacksPage");
 const OrchestratorPage = lazyNamed(() => import("../pages/OrchestratorPage"), "OrchestratorPage");
 const FilesPage = lazyNamed(() => import("../pages/FilesPage"), "FilesPage");
@@ -128,6 +132,8 @@ function renderRoute(routeId: ReturnType<typeof ensureRouteId>, pageProps: any) 
       return <TeamsPage {...pageProps} />;
     case "channels":
       return <ChannelsPage {...pageProps} />;
+    case "channel-connections":
+      return <ChannelConnectionsPage {...pageProps} />;
     case "mcp":
       return <SettingsPage {...pageProps} />;
     case "packs-detail":

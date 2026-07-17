@@ -26,17 +26,17 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-const SIGNING_SECRET: &str = "slack-events-test-secret";
-const SLACK_USER: &str = "U_GOVERNED";
-const SLACK_CHANNEL: &str = "C_GOVERNED";
-const SLACK_TEAM: &str = "T_GOVERNED";
-const SLACK_APP: &str = "A_GOVERNED";
-const ORG_ID: &str = "acme";
-const WORKSPACE_ID: &str = "hq";
+pub(super) const SIGNING_SECRET: &str = "slack-events-test-secret";
+pub(super) const SLACK_USER: &str = "U_GOVERNED";
+pub(super) const SLACK_CHANNEL: &str = "C_GOVERNED";
+pub(super) const SLACK_TEAM: &str = "T_GOVERNED";
+pub(super) const SLACK_APP: &str = "A_GOVERNED";
+pub(super) const ORG_ID: &str = "acme";
+pub(super) const WORKSPACE_ID: &str = "hq";
 
 #[derive(Clone, Default)]
-struct GovernedSlackProbe {
-    calls: Arc<AtomicUsize>,
+pub(super) struct GovernedSlackProbe {
+    pub(super) calls: Arc<AtomicUsize>,
     tools_seen: Arc<Mutex<Vec<Vec<String>>>>,
     prompts_seen: Arc<Mutex<Vec<Vec<String>>>>,
     failures_remaining: Arc<AtomicUsize>,
@@ -117,7 +117,10 @@ impl Provider for GovernedSlackProvider {
     }
 }
 
-async fn install_governed_slack_provider(state: &AppState, failures: usize) -> GovernedSlackProbe {
+pub(super) async fn install_governed_slack_provider(
+    state: &AppState,
+    failures: usize,
+) -> GovernedSlackProbe {
     let probe = GovernedSlackProbe {
         failures_remaining: Arc::new(AtomicUsize::new(failures)),
         ..Default::default()
@@ -157,6 +160,7 @@ impl tandem_tools::Tool for SlackVisibleTool {
 #[derive(Clone, Default)]
 pub(super) struct SlackApiMock {
     pub(super) posts: Arc<Mutex<Vec<Value>>>,
+    pub(super) views_opened: Arc<Mutex<Vec<Value>>>,
     attempts: Arc<AtomicUsize>,
     auth_attempts: Arc<AtomicUsize>,
     bots_info_attempts: Arc<AtomicUsize>,
@@ -164,6 +168,14 @@ pub(super) struct SlackApiMock {
     pub(super) auth_app_id: Arc<Mutex<String>>,
     auth_is_bot: Arc<AtomicBool>,
     failures_remaining: Arc<AtomicUsize>,
+}
+
+async fn slack_views_open(
+    State(state): State<SlackApiMock>,
+    Json(payload): Json<Value>,
+) -> Response {
+    state.views_opened.lock().await.push(payload);
+    Json(json!({ "ok": true, "view": { "id": "V_MOCK" } })).into_response()
 }
 
 async fn slack_bots_info(
@@ -242,6 +254,7 @@ async fn start_slack_api_mock_with_failures(
         .route("/auth.test", get(slack_auth_test))
         .route("/bots.info", get(slack_bots_info))
         .route("/chat.postMessage", post(slack_post_message))
+        .route("/views.open", post(slack_views_open))
         .with_state(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -255,7 +268,7 @@ async fn start_slack_api_mock_with_failures(
     (format!("http://{address}"), state, task)
 }
 
-async fn configure_slack_events(state: &AppState, api_base_url: &str) {
+pub(super) async fn configure_slack_events(state: &AppState, api_base_url: &str) {
     configure_slack_events_for_installation(
         state,
         api_base_url,
@@ -302,7 +315,7 @@ pub(super) async fn configure_slack_events_for_installation(
         .expect("configure Slack Events");
 }
 
-async fn seed_governed_slack_identity(state: &AppState) {
+pub(super) async fn seed_governed_slack_identity(state: &AppState) {
     seed_governed_slack_identity_with_tools(state, &["mcp.github.*"]).await;
 }
 
@@ -310,7 +323,7 @@ async fn seed_governed_slack_identity_with_tools(state: &AppState, tool_patterns
     seed_governed_slack_identity_for_user(state, SLACK_USER, tool_patterns).await;
 }
 
-async fn seed_governed_slack_identity_for_user(
+pub(super) async fn seed_governed_slack_identity_for_user(
     state: &AppState,
     user_id: &str,
     tool_patterns: &[&str],
@@ -425,7 +438,7 @@ pub(super) async fn seed_acme_demo_authority(
     dataset
 }
 
-fn signed_slack_event_request(
+pub(super) fn signed_slack_event_request(
     event_id: &str,
     user_id: &str,
     message_ts: &str,
@@ -530,7 +543,7 @@ fn signed_slack_url_verification_request(challenge: &str, request_timestamp: i64
         .expect("Slack URL verification request")
 }
 
-fn sign_slack_event(secret: &str, timestamp: i64, body: &[u8]) -> String {
+pub(super) fn sign_slack_event(secret: &str, timestamp: i64, body: &[u8]) -> String {
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes()).expect("HMAC key");
     mac.update(b"v0:");
     mac.update(timestamp.to_string().as_bytes());
@@ -631,12 +644,15 @@ async fn slack_capability_and_step_up_do_not_cross_installations() {
     state
         .upsert_channel_user_capability(
             crate::app::state::channel_user_capabilities::ChannelUserCapabilityRecord {
+                org_units: Vec::new(),
                 channel: "slack".to_string(),
                 user_id: first.to_string(),
                 max_tier: crate::app::state::channel_user_capabilities::StoredCommandTier::Approve,
                 enrolled_at_ms: Some(crate::now_ms()),
                 enrolled_by: Some("test".to_string()),
                 pinned_workspace_id: None,
+                tenant_org_id: None,
+                tenant_workspace_id: None,
             },
         )
         .await
@@ -648,6 +664,7 @@ async fn slack_capability_and_step_up_do_not_cross_installations() {
                 first,
                 tandem_channels::config::ChannelSecurityProfile::PublicDemo,
                 true,
+                None,
             )
             .await
     );
@@ -658,12 +675,15 @@ async fn slack_capability_and_step_up_do_not_cross_installations() {
                 second,
                 tandem_channels::config::ChannelSecurityProfile::PublicDemo,
                 true,
+                None,
             )
             .await
     );
-    state.grant_channel_step_up("slack", first, 60_000).await;
-    assert!(state.channel_step_up_active("slack", first).await);
-    assert!(!state.channel_step_up_active("slack", second).await);
+    state
+        .grant_channel_step_up("slack", first, 60_000, None)
+        .await;
+    assert!(state.channel_step_up_active("slack", first, None).await);
+    assert!(!state.channel_step_up_active("slack", second, None).await);
 }
 
 #[tokio::test]
@@ -957,6 +977,80 @@ async fn slack_events_accept_standard_signed_url_verification_payload() {
         .oneshot(forged)
         .await
         .expect("forged URL verification response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+/// PR #1910 review (P3): the url_verification handshake carries no team/app
+/// claim, so readiness must be judged for the installation whose signing
+/// secret signed the request — an interactions-only app must not get its
+/// Events URL accepted just because a different app on the shared endpoint
+/// has events enabled.
+#[tokio::test]
+async fn slack_url_verification_is_scoped_to_events_enabled_installations() {
+    let state = test_state().await;
+    let _ = state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "team_id": "T_EVENTS",
+                    "app_id": "A_EVENTS",
+                    "signing_secret": "events-secret",
+                    "events_enabled": true,
+                    "connections": [
+                        { "channel_id": "C_EVENTS", "bot_token": "xoxb-events" },
+                        {
+                            "channel_id": "C_INTERACTIONS",
+                            "team_id": "T_IX",
+                            "app_id": "A_IX",
+                            "bot_token": "xoxb-ix",
+                            "signing_secret": "interactions-secret",
+                            "events_enabled": false
+                        }
+                    ]
+                }
+            }
+        }))
+        .await
+        .expect("patch project");
+    let app = app_router(state);
+    let now = chrono::Utc::now().timestamp();
+    let handshake = |secret: &str, challenge: &str| {
+        let body = json!({
+            "token": "legacy-verification-token",
+            "challenge": challenge,
+            "type": "url_verification"
+        })
+        .to_string();
+        let signature = sign_slack_event(secret, now, body.as_bytes());
+        Request::builder()
+            .method("POST")
+            .uri("/channels/slack/events")
+            .header("content-type", "application/json")
+            .header("x-slack-request-timestamp", now.to_string())
+            .header("x-slack-signature", signature)
+            .body(Body::from(body))
+            .expect("Slack URL verification request")
+    };
+
+    // Signed by the events-enabled installation: challenge echoed.
+    let response = app
+        .clone()
+        .oneshot(handshake("events-secret", "events-ok"))
+        .await
+        .expect("events-app URL verification response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("URL verification body");
+    assert_eq!(body.as_ref(), b"events-ok");
+
+    // Signed by the interactions-only installation: setup must fail instead
+    // of accepting an Events URL whose callbacks would then be rejected.
+    let response = app
+        .oneshot(handshake("interactions-secret", "ix-denied"))
+        .await
+        .expect("interactions-app URL verification response");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 

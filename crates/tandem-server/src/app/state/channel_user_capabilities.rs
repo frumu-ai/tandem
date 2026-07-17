@@ -25,6 +25,20 @@ pub struct ChannelUserCapabilityRecord {
     pub enrolled_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_workspace_id: Option<String>,
+    /// TAN-765: org units (departments) this enrollment established
+    /// memberships in, recorded for audit/display. The authoritative
+    /// membership rows live in the enterprise org-unit store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub org_units: Vec<String>,
+    /// Tenant this capability is scoped to (copied from the pairing code).
+    /// A tenant-scoped grant only counts on connections bound to the SAME
+    /// tenant — a code issued for tenant A must not confer the Approve tier
+    /// on tenant B's channels just because the Slack principal string
+    /// matches. Absent on legacy records, which stay channel-global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_org_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -48,6 +62,19 @@ pub struct ChannelEnrollmentCodeRecord {
     pub issued_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_workspace_id: Option<String>,
+    /// TAN-765: org units (departments) to bind on redemption. Entries match
+    /// a unit's bare id (`engineering`) or principal id
+    /// (`department/engineering`); redeeming establishes active org-unit
+    /// memberships for the enrolled identity, not just an approval tier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub org_units: Vec<String>,
+    /// Tenant the `org_units` refs resolve in. Set together; when present,
+    /// redemption only matches units bound to this tenant, so a shared unit
+    /// name in another tenant can never satisfy this code's binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_org_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_workspace_id: Option<String>,
 }
 
 impl From<CommandTier> for StoredCommandTier {
@@ -73,6 +100,7 @@ impl From<StoredCommandTier> for CommandTier {
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub async fn issue_channel_enrollment_code(
         &self,
         channel: impl Into<String>,
@@ -81,7 +109,21 @@ impl AppState {
         ttl_ms: Option<u64>,
         issued_by: Option<String>,
         pinned_workspace_id: Option<String>,
-    ) -> ChannelEnrollmentCodeRecord {
+        org_units: Vec<String>,
+        tenant: Option<(String, String)>,
+    ) -> anyhow::Result<ChannelEnrollmentCodeRecord> {
+        let org_units = normalize_org_unit_refs(org_units);
+        // Fail fast on typos: every referenced unit must exist at issue time
+        // — within the enrollment's tenant when one is given, and rejecting
+        // cross-tenant-ambiguous refs otherwise — so the operator learns
+        // immediately rather than the redeeming user hitting a dead code.
+        self.resolve_org_unit_refs(
+            &org_units,
+            tenant
+                .as_ref()
+                .map(|(org_id, workspace_id)| (org_id.as_str(), workspace_id.as_str())),
+        )
+        .await?;
         let issued_at_ms = crate::now_ms();
         let expires_at_ms =
             issued_at_ms.saturating_add(ttl_ms.unwrap_or(DEFAULT_ENROLLMENT_TTL_MS));
@@ -101,12 +143,15 @@ impl AppState {
             expires_at_ms,
             issued_by,
             pinned_workspace_id,
+            org_units,
+            tenant_org_id: tenant.as_ref().map(|(org_id, _)| org_id.clone()),
+            tenant_workspace_id: tenant.map(|(_, workspace_id)| workspace_id),
         };
         self.channel_enrollment_codes
             .write()
             .await
             .insert(code, record.clone());
-        record
+        Ok(record)
     }
 
     pub async fn confirm_channel_enrollment_code(
@@ -125,6 +170,24 @@ impl AppState {
             return Err(anyhow::anyhow!("pairing code expired"));
         }
 
+        // TAN-765: establish the department memberships BEFORE the capability
+        // grant so a failure here leaves no partial authority. The code is
+        // already consumed either way — a failed binding needs a fresh code.
+        if !pending.org_units.is_empty() {
+            let tenant = match (&pending.tenant_org_id, &pending.tenant_workspace_id) {
+                (Some(org_id), Some(workspace_id)) => {
+                    Some((org_id.as_str(), workspace_id.as_str()))
+                }
+                _ => None,
+            };
+            self.grant_org_unit_memberships_for_principal(
+                &pending.user_id,
+                &pending.org_units,
+                tenant,
+            )
+            .await?;
+        }
+
         let record = ChannelUserCapabilityRecord {
             channel: pending.channel,
             user_id: pending.user_id,
@@ -132,9 +195,168 @@ impl AppState {
             enrolled_at_ms: Some(crate::now_ms()),
             enrolled_by: enrolled_by.or(pending.issued_by),
             pinned_workspace_id: pending.pinned_workspace_id,
+            org_units: pending.org_units,
+            tenant_org_id: pending.tenant_org_id,
+            tenant_workspace_id: pending.tenant_workspace_id,
         };
         self.upsert_channel_user_capability(record.clone()).await?;
         Ok(record)
+    }
+
+    /// Resolve org-unit references (bare unit id or `taxonomy/unit_id`
+    /// principal id) against the enterprise org-unit store. Errors on any
+    /// unknown reference. Ambiguity is always REJECTED, never resolved to an
+    /// arbitrary unit: without a `tenant` scope, a ref matching units in
+    /// more than one tenant fails (enrolling a sender must never grant
+    /// authority in a different tenant); and even inside one tenant a bare
+    /// unit id matching several taxonomies (`department/sales` vs
+    /// `region/sales`) fails until the caller uses the taxonomy-qualified
+    /// principal id.
+    pub async fn resolve_org_unit_refs(
+        &self,
+        refs: &[String],
+        tenant: Option<(&str, &str)>,
+    ) -> anyhow::Result<Vec<tandem_enterprise_contract::OrganizationUnit>> {
+        let units = self.enterprise.org_units.read().await;
+        refs.iter()
+            .map(|entry| {
+                let wanted = entry.trim();
+                let matches = units
+                    .values()
+                    .filter(|unit| unit.unit_id == wanted || unit.principal_ref().id == wanted)
+                    .filter(|unit| {
+                        tenant.is_none_or(|(org_id, workspace_id)| {
+                            unit.tenant_context.org_id == org_id
+                                && unit.tenant_context.workspace_id == workspace_id
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let mut identities = matches
+                    .iter()
+                    .map(|unit| {
+                        (
+                            unit.tenant_context.org_id.as_str(),
+                            unit.tenant_context.workspace_id.as_str(),
+                            unit.principal_ref().id,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                identities.sort();
+                identities.dedup();
+                match identities.as_slice() {
+                    [] => Err(anyhow::anyhow!("unknown org unit: {wanted}")),
+                    [_] => Ok(matches[0].clone()),
+                    many => {
+                        let mut tenants = many
+                            .iter()
+                            .map(|(org_id, workspace_id, _)| (*org_id, *workspace_id))
+                            .collect::<Vec<_>>();
+                        tenants.sort();
+                        tenants.dedup();
+                        if tenants.len() > 1 {
+                            Err(anyhow::anyhow!(
+                                "org unit ref {wanted} is ambiguous across tenants; scope the enrollment to a tenant"
+                            ))
+                        } else {
+                            let candidates = many
+                                .iter()
+                                .map(|(_, _, principal_id)| principal_id.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            Err(anyhow::anyhow!(
+                                "org unit ref {wanted} is ambiguous within the tenant (matches: {candidates}); use the taxonomy-qualified id"
+                            ))
+                        }
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// TAN-765: establish active org-unit memberships for a principal (e.g. a
+    /// Slack identity `channel:slack:{team}:{app}:{user}`). Existing active
+    /// memberships are kept as-is; new rows persist through the governance
+    /// store. Returns the membership ids now in effect for the references.
+    pub async fn grant_org_unit_memberships_for_principal(
+        &self,
+        member_id: &str,
+        unit_refs: &[String],
+        tenant: Option<(&str, &str)>,
+    ) -> anyhow::Result<Vec<String>> {
+        use tandem_types::{OrganizationUnitMembership, OrganizationUnitMembershipSource};
+
+        let member_id = member_id.trim();
+        anyhow::ensure!(!member_id.is_empty(), "member id must not be empty");
+        let units = self.resolve_org_unit_refs(unit_refs, tenant).await?;
+        let member = tandem_types::PrincipalRef::human_user(member_id);
+        let now_ms = crate::now_ms();
+
+        let mut effective_ids = Vec::new();
+        {
+            let mut registry = self.enterprise.org_unit_memberships.write().await;
+            for unit in units {
+                let unit_principal = unit.principal_ref();
+                if let Some(existing) = registry.values().find(|membership| {
+                    membership.state.is_active()
+                        && membership.unit.id == unit_principal.id
+                        && membership.member.id == member.id
+                        && membership.tenant_context.org_id == unit.tenant_context.org_id
+                        && membership.tenant_context.workspace_id
+                            == unit.tenant_context.workspace_id
+                }) {
+                    effective_ids.push(existing.membership_id.clone());
+                    continue;
+                }
+                let membership_id = format!(
+                    "enrollment-{}-{}",
+                    unit.unit_id,
+                    Uuid::new_v4()
+                        .simple()
+                        .to_string()
+                        .chars()
+                        .take(8)
+                        .collect::<String>()
+                );
+                let membership = OrganizationUnitMembership::active(
+                    membership_id.clone(),
+                    unit.tenant_context.clone(),
+                    unit_principal,
+                    member.clone(),
+                    OrganizationUnitMembershipSource::Direct,
+                    now_ms,
+                );
+                registry.insert(membership.membership_id.clone(), membership);
+                effective_ids.push(membership_id);
+            }
+            self.persist_enterprise_org_unit_memberships_locked(&registry)
+                .await?;
+        }
+        Ok(effective_ids)
+    }
+
+    /// Persist the org-unit membership registry through the governance store
+    /// (encryption-aware), mirroring how the store is loaded at startup.
+    async fn persist_enterprise_org_unit_memberships_locked(
+        &self,
+        registry: &HashMap<String, tandem_enterprise_contract::OrganizationUnitMembership>,
+    ) -> anyhow::Result<()> {
+        let records = registry
+            .iter()
+            .map(|(key, row)| {
+                crate::governance_store::GovernanceStoreFile::OrgUnitMemberships.json_record(
+                    key,
+                    row,
+                    &row.tenant_context,
+                    Some(&row.unit.id),
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        crate::governance_store::for_state(self)
+            .write_json_records(
+                crate::governance_store::GovernanceStoreFile::OrgUnitMemberships,
+                &records,
+            )
+            .await
     }
 
     pub async fn load_channel_user_capabilities(&self) -> anyhow::Result<()> {
@@ -164,7 +386,11 @@ impl AppState {
         &self,
         record: ChannelUserCapabilityRecord,
     ) -> anyhow::Result<()> {
-        let key = channel_user_capability_key(&record.channel, &record.user_id);
+        // Tenant-scoped grants live under a tenant-aware key so the same
+        // Slack principal can hold separate grants in several tenants —
+        // enrolling for tenant B must never clobber tenant A's grant.
+        // Untenanted (legacy/global) grants keep the legacy key.
+        let key = capability_storage_key(&record);
         self.channel_user_capabilities
             .write()
             .await
@@ -206,13 +432,39 @@ impl AppState {
         user_id: &str,
         fallback_profile: ChannelSecurityProfile,
         is_open_channel: bool,
+        channel_tenant: Option<(&str, &str)>,
     ) -> bool {
         // An explicit per-identity capability grant is authoritative — including a
-        // deliberate downgrade below `Approve`.
-        let key = channel_user_capability_key(channel, user_id);
-        if let Some(record) = self.channel_user_capabilities.read().await.get(&key) {
-            return CommandTier::from(record.max_tier) >= CommandTier::Approve;
+        // deliberate downgrade below `Approve`. A tenant-scoped grant applies
+        // ONLY on connections bound to the same tenant: a code issued for
+        // tenant A must not confer approval authority in tenant B's channels,
+        // and separate tenants' grants coexist under tenant-aware keys. A
+        // grant that does not apply here is treated as absent (the fallback
+        // logic below still runs); untenanted grants stay channel-global.
+        let capabilities = self.channel_user_capabilities.read().await;
+        if let Some((org_id, workspace_id)) = channel_tenant {
+            if let Some(record) = capabilities.get(&tenant_scoped_capability_key(
+                channel,
+                user_id,
+                org_id,
+                workspace_id,
+            )) {
+                return CommandTier::from(record.max_tier) >= CommandTier::Approve;
+            }
         }
+        if let Some(record) = capabilities.get(&channel_user_capability_key(channel, user_id)) {
+            // Records written before tenant-aware keys may carry a tenant
+            // under the legacy key: honor their scope without assuming the
+            // storage location.
+            let record_tenant = record
+                .tenant_org_id
+                .as_deref()
+                .zip(record.tenant_workspace_id.as_deref());
+            if record_tenant.is_none() || record_tenant == channel_tenant {
+                return CommandTier::from(record.max_tier) >= CommandTier::Approve;
+            }
+        }
+        drop(capabilities);
         // GOV-B5a: with no explicit grant, fall back to the channel security profile
         // ONLY on a non-open channel, where the hand-picked `allowed_users` list is a
         // deliberate identity-trust decision by the operator. On a wildcard-open (`*`)
@@ -226,13 +478,26 @@ impl AppState {
     }
 
     /// GOV-B5b: issue a per-identity step-up valid for `ttl_ms`, returning the
-    /// expiry timestamp. Replaces any prior grant for the same channel+user.
-    pub async fn grant_channel_step_up(&self, channel: &str, user_id: &str, ttl_ms: u64) -> u64 {
+    /// expiry timestamp. Replaces any prior grant for the same channel+user
+    /// (+tenant, when the issuer scopes the grant).
+    pub async fn grant_channel_step_up(
+        &self,
+        channel: &str,
+        user_id: &str,
+        ttl_ms: u64,
+        tenant: Option<(&str, &str)>,
+    ) -> u64 {
         let expires_at_ms = crate::now_ms().saturating_add(ttl_ms);
+        let key = match tenant {
+            Some((org_id, workspace_id)) => {
+                tenant_scoped_capability_key(channel, user_id, org_id, workspace_id)
+            }
+            None => channel_user_capability_key(channel, user_id),
+        };
         self.channel_step_up_grants
             .write()
             .await
-            .insert(channel_user_capability_key(channel, user_id), expires_at_ms);
+            .insert(key, expires_at_ms);
         expires_at_ms
     }
 
@@ -240,17 +505,40 @@ impl AppState {
     /// Expired grants are pruned on read. This is the per-user replacement for the
     /// legacy global `TANDEM_CHANNEL_STEP_UP_PIN`, and (unlike the slash-only PIN)
     /// is checkable on the button/interaction path.
-    pub async fn channel_step_up_active(&self, channel: &str, user_id: &str) -> bool {
-        let key = channel_user_capability_key(channel, user_id);
-        let mut guard = self.channel_step_up_grants.write().await;
-        match guard.get(&key).copied() {
-            Some(expires_at_ms) if expires_at_ms > crate::now_ms() => true,
-            Some(_) => {
-                guard.remove(&key);
-                false
-            }
-            None => false,
+    ///
+    /// Tenancy mirrors `channel_user_can_approve`: a tenant-scoped grant only
+    /// satisfies connections bound to that tenant, so a step-up earned while
+    /// approving in tenant A cannot carry over to the same principal's
+    /// approvals in tenant B. An unscoped grant (legacy issuance) satisfies
+    /// any connection.
+    pub async fn channel_step_up_active(
+        &self,
+        channel: &str,
+        user_id: &str,
+        channel_tenant: Option<(&str, &str)>,
+    ) -> bool {
+        let mut keys = Vec::with_capacity(2);
+        if let Some((org_id, workspace_id)) = channel_tenant {
+            keys.push(tenant_scoped_capability_key(
+                channel,
+                user_id,
+                org_id,
+                workspace_id,
+            ));
         }
+        keys.push(channel_user_capability_key(channel, user_id));
+        let now = crate::now_ms();
+        let mut guard = self.channel_step_up_grants.write().await;
+        for key in keys {
+            match guard.get(&key).copied() {
+                Some(expires_at_ms) if expires_at_ms > now => return true,
+                Some(_) => {
+                    guard.remove(&key);
+                }
+                None => {}
+            }
+        }
+        false
     }
 }
 
@@ -273,6 +561,37 @@ pub fn channel_user_capability_key(channel: &str, user_id: &str) -> String {
     )
 }
 
+/// Storage key for a tenant-scoped capability: distinct per tenant so the
+/// same principal's grants in different tenants coexist instead of the
+/// latest enrollment overwriting the previous tenant's grant.
+fn tenant_scoped_capability_key(
+    channel: &str,
+    user_id: &str,
+    org_id: &str,
+    workspace_id: &str,
+) -> String {
+    format!(
+        "{}@{}/{}",
+        channel_user_capability_key(channel, user_id),
+        org_id.trim(),
+        workspace_id.trim(),
+    )
+}
+
+/// Where a capability record is stored: tenant-aware for tenant-scoped
+/// grants, the legacy `channel:user` key otherwise.
+fn capability_storage_key(record: &ChannelUserCapabilityRecord) -> String {
+    match (
+        record.tenant_org_id.as_deref(),
+        record.tenant_workspace_id.as_deref(),
+    ) {
+        (Some(org_id), Some(workspace_id)) => {
+            tenant_scoped_capability_key(&record.channel, &record.user_id, org_id, workspace_id)
+        }
+        _ => channel_user_capability_key(&record.channel, &record.user_id),
+    }
+}
+
 /// GOV-B5b: whether a channel requires an active per-identity step-up before an
 /// approval/interaction is honored. Opt-in per channel via
 /// `/channels/{channel}/require_approval_step_up` (default `false`), so existing
@@ -289,6 +608,18 @@ pub fn channel_requires_approval_step_up(
 
 fn normalize_enrollment_code(code: &str) -> String {
     code.trim().to_ascii_uppercase()
+}
+
+fn normalize_org_unit_refs(raw: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in raw {
+        let normalized = entry.trim().to_string();
+        if normalized.is_empty() || out.contains(&normalized) {
+            continue;
+        }
+        out.push(normalized);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -308,6 +639,9 @@ mod tests {
                 enrolled_at_ms: Some(7),
                 enrolled_by: Some("admin".to_string()),
                 pinned_workspace_id: None,
+                org_units: Vec::new(),
+                tenant_org_id: None,
+                tenant_workspace_id: None,
             })
             .await
             .unwrap();
@@ -320,6 +654,117 @@ mod tests {
                 .channel_user_capability_tier("slack", "U123", ChannelSecurityProfile::PublicDemo)
                 .await,
             CommandTier::Approve
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_scoped_capability_only_counts_in_its_tenant() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = AppState::new_starting("test".to_string(), true);
+        state.channel_user_capabilities_path = dir.path().join("caps.json");
+        state
+            .upsert_channel_user_capability(ChannelUserCapabilityRecord {
+                channel: "slack".to_string(),
+                user_id: "U-tenant-a".to_string(),
+                max_tier: StoredCommandTier::Approve,
+                enrolled_at_ms: Some(1),
+                enrolled_by: Some("admin".to_string()),
+                pinned_workspace_id: None,
+                org_units: Vec::new(),
+                tenant_org_id: Some("acme".to_string()),
+                tenant_workspace_id: Some("hq".to_string()),
+            })
+            .await
+            .unwrap();
+
+        // The grant applies on a connection bound to the SAME tenant.
+        assert!(
+            state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    Some(("acme", "hq")),
+                )
+                .await
+        );
+        // Another tenant's channel: the grant is absent there, and the
+        // open-channel fallback denies.
+        assert!(
+            !state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    Some(("other", "ops")),
+                )
+                .await,
+            "a code issued for tenant A must not confer approval in tenant B"
+        );
+        // An unbound connection doesn't satisfy a tenant-scoped grant either.
+        assert!(
+            !state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    None,
+                )
+                .await
+        );
+
+        // A second enrollment for another tenant COEXISTS with the first —
+        // it must not overwrite tenant A's grant.
+        state
+            .upsert_channel_user_capability(ChannelUserCapabilityRecord {
+                channel: "slack".to_string(),
+                user_id: "U-tenant-a".to_string(),
+                max_tier: StoredCommandTier::Approve,
+                enrolled_at_ms: Some(2),
+                enrolled_by: Some("admin".to_string()),
+                pinned_workspace_id: None,
+                org_units: Vec::new(),
+                tenant_org_id: Some("other".to_string()),
+                tenant_workspace_id: Some("ops".to_string()),
+            })
+            .await
+            .unwrap();
+        assert!(
+            state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    Some(("acme", "hq")),
+                )
+                .await,
+            "enrolling for tenant B must not clobber tenant A's grant"
+        );
+        assert!(
+            state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    Some(("other", "ops")),
+                )
+                .await
+        );
+        assert!(
+            !state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    Some(("third", "hq")),
+                )
+                .await
         );
     }
 
@@ -352,8 +797,11 @@ mod tests {
                 None,
                 Some("operator".to_string()),
                 Some("/workspace/acme".to_string()),
+                Vec::new(),
+                None,
             )
-            .await;
+            .await
+            .expect("issue enrollment code");
         let record = state
             .confirm_channel_enrollment_code(&issued.code.to_ascii_lowercase(), None)
             .await
@@ -372,6 +820,7 @@ mod tests {
                     "fake-telegram-user",
                     ChannelSecurityProfile::PublicDemo,
                     false,
+                    None,
                 )
                 .await
         );
@@ -384,7 +833,13 @@ mod tests {
         let state = AppState::new_starting("test".to_string(), true);
         assert!(
             !state
-                .channel_user_can_approve("slack", "U-open", ChannelSecurityProfile::Operator, true)
+                .channel_user_can_approve(
+                    "slack",
+                    "U-open",
+                    ChannelSecurityProfile::Operator,
+                    true,
+                    None
+                )
                 .await,
             "open channel must not auto-confer approval"
         );
@@ -396,7 +851,8 @@ mod tests {
                     "slack",
                     "U-open",
                     ChannelSecurityProfile::Operator,
-                    false
+                    false,
+                    None
                 )
                 .await,
             "non-open Operator channel preserves approval"
@@ -416,6 +872,9 @@ mod tests {
                 enrolled_at_ms: Some(1),
                 enrolled_by: Some("admin".to_string()),
                 pinned_workspace_id: None,
+                org_units: Vec::new(),
+                tenant_org_id: None,
+                tenant_workspace_id: None,
             })
             .await
             .unwrap();
@@ -426,7 +885,8 @@ mod tests {
                     "slack",
                     "U-granted",
                     ChannelSecurityProfile::PublicDemo,
-                    true
+                    true,
+                    None
                 )
                 .await
         );
@@ -437,7 +897,8 @@ mod tests {
                     "slack",
                     "U-nogrant",
                     ChannelSecurityProfile::PublicDemo,
-                    true
+                    true,
+                    None
                 )
                 .await
         );
@@ -448,11 +909,49 @@ mod tests {
         // GOV-B5b: a per-identity step-up is active while unexpired and absent
         // otherwise (a zero-TTL grant is immediately expired).
         let state = AppState::new_starting("test".to_string(), true);
-        assert!(!state.channel_step_up_active("slack", "U-step").await);
-        state.grant_channel_step_up("slack", "U-step", 60_000).await;
-        assert!(state.channel_step_up_active("slack", "U-step").await);
-        state.grant_channel_step_up("slack", "U-step", 0).await;
-        assert!(!state.channel_step_up_active("slack", "U-step").await);
+        assert!(!state.channel_step_up_active("slack", "U-step", None).await);
+        state
+            .grant_channel_step_up("slack", "U-step", 60_000, None)
+            .await;
+        assert!(state.channel_step_up_active("slack", "U-step", None).await);
+        state
+            .grant_channel_step_up("slack", "U-step", 0, None)
+            .await;
+        assert!(!state.channel_step_up_active("slack", "U-step", None).await);
+    }
+
+    #[tokio::test]
+    async fn step_up_grants_are_tenant_scoped() {
+        // A step-up issued for tenant A must not satisfy the same principal's
+        // approvals on a connection bound to tenant B; an unscoped grant
+        // (legacy issuance) satisfies any connection.
+        let state = AppState::new_starting("test".to_string(), true);
+        let tenant_a = Some(("acme", "hq"));
+        let tenant_b = Some(("other", "ops"));
+        state
+            .grant_channel_step_up("slack", "U-step", 60_000, tenant_a)
+            .await;
+        assert!(
+            state
+                .channel_step_up_active("slack", "U-step", tenant_a)
+                .await
+        );
+        assert!(
+            !state
+                .channel_step_up_active("slack", "U-step", tenant_b)
+                .await
+        );
+        assert!(!state.channel_step_up_active("slack", "U-step", None).await);
+
+        state
+            .grant_channel_step_up("slack", "U-open", 60_000, None)
+            .await;
+        assert!(
+            state
+                .channel_step_up_active("slack", "U-open", tenant_a)
+                .await
+        );
+        assert!(state.channel_step_up_active("slack", "U-open", None).await);
     }
 
     #[test]

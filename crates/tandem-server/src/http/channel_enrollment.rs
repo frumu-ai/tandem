@@ -26,6 +26,17 @@ pub(crate) enum ChannelEnrollRequest {
         issued_by: Option<String>,
         #[serde(default)]
         pinned_workspace_id: Option<String>,
+        /// TAN-765: departments (org units, by bare id or `taxonomy/unit_id`)
+        /// the redeeming identity should become a member of.
+        #[serde(default)]
+        org_units: Vec<String>,
+        /// Tenant the `org_units` refs resolve in (set both or neither).
+        /// Without it, refs that match units in multiple tenants are
+        /// rejected rather than resolved to an arbitrary tenant.
+        #[serde(default)]
+        tenant_org_id: Option<String>,
+        #[serde(default)]
+        tenant_workspace_id: Option<String>,
     },
     Confirm {
         pairing_code: String,
@@ -56,6 +67,12 @@ pub(crate) struct ChannelStepUpRequest {
     user_id: String,
     #[serde(default)]
     ttl_seconds: Option<u64>,
+    /// Optional tenant scope. A scoped grant only satisfies connections
+    /// bound to this tenant; an unscoped grant satisfies any connection.
+    #[serde(default)]
+    tenant_org_id: Option<String>,
+    #[serde(default)]
+    tenant_workspace_id: Option<String>,
 }
 
 const DEFAULT_STEP_UP_TTL_MS: u64 = 5 * 60 * 1000;
@@ -72,11 +89,34 @@ pub(crate) async fn channel_step_up(
         .map(|seconds| seconds.saturating_mul(1000))
         .filter(|ms| *ms > 0)
         .unwrap_or(DEFAULT_STEP_UP_TTL_MS);
+    let tenant_org_id = input
+        .tenant_org_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let tenant_workspace_id = input
+        .tenant_workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let tenant = match (tenant_org_id, tenant_workspace_id) {
+        (Some(org_id), Some(workspace_id)) => Some((org_id, workspace_id)),
+        (None, None) => None,
+        // Half a tenant is a caller bug; refuse rather than silently issuing
+        // an unscoped (works-everywhere) grant the operator meant to scope.
+        _ => {
+            return enrollment_error(
+                StatusCode::BAD_REQUEST,
+                "tenant_org_id and tenant_workspace_id must be provided together",
+            );
+        }
+    };
     let expires_at_ms = state
         .grant_channel_step_up(
             &input.channel.trim().to_ascii_lowercase(),
             input.user_id.trim(),
             ttl_ms,
+            tenant,
         )
         .await;
     Json(json!({
@@ -84,6 +124,8 @@ pub(crate) async fn channel_step_up(
         "channel": input.channel.trim().to_ascii_lowercase(),
         "user_id": input.user_id.trim(),
         "expires_at_ms": expires_at_ms,
+        "tenant_org_id": tenant.map(|(org_id, _)| org_id),
+        "tenant_workspace_id": tenant.map(|(_, workspace_id)| workspace_id),
     }))
     .into_response()
 }
@@ -100,6 +142,9 @@ pub(crate) async fn channel_enroll(
             ttl_seconds,
             issued_by,
             pinned_workspace_id,
+            org_units,
+            tenant_org_id,
+            tenant_workspace_id,
         } => {
             if channel.trim().is_empty() || user_id.trim().is_empty() {
                 return enrollment_error(
@@ -107,7 +152,21 @@ pub(crate) async fn channel_enroll(
                     "channel and user_id are required",
                 );
             }
-            let enrollment = state
+            let tenant = match (tenant_org_id, tenant_workspace_id) {
+                (Some(org_id), Some(workspace_id))
+                    if !org_id.trim().is_empty() && !workspace_id.trim().is_empty() =>
+                {
+                    Some((org_id.trim().to_string(), workspace_id.trim().to_string()))
+                }
+                (None, None) => None,
+                _ => {
+                    return enrollment_error(
+                        StatusCode::BAD_REQUEST,
+                        "tenant_org_id and tenant_workspace_id must be provided together",
+                    );
+                }
+            };
+            let enrollment = match state
                 .issue_channel_enrollment_code(
                     channel.trim().to_ascii_lowercase(),
                     user_id.trim().to_string(),
@@ -117,8 +176,16 @@ pub(crate) async fn channel_enroll(
                     pinned_workspace_id
                         .as_deref()
                         .and_then(tandem_core::normalize_workspace_path),
+                    org_units,
+                    tenant,
                 )
-                .await;
+                .await
+            {
+                Ok(enrollment) => enrollment,
+                // Unknown org-unit references fail at issue time so the
+                // operator sees the typo immediately (TAN-765).
+                Err(error) => return enrollment_error(StatusCode::BAD_REQUEST, &error.to_string()),
+            };
             Json(ChannelEnrollResponse::CodeIssued {
                 pairing_code: enrollment.code.clone(),
                 expires_at_ms: enrollment.expires_at_ms,
@@ -166,6 +233,9 @@ mod tests {
                 ttl_seconds: Some(60),
                 issued_by: Some("operator".to_string()),
                 pinned_workspace_id: Some("/workspace/acme".to_string()),
+                org_units: Vec::new(),
+                tenant_org_id: None,
+                tenant_workspace_id: None,
             }),
         )
         .await;
@@ -194,7 +264,8 @@ mod tests {
                     "telegram",
                     "4242",
                     ChannelSecurityProfile::PublicDemo,
-                    false
+                    false,
+                    None
                 )
                 .await
         );

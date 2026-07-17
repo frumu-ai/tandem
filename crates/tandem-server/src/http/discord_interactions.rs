@@ -223,6 +223,7 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
             &user_id,
             profile,
             channel_is_open_to_all(&effective_config, ChannelKind::Discord),
+            None,
         )
         .await
     {
@@ -237,7 +238,7 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
     // per-identity step-up grant issued out-of-band by the control panel.
     if channel_requires_approval_step_up(&effective_config, ChannelKind::Discord.as_str())
         && !state
-            .channel_step_up_active(ChannelKind::Discord.as_str(), &user_id)
+            .channel_step_up_active(ChannelKind::Discord.as_str(), &user_id, None)
             .await
     {
         tracing::warn!(
@@ -358,6 +359,7 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
             &user_id,
             profile,
             channel_is_open_to_all(&effective_config, ChannelKind::Discord),
+            None,
         )
         .await
     {
@@ -372,7 +374,7 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
     // per-identity step-up grant issued out-of-band by the control panel.
     if channel_requires_approval_step_up(&effective_config, ChannelKind::Discord.as_str())
         && !state
-            .channel_step_up_active(ChannelKind::Discord.as_str(), &user_id)
+            .channel_step_up_active(ChannelKind::Discord.as_str(), &user_id, None)
             .await
     {
         tracing::warn!(

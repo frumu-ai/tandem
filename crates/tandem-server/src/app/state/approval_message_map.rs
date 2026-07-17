@@ -22,6 +22,15 @@ pub struct ApprovalMessageRecord {
     pub message_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
+    /// Slack installation `(team_id, app_id)` that posted the card. Two
+    /// installations can share a channel-id string, so decision updates must
+    /// route by the full binding — editing app B's message with app A's bot
+    /// token fails or edits the wrong card. Absent on legacy records and
+    /// non-Slack channels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
 }
 
 impl ApprovalMessageRecord {
@@ -32,7 +41,40 @@ impl ApprovalMessageRecord {
             recipient: sent.recipient,
             message_id: sent.message_id,
             thread_id: sent.thread_id,
+            team_id: None,
+            app_id: None,
         }
+    }
+
+    pub fn with_installation(mut self, installation: Option<(String, String)>) -> Self {
+        let (team_id, app_id) = installation.unzip();
+        self.team_id = team_id;
+        self.app_id = app_id;
+        self
+    }
+
+    /// The Slack connection this record's card may be edited through. A
+    /// record that carries its posting installation matches ONLY that
+    /// `(team_id, app_id, channel_id)` binding — if that exact connection is
+    /// gone, the update is skipped rather than attempted with another
+    /// installation's bot token (which fails, or edits a colliding card).
+    /// Legacy records without an installation keep recipient-only matching
+    /// with the first connection as the single-channel fallback.
+    pub fn select_slack_connection<'a>(
+        &self,
+        connections: &'a [crate::config::channels::ResolvedSlackConnection],
+    ) -> Option<&'a crate::config::channels::ResolvedSlackConnection> {
+        if self.team_id.is_some() || self.app_id.is_some() {
+            return connections.iter().find(|connection| {
+                connection.channel_id == self.recipient
+                    && connection.team_id == self.team_id
+                    && connection.app_id == self.app_id
+            });
+        }
+        connections
+            .iter()
+            .find(|connection| connection.channel_id == self.recipient)
+            .or_else(|| connections.first())
     }
 }
 
@@ -51,6 +93,13 @@ pub struct ApprovalCallbackRecord {
 struct ApprovalMessageMapFile {
     #[serde(default)]
     messages: HashMap<String, ApprovalMessageRecord>,
+    /// Every card sent for a request, one entry per `(channel, recipient)`.
+    /// Approval fan-out can post the same request to several Slack
+    /// connections (TAN-763); decision updates must edit ALL of them, not
+    /// just the last-recorded card. `messages` keeps the most recent record
+    /// for backward compatibility with pre-existing files and readers.
+    #[serde(default)]
+    message_deliveries: HashMap<String, Vec<ApprovalMessageRecord>>,
     #[serde(default)]
     run_threads: HashMap<String, ApprovalMessageRecord>,
     #[serde(default)]
@@ -94,7 +143,20 @@ impl ApprovalMessageMap {
         request: &tandem_types::ApprovalRequest,
         sent: InteractiveCardSent,
     ) -> anyhow::Result<()> {
-        let record = ApprovalMessageRecord::from_sent(request.request_id.clone(), sent);
+        self.record_approval_sent_via(request, sent, None).await
+    }
+
+    /// Record a sent approval card together with the Slack installation
+    /// `(team_id, app_id)` that posted it, so decision updates can route by
+    /// the full binding when channel-id strings collide across installations.
+    pub async fn record_approval_sent_via(
+        &self,
+        request: &tandem_types::ApprovalRequest,
+        sent: InteractiveCardSent,
+        installation: Option<(String, String)>,
+    ) -> anyhow::Result<()> {
+        let record = ApprovalMessageRecord::from_sent(request.request_id.clone(), sent)
+            .with_installation(installation);
         self.record_message(record, Some(request.run_id.as_str()))
             .await
     }
@@ -128,12 +190,40 @@ impl ApprovalMessageMap {
         if let Some(run_id) = run_id.map(str::trim).filter(|value| !value.is_empty()) {
             data.run_threads.insert(run_id.to_string(), record.clone());
         }
+        let deliveries = data
+            .message_deliveries
+            .entry(record.request_id.clone())
+            .or_default();
+        // One live card per (channel, installation, recipient): a re-send
+        // (reminder) replaces its own prior entry rather than accumulating,
+        // while two installations sharing a channel-id string keep separate
+        // cards.
+        if let Some(existing) = deliveries.iter_mut().find(|existing| {
+            existing.channel == record.channel
+                && existing.recipient == record.recipient
+                && existing.team_id == record.team_id
+                && existing.app_id == record.app_id
+        }) {
+            *existing = record.clone();
+        } else {
+            deliveries.push(record.clone());
+        }
         data.messages.insert(record.request_id.clone(), record);
         self.persist_locked(&data).await
     }
 
     pub async fn get(&self, request_id: &str) -> Option<ApprovalMessageRecord> {
         self.data.read().await.messages.get(request_id).cloned()
+    }
+
+    /// Every card sent for a request. Falls back to the legacy single-record
+    /// store for files written before `message_deliveries` existed.
+    pub async fn get_deliveries(&self, request_id: &str) -> Vec<ApprovalMessageRecord> {
+        let data = self.data.read().await;
+        match data.message_deliveries.get(request_id) {
+            Some(deliveries) if !deliveries.is_empty() => deliveries.clone(),
+            _ => data.messages.get(request_id).cloned().into_iter().collect(),
+        }
     }
 
     pub async fn get_thread_for_run(&self, run_id: &str) -> Option<ApprovalMessageRecord> {
@@ -271,6 +361,182 @@ mod tests {
         let record = loaded.get_thread_for_run("run-1").await.unwrap();
         assert_eq!(record.recipient, "C123");
         assert_eq!(record.message_id, "1700000000.000100");
+    }
+
+    fn sent_to(message_id: &str, recipient: &str) -> InteractiveCardSent {
+        InteractiveCardSent {
+            channel: "slack".to_string(),
+            message_id: message_id.to_string(),
+            recipient: recipient.to_string(),
+            thread_id: None,
+        }
+    }
+
+    #[test]
+    fn select_slack_connection_respects_the_recorded_installation() {
+        let connections = crate::config::channels::resolve_slack_connections(&serde_json::json!({
+            "connections": [
+                {
+                    "channel_id": "C_SHARED",
+                    "team_id": "T_A",
+                    "app_id": "A_A",
+                    "bot_token": "xoxb-a"
+                },
+                {
+                    "channel_id": "C_SHARED",
+                    "team_id": "T_B",
+                    "app_id": "A_B",
+                    "bot_token": "xoxb-b"
+                }
+            ]
+        }));
+        let record = |team: Option<&str>, app: Option<&str>| ApprovalMessageRecord {
+            request_id: "req".to_string(),
+            channel: "slack".to_string(),
+            recipient: "C_SHARED".to_string(),
+            message_id: "100.1".to_string(),
+            thread_id: None,
+            team_id: team.map(str::to_string),
+            app_id: app.map(str::to_string),
+        };
+
+        // A recorded installation selects exactly its own connection.
+        let selected = record(Some("T_B"), Some("A_B"))
+            .select_slack_connection(&connections)
+            .expect("installation B's connection");
+        assert_eq!(selected.bot_token.as_deref(), Some("xoxb-b"));
+
+        // If the posting installation is gone, do NOT fall back to the
+        // colliding channel-id — skip instead of editing with a wrong token.
+        assert!(
+            record(Some("T_GONE"), Some("A_GONE"))
+                .select_slack_connection(&connections)
+                .is_none(),
+            "a removed installation must skip, not borrow another installation's token"
+        );
+
+        // Legacy records without an installation keep recipient matching.
+        let legacy = record(None, None)
+            .select_slack_connection(&connections)
+            .expect("legacy recipient match");
+        assert_eq!(legacy.bot_token.as_deref(), Some("xoxb-a"));
+    }
+
+    #[tokio::test]
+    async fn deliveries_are_keyed_by_installation_when_channel_ids_collide() {
+        // PR #1910 review (P2): two installations can share a channel-id
+        // string. Their cards must be retained separately (keyed by the
+        // full installation binding) and a re-send through the SAME
+        // installation must still replace its own prior entry.
+        let map = ApprovalMessageMap::ephemeral();
+        let request = request("run-collide");
+        map.record_approval_sent_via(
+            &request,
+            sent_to("100.1", "C_SHARED"),
+            Some(("T_A".to_string(), "A_A".to_string())),
+        )
+        .await
+        .unwrap();
+        map.record_approval_sent_via(
+            &request,
+            sent_to("100.2", "C_SHARED"),
+            Some(("T_B".to_string(), "A_B".to_string())),
+        )
+        .await
+        .unwrap();
+
+        let deliveries = map.get_deliveries(&request.request_id).await;
+        assert_eq!(
+            deliveries.len(),
+            2,
+            "cards from two installations sharing a channel id must both survive"
+        );
+        assert_eq!(deliveries[0].team_id.as_deref(), Some("T_A"));
+        assert_eq!(deliveries[1].team_id.as_deref(), Some("T_B"));
+
+        // A reminder re-send through installation A replaces only A's card.
+        map.record_approval_sent_via(
+            &request,
+            sent_to("100.3", "C_SHARED"),
+            Some(("T_A".to_string(), "A_A".to_string())),
+        )
+        .await
+        .unwrap();
+        let deliveries = map.get_deliveries(&request.request_id).await;
+        assert_eq!(deliveries.len(), 2);
+        assert_eq!(
+            deliveries
+                .iter()
+                .find(|record| record.team_id.as_deref() == Some("T_A"))
+                .map(|record| record.message_id.as_str()),
+            Some("100.3")
+        );
+        assert_eq!(
+            deliveries
+                .iter()
+                .find(|record| record.team_id.as_deref() == Some("T_B"))
+                .map(|record| record.message_id.as_str()),
+            Some("100.2")
+        );
+    }
+
+    #[tokio::test]
+    async fn fanned_out_cards_are_all_retained_for_decision_updates() {
+        // PR #1910 review (P2): multi-connection fan-out posts one card per
+        // Slack channel; the map must retain every recipient so a decision
+        // can edit all of them, not just the last-recorded card.
+        let map = ApprovalMessageMap::ephemeral();
+        map.record_sent("req-fan", sent_to("1700000000.000100", "C_SALES"))
+            .await
+            .unwrap();
+        map.record_sent("req-fan", sent_to("1700000000.000200", "C_ENG"))
+            .await
+            .unwrap();
+
+        let deliveries = map.get_deliveries("req-fan").await;
+        assert_eq!(deliveries.len(), 2, "both fanned-out cards retained");
+        let recipients = deliveries
+            .iter()
+            .map(|record| record.recipient.as_str())
+            .collect::<Vec<_>>();
+        assert!(recipients.contains(&"C_SALES") && recipients.contains(&"C_ENG"));
+
+        // A re-send to the same (channel, recipient) replaces its own entry
+        // rather than accumulating a stale duplicate.
+        map.record_sent("req-fan", sent_to("1700000000.000300", "C_SALES"))
+            .await
+            .unwrap();
+        let deliveries = map.get_deliveries("req-fan").await;
+        assert_eq!(deliveries.len(), 2);
+        let sales = deliveries
+            .iter()
+            .find(|record| record.recipient == "C_SALES")
+            .unwrap();
+        assert_eq!(sales.message_id, "1700000000.000300");
+    }
+
+    #[tokio::test]
+    async fn get_deliveries_falls_back_to_legacy_single_record_files() {
+        // Files written before `message_deliveries` existed only carry the
+        // single-record `messages` store; deliveries must fall back to it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approval_message_map.json");
+        let legacy = serde_json::json!({
+            "messages": {
+                "req-legacy": {
+                    "request_id": "req-legacy",
+                    "channel": "slack",
+                    "recipient": "C123",
+                    "message_id": "1700000000.000100"
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        let map = ApprovalMessageMap::load_or_default(&path).await;
+        let deliveries = map.get_deliveries("req-legacy").await;
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].recipient, "C123");
     }
 
     #[tokio::test]

@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 
 use crate::traits::{
     InteractiveCard, InteractiveCardButton, InteractiveCardButtonStyle, InteractiveCardField,
+    InteractiveCardReasonPrompt,
 };
 
 /// Render an [`InteractiveCard`] to a Block Kit `blocks` array.
@@ -117,18 +118,22 @@ pub fn build_chat_update_payload_for_decision(
 
 /// Build a `views.open` modal payload for the rework-reason flow. Slack passes
 /// the trigger_id back from the user's button click; the caller supplies it
-/// here.
+/// here. `private_metadata` is an opaque string Slack echoes back verbatim in
+/// the `view_submission` callback — the caller stashes its correlation there
+/// (run id, channel binding) so the submission can be routed without any
+/// server-side modal state.
 pub fn build_rework_modal_payload(
-    card: &InteractiveCard,
+    prompt: &InteractiveCardReasonPrompt,
     trigger_id: &str,
     callback_id: &str,
-) -> Option<Value> {
-    let prompt = card.reason_prompt.as_ref()?;
-    Some(json!({
+    private_metadata: &str,
+) -> Value {
+    json!({
         "trigger_id": trigger_id,
         "view": {
             "type": "modal",
             "callback_id": callback_id,
+            "private_metadata": private_metadata,
             "title": { "type": "plain_text", "text": prompt.modal_title.clone() },
             "submit": { "type": "plain_text", "text": prompt.submit_label.clone() },
             "close": { "type": "plain_text", "text": "Cancel" },
@@ -149,7 +154,7 @@ pub fn build_rework_modal_payload(
                 }
             ]
         }
-    }))
+    })
 }
 
 fn header_block(title: &str) -> Value {
@@ -630,18 +635,15 @@ mod tests {
     }
 
     #[test]
-    fn build_rework_modal_payload_returns_none_when_no_reason_prompt() {
-        let mut card = approval_card();
-        card.reason_prompt = None;
-        let modal = build_rework_modal_payload(&card, "trigger.123", "rework_modal_v1");
-        assert!(modal.is_none());
-    }
-
-    #[test]
     fn build_rework_modal_payload_includes_input_block_with_label() {
         let card = approval_card();
-        let modal = build_rework_modal_payload(&card, "trigger.123", "rework_modal_v1")
-            .expect("modal payload");
+        let prompt = card.reason_prompt.as_ref().expect("reason prompt");
+        let modal = build_rework_modal_payload(
+            prompt,
+            "trigger.123",
+            "rework_modal_v1",
+            "{\"automation_v2_run_id\":\"run-1\"}",
+        );
         assert_eq!(
             modal.get("trigger_id").and_then(Value::as_str),
             Some("trigger.123")
@@ -651,6 +653,11 @@ mod tests {
         assert_eq!(
             view.get("callback_id").and_then(Value::as_str),
             Some("rework_modal_v1")
+        );
+        assert_eq!(
+            view.get("private_metadata").and_then(Value::as_str),
+            Some("{\"automation_v2_run_id\":\"run-1\"}"),
+            "private_metadata must round-trip through the view"
         );
         let blocks = view.get("blocks").and_then(Value::as_array).unwrap();
         let input_block = &blocks[0];

@@ -239,6 +239,7 @@ pub(crate) async fn telegram_interactions(
             &user_id,
             profile,
             channel_is_open_to_all(&effective_config, ChannelKind::Telegram),
+            None,
         )
         .await
     {
@@ -253,7 +254,7 @@ pub(crate) async fn telegram_interactions(
     // per-identity step-up grant issued out-of-band by the control panel.
     if channel_requires_approval_step_up(&effective_config, ChannelKind::Telegram.as_str())
         && !state
-            .channel_step_up_active(ChannelKind::Telegram.as_str(), &user_id)
+            .channel_step_up_active(ChannelKind::Telegram.as_str(), &user_id, None)
             .await
     {
         tracing::warn!(

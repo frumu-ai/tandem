@@ -66,7 +66,7 @@ async fn resume_recovered_slack_event(
 ) {
     let claim = recovered.claim;
     let prepared = prepare_recovered_slack_event(&state, recovered.recovery_payload).await;
-    let (effective_config, event, installation, verified) = match prepared {
+    let (connection, event, installation, verified) = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
             tracing::warn!(
@@ -93,7 +93,7 @@ async fn resume_recovered_slack_event(
     }
     run_claimed_slack_event(
         state,
-        effective_config,
+        connection,
         event,
         installation,
         verified,
@@ -107,7 +107,7 @@ async fn prepare_recovered_slack_event(
     state: &AppState,
     payload: Value,
 ) -> anyhow::Result<(
-    Value,
+    ResolvedSlackConnection,
     SlackMessageEvent,
     SlackInstallationBinding,
     VerifiedTenantContext,
@@ -115,30 +115,44 @@ async fn prepare_recovered_slack_event(
     let recovered: SlackEventRecoveryPayload =
         serde_json::from_value(payload).context("parse durable Slack recovery payload")?;
     let effective_config = state.config.get_effective_value().await;
+    let connections = slack_connections_from_effective_config(&effective_config);
     anyhow::ensure!(
-        effective_config
-            .pointer("/channels/slack/events_enabled")
-            .and_then(Value::as_bool)
-            == Some(true),
+        connections
+            .iter()
+            .any(|connection| connection.events_enabled),
         "Slack events are no longer enabled"
     );
     anyhow::ensure!(
-        config_string(&effective_config, "/channels/slack/team_id").as_deref()
-            == Some(recovered.installation.team_id.as_str()),
+        connections
+            .iter()
+            .any(|connection| connection.team_id.as_deref()
+                == Some(recovered.installation.team_id.as_str())),
         "recovered Slack team does not match current configuration"
     );
+    let installation_connections = connections
+        .iter()
+        .filter(|connection| {
+            connection.team_id.as_deref() == Some(recovered.installation.team_id.as_str())
+                && connection.app_id.as_deref() == Some(recovered.installation.app_id.as_str())
+        })
+        .collect::<Vec<_>>();
     anyhow::ensure!(
-        config_string(&effective_config, "/channels/slack/app_id").as_deref()
-            == Some(recovered.installation.app_id.as_str()),
+        !installation_connections.is_empty(),
         "recovered Slack app does not match current configuration"
     );
+    let connection = installation_connections
+        .into_iter()
+        .find(|connection| connection.channel_id == recovered.event.channel_id)
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!("recovered Slack channel does not match current configuration")
+        })?;
     anyhow::ensure!(
-        config_string(&effective_config, "/channels/slack/channel_id").as_deref()
-            == Some(recovered.event.channel_id.as_str()),
-        "recovered Slack channel does not match current configuration"
+        connection.events_enabled,
+        "Slack events are no longer enabled"
     );
-    let principal = match resolve_slack_user_for_installation(
-        &effective_config,
+    let principal = match resolve_slack_user_for_connection(
+        &connection.allowed_users,
         &recovered.installation.team_id,
         &recovered.installation.app_id,
         &recovered.event.user_id,
@@ -154,6 +168,7 @@ async fn prepare_recovered_slack_event(
     let verified = build_governed_slack_context(
         state,
         &effective_config,
+        &connection,
         &recovered.event,
         &recovered.installation,
         principal,
@@ -161,7 +176,7 @@ async fn prepare_recovered_slack_event(
     .await
     .map_err(anyhow::Error::msg)?;
     Ok((
-        effective_config,
+        connection,
         recovered.event,
         recovered.installation,
         verified,
@@ -171,6 +186,7 @@ async fn prepare_recovered_slack_event(
 pub(super) async fn build_governed_slack_context(
     state: &AppState,
     effective_config: &Value,
+    connection: &ResolvedSlackConnection,
     event: &SlackMessageEvent,
     installation: &SlackInstallationBinding,
     request_principal: RequestPrincipal,
@@ -179,12 +195,12 @@ pub(super) async fn build_governed_slack_context(
         .actor_id
         .clone()
         .ok_or_else(|| "resolved Slack principal is missing actor_id".to_string())?;
-    let (org_id, workspace_id) = channel_bound_tenant(effective_config, ChannelKind::Slack)
+    let (org_id, workspace_id) = connection
+        .bound_tenant()
         .ok_or_else(|| "slack channel must be bound to a governed tenant".to_string())?;
     let mut tenant_context =
         TenantContext::explicit(org_id.clone(), workspace_id.clone(), Some(actor_id.clone()));
-    tenant_context.deployment_id =
-        config_string(effective_config, "/channels/slack/tenant/deployment_id");
+    tenant_context.deployment_id = connection.tenant_deployment_id.clone();
 
     let principal = PrincipalRef::human_user(actor_id.clone());
     let now_ms = crate::now_ms();
@@ -200,6 +216,33 @@ pub(super) async fn build_governed_slack_context(
     if active_units.is_empty() {
         return Err("Slack user has no active organization-unit membership".to_string());
     }
+
+    // TAN-764: a department-bound connection narrows the run's authority to
+    // the intersection of the user's active units and the channel's bound
+    // units. The user's verified memberships stay authoritative — the channel
+    // can only narrow, never widen — and an empty intersection fails closed.
+    // Roles, grants, and capabilities below all derive from the intersected
+    // set, so both memory reach and the tool surface narrow with it.
+    let active_units = if !connection.binds_departments() {
+        active_units
+    } else {
+        let user_unit_ids = active_units
+            .iter()
+            .map(|unit| unit.principal_ref().id)
+            .collect::<Vec<_>>();
+        let intersected = active_units
+            .into_iter()
+            .filter(|unit| connection.binds_org_unit(&unit.principal_ref().id, &unit.unit_id))
+            .collect::<Vec<_>>();
+        if intersected.is_empty() {
+            return Err(format!(
+                "Slack user's organization units do not intersect the channel's bound org units (user: [{}]; channel: [{}])",
+                user_unit_ids.join(", "),
+                connection.org_units.join(", ")
+            ));
+        }
+        intersected
+    };
 
     let active_unit_principals = active_units
         .iter()
@@ -219,17 +262,11 @@ pub(super) async fn build_governed_slack_context(
     roles.sort();
     roles.dedup();
 
-    let mut grants = graph
-        .effective_grants(&principal, now_ms)
-        .into_iter()
-        .filter(|grant| {
-            grant
-                .source_principal
-                .as_ref()
-                .map(|source| active_unit_principals.contains(source))
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
+    let mut grants = narrow_grants_to_channel_authority(
+        graph.effective_grants(&principal, now_ms),
+        &active_unit_principals,
+        connection.binds_departments(),
+    );
     grants.sort_by(|left, right| left.grant_id.cmp(&right.grant_id));
     let capabilities = capabilities_from_grants(&grants);
     let authority_chain = AuthorityChain::from_request(request_principal);
@@ -301,6 +338,27 @@ pub(super) async fn build_governed_slack_context(
     Ok(verified)
 }
 
+/// TAN-764: which effective grants a channel-scoped run may carry.
+/// Unit-sourced grants survive only when their source unit is in the
+/// (possibly intersected) active set. A grant without a source unit is
+/// DIRECT (personal) authority — a department-bound channel narrows the run
+/// to the intersected units only, so a personal engineering grant must not
+/// ride into a sales-bound channel; direct grants survive only on unbound
+/// connections.
+fn narrow_grants_to_channel_authority(
+    grants: Vec<tandem_types::ScopedGrant>,
+    active_unit_principals: &[PrincipalRef],
+    binds_departments: bool,
+) -> Vec<tandem_types::ScopedGrant> {
+    grants
+        .into_iter()
+        .filter(|grant| match grant.source_principal.as_ref() {
+            Some(source) => active_unit_principals.contains(source),
+            None => !binds_departments,
+        })
+        .collect()
+}
+
 fn capabilities_from_grants(grants: &[tandem_types::ScopedGrant]) -> Vec<String> {
     let mut capabilities = grants
         .iter()
@@ -316,7 +374,7 @@ fn capabilities_from_grants(grants: &[tandem_types::ScopedGrant]) -> Vec<String>
 
 pub(super) async fn run_claimed_slack_event(
     state: AppState,
-    effective_config: Value,
+    connection: ResolvedSlackConnection,
     event: SlackMessageEvent,
     installation: SlackInstallationBinding,
     verified: VerifiedTenantContext,
@@ -325,7 +383,7 @@ pub(super) async fn run_claimed_slack_event(
 ) {
     let processing = process_governed_slack_event(
         state.clone(),
-        effective_config,
+        connection,
         event,
         installation,
         verified,
@@ -433,7 +491,7 @@ pub(super) async fn run_claimed_slack_event(
 
 async fn process_governed_slack_event(
     state: AppState,
-    effective_config: Value,
+    connection: ResolvedSlackConnection,
     event: SlackMessageEvent,
     installation: SlackInstallationBinding,
     verified: VerifiedTenantContext,
@@ -460,7 +518,7 @@ async fn process_governed_slack_event(
         let delivery_checkpoint_reused = claim.response_delivered_at_ms.is_some();
         if !delivery_checkpoint_reused {
             let delivery = tokio::select! {
-                result = deliver_slack_reply(&effective_config, &event, &installation, response) => result,
+                result = deliver_slack_reply(&connection, &event, &installation, response) => result,
                 _ = cancel.cancelled() => anyhow::bail!("Slack event cancelled before response replay"),
             };
             if let Err(error) = delivery {
@@ -508,7 +566,7 @@ async fn process_governed_slack_event(
             reconcile_checkpointed_slack_execution(&state, claim, &cancel).await?;
         return deliver_and_checkpoint_slack_response(
             &state,
-            &effective_config,
+            &connection,
             &event,
             &installation,
             &verified,
@@ -521,14 +579,9 @@ async fn process_governed_slack_event(
         .await;
     }
 
-    let session_id = get_or_create_governed_slack_session(
-        &state,
-        &effective_config,
-        &event,
-        &installation,
-        &verified,
-    )
-    .await?;
+    let session_id =
+        get_or_create_governed_slack_session(&state, &connection, &event, &installation, &verified)
+            .await?;
     let session_message_count = state
         .storage
         .get_session(&session_id)
@@ -545,6 +598,7 @@ async fn process_governed_slack_event(
             "attempt": claim.attempt,
             "roles": verified.roles,
             "org_units": verified.org_units,
+            "channel_org_units": connection.org_units,
             "tool_capabilities": verified.capabilities,
             "grant_ids": verified.strict_projection.as_ref().map(|strict| {
                 strict.grants.iter().map(|grant| grant.grant_id.clone()).collect::<Vec<_>>()
@@ -557,7 +611,7 @@ async fn process_governed_slack_event(
 
     let reply = run_governed_slack_prompt_in_session(
         &state,
-        &effective_config,
+        &connection,
         &event,
         &installation,
         &verified,
@@ -600,7 +654,7 @@ async fn process_governed_slack_event(
     let response = redact_slack_response(&reply);
     deliver_and_checkpoint_slack_response(
         &state,
-        &effective_config,
+        &connection,
         &event,
         &installation,
         &verified,
@@ -616,7 +670,7 @@ async fn process_governed_slack_event(
 #[allow(clippy::too_many_arguments)]
 async fn deliver_and_checkpoint_slack_response(
     state: &AppState,
-    effective_config: &Value,
+    connection: &ResolvedSlackConnection,
     event: &SlackMessageEvent,
     installation: &SlackInstallationBinding,
     verified: &VerifiedTenantContext,
@@ -630,7 +684,7 @@ async fn deliver_and_checkpoint_slack_response(
         anyhow::bail!("lost Slack event claim before staging response");
     }
     let delivery = tokio::select! {
-        result = deliver_slack_reply(effective_config, event, installation, response) => result,
+        result = deliver_slack_reply(connection, event, installation, response) => result,
         _ = cancel.cancelled() => Err(anyhow::anyhow!("Slack event cancelled before response delivery")),
     };
     if let Err(error) = delivery {
@@ -673,7 +727,7 @@ async fn deliver_and_checkpoint_slack_response(
 
 async fn run_governed_slack_prompt_in_session(
     state: &AppState,
-    effective_config: &Value,
+    connection: &ResolvedSlackConnection,
     event: &SlackMessageEvent,
     installation: &SlackInstallationBinding,
     verified: &VerifiedTenantContext,
@@ -683,7 +737,7 @@ async fn run_governed_slack_prompt_in_session(
     prior_message_count: usize,
     cancel: &CancellationToken,
 ) -> anyhow::Result<String> {
-    let model = slack_model_spec(effective_config);
+    let model = slack_model_spec(connection);
     let memory_subject = format!(
         "{}:{}:{}",
         installation.team_id, installation.app_id, event.user_id
@@ -697,9 +751,7 @@ async fn run_governed_slack_prompt_in_session(
         agent: None,
         tool_mode: None,
         tool_allowlist: Some(verified.capabilities.clone()),
-        strict_kb_grounding: effective_config
-            .pointer("/channels/slack/strict_kb_grounding")
-            .and_then(Value::as_bool),
+        strict_kb_grounding: connection.strict_kb_grounding,
         context_mode: None,
         write_required: None,
         prewrite_requirements: None,
@@ -858,13 +910,13 @@ async fn reconcile_checkpointed_slack_execution(
 
 async fn get_or_create_governed_slack_session(
     state: &AppState,
-    effective_config: &Value,
+    connection: &ResolvedSlackConnection,
     event: &SlackMessageEvent,
     installation: &SlackInstallationBinding,
     verified: &VerifiedTenantContext,
 ) -> anyhow::Result<String> {
     let scope_id = event.scope_id(installation);
-    let model = slack_model_spec(effective_config);
+    let model = slack_model_spec(connection);
     if let Some(mut session) = state
         .storage
         .list_sessions()
@@ -916,8 +968,7 @@ async fn get_or_create_governed_slack_session(
         return Ok(session_id);
     }
 
-    let security_profile =
-        channel_security_profile_from_config(effective_config, ChannelKind::Slack.as_str());
+    let security_profile = connection.security_profile;
     let request = CreateSessionRequest {
         parent_id: None,
         title: Some(format!("slack - {} - {scope_id}", event.user_id)),
@@ -960,10 +1011,10 @@ fn slack_session_metadata(
     })
 }
 
-fn slack_model_spec(effective_config: &Value) -> Option<ModelSpec> {
+fn slack_model_spec(connection: &ResolvedSlackConnection) -> Option<ModelSpec> {
     Some(ModelSpec {
-        provider_id: config_string(effective_config, "/channels/slack/model_provider_id")?,
-        model_id: config_string(effective_config, "/channels/slack/model_id")?,
+        provider_id: connection.model_provider_id.clone()?,
+        model_id: connection.model_id.clone()?,
     })
 }
 
@@ -996,41 +1047,29 @@ fn redact_slack_response(reply: &str) -> String {
 }
 
 async fn deliver_slack_reply(
-    effective_config: &Value,
+    connection: &ResolvedSlackConnection,
     event: &SlackMessageEvent,
     installation: &SlackInstallationBinding,
     reply: &str,
 ) -> anyhow::Result<()> {
-    verify_slack_bot_binding(effective_config, event, installation).await?;
-    let bot_token = config_string(effective_config, "/channels/slack/bot_token")
+    verify_slack_bot_binding(connection, event, installation).await?;
+    let bot_token = connection
+        .bot_token
+        .clone()
         .ok_or_else(|| anyhow::anyhow!("slack bot token not configured"))?;
-    let channel_id = config_string(effective_config, "/channels/slack/channel_id")
-        .unwrap_or_else(|| event.channel_id.clone());
-    let allowed_users = effective_config
-        .pointer("/channels/slack/allowed_users")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let channel_id = if connection.channel_id.is_empty() {
+        event.channel_id.clone()
+    } else {
+        connection.channel_id.clone()
+    };
     let slack_config = SlackConfig {
         bot_token,
         channel_id,
-        allowed_users,
-        mention_only: effective_config
-            .pointer("/channels/slack/mention_only")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        security_profile: channel_security_profile_from_config(
-            effective_config,
-            ChannelKind::Slack.as_str(),
-        ),
+        allowed_users: connection.allowed_users.clone(),
+        mention_only: connection.mention_only,
+        security_profile: connection.security_profile,
     };
-    let channel = match config_string(effective_config, "/channels/slack/api_base_url") {
+    let channel = match connection.api_base_url.clone() {
         Some(api_base_url) => SlackChannel::new_with_api_base_url(slack_config, api_base_url),
         None => SlackChannel::new(slack_config),
     };
@@ -1044,28 +1083,29 @@ async fn deliver_slack_reply(
 }
 
 async fn verify_slack_bot_binding(
-    effective_config: &Value,
+    connection: &ResolvedSlackConnection,
     event: &SlackMessageEvent,
     installation: &SlackInstallationBinding,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        config_string(effective_config, "/channels/slack/team_id").as_deref()
-            == Some(installation.team_id.as_str()),
+        connection.team_id.as_deref() == Some(installation.team_id.as_str()),
         "Slack outbound team binding changed"
     );
     anyhow::ensure!(
-        config_string(effective_config, "/channels/slack/app_id").as_deref()
-            == Some(installation.app_id.as_str()),
+        connection.app_id.as_deref() == Some(installation.app_id.as_str()),
         "Slack outbound app binding changed"
     );
     anyhow::ensure!(
-        config_string(effective_config, "/channels/slack/channel_id").as_deref()
-            == Some(event.channel_id.as_str()),
+        connection.channel_id == event.channel_id,
         "Slack outbound channel binding changed"
     );
-    let bot_token = config_string(effective_config, "/channels/slack/bot_token")
+    let bot_token = connection
+        .bot_token
+        .clone()
         .context("slack bot token not configured")?;
-    let api_base_url = config_string(effective_config, "/channels/slack/api_base_url")
+    let api_base_url = connection
+        .api_base_url
+        .clone()
         .unwrap_or_else(|| "https://slack.com/api".to_string());
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -1128,4 +1168,63 @@ async fn verify_slack_bot_binding(
         "Slack bot token belongs to a different app"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tandem_types::{GrantSource, ScopedGrant};
+
+    fn unit_grant(id: &str, unit: &PrincipalRef) -> ScopedGrant {
+        ScopedGrant::new(
+            id,
+            PrincipalRef::human_user("channel:slack:T1:A1:U1"),
+            ResourceRef::new("org", "ws", ResourceKind::Workspace, "ws"),
+            GrantSource::OrganizationUnitMembership,
+        )
+        .with_source_principal(unit.clone())
+    }
+
+    fn direct_grant(id: &str) -> ScopedGrant {
+        ScopedGrant::new(
+            id,
+            PrincipalRef::human_user("channel:slack:T1:A1:U1"),
+            ResourceRef::new("org", "ws", ResourceKind::Workspace, "ws"),
+            GrantSource::Direct,
+        )
+    }
+
+    #[test]
+    fn department_bound_channels_drop_direct_grants() {
+        let sales = PrincipalRef::organization_unit("department/sales");
+        let engineering = PrincipalRef::organization_unit("department/engineering");
+        let intersected = vec![sales.clone()];
+        let grants = vec![
+            unit_grant("sales-grant", &sales),
+            unit_grant("eng-grant", &engineering),
+            direct_grant("personal-grant"),
+        ];
+
+        let narrowed = narrow_grants_to_channel_authority(grants.clone(), &intersected, true);
+        assert_eq!(
+            narrowed
+                .iter()
+                .map(|grant| grant.grant_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sales-grant"],
+            "a department-bound channel must carry only grants sourced from \
+             the intersected units — never direct (personal) grants"
+        );
+
+        // Unbound connections keep the legacy behavior: direct grants stay,
+        // unit grants still require an active source unit.
+        let unbound = narrow_grants_to_channel_authority(grants, &intersected, false);
+        assert_eq!(
+            unbound
+                .iter()
+                .map(|grant| grant.grant_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sales-grant", "personal-grant"]
+        );
+    }
 }
