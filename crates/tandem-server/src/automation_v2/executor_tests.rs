@@ -1101,14 +1101,17 @@ fn completion_deliverable_assertion_ignores_webhook_event_output_target() {
     let workspace = completion_test_workspace();
     let mut automation = test_automation();
     automation.flow.nodes.clear();
-    automation.metadata = Some(json!({
+    automation.metadata = None;
+    automation.output_targets = vec!["customer.incident_reported".to_string()];
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    let mut snapshot = automation.clone();
+    snapshot.metadata = Some(json!({
         "automation_webhook": {
             "provider_event_kind": "customer.incident_reported",
             "preview": { "event": "customer.incident_reported" }
         }
     }));
-    automation.output_targets = vec!["customer.incident_reported".to_string()];
-    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.automation_snapshot = Some(snapshot);
     run.checkpoint.node_outputs.clear();
 
     let state = assert_completion_deliverables(

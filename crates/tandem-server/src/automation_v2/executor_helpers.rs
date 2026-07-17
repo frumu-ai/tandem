@@ -46,13 +46,19 @@ fn completion_output_target_is_local_file(path: &str) -> bool {
 
 fn completion_output_target_matches_webhook_event(
     automation: &crate::AutomationV2Spec,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
     path: &str,
 ) -> bool {
-    let Some(webhook) = automation
+    let run_webhook = run
+        .automation_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.metadata.as_ref())
+        .and_then(|metadata| metadata.get("automation_webhook"));
+    let live_webhook = automation
         .metadata
         .as_ref()
-        .and_then(|metadata| metadata.get("automation_webhook"))
-    else {
+        .and_then(|metadata| metadata.get("automation_webhook"));
+    let Some(webhook) = run_webhook.or(live_webhook) else {
         return false;
     };
     [
@@ -178,7 +184,7 @@ fn completion_required_deliverables(
         );
         let path = path.trim().to_string();
         if path.is_empty()
-            || completion_output_target_matches_webhook_event(automation, &path)
+            || completion_output_target_matches_webhook_event(automation, run, &path)
             || !completion_output_target_is_local_file(&path)
         {
             continue;
