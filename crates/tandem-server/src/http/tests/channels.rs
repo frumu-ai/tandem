@@ -600,6 +600,40 @@ async fn channels_put_accepts_connection_only_slack_configs() {
         "the resolved connection must be usable after the save"
     );
 
+    // `GET /channels/config` reports `channel_id: null` for connection-only
+    // configs; a client echoing that snapshot back (the Channels page
+    // Reconnect) must not 400 on the explicit null before the preserved
+    // `connections[]` can make the config startable.
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/channels/slack")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "channel_id": null,
+                "events_enabled": true,
+                "mention_only": false,
+                "allowed_users": []
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "echoing the sanitized snapshot's channel_id: null must not 400"
+    );
+    let effective = state.config.get_effective_value().await;
+    let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
+    assert!(
+        connections
+            .iter()
+            .any(|connection| connection.channel_id == "C_SALES"
+                && connection.bot_token.as_deref() == Some("xoxb-sales")),
+        "the preserved connection must survive a null-channel_id echo"
+    );
+
     // A config with no usable connection anywhere is still rejected (fresh
     // state, so nothing stored can be inherited to make it startable).
     let state = test_state().await;

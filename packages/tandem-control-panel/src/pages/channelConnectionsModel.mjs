@@ -150,6 +150,20 @@ export function verifyResultsByChannel(payload) {
   return byConnection;
 }
 
+/**
+ * Slack allowlist input → FAITHFUL list. A blank field stays empty
+ * (deny-all on signed ingress) instead of being normalized to a "*"
+ * wildcard — a routine settings save must never silently flip a deny-all
+ * channel to open-to-all. Opening a channel to everyone requires the
+ * operator explicitly typing `*`.
+ */
+export function parseSlackAllowedUsers(input) {
+  return String(input || "")
+    .split(",")
+    .map((row) => row.trim())
+    .filter(Boolean);
+}
+
 /** Comma-separated org-unit input → trimmed, deduped list. */
 export function parseOrgUnitsInput(raw) {
   const seen = new Set();

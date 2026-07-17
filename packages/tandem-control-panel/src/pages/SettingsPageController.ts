@@ -32,6 +32,7 @@ import type { NavigationVisibility } from "../app/navigation";
 import type { RouteId } from "../app/routes";
 import type { IconName } from "../ui/Icon";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
+import { parseSlackAllowedUsers } from "./channelConnectionsModel.mjs";
 
 type BrowserBlockingIssue = {
   code?: string;
@@ -2660,7 +2661,12 @@ export function useSettingsPageController({
       const modelProviderId = String(draft.modelProviderId || "").trim();
       const modelId = String(draft.modelId || "").trim();
       const payload: Record<string, unknown> = {
-        allowed_users: parseAllowedUsers(draft.allowedUsers),
+        // Slack allowlists are faithful: a blank field means deny-all on
+        // signed ingress and must not be widened to "*" by a routine save.
+        allowed_users:
+          channel === "slack"
+            ? parseSlackAllowedUsers(draft.allowedUsers)
+            : parseAllowedUsers(draft.allowedUsers),
         mention_only: !!draft.mentionOnly,
         strict_kb_grounding: !!draft.strictKbGrounding,
         security_profile: String(draft.securityProfile || "operator").trim() || "operator",

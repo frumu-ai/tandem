@@ -1165,6 +1165,14 @@ pub(super) async fn channels_put(
                         cfg.insert("channel_id".to_string(), Value::String(existing));
                     }
                 }
+                // Connection-only configs have no top-level channel: GET
+                // reports `channel_id: null`, and a client echoing that
+                // snapshot back must not 400 on `SlackConfigFile` expecting a
+                // string before the preserved `connections[]` can make the
+                // config startable.
+                if cfg.get("channel_id").is_some_and(Value::is_null) {
+                    cfg.remove("channel_id");
+                }
                 // `GET /channels/config` returns a sanitized snapshot without
                 // these fields (secrets are presence flags, connections a
                 // summary). A client echoing that snapshot back — the

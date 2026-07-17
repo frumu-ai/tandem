@@ -6,6 +6,7 @@ import {
   normalizeSlackConnections,
   normalizeSlackSenders,
   parseOrgUnitsInput,
+  parseSlackAllowedUsers,
   senderRowKey,
   senderTone,
   unmappedBoundChannels,
@@ -198,6 +199,17 @@ test("senderRowKey separates the same principal across tenants", () => {
     inTenantA,
     senderRowKey({ principal, tenantOrgId: "acme", tenantWorkspaceId: "hq" }),
   );
+});
+
+test("parseSlackAllowedUsers keeps a blank field deny-all", () => {
+  // A routine save with an empty allowlist field must serialize as [] —
+  // NOT as ["*"] — or it silently flips a deny-all signed-ingress channel
+  // to open-to-all. Opening up requires the operator explicitly typing "*".
+  assert.deepEqual(parseSlackAllowedUsers(""), []);
+  assert.deepEqual(parseSlackAllowedUsers("   "), []);
+  assert.deepEqual(parseSlackAllowedUsers(undefined), []);
+  assert.deepEqual(parseSlackAllowedUsers("*"), ["*"]);
+  assert.deepEqual(parseSlackAllowedUsers(" U1 , U2 ,, "), ["U1", "U2"]);
 });
 
 test("parseOrgUnitsInput trims, drops empties, and dedups", () => {
