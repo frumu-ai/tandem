@@ -341,17 +341,27 @@ fn resolve_slack_connection_entry(base: &Value, entry: &Value) -> ResolvedSlackC
         .or_else(|| raw_string(entry, "workspace_id"))
         .or_else(|| raw_string(base, "team_id"))
         .or_else(|| raw_string(base, "workspace_id"));
-    let app_id = raw_string(entry, "app_id")
-        .or_else(|| raw_string(entry, "api_app_id"))
-        .or_else(|| raw_string(base, "app_id"))
-        .or_else(|| raw_string(base, "api_app_id"));
+    let entry_app = raw_string(entry, "app_id").or_else(|| raw_string(entry, "api_app_id"));
+    let base_app = raw_string(base, "app_id").or_else(|| raw_string(base, "api_app_id"));
+    let app_id = entry_app.clone().or_else(|| base_app.clone());
+    // A signing secret is a Slack APP credential: an entry that overrides
+    // the app identity must NOT inherit the base app's secret — that would
+    // let app A's secret verify payloads claiming app B (while app B's real
+    // callbacks get rejected). Such an entry resolves secretless and fails
+    // closed downstream unless it carries its own secret.
+    let inherits_base_app = entry_app.is_none() || entry_app == base_app;
+    let signing_secret = raw_string(entry, "signing_secret").or_else(|| {
+        inherits_base_app
+            .then(|| raw_string(base, "signing_secret"))
+            .flatten()
+    });
 
     ResolvedSlackConnection {
         channel_id: raw_string(entry, "channel_id").unwrap_or_default(),
         team_id,
         app_id,
         bot_token: pick_string("bot_token"),
-        signing_secret: pick_string("signing_secret"),
+        signing_secret,
         events_enabled: pick_bool("events_enabled").unwrap_or(false),
         tenant_org_id: tenant_org,
         tenant_workspace_id: tenant_workspace,
@@ -733,6 +743,54 @@ mod tests {
         let connections = resolve_slack_connections(&slack);
         assert_eq!(connections.len(), 1);
         assert!(connections[0].mention_only);
+    }
+
+    #[test]
+    fn signing_secret_does_not_inherit_across_app_overrides() {
+        // The secret is an app credential: only entries that keep the base
+        // app identity may inherit it. An entry overriding app_id without
+        // its own secret resolves secretless (and fails closed downstream).
+        let slack = json!({
+            "team_id": "T1",
+            "app_id": "A_BASE",
+            "signing_secret": "secret-base",
+            "connections": [
+                { "channel_id": "C_INHERIT" },
+                { "channel_id": "C_SAME_APP", "app_id": "A_BASE" },
+                { "channel_id": "C_OTHER_APP", "app_id": "A_OTHER" },
+                {
+                    "channel_id": "C_OTHER_APP_OWN",
+                    "app_id": "A_OTHER",
+                    "signing_secret": "secret-other"
+                }
+            ]
+        });
+        let connections = resolve_slack_connections(&slack);
+        let by_channel = |channel: &str| {
+            connections
+                .iter()
+                .find(|connection| connection.channel_id == channel)
+                .unwrap_or_else(|| panic!("connection {channel}"))
+        };
+        assert_eq!(
+            by_channel("C_INHERIT").signing_secret.as_deref(),
+            Some("secret-base"),
+            "no app override: the base app's secret applies"
+        );
+        assert_eq!(
+            by_channel("C_SAME_APP").signing_secret.as_deref(),
+            Some("secret-base"),
+            "explicitly the same app: the base app's secret applies"
+        );
+        assert_eq!(
+            by_channel("C_OTHER_APP").signing_secret,
+            None,
+            "a different app must not inherit the base app's secret"
+        );
+        assert_eq!(
+            by_channel("C_OTHER_APP_OWN").signing_secret.as_deref(),
+            Some("secret-other")
+        );
     }
 
     #[test]

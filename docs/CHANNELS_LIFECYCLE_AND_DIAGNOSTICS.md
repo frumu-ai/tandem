@@ -67,7 +67,11 @@ and may override any top-level field (`team_id`, `app_id`, `bot_token`,
 `strict_kb_grounding`, `model_provider_id`/`model_id`, `security_profile`,
 `require_approval_step_up`, `api_base_url`, `org_units`, `notify_approvals`);
 anything unset inherits the top-level value, so a workspace-wide app declares
-its installation identity and secrets once:
+its installation identity and secrets once. Exception: `signing_secret` is an
+app credential and only inherits into entries that keep the top-level
+`app_id` — an entry overriding the app without its own secret resolves
+secretless and fails closed, rather than letting one app's secret vouch for
+another's payloads:
 
 ```json
 {

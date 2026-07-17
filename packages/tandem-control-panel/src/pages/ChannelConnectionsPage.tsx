@@ -146,7 +146,7 @@ export function ChannelConnectionsPage({ client, api, toast, navigate }: AppPage
             connections.map((connection) => {
               const verify = verifyResults?.get(connectionVerifyKey(connection));
               return (
-                <div key={connection.channelId} className="tcp-list-item">
+                <div key={connectionVerifyKey(connection)} className="tcp-list-item">
                   <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                     <strong>{connection.channelId}</strong>
                     <div className="flex flex-wrap items-center gap-1">
