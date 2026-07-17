@@ -449,6 +449,38 @@ async fn channels_put_normalizes_empty_allowed_users_to_wildcard() {
     );
 }
 
+/// PR #1910 review: a FRESH Slack save (nothing stored) that omits
+/// `allowed_users` must persist an explicit empty allowlist — not
+/// `SlackConfigFile`'s legacy `["*"]` serde default, which would open
+/// signed Events ingress to every Slack user.
+#[tokio::test]
+async fn channels_put_fresh_slack_save_without_allowlist_stays_deny_all() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/channels/slack")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "bot_token": "xoxb-fresh",
+                "channel_id": "C_FRESH"
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let stored = state.config.get_project_value().await;
+    assert_eq!(
+        stored.pointer("/channels/slack/allowed_users"),
+        Some(&json!([])),
+        "a fresh save without an allowlist must not persist the '*' wildcard"
+    );
+}
+
 #[tokio::test]
 async fn channels_put_unknown_channel_returns_not_found() {
     let state = test_state().await;

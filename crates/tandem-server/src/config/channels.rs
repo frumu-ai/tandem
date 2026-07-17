@@ -384,8 +384,10 @@ fn resolve_slack_connection_entry(base: &Value, entry: &Value) -> ResolvedSlackC
 ///   errors it always has.
 /// - With `connections`: the top-level fields define a connection of their
 ///   own when `channel_id` is non-empty, followed by each entry (entries
-///   with an empty `channel_id` are dropped; an entry that repeats the
-///   top-level `channel_id` replaces it).
+///   with an empty `channel_id` are dropped; an entry that repeats an
+///   earlier resolved `(team_id, app_id, channel_id)` binding replaces it —
+///   the same tuple the runtime routes events and interactions by, so two
+///   installations sharing a channel-id string never collapse into one).
 pub fn resolve_slack_connections(slack: &Value) -> Vec<ResolvedSlackConnection> {
     if !slack.is_object() {
         return Vec::new();
@@ -414,10 +416,11 @@ pub fn resolve_slack_connections(slack: &Value) -> Vec<ResolvedSlackConnection> 
         if resolved.channel_id.is_empty() {
             continue;
         }
-        if let Some(existing) = connections
-            .iter_mut()
-            .find(|existing| existing.channel_id == resolved.channel_id)
-        {
+        if let Some(existing) = connections.iter_mut().find(|existing| {
+            existing.team_id == resolved.team_id
+                && existing.app_id == resolved.app_id
+                && existing.channel_id == resolved.channel_id
+        }) {
             *existing = resolved;
         } else {
             connections.push(resolved);
@@ -679,6 +682,57 @@ mod tests {
         assert_eq!(connections[0].channel_id, "C_MAIN");
         assert!(connections[0].mention_only, "entry overrides top-level");
         assert_eq!(connections[1].channel_id, "C_OTHER");
+    }
+
+    #[test]
+    fn connections_sharing_a_channel_id_across_installations_both_survive() {
+        // Two installations (different team/app) can legitimately carry the
+        // same channel-id string; the runtime routes by the full
+        // (team, app, channel) binding, so resolution must keep both.
+        let slack = json!({
+            "connections": [
+                {
+                    "channel_id": "C_SHARED",
+                    "team_id": "T_A",
+                    "app_id": "A_A",
+                    "signing_secret": "secret-a",
+                    "bot_token": "xoxb-a"
+                },
+                {
+                    "channel_id": "C_SHARED",
+                    "team_id": "T_B",
+                    "app_id": "A_B",
+                    "signing_secret": "secret-b",
+                    "bot_token": "xoxb-b"
+                }
+            ]
+        });
+        let connections = resolve_slack_connections(&slack);
+        assert_eq!(
+            connections.len(),
+            2,
+            "a shared channel-id string must not collapse two installations"
+        );
+        assert_eq!(connections[0].team_id.as_deref(), Some("T_A"));
+        assert_eq!(connections[0].signing_secret.as_deref(), Some("secret-a"));
+        assert_eq!(connections[1].team_id.as_deref(), Some("T_B"));
+        assert_eq!(connections[1].signing_secret.as_deref(), Some("secret-b"));
+
+        // Same full binding: the later entry still replaces the earlier one.
+        let slack = json!({
+            "connections": [
+                { "channel_id": "C_SHARED", "team_id": "T_A", "app_id": "A_A" },
+                {
+                    "channel_id": "C_SHARED",
+                    "team_id": "T_A",
+                    "app_id": "A_A",
+                    "mention_only": true
+                }
+            ]
+        });
+        let connections = resolve_slack_connections(&slack);
+        assert_eq!(connections.len(), 1);
+        assert!(connections[0].mention_only);
     }
 
     #[test]

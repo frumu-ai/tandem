@@ -1194,6 +1194,13 @@ pub(super) async fn channels_put(
                         }
                     }
                 }
+                // Still absent (nothing provided, nothing stored): pin the
+                // allowlist to an explicit empty list so SlackConfigFile's
+                // legacy `default_allow_all` serde default cannot turn a
+                // fresh save into an open-to-all signed-ingress config.
+                if !cfg.contains_key("allowed_users") {
+                    cfg.insert("allowed_users".to_string(), Value::Array(Vec::new()));
+                }
             }
             let mut cfg: SlackConfigFile =
                 serde_json::from_value(input).map_err(|_| StatusCode::BAD_REQUEST)?;
