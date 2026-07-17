@@ -441,21 +441,27 @@ fn hoist_persisted_secrets(value: &mut Value) -> anyhow::Result<()> {
         }
         // Per-connection Slack credentials (TAN-763) hoist alongside the
         // top-level token so `strip_persisted_secrets` can remove them from
-        // the plaintext file without losing them.
+        // the plaintext file without losing them. An EXPLICITLY cleared
+        // field (present but empty, or null) is a revocation: the stored
+        // secret is deleted so injection cannot silently resurrect a rotated
+        // or compromised credential. An ABSENT field is the normal state of
+        // an already-stripped config and leaves the stored secret alone.
         for entry in slack_connection_entries(channels) {
             for (field, alias) in SLACK_CONNECTION_SECRET_FIELDS {
-                let secret = entry
-                    .get(field)
-                    .or_else(|| entry.get(alias))
-                    .and_then(Value::as_str)
+                let Some(provided) = entry.get(field).or_else(|| entry.get(alias)) else {
+                    continue;
+                };
+                let secret = provided
+                    .as_str()
                     .map(str::trim)
                     .unwrap_or_default()
                     .to_string();
-                if secret.is_empty() {
-                    continue;
-                }
                 let secret_id = slack_connection_secret_store_id(entry, field);
-                crate::set_provider_auth(&secret_id, &secret)?;
+                if secret.is_empty() {
+                    let _ = crate::delete_provider_auth(&secret_id);
+                } else {
+                    crate::set_provider_auth(&secret_id, &secret)?;
+                }
             }
         }
     }
@@ -1321,6 +1327,36 @@ mod tests {
         assert_eq!(
             rehydrated.pointer("/channels/slack/connections/1/bot_token"),
             Some(&json!("xoxb-eng"))
+        );
+
+        // An EXPLICIT clear (present-but-empty field) revokes the stored
+        // secret — injection must not silently resurrect a rotated or
+        // compromised credential.
+        let mut cleared = json!({
+            "channels": {
+                "slack": {
+                    "connections": [
+                        { "channel_id": "C_SALES", "bot_token": "", "signing_secret": "" }
+                    ]
+                }
+            }
+        });
+        scrub_persisted_secrets(&mut cleared, Some(&path))
+            .await
+            .expect("scrub cleared");
+        let stored = crate::load_provider_auth();
+        assert!(
+            !stored.contains_key("channel::slack::connection::-::-::c_sales::bot_token"),
+            "clearing the field must delete the stored secret"
+        );
+        assert!(!stored.contains_key("channel::slack::connection::-::-::c_sales::signing_secret"));
+        let mut rehydrated = cleared.clone();
+        inject_stored_channel_secrets(&mut rehydrated);
+        assert!(
+            rehydrated
+                .pointer("/channels/slack/connections/0/bot_token")
+                .is_none(),
+            "a cleared credential must not be injected back"
         );
 
         for id in [
