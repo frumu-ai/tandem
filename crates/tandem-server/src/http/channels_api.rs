@@ -1247,22 +1247,27 @@ pub(super) async fn channels_put(
             // keystore entry that would silently resurrect its credentials
             // if the same (team, app, channel) binding is ever re-added.
             // Layer-safe because PUT replaces only the project-level object.
-            let kept_ids: std::collections::HashSet<String> = cfg
-                .connections
-                .iter()
-                .filter_map(|entry| serde_json::to_value(entry).ok())
-                .filter_map(|value| value.as_object().cloned())
-                .flat_map(|entry| tandem_core::slack_connection_secret_ids(&entry))
-                .collect();
-            if let Some(previous_entries) = channels_obj
-                .get(spec.config_key)
-                .and_then(|value| value.get("connections"))
+            let new_slack_value = serde_json::json!(cfg);
+            let empty_map = serde_json::Map::new();
+            let new_slack_obj = new_slack_value.as_object().unwrap_or(&empty_map);
+            let kept_ids: std::collections::HashSet<String> = new_slack_obj
+                .get("connections")
                 .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_object)
+                .flat_map(|entry| tandem_core::slack_connection_secret_ids(new_slack_obj, entry))
+                .collect();
+            if let Some(previous_obj) = channels_obj.get(spec.config_key).and_then(Value::as_object)
             {
-                for entry in previous_entries.iter().filter_map(Value::as_object) {
-                    for id in tandem_core::slack_connection_secret_ids(entry) {
-                        if !kept_ids.contains(&id) {
-                            let _ = tandem_core::delete_provider_auth(&id);
+                if let Some(previous_entries) =
+                    previous_obj.get("connections").and_then(Value::as_array)
+                {
+                    for entry in previous_entries.iter().filter_map(Value::as_object) {
+                        for id in tandem_core::slack_connection_secret_ids(previous_obj, entry) {
+                            if !kept_ids.contains(&id) {
+                                let _ = tandem_core::delete_provider_auth(&id);
+                            }
                         }
                     }
                 }

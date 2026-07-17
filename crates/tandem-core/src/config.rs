@@ -392,23 +392,46 @@ fn slack_connection_entries(
         .unwrap_or_default()
 }
 
-/// Stable secret-store id for one Slack connection entry's credential. Keyed
-/// by the entry's OWN (team, app, channel) fields — inherited values are
-/// deliberately excluded so editing the top level never orphans a stored
-/// per-connection secret.
-fn slack_connection_secret_store_id(entry: &serde_json::Map<String, Value>, field: &str) -> String {
+/// The raw installation identity `(team, app)` declared on a
+/// `channels.slack` object (or one of its connection entries).
+fn slack_raw_installation(
+    map: &serde_json::Map<String, Value>,
+) -> (Option<String>, Option<String>) {
     let raw = |keys: [&str; 2]| {
         keys.iter()
-            .find_map(|key| entry.get(*key))
+            .find_map(|key| map.get(*key))
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or("-")
-            .to_string()
+            .map(str::to_string)
     };
-    let team = raw(["team_id", "workspace_id"]);
-    let app = raw(["app_id", "api_app_id"]);
-    let channel_id = raw(["channel_id", "channel_id"]);
+    (
+        raw(["team_id", "workspace_id"]),
+        raw(["app_id", "api_app_id"]),
+    )
+}
+
+/// Stable secret-store id for one Slack connection entry's credential. Keyed
+/// by the entry's RESOLVED installation — its own (team, app) or, when the
+/// entry inherits them, the top-level values — plus the channel id. A secret
+/// is an installation credential: migrating the top-level app A → B changes
+/// an inheriting entry's id, so B never resurrects A's stored secret; the
+/// entry resolves secretless and fails closed until B's own secret is set.
+fn slack_connection_secret_store_id(
+    entry: &serde_json::Map<String, Value>,
+    field: &str,
+    top_team: Option<&str>,
+    top_app: Option<&str>,
+) -> String {
+    let (entry_team, entry_app) = slack_raw_installation(entry);
+    let team = entry_team.as_deref().or(top_team).unwrap_or("-");
+    let app = entry_app.as_deref().or(top_app).unwrap_or("-");
+    let channel_id = entry
+        .get("channel_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-");
     // The provider-auth store normalizes ids to lowercase; match it so
     // store and lookup agree.
     format!("channel::slack::connection::{team}::{app}::{channel_id}::{field}").to_ascii_lowercase()
@@ -430,17 +453,9 @@ pub const SLACK_SIGNING_SECRET_STORE_PREFIX: &str = "channel::slack::signing_sec
 /// Installation-keyed secret-store id for the top-level Slack signing
 /// secret of this raw `channels.slack` object.
 fn slack_signing_secret_store_id(cfg: &serde_json::Map<String, Value>) -> String {
-    let raw = |keys: [&str; 2]| {
-        keys.iter()
-            .find_map(|key| cfg.get(*key))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("-")
-            .to_string()
-    };
-    let team = raw(["team_id", "workspace_id"]);
-    let app = raw(["app_id", "api_app_id"]);
+    let (team, app) = slack_raw_installation(cfg);
+    let team = team.as_deref().unwrap_or("-");
+    let app = app.as_deref().unwrap_or("-");
     format!("{SLACK_SIGNING_SECRET_STORE_PREFIX}::{team}::{app}").to_ascii_lowercase()
 }
 
@@ -448,12 +463,17 @@ fn slack_signing_secret_store_id(cfg: &serde_json::Map<String, Value>) -> String
 pub const SLACK_CONNECTION_SECRET_PREFIX: &str = "channel::slack::connection::";
 
 /// Secret-store ids for one raw `connections[]` entry's credentials
-/// (bot token + signing secret). Used by removal paths to purge stored
-/// secrets for connections that no longer exist in config.
-pub fn slack_connection_secret_ids(entry: &serde_json::Map<String, Value>) -> [String; 2] {
+/// (bot token + signing secret), resolved against its `channels.slack`
+/// object for inherited installation identity. Used by removal paths to
+/// purge stored secrets for connections that no longer exist in config.
+pub fn slack_connection_secret_ids(
+    slack_cfg: &serde_json::Map<String, Value>,
+    entry: &serde_json::Map<String, Value>,
+) -> [String; 2] {
+    let (team, app) = slack_raw_installation(slack_cfg);
     [
-        slack_connection_secret_store_id(entry, "bot_token"),
-        slack_connection_secret_store_id(entry, "signing_secret"),
+        slack_connection_secret_store_id(entry, "bot_token", team.as_deref(), app.as_deref()),
+        slack_connection_secret_store_id(entry, "signing_secret", team.as_deref(), app.as_deref()),
     ]
 }
 
@@ -520,6 +540,11 @@ fn hoist_persisted_secrets(value: &mut Value) -> anyhow::Result<()> {
                 }
             }
         }
+        let (top_team, top_app) = channels
+            .get("slack")
+            .and_then(Value::as_object)
+            .map(slack_raw_installation)
+            .unwrap_or((None, None));
         for entry in slack_connection_entries(channels) {
             for (field, alias) in SLACK_CONNECTION_SECRET_FIELDS {
                 let Some(provided) = entry.get(field).or_else(|| entry.get(alias)) else {
@@ -530,7 +555,12 @@ fn hoist_persisted_secrets(value: &mut Value) -> anyhow::Result<()> {
                     .map(str::trim)
                     .unwrap_or_default()
                     .to_string();
-                let secret_id = slack_connection_secret_store_id(entry, field);
+                let secret_id = slack_connection_secret_store_id(
+                    entry,
+                    field,
+                    top_team.as_deref(),
+                    top_app.as_deref(),
+                );
                 if secret.is_empty() {
                     let _ = crate::delete_provider_auth(&secret_id);
                 } else {
@@ -697,6 +727,11 @@ fn inject_stored_channel_secrets(value: &mut Value) {
             }
         }
     }
+    let (top_team, top_app) = channels
+        .get("slack")
+        .and_then(Value::as_object)
+        .map(slack_raw_installation)
+        .unwrap_or((None, None));
     for entry in slack_connection_entries(channels) {
         for (field, alias) in SLACK_CONNECTION_SECRET_FIELDS {
             let already_present = entry
@@ -707,7 +742,12 @@ fn inject_stored_channel_secrets(value: &mut Value) {
             if already_present {
                 continue;
             }
-            let secret_id = slack_connection_secret_store_id(entry, field);
+            let secret_id = slack_connection_secret_store_id(
+                entry,
+                field,
+                top_team.as_deref(),
+                top_app.as_deref(),
+            );
             let Some(secret) = secrets.get(&secret_id) else {
                 continue;
             };
@@ -1402,13 +1442,13 @@ mod tests {
         );
         assert_eq!(
             stored
-                .get("channel::slack::connection::-::-::c_sales::bot_token")
+                .get("channel::slack::connection::t1::a1::c_sales::bot_token")
                 .map(String::as_str),
             Some("xoxb-sales")
         );
         assert_eq!(
             stored
-                .get("channel::slack::connection::-::-::c_sales::signing_secret")
+                .get("channel::slack::connection::t1::a1::c_sales::signing_secret")
                 .map(String::as_str),
             Some("shh-sales")
         );
@@ -1443,12 +1483,30 @@ mod tests {
         // previous app's stored signing secret — the id is keyed by the
         // installation, so the new identity resolves secretless.
         let mut migrated = json!({
-            "channels": { "slack": { "team_id": "T1", "app_id": "A_NEW" } }
+            "channels": {
+                "slack": {
+                    "team_id": "T1",
+                    "app_id": "A_NEW",
+                    "connections": [ { "channel_id": "C_SALES" } ]
+                }
+            }
         });
         inject_stored_channel_secrets(&mut migrated);
         assert!(
             migrated.pointer("/channels/slack/signing_secret").is_none(),
             "a changed app identity must not inject the previous app's secret"
+        );
+        assert!(
+            migrated
+                .pointer("/channels/slack/connections/0/signing_secret")
+                .is_none(),
+            "an inheriting connection must not receive the previous app's secret either"
+        );
+        assert!(
+            migrated
+                .pointer("/channels/slack/connections/0/bot_token")
+                .is_none(),
+            "an inheriting connection must not receive the previous app's bot token either"
         );
 
         // An EXPLICIT clear (present-but-empty field) revokes the stored
@@ -1471,10 +1529,10 @@ mod tests {
             .expect("scrub cleared");
         let stored = crate::load_provider_auth();
         assert!(
-            !stored.contains_key("channel::slack::connection::-::-::c_sales::bot_token"),
+            !stored.contains_key("channel::slack::connection::t1::a1::c_sales::bot_token"),
             "clearing the field must delete the stored secret"
         );
-        assert!(!stored.contains_key("channel::slack::connection::-::-::c_sales::signing_secret"));
+        assert!(!stored.contains_key("channel::slack::connection::t1::a1::c_sales::signing_secret"));
         assert!(
             !stored.contains_key("channel::slack::signing_secret::t1::a1"),
             "clearing the top-level signing secret must delete the stored secret"
@@ -1489,8 +1547,8 @@ mod tests {
         );
 
         for id in [
-            "channel::slack::connection::-::-::c_sales::bot_token",
-            "channel::slack::connection::-::-::c_sales::signing_secret",
+            "channel::slack::connection::t1::a1::c_sales::bot_token",
+            "channel::slack::connection::t1::a1::c_sales::signing_secret",
             "channel::slack::connection::t2::a2::c_eng::bot_token",
             "channel::slack::signing_secret::t1::a1",
         ] {
