@@ -118,7 +118,9 @@ Semantics:
   receives approval cards; card edits route by the recorded recipient channel
   AND the Slack installation `(team_id, app_id)` that posted the card, so
   channel-id strings colliding across installations never edit the wrong
-  message with the wrong bot token. Before the first card posts through a
+  message with the wrong bot token; if the posting installation is removed
+  from config, the update is skipped rather than attempted through another
+  installation. Before the first card posts through a
   connection that declares an installation, the notifier verifies the bot
   token actually belongs to it (`auth.test` team + `bots.info` app — the
   same fail-closed check as the governed reply path); a token copied from
@@ -163,9 +165,11 @@ Semantics:
 - **Department-binding enrollment (TAN-765).** `POST /channels/enroll`
   (action `issue`) accepts `org_units` (bare unit id or `taxonomy/unit_id`)
   plus an optional `tenant_org_id`/`tenant_workspace_id` pair scoping where
-  those refs resolve; unknown units fail at issue time, and an unscoped ref
-  that matches units in more than one tenant is rejected as ambiguous rather
-  than resolved to an arbitrary tenant. Redeeming the pairing code
+  those refs resolve; unknown units fail at issue time, and ambiguity is
+  always rejected rather than resolved to an arbitrary unit — an unscoped
+  ref matching units in more than one tenant, or a bare unit id matching
+  several taxonomies inside one tenant (`department/sales` vs
+  `region/sales`), both fail until the taxonomy-qualified id is used. Redeeming the pairing code
   establishes active org-unit memberships for the enrolled identity in the
   issued tenant (persisted through the governance store) in addition to the
   capability tier, so a department-bound enrollment immediately yields a

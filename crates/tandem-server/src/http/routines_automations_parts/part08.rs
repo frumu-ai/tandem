@@ -103,30 +103,20 @@ async fn update_single_channel_approval_card(
             // Route by the recorded recipient AND the installation that
             // posted the card (channel-id strings can collide across
             // installations — editing app B's message with app A's token
-            // fails or edits the wrong card). Legacy records without an
-            // installation fall back to recipient-only matching, and an
-            // unknown recipient to the default (first) resolved connection,
-            // preserving the legacy single-channel behavior.
+            // fails or edits the wrong card). A record carrying its posting
+            // installation is edited ONLY through that exact binding; legacy
+            // records keep recipient-only/first-connection fallbacks.
             let connections = crate::config::channels::resolve_slack_connections(&slack_value);
-            let connection = connections
-                .iter()
-                .find(|connection| {
-                    connection.channel_id == record.recipient
-                        && record
-                            .team_id
-                            .as_deref()
-                            .is_none_or(|team| connection.team_id.as_deref() == Some(team))
-                        && record
-                            .app_id
-                            .as_deref()
-                            .is_none_or(|app| connection.app_id.as_deref() == Some(app))
-                })
-                .or_else(|| {
-                    connections
-                        .iter()
-                        .find(|connection| connection.channel_id == record.recipient)
-                })
-                .or_else(|| connections.first());
+            let connection = record.select_slack_connection(&connections);
+            if connection.is_none() && (record.team_id.is_some() || record.app_id.is_some()) {
+                tracing::warn!(
+                    target: "tandem_server::routines_automations",
+                    recipient = %record.recipient,
+                    team_id = record.team_id.as_deref().unwrap_or(""),
+                    app_id = record.app_id.as_deref().unwrap_or(""),
+                    "skipping Slack approval card update: the posting installation is no longer configured"
+                );
+            }
             let Some(bot_token) = connection.and_then(|connection| connection.bot_token.clone())
             else {
                 return Ok(());

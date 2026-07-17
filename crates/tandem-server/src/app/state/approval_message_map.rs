@@ -52,6 +52,30 @@ impl ApprovalMessageRecord {
         self.app_id = app_id;
         self
     }
+
+    /// The Slack connection this record's card may be edited through. A
+    /// record that carries its posting installation matches ONLY that
+    /// `(team_id, app_id, channel_id)` binding — if that exact connection is
+    /// gone, the update is skipped rather than attempted with another
+    /// installation's bot token (which fails, or edits a colliding card).
+    /// Legacy records without an installation keep recipient-only matching
+    /// with the first connection as the single-channel fallback.
+    pub fn select_slack_connection<'a>(
+        &self,
+        connections: &'a [crate::config::channels::ResolvedSlackConnection],
+    ) -> Option<&'a crate::config::channels::ResolvedSlackConnection> {
+        if self.team_id.is_some() || self.app_id.is_some() {
+            return connections.iter().find(|connection| {
+                connection.channel_id == self.recipient
+                    && connection.team_id == self.team_id
+                    && connection.app_id == self.app_id
+            });
+        }
+        connections
+            .iter()
+            .find(|connection| connection.channel_id == self.recipient)
+            .or_else(|| connections.first())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -346,6 +370,56 @@ mod tests {
             recipient: recipient.to_string(),
             thread_id: None,
         }
+    }
+
+    #[test]
+    fn select_slack_connection_respects_the_recorded_installation() {
+        let connections = crate::config::channels::resolve_slack_connections(&serde_json::json!({
+            "connections": [
+                {
+                    "channel_id": "C_SHARED",
+                    "team_id": "T_A",
+                    "app_id": "A_A",
+                    "bot_token": "xoxb-a"
+                },
+                {
+                    "channel_id": "C_SHARED",
+                    "team_id": "T_B",
+                    "app_id": "A_B",
+                    "bot_token": "xoxb-b"
+                }
+            ]
+        }));
+        let record = |team: Option<&str>, app: Option<&str>| ApprovalMessageRecord {
+            request_id: "req".to_string(),
+            channel: "slack".to_string(),
+            recipient: "C_SHARED".to_string(),
+            message_id: "100.1".to_string(),
+            thread_id: None,
+            team_id: team.map(str::to_string),
+            app_id: app.map(str::to_string),
+        };
+
+        // A recorded installation selects exactly its own connection.
+        let selected = record(Some("T_B"), Some("A_B"))
+            .select_slack_connection(&connections)
+            .expect("installation B's connection");
+        assert_eq!(selected.bot_token.as_deref(), Some("xoxb-b"));
+
+        // If the posting installation is gone, do NOT fall back to the
+        // colliding channel-id — skip instead of editing with a wrong token.
+        assert!(
+            record(Some("T_GONE"), Some("A_GONE"))
+                .select_slack_connection(&connections)
+                .is_none(),
+            "a removed installation must skip, not borrow another installation's token"
+        );
+
+        // Legacy records without an installation keep recipient matching.
+        let legacy = record(None, None)
+            .select_slack_connection(&connections)
+            .expect("legacy recipient match");
+        assert_eq!(legacy.bot_token.as_deref(), Some("xoxb-a"));
     }
 
     #[tokio::test]

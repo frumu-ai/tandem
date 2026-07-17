@@ -1126,6 +1126,23 @@ async fn enrollment_org_units_resolve_within_the_sender_tenant() {
             .await
             .insert(key.to_string(), unit);
     }
+    // Tenant A also has `region/sales`, so the bare ref "sales" is ambiguous
+    // even inside the tenant.
+    let region = OrganizationUnit::active(
+        "sales",
+        tenant_a.clone(),
+        "Sales Region",
+        OrganizationUnitKind::Department,
+        admin.clone(),
+        now_ms,
+    )
+    .with_taxonomy_id("region");
+    state
+        .enterprise
+        .org_units
+        .write()
+        .await
+        .insert("a:region-sales".to_string(), region);
 
     let principal = format!("channel:slack:{SLACK_TEAM}:{SLACK_APP}:{SLACK_USER}");
     let tier = crate::app::state::channel_user_capabilities::StoredCommandTier::Approve;
@@ -1152,8 +1169,30 @@ async fn enrollment_org_units_resolve_within_the_sender_tenant() {
         "an org unit ref matching multiple tenants must be rejected"
     );
 
-    // Scoped to tenant A: resolves, and redemption creates the membership in
-    // tenant A only.
+    // Even scoped to one tenant, a bare unit id matching several taxonomies
+    // (`department/sales` vs `region/sales`) is rejected, not first-match.
+    let bare = state
+        .issue_channel_enrollment_code(
+            "slack",
+            principal.clone(),
+            tier,
+            Some(60_000),
+            Some("operator".to_string()),
+            None,
+            vec!["sales".to_string()],
+            Some((ORG_ID.to_string(), WORKSPACE_ID.to_string())),
+        )
+        .await;
+    assert!(
+        bare.err()
+            .map(|error| error.to_string())
+            .unwrap_or_default()
+            .contains("ambiguous within the tenant"),
+        "a bare ref matching several taxonomies in one tenant must be rejected"
+    );
+
+    // Scoped to tenant A with the taxonomy-qualified id: resolves, and
+    // redemption creates the membership in tenant A only.
     let code = state
         .issue_channel_enrollment_code(
             "slack",

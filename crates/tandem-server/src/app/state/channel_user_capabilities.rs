@@ -194,11 +194,13 @@ impl AppState {
 
     /// Resolve org-unit references (bare unit id or `taxonomy/unit_id`
     /// principal id) against the enterprise org-unit store. Errors on any
-    /// unknown reference. When `tenant` is given, only units bound to that
-    /// `(org_id, workspace_id)` are considered; without it, a reference that
-    /// matches units in more than one tenant is REJECTED rather than resolved
-    /// to an arbitrary one — enrolling a sender must never grant authority in
-    /// a different tenant because two tenants share a unit name.
+    /// unknown reference. Ambiguity is always REJECTED, never resolved to an
+    /// arbitrary unit: without a `tenant` scope, a ref matching units in
+    /// more than one tenant fails (enrolling a sender must never grant
+    /// authority in a different tenant); and even inside one tenant a bare
+    /// unit id matching several taxonomies (`department/sales` vs
+    /// `region/sales`) fails until the caller uses the taxonomy-qualified
+    /// principal id.
     pub async fn resolve_org_unit_refs(
         &self,
         refs: &[String],
@@ -218,23 +220,43 @@ impl AppState {
                         })
                     })
                     .collect::<Vec<_>>();
-                let mut tenants = matches
+                let mut identities = matches
                     .iter()
                     .map(|unit| {
                         (
                             unit.tenant_context.org_id.as_str(),
                             unit.tenant_context.workspace_id.as_str(),
+                            unit.principal_ref().id,
                         )
                     })
                     .collect::<Vec<_>>();
-                tenants.sort();
-                tenants.dedup();
-                match tenants.len() {
-                    0 => Err(anyhow::anyhow!("unknown org unit: {wanted}")),
-                    1 => Ok(matches[0].clone()),
-                    _ => Err(anyhow::anyhow!(
-                        "org unit ref {wanted} is ambiguous across tenants; scope the enrollment to a tenant"
-                    )),
+                identities.sort();
+                identities.dedup();
+                match identities.as_slice() {
+                    [] => Err(anyhow::anyhow!("unknown org unit: {wanted}")),
+                    [_] => Ok(matches[0].clone()),
+                    many => {
+                        let mut tenants = many
+                            .iter()
+                            .map(|(org_id, workspace_id, _)| (*org_id, *workspace_id))
+                            .collect::<Vec<_>>();
+                        tenants.sort();
+                        tenants.dedup();
+                        if tenants.len() > 1 {
+                            Err(anyhow::anyhow!(
+                                "org unit ref {wanted} is ambiguous across tenants; scope the enrollment to a tenant"
+                            ))
+                        } else {
+                            let candidates = many
+                                .iter()
+                                .map(|(_, _, principal_id)| principal_id.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            Err(anyhow::anyhow!(
+                                "org unit ref {wanted} is ambiguous within the tenant (matches: {candidates}); use the taxonomy-qualified id"
+                            ))
+                        }
+                    }
                 }
             })
             .collect()
