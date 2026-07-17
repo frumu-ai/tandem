@@ -1076,7 +1076,8 @@ fn completion_deliverable_assertion_requeues_invalid_json() {
 #[test]
 fn completion_deliverable_assertion_ignores_skipped_node_artifact() {
     let workspace = completion_test_workspace();
-    let automation = automation_with_required_output("reports/final.md", "report_markdown");
+    let mut automation = automation_with_required_output("reports/final.md", "report_markdown");
+    automation.output_targets = vec!["reports/final.md".to_string()];
     let mut run = test_run_with_output(json!({
         "status": "skipped",
         "summary": "Skipped: upstream triage found no work."

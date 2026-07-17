@@ -209,6 +209,12 @@ fn completion_required_deliverables(
             continue;
         }
         let owner_node_id = owner_by_path.get(&path).cloned();
+        if owner_node_id
+            .as_deref()
+            .is_some_and(|node_id| completion_node_was_skipped(run, node_id))
+        {
+            continue;
+        }
         requirements.push(CompletionDeliverableRequirement {
             path,
             owner_node_id,

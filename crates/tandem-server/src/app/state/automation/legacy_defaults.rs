@@ -116,7 +116,6 @@ pub(crate) fn automation_node_is_outbound_action(node: &AutomationFlowNode) -> b
         "post ",
         "send ",
         "notify",
-        "deliver ",
         "submit",
         "share",
         "insert ",
@@ -126,6 +125,9 @@ pub(crate) fn automation_node_is_outbound_action(node: &AutomationFlowNode) -> b
     ]
     .iter()
     .any(|needle| objective.contains(needle))
+        || objective
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|word| word == "deliver")
 }
 
 fn automation_node_metadata_bool(node: &AutomationFlowNode, key: &str) -> bool {
@@ -301,12 +303,6 @@ pub(crate) fn automation_node_requires_email_delivery(node: &AutomationFlowNode)
     {
         return true;
     }
-    if !automation_node_is_outbound_action(node) {
-        return false;
-    }
-    if automation_node_delivery_target(node).is_some() {
-        return true;
-    }
     let objective = node.objective.to_ascii_lowercase();
     let contains_phrase = [
         "send email",
@@ -324,8 +320,8 @@ pub(crate) fn automation_node_requires_email_delivery(node: &AutomationFlowNode)
     ]
     .iter()
     .any(|needle| objective.contains(needle));
-    if contains_phrase {
-        return true;
+    if !automation_node_is_outbound_action(node) && !contains_phrase {
+        return false;
     }
-    false
+    automation_node_delivery_target(node).is_some() || contains_phrase
 }
