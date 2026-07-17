@@ -1172,14 +1172,12 @@ pub(super) async fn channels_put(
                 // installation identity, Events ingress, or per-connection /
                 // governance bindings. Absent keys inherit the stored value;
                 // explicitly provided values (including `[]`) still win.
-                const PRESERVED_SLACK_KEYS: [&str; 11] = [
-                    "signing_secret",
+                const PRESERVED_SLACK_KEYS: [&str; 9] = [
                     "team_id",
                     "app_id",
                     "events_enabled",
                     "tenant",
                     "org_units",
-                    "connections",
                     "require_approval_step_up",
                     "api_base_url",
                     "notify_approvals",
@@ -1191,6 +1189,61 @@ pub(super) async fn channels_put(
                             if let Some(value) = existing.get(key) {
                                 cfg.insert(key.to_string(), value.clone());
                             }
+                        }
+                    }
+                    // Secret-BEARING keys are identity-gated: `existing`
+                    // comes from the effective config, so it carries
+                    // keystore-injected secrets. Carrying them into a save
+                    // that CHANGES team/app would re-hoist app A's
+                    // credentials under app B's installation ids and defeat
+                    // the fail-closed migration semantics.
+                    let installation = |map: &serde_json::Map<String, Value>| {
+                        let raw = |keys: [&str; 2]| {
+                            keys.iter()
+                                .find_map(|key| map.get(*key))
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_ascii_lowercase)
+                        };
+                        (
+                            raw(["team_id", "workspace_id"]),
+                            raw(["app_id", "api_app_id"]),
+                        )
+                    };
+                    let identity_unchanged = installation(cfg) == installation(existing);
+                    if identity_unchanged && !cfg.contains_key("signing_secret") {
+                        if let Some(value) = existing.get("signing_secret") {
+                            cfg.insert("signing_secret".to_string(), value.clone());
+                        }
+                    }
+                    if !cfg.contains_key("connections") {
+                        if let Some(Value::Array(entries)) = existing.get("connections") {
+                            let preserved = entries
+                                .iter()
+                                .map(|entry| {
+                                    let Some(entry) = entry.as_object() else {
+                                        return entry.clone();
+                                    };
+                                    let mut entry = entry.clone();
+                                    // An entry that self-declares BOTH team
+                                    // and app keeps its resolved identity
+                                    // regardless of the top level; anything
+                                    // inheriting resolves under the NEW
+                                    // identity, so its old secrets must not
+                                    // ride along.
+                                    let (entry_team, entry_app) = installation(&entry);
+                                    let self_declared = entry_team.is_some() && entry_app.is_some();
+                                    if !identity_unchanged && !self_declared {
+                                        entry.remove("bot_token");
+                                        entry.remove("botToken");
+                                        entry.remove("signing_secret");
+                                        entry.remove("signingSecret");
+                                    }
+                                    Value::Object(entry)
+                                })
+                                .collect::<Vec<_>>();
+                            cfg.insert("connections".to_string(), Value::Array(preserved));
                         }
                     }
                 }

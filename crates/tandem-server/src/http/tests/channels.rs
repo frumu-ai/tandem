@@ -481,6 +481,84 @@ async fn channels_put_fresh_slack_save_without_allowlist_stays_deny_all() {
     );
 }
 
+/// PR #1910 review (round 19): a save that CHANGES the Slack installation
+/// identity must not carry the previous installation's secrets across — the
+/// preservation block reads the effective config (keystore-injected
+/// secrets), and re-hoisting them under the new identity would let app B
+/// verify with app A's credentials instead of failing closed.
+#[tokio::test]
+async fn channels_put_migrating_installation_does_not_carry_secrets() {
+    let state = test_state().await;
+    let _ = state
+        .config
+        .patch_project(json!({
+            "channels": {
+                "slack": {
+                    "bot_token": "xoxb-top",
+                    "channel_id": "C_MAIN",
+                    "team_id": "T1",
+                    "app_id": "A_OLD",
+                    "signing_secret": "shh-old",
+                    "events_enabled": true,
+                    "connections": [
+                        { "channel_id": "C_SALES", "bot_token": "xoxb-sales" }
+                    ]
+                }
+            }
+        }))
+        .await
+        .expect("patch project");
+    let app = app_router(state.clone());
+
+    // Sanity: the effective config resolves the old installation's secrets.
+    let effective = state.config.get_effective_value().await;
+    let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
+    assert!(connections
+        .iter()
+        .any(|connection| connection.channel_id == "C_SALES"
+            && connection.bot_token.as_deref() == Some("xoxb-sales")));
+
+    // Sanitized echo that migrates the app identity: no secrets provided.
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/channels/slack")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "channel_id": "C_MAIN",
+                "team_id": "T1",
+                "app_id": "A_NEW",
+                "allowed_users": []
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let effective = state.config.get_effective_value().await;
+    assert!(
+        effective
+            .pointer("/channels/slack/signing_secret")
+            .and_then(Value::as_str)
+            .is_none_or(|secret| secret != "shh-old"),
+        "the old app's signing secret must not follow the new identity"
+    );
+    let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
+    let sales = connections
+        .iter()
+        .find(|connection| connection.channel_id == "C_SALES")
+        .expect("connection structure preserved");
+    assert!(
+        sales.bot_token.as_deref() != Some("xoxb-sales"),
+        "an inheriting connection must not carry the old installation's token"
+    );
+    assert!(
+        sales.signing_secret.is_none(),
+        "the migrated installation must fail closed until its own secret is set"
+    );
+}
+
 /// PR #1910 review: a fresh multi-connection config that carries channel_id
 /// and bot_token only inside `connections[]` is a valid save — startability
 /// is judged on the resolved connections, not the legacy top-level fields.
