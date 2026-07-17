@@ -35,91 +35,35 @@ struct CompletionDeliverableRequirement {
     owner_node_id: Option<String>,
 }
 
-fn completion_output_target_looks_like_file(path: &str) -> bool {
+fn completion_output_target_is_local_file(path: &str) -> bool {
     let path = path.trim();
-    let explicit_file_uri = path.starts_with("file://");
     let trimmed = path
         .strip_prefix("file://")
         .unwrap_or(path)
         .trim();
-    if trimmed.is_empty() || trimmed.contains("://") {
+    !trimmed.is_empty() && !trimmed.contains("://")
+}
+
+fn completion_output_target_matches_webhook_event(
+    automation: &crate::AutomationV2Spec,
+    path: &str,
+) -> bool {
+    let Some(webhook) = automation
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("automation_webhook"))
+    else {
         return false;
-    }
-    if explicit_file_uri {
-        return true;
-    }
-    if trimmed.starts_with('/')
-        || trimmed.starts_with("./")
-        || trimmed.starts_with("../")
-        || trimmed.contains('/')
-        || trimmed.contains('\\')
-    {
-        return true;
-    }
-    let extension = std::path::Path::new(trimmed)
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase());
-    matches!(
-        extension.as_deref(),
-        Some(
-            "md" | "markdown"
-                | "txt"
-                | "json"
-                | "jsonl"
-                | "yaml"
-                | "yml"
-                | "csv"
-                | "tsv"
-                | "toml"
-                | "ini"
-                | "cfg"
-                | "conf"
-                | "env"
-                | "xml"
-                | "html"
-                | "htm"
-                | "sql"
-                | "rs"
-                | "ts"
-                | "tsx"
-                | "js"
-                | "jsx"
-                | "mjs"
-                | "cjs"
-                | "py"
-                | "go"
-                | "java"
-                | "kt"
-                | "swift"
-                | "rb"
-                | "php"
-                | "c"
-                | "h"
-                | "cc"
-                | "cpp"
-                | "hpp"
-                | "cs"
-                | "sh"
-                | "css"
-                | "scss"
-                | "vue"
-                | "svelte"
-                | "pdf"
-                | "docx"
-                | "xlsx"
-                | "pptx"
-                | "png"
-                | "jpg"
-                | "jpeg"
-                | "gif"
-                | "svg"
-                | "webp"
-                | "zip"
-                | "tar"
-                | "gz"
-        )
-    )
+    };
+    [
+        webhook.get("provider_event_kind"),
+        webhook.get("providerEventKind"),
+        webhook.pointer("/preview/event"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    .any(|event| event.trim() == path.trim())
 }
 
 fn automation_run_needs_initial_output_cleanup(
@@ -233,7 +177,10 @@ fn completion_required_deliverables(
             Some(&runtime_values),
         );
         let path = path.trim().to_string();
-        if path.is_empty() || !completion_output_target_looks_like_file(&path) {
+        if path.is_empty()
+            || completion_output_target_matches_webhook_event(automation, &path)
+            || !completion_output_target_is_local_file(&path)
+        {
             continue;
         }
         let path = path

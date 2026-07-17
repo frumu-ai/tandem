@@ -74,3 +74,28 @@ fn completion_deliverable_assertion_accepts_existing_file_uri_output_target() {
     assert_eq!(state, CompletionDeliverableState::Satisfied);
     let _ = std::fs::remove_dir_all(workspace);
 }
+
+#[test]
+fn completion_deliverable_assertion_checks_root_level_output_targets() {
+    for target in ["Dockerfile", "Cargo.lock", "schema.graphql", "terraform.tfvars"] {
+        let workspace = completion_test_workspace();
+        let mut automation = test_automation();
+        automation.flow.nodes.clear();
+        automation.output_targets = vec![target.to_string()];
+        let mut run = test_run_with_output(json!({"status": "completed"}));
+        run.checkpoint.node_outputs.clear();
+
+        let state = assert_completion_deliverables(
+            &automation,
+            &run,
+            workspace.to_str().expect("workspace path"),
+        );
+
+        assert!(matches!(
+            state,
+            CompletionDeliverableState::Failed { ref detail }
+                if detail.contains(target)
+        ));
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+}

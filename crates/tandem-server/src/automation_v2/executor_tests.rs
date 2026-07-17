@@ -1097,10 +1097,16 @@ fn completion_deliverable_assertion_ignores_skipped_node_artifact() {
 }
 
 #[test]
-fn completion_deliverable_assertion_ignores_non_file_output_target() {
+fn completion_deliverable_assertion_ignores_webhook_event_output_target() {
     let workspace = completion_test_workspace();
     let mut automation = test_automation();
     automation.flow.nodes.clear();
+    automation.metadata = Some(json!({
+        "automation_webhook": {
+            "provider_event_kind": "customer.incident_reported",
+            "preview": { "event": "customer.incident_reported" }
+        }
+    }));
     automation.output_targets = vec!["customer.incident_reported".to_string()];
     let mut run = test_run_with_output(json!({"status": "completed"}));
     run.checkpoint.node_outputs.clear();
