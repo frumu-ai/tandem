@@ -1242,6 +1242,31 @@ pub(super) async fn channels_put(
             if !has_usable_connection && !channel_is_connected(spec) {
                 return Err(StatusCode::BAD_REQUEST);
             }
+            // Purge stored credentials for connections this save REMOVES:
+            // a binding dropped from `connections[]` must not keep a live
+            // keystore entry that would silently resurrect its credentials
+            // if the same (team, app, channel) binding is ever re-added.
+            // Layer-safe because PUT replaces only the project-level object.
+            let kept_ids: std::collections::HashSet<String> = cfg
+                .connections
+                .iter()
+                .filter_map(|entry| serde_json::to_value(entry).ok())
+                .filter_map(|value| value.as_object().cloned())
+                .flat_map(|entry| tandem_core::slack_connection_secret_ids(&entry))
+                .collect();
+            if let Some(previous_entries) = channels_obj
+                .get(spec.config_key)
+                .and_then(|value| value.get("connections"))
+                .and_then(Value::as_array)
+            {
+                for entry in previous_entries.iter().filter_map(Value::as_object) {
+                    for id in tandem_core::slack_connection_secret_ids(entry) {
+                        if !kept_ids.contains(&id) {
+                            let _ = tandem_core::delete_provider_auth(&id);
+                        }
+                    }
+                }
+            }
             channels_obj.insert(spec.config_key.to_string(), json!(cfg));
         }
         _ => return Err(StatusCode::NOT_FOUND),
@@ -1267,6 +1292,12 @@ pub(super) async fn channels_delete(
     };
     if let Some(secret_id) = tandem_core::channel_secret_store_id(spec.name) {
         let _ = tandem_core::delete_provider_auth(&secret_id);
+    }
+    if spec.name == "slack" {
+        // Deleting the channel revokes ALL its stored credentials — the
+        // top-level signing secret and every per-connection entry — so a
+        // later re-add cannot silently resurrect them from the keystore.
+        tandem_core::purge_slack_channel_secrets();
     }
     let mut project = state.config.get_project_value().await;
     let Some(root) = project.as_object_mut() else {
