@@ -36,7 +36,11 @@ struct CompletionDeliverableRequirement {
 }
 
 fn completion_output_target_looks_like_file(path: &str) -> bool {
-    let trimmed = path.trim();
+    let trimmed = path
+        .trim()
+        .strip_prefix("file://")
+        .unwrap_or(path.trim())
+        .trim();
     if trimmed.is_empty() || trimmed.contains("://") {
         return false;
     }
@@ -190,12 +194,32 @@ fn completion_required_deliverables(
             &run.run_id,
             started_at_ms,
         ) {
-            owner_by_path.insert(path.clone(), node.node_id.clone());
+            owner_by_path.insert(
+                normalize_completion_path_for_compare(&path),
+                node.node_id.clone(),
+            );
             if !completion_node_was_skipped(run, &node.node_id) {
                 requirements.push(CompletionDeliverableRequirement {
                     path,
                     owner_node_id: Some(node.node_id.clone()),
                 });
+            }
+        }
+        if let Some(path) = node
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/artifact/path"))
+            .and_then(Value::as_str)
+            .map(|path| {
+                crate::app::state::automation::automation_runtime_placeholder_replace(
+                    path,
+                    Some(&runtime_values),
+                )
+            })
+        {
+            let normalized = normalize_completion_path_for_compare(&path);
+            if !normalized.is_empty() {
+                owner_by_path.insert(normalized, node.node_id.clone());
             }
         }
     }
@@ -208,7 +232,14 @@ fn completion_required_deliverables(
         if path.is_empty() || !completion_output_target_looks_like_file(&path) {
             continue;
         }
-        let owner_node_id = owner_by_path.get(&path).cloned();
+        let path = path
+            .strip_prefix("file://")
+            .unwrap_or(&path)
+            .trim()
+            .to_string();
+        let owner_node_id = owner_by_path
+            .get(&normalize_completion_path_for_compare(&path))
+            .cloned();
         if owner_node_id
             .as_deref()
             .is_some_and(|node_id| completion_node_was_skipped(run, node_id))

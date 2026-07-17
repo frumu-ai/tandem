@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
+include!("executor_completion_uri_tests.rs");
+
 use super::*;
 
 fn test_automation() -> crate::automation_v2::types::AutomationV2Spec {
