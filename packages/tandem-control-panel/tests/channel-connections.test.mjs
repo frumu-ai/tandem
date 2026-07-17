@@ -6,6 +6,7 @@ import {
   normalizeSlackConnections,
   normalizeSlackSenders,
   parseOrgUnitsInput,
+  senderRowKey,
   senderTone,
   unmappedBoundChannels,
   verifyResultsByChannel,
@@ -174,6 +175,29 @@ test("verifyResultsByChannel keeps colliding channel ids apart by installation",
   assert.equal(a.ok, true);
   assert.equal(b.ok, false);
   assert.match(b.error, /different Slack app/);
+});
+
+test("senderRowKey separates the same principal across tenants", () => {
+  const principal = "channel:slack:T1:A1:U1";
+  const inTenantA = senderRowKey({
+    principal,
+    tenantOrgId: "acme",
+    tenantWorkspaceId: "hq",
+  });
+  const inTenantB = senderRowKey({
+    principal,
+    tenantOrgId: "other",
+    tenantWorkspaceId: "ops",
+  });
+  assert.notEqual(
+    inTenantA,
+    inTenantB,
+    "one row per tenant must not share a key just because the Slack principal matches",
+  );
+  assert.equal(
+    inTenantA,
+    senderRowKey({ principal, tenantOrgId: "acme", tenantWorkspaceId: "hq" }),
+  );
 });
 
 test("parseOrgUnitsInput trims, drops empties, and dedups", () => {

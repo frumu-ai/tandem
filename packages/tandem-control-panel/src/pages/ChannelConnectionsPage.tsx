@@ -10,6 +10,7 @@ import {
   normalizeSlackConnections,
   normalizeSlackSenders,
   parseOrgUnitsInput,
+  senderRowKey,
   senderTone,
   unmappedBoundChannels,
   verifyResultsByChannel,
@@ -204,7 +205,7 @@ export function ChannelConnectionsPage({ client, api, toast, navigate }: AppPage
         <div className="grid gap-2">
           {senders.length ? (
             senders.map((sender) => (
-              <div key={sender.principal} className="tcp-list-item">
+              <div key={senderRowKey(sender)} className="tcp-list-item">
                 <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                   <strong>{sender.userId}</strong>
                   <div className="flex flex-wrap items-center gap-1">
@@ -256,7 +257,7 @@ export function ChannelConnectionsPage({ client, api, toast, navigate }: AppPage
                     Enterprise admin
                   </button>
                 </div>
-                {enrollTarget?.principal === sender.principal ? (
+                {enrollTarget && senderRowKey(enrollTarget) === senderRowKey(sender) ? (
                   <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto]">
                     <input
                       className="tcp-input h-8 text-xs"

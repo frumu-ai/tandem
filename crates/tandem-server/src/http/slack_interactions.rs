@@ -783,34 +783,39 @@ fn parse_slack_interaction_body(body: &[u8]) -> Result<Value, String> {
     Err("body did not contain a `payload` form field".to_string())
 }
 
+/// Percent-decoding collects raw BYTES first and UTF-8 decodes at the end:
+/// Slack form-encodes UTF-8 JSON, so a multi-byte sequence (emoji, accents,
+/// CJK — e.g. a free-form rework reason) arrives as several `%xx` escapes
+/// that only mean anything reassembled. Decoding each escape as its own
+/// `char` would produce mojibake in persisted gate decisions.
 fn url_decode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
     let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'+' => {
-                out.push(' ');
+                out.push(b' ');
                 i += 1;
             }
             b'%' if i + 2 < bytes.len() => {
                 let hi = hex_digit(bytes[i + 1]);
                 let lo = hex_digit(bytes[i + 2]);
                 if let (Some(hi), Some(lo)) = (hi, lo) {
-                    out.push((hi << 4 | lo) as char);
+                    out.push(hi << 4 | lo);
                     i += 3;
                 } else {
-                    out.push('%');
+                    out.push(b'%');
                     i += 1;
                 }
             }
             other => {
-                out.push(other as char);
+                out.push(other);
                 i += 1;
             }
         }
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn hex_digit(b: u8) -> Option<u8> {
@@ -1647,6 +1652,32 @@ fn slack_event_message_user(payload: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_decode_reassembles_multibyte_utf8() {
+        // Percent escapes are UTF-8 bytes, not chars: emoji/CJK/accents in a
+        // free-form rework reason must round-trip without mojibake.
+        assert_eq!(url_decode("%F0%9F%94%A5+ship+it"), "🔥 ship it");
+        assert_eq!(url_decode("%E4%B8%AD%E6%96%87"), "中文");
+        assert_eq!(url_decode("caf%C3%A9"), "café");
+        assert_eq!(url_decode("plain+ascii%21"), "plain ascii!");
+        // Malformed escapes stay literal instead of corrupting the rest.
+        assert_eq!(url_decode("100%+done"), "100% done");
+    }
+
+    #[test]
+    fn parse_slack_interaction_body_preserves_unicode_payload_values() {
+        let payload = json!({"type": "view_submission", "reason": "需要修改 🔥"}).to_string();
+        let mut encoded = String::from("payload=");
+        for byte in payload.as_bytes() {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+        let parsed = parse_slack_interaction_body(encoded.as_bytes()).expect("parse");
+        assert_eq!(
+            parsed.get("reason").and_then(Value::as_str),
+            Some("需要修改 🔥")
+        );
+    }
 
     #[test]
     fn slack_event_message_user_extracts_plain_message_sender() {
