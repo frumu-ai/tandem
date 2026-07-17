@@ -15,10 +15,14 @@ with 0.7.0.
 ### Multi-Channel Slack Connections
 
 `channels.slack.connections[]` turns the single-channel Slack config into a
-set of per-channel connections. Each entry inherits anything it does not set
+set of per-channel connections. Each entry inherits what it does not set
 from the top level — installation identity, tokens, tenant, allowlist,
-profiles, model override — and signed Events and interaction callbacks route
-by the payload's `(team_id, api_app_id, channel_id)` binding. Signature
+profiles, model override — with one deliberate exception: a connection that
+overrides the app identity does not inherit the top-level signing secret
+and must declare its own, so signed ingress fails closed rather than
+verifying one app's payloads with another app's secret. Signed Events and
+interaction callbacks route by the payload's
+`(team_id, api_app_id, channel_id)` binding. Signature
 verification is bound to the claimed installation: a payload is only accepted
 when it verifies against that installation's own signing secret, a
 configured-but-secretless installation fails closed, and two workspaces that
@@ -51,9 +55,10 @@ immediately yields a working governed run, and the same Slack principal can
 hold separate grants in different tenants without one overwriting the other.
 The new Channel Connections page (Govern nav) shows one card per connection
 with identity, ingress mode, secret presence, tenant/department bindings, and
-live status, plus a per-connection Verify-bindings action backed by
-`POST /channels/slack/verify` and the sender-mapping UI with inline
-pairing-code issuance.
+live status, plus a Verify-bindings action that checks every configured
+connection through `POST /channels/slack/verify` and reports
+per-connection, installation-keyed results, and the sender-mapping UI with
+inline pairing-code issuance.
 
 ### Rework Reason Modal
 
@@ -69,20 +74,25 @@ A Slack config that carries a tenant or department binding but no
 signed-events capability anywhere now fails closed at listener startup
 instead of running governed bindings through the unauthenticated legacy
 poller. The poller remains for fully unbound configs — ones with no
-governed binding on any connection — including unbound events-capable
-configs, which keep poller ingress rather than losing both paths. These
-startup gates are evaluated for the config as a whole: once a config mixes
-a governed binding with events capability, the poller is suppressed for
-the whole channel. Slack URL verification handshakes are scoped to the
+governed binding on any connection — that keep the legacy top-level channel
+fields (bot token and channel id), including unbound events-capable
+configs, which retain poller ingress rather than losing both paths. The
+poller serves only that legacy top-level channel, so a fully unbound
+connection-only config has no poller path. These startup gates are
+evaluated for the config as a whole: once a config mixes a governed
+binding with events capability, the poller is suppressed for the whole
+channel. Slack URL verification handshakes are scoped to the
 installation whose signing secret actually signed the request.
 
 ### Slack Credential Lifecycle Hardening
 
 Slack credentials never persist in plaintext config. Bot tokens and signing
-secrets hoist into the OS keystore — the top-level signing secret and all
-per-connection credentials under installation-keyed ids, the top-level bot
-token under the shared legacy id — are stripped from the on-disk file, and
-are injected back into the effective config at read time. Explicitly
+secrets hoist into the provider auth store — the OS keyring when one is
+available, otherwise its file-backed fallback — with the top-level signing
+secret and all per-connection credentials under installation-keyed ids and
+the top-level bot token under the shared legacy id. They are stripped from
+the on-disk config file and injected back into the effective config at
+read time. Explicitly
 clearing a signing secret or a per-connection credential revokes the stored
 secret; removing a connection or deleting the channel purges its stored
 credentials. The top-level bot token is rotated by saving a new value, and

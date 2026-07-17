@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added multi-channel Slack connections: `channels.slack.connections[]`
   defines per-channel connections that inherit unset fields from the top
-  level, with signed Events and interaction callbacks routed by the
-  payload's `(team_id, api_app_id, channel_id)` binding. Signature
+  level (except the signing secret, which never inherits across an app-id
+  override — such a connection must declare its own or signed ingress
+  fails closed), with signed Events and interaction callbacks routed by
+  the payload's `(team_id, api_app_id, channel_id)` binding. Signature
   verification is bound to the claimed installation and fails closed for
   configured-but-secretless installations; outbound replies, bot-binding
   verification, and approval-card updates use the matched connection; and
@@ -32,23 +34,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and department-binding enrollment: pairing codes carry `org_units` and a
   tenant scope, and redemption establishes active org-unit memberships so a
   department-bound enrollment immediately yields a working governed run.
-  Capabilities and step-up grants are tenant-scoped, so the same Slack
-  principal can hold separate grants in different tenants. (#1910)
+  Capabilities and step-up grants can be issued with a tenant scope — a
+  scoped grant only counts on connections bound to that tenant, so the
+  same Slack principal can hold separate grants in different tenants —
+  while unscoped legacy grants remain channel-global. (#1910)
 - Added the Channel Connections control-panel page (Govern nav): one card
   per connection with identity, ingress mode, secret presence, and
-  tenant/department bindings, per-connection verify backed by new
-  installation-aware support in `POST /channels/slack/verify`, and the
+  tenant/department bindings, a Verify-bindings action that checks all
+  configured connections and reports per-connection, installation-keyed
+  results via new support in `POST /channels/slack/verify`, and the
   sender-mapping UI with inline pairing-code issuance. (#1910)
 - Added the Slack rework-reason modal: the Rework button opens a
   `views.open` modal after the full guard stack and dispatches the rework
   gate decision with the collected reason on `view_submission`, with inline
   validation for empty reasons, dedupe only after validation, and UTF-8
   decoding of free-form input. (#1910)
-- Added keystore-backed Slack credential storage: bot tokens and signing
-  secrets hoist into the OS keystore — the top-level signing secret and all
-  per-connection credentials under installation-keyed ids, the top-level
-  bot token under the shared legacy id — are stripped from plaintext
-  config, and are injected into the effective config at read time.
+- Added provider-auth-store-backed Slack credential storage: bot tokens
+  and signing secrets hoist into the provider auth store (the OS keyring
+  when available, otherwise its file-backed fallback) — the top-level
+  signing secret and all per-connection credentials under
+  installation-keyed ids, the top-level bot token under the shared legacy
+  id — are stripped from plaintext config, and are injected into the
+  effective config at read time.
   Explicitly clearing a signing secret or per-connection credential revokes
   the stored secret; removing a connection or deleting the channel purges
   its stored credentials; the top-level bot token is rotated by saving a
@@ -67,10 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or department binding but no signed-events capability anywhere fails
   closed at listener startup instead of running governed bindings through
   the unauthenticated legacy poller. Fully unbound configs (no governed
-  binding on any connection) — including unbound events-capable ones — keep
-  the poller; these startup gates are config-global, so mixing a governed
-  binding with events capability suppresses the poller for the whole
-  channel. Slack URL verification is scoped to the installation whose
+  binding on any connection) that keep the legacy top-level channel fields
+  — including unbound events-capable ones — keep the poller, which serves
+  only that top-level channel; these startup gates are config-global, so
+  mixing a governed binding with events capability suppresses the poller
+  for the whole channel. Slack URL verification is scoped to the installation whose
   signing secret signed the handshake. (#1910)
 - Slack allowlists are now stored faithfully: an empty allowlist means
   deny-all on signed ingress, no save path synthesizes a `"*"` wildcard,
