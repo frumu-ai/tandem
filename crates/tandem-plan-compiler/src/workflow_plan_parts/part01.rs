@@ -1349,7 +1349,10 @@ pub fn infer_explicit_output_targets(prompt: &str) -> Vec<String> {
                     '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':'
                 )
             })
-            .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '?'))
+            .trim_end_matches(|ch: char| matches!(ch as u32, 0x2e | 0x21 | 0x3f))
+            .trim_matches(|ch: char| {
+                matches!(ch as u32, 0x22 | 0x27 | 0x28 | 0x29 | 0x5b | 0x5d | 0x60 | 0x7b | 0x7d)
+            })
             .trim();
         if token.is_empty() || token.contains("://") {
             continue;
@@ -1389,7 +1392,10 @@ pub fn infer_read_only_source_paths(prompt: &str) -> Vec<String> {
                     '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':'
                 )
             })
-            .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '?'))
+            .trim_end_matches(|ch: char| matches!(ch as u32, 0x2e | 0x21 | 0x3f))
+            .trim_matches(|ch: char| {
+                matches!(ch as u32, 0x22 | 0x27 | 0x28 | 0x29 | 0x5b | 0x5d | 0x60 | 0x7b | 0x7d)
+            })
             .trim();
         if token.is_empty() || token.contains("://") {
             continue;
