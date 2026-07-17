@@ -966,6 +966,7 @@ The Notion page should include:
         for prompt in [
             "Create a workflow triggered by a webhook event named \u{60}customer.incident_reported\u{60}. Create demo-output/incident.md.",
             "Create a workflow triggered by webhook event type: \u{22}customer.incident_reported\u{22}. Create demo-output/incident.md.",
+            "Create a workflow triggered by a webhook event named “customer.incident_reported”. Create demo-output/incident.md.",
         ] {
             let targets = infer_explicit_output_targets(prompt);
 

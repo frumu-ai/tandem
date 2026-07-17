@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-fn output_target_is_webhook_event_identifier(prompt: &str, token: &str) -> bool {
-    let lowered_prompt = prompt
+fn normalize_webhook_event_match_text(value: &str) -> String {
+    value
         .to_ascii_lowercase()
         .chars()
         .filter(|ch| {
@@ -14,8 +14,12 @@ fn output_target_is_webhook_event_identifier(prompt: &str, token: &str) -> bool 
                     | 0x60 | 0x7b | 0x7d | 0x2018 | 0x2019 | 0x201c | 0x201d
             )
         })
-        .collect::<String>();
-    let lowered_token = token.to_ascii_lowercase();
+        .collect()
+}
+
+fn output_target_is_webhook_event_identifier(prompt: &str, token: &str) -> bool {
+    let lowered_prompt = normalize_webhook_event_match_text(prompt);
+    let lowered_token = normalize_webhook_event_match_text(token);
     [
         format!("webhook event named {lowered_token}"),
         format!("webhook event name {lowered_token}"),
