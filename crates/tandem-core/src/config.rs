@@ -419,8 +419,30 @@ const SLACK_CONNECTION_SECRET_FIELDS: [(&str, &str); 2] = [
     ("signing_secret", "signingSecret"),
 ];
 
-/// Secret-store id for the top-level `channels.slack.signing_secret`.
-pub const SLACK_SIGNING_SECRET_STORE_ID: &str = "channel::slack::signing_secret";
+/// Prefix of every stored top-level `channels.slack.signing_secret`. The
+/// full id is keyed by the configured installation (`::{team}::{app}`
+/// suffix): a signing secret is an app credential, so migrating the config
+/// from app A to app B must NOT inject A's stored secret as B's — the new
+/// identity resolves secretless and fails closed until its own secret is
+/// entered.
+pub const SLACK_SIGNING_SECRET_STORE_PREFIX: &str = "channel::slack::signing_secret";
+
+/// Installation-keyed secret-store id for the top-level Slack signing
+/// secret of this raw `channels.slack` object.
+fn slack_signing_secret_store_id(cfg: &serde_json::Map<String, Value>) -> String {
+    let raw = |keys: [&str; 2]| {
+        keys.iter()
+            .find_map(|key| cfg.get(*key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("-")
+            .to_string()
+    };
+    let team = raw(["team_id", "workspace_id"]);
+    let app = raw(["app_id", "api_app_id"]);
+    format!("{SLACK_SIGNING_SECRET_STORE_PREFIX}::{team}::{app}").to_ascii_lowercase()
+}
 
 /// Prefix of every per-connection Slack credential in the secret store.
 pub const SLACK_CONNECTION_SECRET_PREFIX: &str = "channel::slack::connection::";
@@ -440,13 +462,12 @@ pub fn slack_connection_secret_ids(entry: &serde_json::Map<String, Value>) -> [S
 /// a later re-add cannot silently resurrect revoked credentials.
 pub fn purge_slack_channel_secrets() {
     let stored = crate::load_provider_auth();
-    for id in stored
-        .keys()
-        .filter(|key| key.starts_with(SLACK_CONNECTION_SECRET_PREFIX))
-    {
+    for id in stored.keys().filter(|key| {
+        key.starts_with(SLACK_CONNECTION_SECRET_PREFIX)
+            || key.starts_with(SLACK_SIGNING_SECRET_STORE_PREFIX)
+    }) {
         let _ = crate::delete_provider_auth(id);
     }
-    let _ = crate::delete_provider_auth(SLACK_SIGNING_SECRET_STORE_ID);
 }
 
 fn hoist_persisted_secrets(value: &mut Value) -> anyhow::Result<()> {
@@ -491,10 +512,11 @@ fn hoist_persisted_secrets(value: &mut Value) -> anyhow::Result<()> {
                     .map(str::trim)
                     .unwrap_or_default()
                     .to_string();
+                let secret_id = slack_signing_secret_store_id(cfg);
                 if secret.is_empty() {
-                    let _ = crate::delete_provider_auth(SLACK_SIGNING_SECRET_STORE_ID);
+                    let _ = crate::delete_provider_auth(&secret_id);
                 } else {
-                    crate::set_provider_auth(SLACK_SIGNING_SECRET_STORE_ID, &secret)?;
+                    crate::set_provider_auth(&secret_id, &secret)?;
                 }
             }
         }
@@ -664,7 +686,11 @@ fn inject_stored_channel_secrets(value: &mut Value) {
             .and_then(Value::as_str)
             .is_some_and(|value| !value.trim().is_empty());
         if !already_present {
-            if let Some(secret) = secrets.get(SLACK_SIGNING_SECRET_STORE_ID) {
+            // Installation-keyed lookup: a config whose team/app changed
+            // resolves a DIFFERENT id, so the previous app's secret is never
+            // injected as the new app's — it fails closed instead.
+            let secret_id = slack_signing_secret_store_id(cfg);
+            if let Some(secret) = secrets.get(&secret_id) {
                 if !secret.trim().is_empty() {
                     cfg.insert("signing_secret".to_string(), Value::String(secret.clone()));
                 }
@@ -1370,7 +1396,7 @@ mod tests {
         let stored = crate::load_provider_auth();
         assert_eq!(
             stored
-                .get(SLACK_SIGNING_SECRET_STORE_ID)
+                .get("channel::slack::signing_secret::t1::a1")
                 .map(String::as_str),
             Some("shh-top-level")
         );
@@ -1413,12 +1439,26 @@ mod tests {
             Some(&json!("xoxb-eng"))
         );
 
+        // A config migrated to a DIFFERENT app identity must not inherit the
+        // previous app's stored signing secret — the id is keyed by the
+        // installation, so the new identity resolves secretless.
+        let mut migrated = json!({
+            "channels": { "slack": { "team_id": "T1", "app_id": "A_NEW" } }
+        });
+        inject_stored_channel_secrets(&mut migrated);
+        assert!(
+            migrated.pointer("/channels/slack/signing_secret").is_none(),
+            "a changed app identity must not inject the previous app's secret"
+        );
+
         // An EXPLICIT clear (present-but-empty field) revokes the stored
         // secret — injection must not silently resurrect a rotated or
         // compromised credential.
         let mut cleared = json!({
             "channels": {
                 "slack": {
+                    "team_id": "T1",
+                    "app_id": "A1",
                     "signing_secret": "",
                     "connections": [
                         { "channel_id": "C_SALES", "bot_token": "", "signing_secret": "" }
@@ -1436,7 +1476,7 @@ mod tests {
         );
         assert!(!stored.contains_key("channel::slack::connection::-::-::c_sales::signing_secret"));
         assert!(
-            !stored.contains_key(SLACK_SIGNING_SECRET_STORE_ID),
+            !stored.contains_key("channel::slack::signing_secret::t1::a1"),
             "clearing the top-level signing secret must delete the stored secret"
         );
         let mut rehydrated = cleared.clone();
@@ -1452,7 +1492,7 @@ mod tests {
             "channel::slack::connection::-::-::c_sales::bot_token",
             "channel::slack::connection::-::-::c_sales::signing_secret",
             "channel::slack::connection::t2::a2::c_eng::bot_token",
-            SLACK_SIGNING_SECRET_STORE_ID,
+            "channel::slack::signing_secret::t1::a1",
         ] {
             let _ = crate::delete_provider_auth(id);
         }
