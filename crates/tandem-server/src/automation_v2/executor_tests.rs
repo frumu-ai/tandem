@@ -1150,6 +1150,44 @@ fn completion_deliverable_assertion_rejects_stale_unowned_output_target() {
 }
 
 #[test]
+fn completion_deliverable_assertion_repairs_stale_metadata_owned_output_target() {
+    let workspace = completion_test_workspace();
+    let mut automation = test_automation();
+    automation.output_targets = vec!["reports/final.md".to_string()];
+    automation.flow.nodes[0].metadata = Some(json!({
+        "artifact": {
+            "path": "reports/final.md"
+        }
+    }));
+    let mut run = test_run_with_output(json!({"status": "completed"}));
+    run.checkpoint.completed_nodes = vec!["research-brief".to_string()];
+    write_completion_artifact(
+        &workspace,
+        ".tandem/runs/run-test/artifacts/research-brief.json",
+        r#"{"status":"completed"}"#,
+    );
+    write_completion_artifact(&workspace, "reports/final.md", &substantive_markdown());
+
+    let state = assert_completion_deliverables(
+        &automation,
+        &run,
+        workspace.to_str().expect("workspace path"),
+    );
+
+    assert!(matches!(
+        state,
+        CompletionDeliverableState::Repair(CompletionDeliverableRepair {
+            ref node_id,
+            ref path,
+            ref detail,
+        }) if node_id == "research-brief"
+            && path == "reports/final.md"
+            && detail.contains("lacks current-run output evidence")
+    ));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn completion_deliverable_assertion_accepts_unowned_output_target_with_publication_evidence() {
     let workspace = completion_test_workspace();
     let mut automation = test_automation();

@@ -672,7 +672,7 @@ export function StatefulRunsPage({
         selectedRow={detailRow}
         detail={detail}
         loading={
-          (runsQuery.isLoading && !runsQuery.data) ||
+          (runsQuery.isLoading && !runsQuery.data && !detailQuery.data) ||
           (detailQuery.isLoading && !detailQuery.data && selectedRow?.source !== "context")
         }
         error={detailQuery.data?.error || ""}

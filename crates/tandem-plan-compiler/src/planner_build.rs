@@ -414,27 +414,32 @@ where
                                     };
                                 }
                                 let compacted_count = plan.steps.len();
-                                let detail = format!(
-                                    "Planner compacted {original_step_count} generated tasks into {compacted_count} runnable workflow steps."
-                                );
-                                host.warn(&format!(
-                                    "workflow planner llm output compacted to generated task budget: {detail}"
-                                ));
-                                let diagnostics = planner_diagnostics(
-                                    Some("task_budget_compacted"),
-                                    Some(detail.clone()),
-                                    Some(workflow_plan_decomposition_observation_with_task_budget(
-                                        &decomposition_profile,
-                                        &plan,
-                                        Some(report),
-                                    )),
-                                );
-                                return PlannerBuildResult {
-                                    plan,
-                                    assistant_text: payload.assistant_text.or(Some(detail.clone())),
-                                    clarifier: Value::Null,
-                                    planner_diagnostics: diagnostics,
-                                };
+                                if !workflow_plan_is_too_flat_for_profile(
+                                    &decomposition_profile,
+                                    compacted_count,
+                                ) {
+                                    let detail = format!(
+                                        "Planner compacted {original_step_count} generated tasks into {compacted_count} runnable workflow steps."
+                                    );
+                                    host.warn(&format!(
+                                        "workflow planner llm output compacted to generated task budget: {detail}"
+                                    ));
+                                    let diagnostics = planner_diagnostics(
+                                        Some("task_budget_compacted"),
+                                        Some(detail.clone()),
+                                        Some(workflow_plan_decomposition_observation_with_task_budget(
+                                            &decomposition_profile,
+                                            &plan,
+                                            Some(report),
+                                        )),
+                                    );
+                                    return PlannerBuildResult {
+                                        plan,
+                                        assistant_text: payload.assistant_text.or(Some(detail.clone())),
+                                        clarifier: Value::Null,
+                                        planner_diagnostics: diagnostics,
+                                    };
+                                }
                             }
                         }
                         if workflow_plan_is_too_flat_for_profile(

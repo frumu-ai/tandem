@@ -33,6 +33,7 @@ enum CompletionDeliverableState {
 struct CompletionDeliverableRequirement {
     path: String,
     owner_node_id: Option<String>,
+    requires_run_evidence: bool,
 }
 
 fn completion_output_target_is_local_file(path: &str) -> bool {
@@ -156,6 +157,7 @@ fn completion_required_deliverables(
                 requirements.push(CompletionDeliverableRequirement {
                     path,
                     owner_node_id: Some(node.node_id.clone()),
+                    requires_run_evidence: false,
                 });
             }
         }
@@ -206,13 +208,24 @@ fn completion_required_deliverables(
         requirements.push(CompletionDeliverableRequirement {
             path,
             owner_node_id,
+            requires_run_evidence: true,
         });
     }
-    let mut seen = std::collections::HashSet::new();
-    requirements
-        .into_iter()
-        .filter(|requirement| seen.insert(requirement.path.clone()))
-        .collect()
+    let mut deduplicated = Vec::<CompletionDeliverableRequirement>::new();
+    for requirement in requirements {
+        if let Some(existing) = deduplicated
+            .iter_mut()
+            .find(|existing| existing.path == requirement.path)
+        {
+            existing.requires_run_evidence |= requirement.requires_run_evidence;
+            if existing.owner_node_id.is_none() {
+                existing.owner_node_id = requirement.owner_node_id;
+            }
+        } else {
+            deduplicated.push(requirement);
+        }
+    }
+    deduplicated
 }
 
 fn repairable_completion_owner(
@@ -393,7 +406,7 @@ fn completion_output_value_references_path(value: &Value, target: &str) -> bool 
     false
 }
 
-fn completion_unowned_output_target_has_run_evidence(
+fn completion_output_target_has_run_evidence(
     run: &crate::automation_v2::types::AutomationV2RunRecord,
     path: &str,
 ) -> bool {
@@ -414,15 +427,25 @@ fn assert_completion_deliverables(
         state => return state,
     }
     for requirement in completion_required_deliverables(automation, run) {
-        if requirement.owner_node_id.is_none()
-            && !completion_unowned_output_target_has_run_evidence(run, &requirement.path)
+        if requirement.requires_run_evidence
+            && !completion_output_target_has_run_evidence(run, &requirement.path)
         {
-            return CompletionDeliverableState::Failed {
-                detail: format!(
-                    "automation run deliverable `{}` lacks current-run output evidence",
-                    requirement.path
-                ),
-            };
+            let detail = format!(
+                "automation run deliverable `{}` lacks current-run output evidence",
+                requirement.path
+            );
+            if let Some(node_id) = repairable_completion_owner(
+                automation,
+                run,
+                requirement.owner_node_id.as_deref(),
+            ) {
+                return CompletionDeliverableState::Repair(CompletionDeliverableRepair {
+                    node_id,
+                    path: requirement.path,
+                    detail,
+                });
+            }
+            return CompletionDeliverableState::Failed { detail };
         }
         let resolved = match crate::app::state::automation::resolve_automation_output_path(
             workspace_root,
