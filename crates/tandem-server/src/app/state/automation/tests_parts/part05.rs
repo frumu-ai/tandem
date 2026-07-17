@@ -68,6 +68,24 @@ fn no_work_handoff_is_not_treated_as_rich_upstream_research_evidence() {
 }
 
 #[test]
+fn nested_no_work_row_does_not_mark_the_whole_output_empty() {
+    let output = json!({
+        "has_work": true,
+        "items": [
+            {"id": "actionable", "has_work": true},
+            {"id": "not-actionable", "has_work": false}
+        ],
+        "artifact_validation": {
+            "read_paths": ["README.md"],
+            "citation_count": 1,
+            "citations": ["README.md"]
+        }
+    });
+
+    assert!(!automation_output_reports_no_actionable_work(&output));
+}
+
+#[test]
 fn mcp_contract_summary_extracts_required_args_and_example() {
     let schema = ToolSchema::new(
         "mcp.notion.notion_search",

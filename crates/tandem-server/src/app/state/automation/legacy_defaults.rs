@@ -127,7 +127,7 @@ pub(crate) fn automation_node_is_outbound_action(node: &AutomationFlowNode) -> b
     .any(|needle| objective.contains(needle))
         || objective
             .split(|character: char| !character.is_ascii_alphanumeric())
-            .any(|word| word == "deliver")
+            .any(|word| matches!(word, "deliver" | "delivers" | "delivered" | "delivering"))
 }
 
 fn automation_node_metadata_bool(node: &AutomationFlowNode, key: &str) -> bool {

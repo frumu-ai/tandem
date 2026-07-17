@@ -143,6 +143,19 @@ fn explicit_deliver_action_remains_outbound() {
 }
 
 #[test]
+fn delivery_verb_forms_remain_outbound() {
+    for objective in [
+        "Delivers the report to the customer.",
+        "Delivering the approved update.",
+        "Delivered to the customer.",
+    ] {
+        let mut node = bare_node();
+        node.objective = objective.to_string();
+        assert!(automation_node_is_outbound_action(&node), "{objective}");
+    }
+}
+
+#[test]
 fn deliver_action_with_punctuation_remains_outbound() {
     for objective in ["Deliver.", "Deliver: final report", "Prepare the report, then deliver"] {
         let mut node = bare_node();
