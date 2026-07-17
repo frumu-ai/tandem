@@ -90,3 +90,44 @@ fn publish_verified_output_limits_planner_node_to_owned_artifact_target() {
 
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
+
+#[test]
+fn structured_handoff_preserves_automation_level_source_guards() {
+    let mut node = bare_node();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    let mut automation = automation_with_output_targets(vec![node.clone()], Vec::new());
+    automation.description = Some(
+        "Read RESUME.md as the source of truth and never edit, rewrite, rename, move, or delete it."
+            .to_string(),
+    );
+    automation.workspace_root = Some("/workspace".to_string());
+    let mut session = Session::new(Some("structured handoff".to_string()), None);
+    session.workspace_root = Some("/workspace".to_string());
+    let session_text = r#"{
+        "summary": "Prepared downstream write targets.",
+        "write_targets": ["RESUME.md", "daily-results.md"]
+    }"#;
+
+    let output = wrap_automation_node_output_with_automation(
+        &automation,
+        &node,
+        &session,
+        &[],
+        "session-source-guard",
+        Some("run-source-guard"),
+        session_text,
+        None,
+        None,
+    );
+
+    assert_eq!(
+        output.pointer("/content/structured_handoff/write_targets"),
+        Some(&json!(["daily-results.md"]))
+    );
+}

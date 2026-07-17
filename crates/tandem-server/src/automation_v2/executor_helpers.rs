@@ -36,13 +36,17 @@ struct CompletionDeliverableRequirement {
 }
 
 fn completion_output_target_looks_like_file(path: &str) -> bool {
+    let path = path.trim();
+    let explicit_file_uri = path.starts_with("file://");
     let trimmed = path
-        .trim()
         .strip_prefix("file://")
-        .unwrap_or(path.trim())
+        .unwrap_or(path)
         .trim();
     if trimmed.is_empty() || trimmed.contains("://") {
         return false;
+    }
+    if explicit_file_uri {
+        return true;
     }
     if trimmed.starts_with('/')
         || trimmed.starts_with("./")

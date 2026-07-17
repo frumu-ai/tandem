@@ -30,11 +30,11 @@ fn completion_deliverable_assertion_ignores_skipped_publication_artifact() {
 }
 
 #[test]
-fn completion_deliverable_assertion_checks_file_uri_output_target() {
+fn completion_deliverable_assertion_checks_extensionless_file_uri_output_target() {
     let workspace = completion_test_workspace();
     let mut automation = test_automation();
     automation.flow.nodes.clear();
-    automation.output_targets = vec!["file://reports/final.md".to_string()];
+    automation.output_targets = vec!["file://Dockerfile".to_string()];
     let mut run = test_run_with_output(json!({"status": "completed"}));
     run.checkpoint.node_outputs.clear();
 
@@ -47,7 +47,7 @@ fn completion_deliverable_assertion_checks_file_uri_output_target() {
     assert!(matches!(
         state,
         CompletionDeliverableState::Failed { ref detail }
-            if detail.contains("reports/final.md")
+            if detail.contains("Dockerfile")
     ));
     let _ = std::fs::remove_dir_all(workspace);
 }
