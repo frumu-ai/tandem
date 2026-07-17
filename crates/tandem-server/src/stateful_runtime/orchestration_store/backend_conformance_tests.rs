@@ -13,6 +13,8 @@
 
 use std::time::{Duration, Instant};
 
+use serial_test::serial;
+
 use super::*;
 use tandem_automation::{
     GoalLimitAction, GoalPolicy, LongRunningGoalStatus, OrchestrationArtifactRef,
@@ -257,6 +259,7 @@ fn outbox(outbox_id: &str, updated_at_ms: u64) -> StatefulOutboxRecord {
 }
 
 #[test]
+#[serial]
 fn handoff_transition_is_exactly_once_and_tenant_scoped() {
     for_each_backend(|name, store| {
         let downstream_run = run("run-2");
@@ -338,6 +341,7 @@ fn handoff_transition_is_exactly_once_and_tenant_scoped() {
 /// idempotent commits resolve as Committed/AlreadyCommitted instead of one
 /// side failing on a unique constraint.
 #[test]
+#[serial]
 fn concurrent_idempotent_handoffs_serialize_on_every_backend() {
     for_each_backend(|name, store| {
         let downstream_run = run("run-2");
@@ -375,6 +379,7 @@ fn concurrent_idempotent_handoffs_serialize_on_every_backend() {
 }
 
 #[test]
+#[serial]
 fn orchestration_specs_publish_and_stay_immutable() {
     for_each_backend(|name, store| {
         let spec: OrchestrationSpec = serde_json::from_value(serde_json::json!({
@@ -450,6 +455,7 @@ fn orchestration_specs_publish_and_stay_immutable() {
 }
 
 #[test]
+#[serial]
 fn tool_request_ledger_blocks_and_replays() {
     for_each_backend(|name, store| {
         let tenant = TenantContext::local_implicit();
@@ -506,6 +512,7 @@ fn tool_request_ledger_blocks_and_replays() {
 }
 
 #[test]
+#[serial]
 fn snapshot_retention_keeps_newest_per_run() {
     for_each_backend(|name, store| {
         for (snapshot_id, seq, created_at_ms) in [
@@ -534,6 +541,7 @@ fn snapshot_retention_keeps_newest_per_run() {
 }
 
 #[test]
+#[serial]
 fn legacy_migration_journal_records_attempts_once() {
     for_each_backend(|name, store| {
         let sources = tempfile::tempdir().unwrap();
@@ -561,6 +569,7 @@ fn legacy_migration_journal_records_attempts_once() {
 }
 
 #[test]
+#[serial]
 fn waits_and_reliability_records_round_trip() {
     for_each_backend(|name, store| {
         store
@@ -589,6 +598,7 @@ fn waits_and_reliability_records_round_trip() {
 }
 
 #[test]
+#[serial]
 fn hot_sync_retains_archived_rows() {
     for_each_backend(|name, store| {
         let archived = run("run-archived");
@@ -603,6 +613,7 @@ fn hot_sync_retains_archived_rows() {
 }
 
 #[test]
+#[serial]
 fn engine_lock_is_exclusive_per_backend() {
     for_each_backend(|name, store| {
         let first = store.acquire_engine_lock().unwrap();
@@ -613,6 +624,7 @@ fn engine_lock_is_exclusive_per_backend() {
 }
 
 #[test]
+#[serial]
 fn high_volume_event_replay_stays_bounded_per_goal() {
     const SMALL_STORE_EVENTS: usize = 128;
     const LARGE_STORE_EVENTS: usize = 2_048;
