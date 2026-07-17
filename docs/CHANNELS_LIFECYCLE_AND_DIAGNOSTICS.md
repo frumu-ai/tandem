@@ -169,9 +169,13 @@ Semantics:
 - **Updates.** `PUT /channels/slack` preserves stored governance fields the
   sanitized snapshot omits (`signing_secret`, `team_id`/`app_id`,
   `events_enabled`, `tenant`, `org_units`, `connections`,
-  `require_approval_step_up`, `api_base_url`, `notify_approvals`): a request
-  that leaves a key out inherits the stored value, while explicitly provided
-  values — including `"connections": []` — replace it.
+  `require_approval_step_up`, `api_base_url`, `notify_approvals`,
+  `allowed_users`): a request that leaves a key out inherits the stored
+  value, while explicitly provided values — including `"connections": []` —
+  replace it. Unlike the poller-era channels, the Slack allowlist is stored
+  and reported faithfully — never normalized to a `"*"` wildcard — because a
+  missing/empty allowlist is deny-all on signed ingress; opening a channel
+  to everyone requires an explicit `["*"]`.
 - **Approval fan-out tenancy.** A tenant-bound connection only receives its
   own tenant's approval cards; requests from other tenants are skipped
   before anything posts. Unbound connections keep the legacy receive-all

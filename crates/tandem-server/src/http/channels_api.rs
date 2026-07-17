@@ -162,6 +162,29 @@ fn normalize_channel_config_obj<'a>(
                     .map(|value| Value::String(value.to_string()))
                     .unwrap_or(Value::Null),
             );
+            // The generic entry above synthesizes a "*" wildcard for a
+            // missing allowlist — right for the poller-era channels, wrong
+            // for Slack: signed Events ingress treats a missing/empty
+            // `allowed_users` as DENY-ALL (`resolve_slack_connections`).
+            // Report the stored value faithfully so a client echoing this
+            // snapshot back can never widen deny-all into open-to-all.
+            entry.insert(
+                "allowed_users".to_string(),
+                Value::Array(
+                    channel
+                        .and_then(|cfg| cfg.get("allowed_users"))
+                        .and_then(Value::as_array)
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(|value| Value::String(value.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                ),
+            );
             // Per-connection summary (TAN-763). Secrets are reported as
             // presence flags only, matching the top-level `token_masked`
             // contract — never the raw values. Deliberately NOT under the
@@ -1149,7 +1172,7 @@ pub(super) async fn channels_put(
                 // installation identity, Events ingress, or per-connection /
                 // governance bindings. Absent keys inherit the stored value;
                 // explicitly provided values (including `[]`) still win.
-                const PRESERVED_SLACK_KEYS: [&str; 10] = [
+                const PRESERVED_SLACK_KEYS: [&str; 11] = [
                     "signing_secret",
                     "team_id",
                     "app_id",
@@ -1160,6 +1183,7 @@ pub(super) async fn channels_put(
                     "require_approval_step_up",
                     "api_base_url",
                     "notify_approvals",
+                    "allowed_users",
                 ];
                 if let Some(existing) = existing_channel_cfg(spec) {
                     for key in PRESERVED_SLACK_KEYS {
@@ -1173,7 +1197,19 @@ pub(super) async fn channels_put(
             }
             let mut cfg: SlackConfigFile =
                 serde_json::from_value(input).map_err(|_| StatusCode::BAD_REQUEST)?;
-            cfg.allowed_users = crate::normalize_allowed_users_or_wildcard(cfg.allowed_users);
+            // Unlike telegram/discord, the Slack allowlist is stored
+            // faithfully — NOT normalized to a "*" wildcard. Signed Events
+            // ingress treats a missing/empty allowlist as deny-all, so
+            // persisting a synthesized wildcard would silently open every
+            // inheriting connection; the poller/notifier paths still
+            // normalize at use time, keeping legacy behavior. Opening a
+            // channel to everyone requires an explicit `["*"]`.
+            cfg.allowed_users = cfg
+                .allowed_users
+                .into_iter()
+                .map(|user| user.trim().to_string())
+                .filter(|user| !user.is_empty())
+                .collect();
             cfg.model_provider_id = trim_optional_string(cfg.model_provider_id);
             cfg.model_id = trim_optional_string(cfg.model_id);
             if cfg.bot_token.trim().is_empty() {

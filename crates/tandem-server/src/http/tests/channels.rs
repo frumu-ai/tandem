@@ -312,6 +312,12 @@ async fn channels_put_echoing_sanitized_config_preserves_slack_connections() {
         slack.get("connections").is_none(),
         "the sanitized snapshot must not expose a `connections` config key"
     );
+    assert_eq!(
+        slack.get("allowed_users"),
+        Some(&json!([])),
+        "a missing Slack allowlist is deny-all on signed ingress and must \
+         not be reported as a '*' wildcard"
+    );
     let summary = slack
         .get("connections_summary")
         .and_then(Value::as_array)
@@ -319,7 +325,8 @@ async fn channels_put_echoing_sanitized_config_preserves_slack_connections() {
     assert_eq!(summary.len(), 2, "top-level + per-connection entries");
 
     // Echo a sanitized snapshot back (the Channels page Reconnect shape):
-    // no secrets, no connections, plus the summary key the server ignores.
+    // no secrets, no connections, the snapshot's (empty) allowlist, plus
+    // the summary key the server ignores.
     let put_req = Request::builder()
         .method("PUT")
         .uri("/channels/slack")
@@ -327,7 +334,7 @@ async fn channels_put_echoing_sanitized_config_preserves_slack_connections() {
         .body(Body::from(
             json!({
                 "channel_id": "C_MAIN",
-                "allowed_users": ["*"],
+                "allowed_users": slack.get("allowed_users"),
                 "mention_only": false,
                 "connections_summary": summary,
             })
@@ -364,6 +371,13 @@ async fn channels_put_echoing_sanitized_config_preserves_slack_connections() {
             .and_then(Value::as_str),
         Some("C_SALES"),
         "echoed sanitized config must not wipe per-connection entries"
+    );
+    assert!(
+        slack
+            .get("allowed_users")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty),
+        "echoing the snapshot must not widen a deny-all allowlist to '*'"
     );
 }
 
