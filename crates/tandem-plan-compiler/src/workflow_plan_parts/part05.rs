@@ -25,6 +25,7 @@ fn output_target_is_webhook_event_identifier(prompt: &str, token: &str) -> bool 
         format!("webhook event name {lowered_token}"),
         format!("webhook event type {lowered_token}"),
         format!("webhook event kind {lowered_token}"),
+        format!("webhook event {lowered_token}"),
         format!("event named {lowered_token}"),
         format!("event name {lowered_token}"),
         format!("event type {lowered_token}"),
