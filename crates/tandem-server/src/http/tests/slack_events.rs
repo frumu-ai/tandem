@@ -679,9 +679,11 @@ async fn slack_capability_and_step_up_do_not_cross_installations() {
             )
             .await
     );
-    state.grant_channel_step_up("slack", first, 60_000).await;
-    assert!(state.channel_step_up_active("slack", first).await);
-    assert!(!state.channel_step_up_active("slack", second).await);
+    state
+        .grant_channel_step_up("slack", first, 60_000, None)
+        .await;
+    assert!(state.channel_step_up_active("slack", first, None).await);
+    assert!(!state.channel_step_up_active("slack", second, None).await);
 }
 
 #[tokio::test]

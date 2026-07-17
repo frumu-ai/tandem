@@ -448,7 +448,13 @@ async fn authorize_slack_approver(
     // per-identity step-up grant issued out-of-band by the control panel.
     if connection.require_approval_step_up
         && !state
-            .channel_step_up_active(ChannelKind::Slack.as_str(), &approval_identity)
+            .channel_step_up_active(
+                ChannelKind::Slack.as_str(),
+                &approval_identity,
+                bound_tenant
+                    .as_ref()
+                    .map(|(org_id, workspace_id)| (org_id.as_str(), workspace_id.as_str())),
+            )
             .await
     {
         tracing::warn!(

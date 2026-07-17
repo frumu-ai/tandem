@@ -518,7 +518,10 @@ async fn channels_put_migrating_installation_does_not_carry_secrets() {
         .any(|connection| connection.channel_id == "C_SALES"
             && connection.bot_token.as_deref() == Some("xoxb-sales")));
 
-    // Sanitized echo that migrates the app identity: no secrets provided.
+    // Sanitized echo that migrates the app identity WITHOUT credentials: the
+    // old installation's bot token must not be carried under the new
+    // identity, so the save has no usable connection left and fails closed
+    // instead of appearing usable while delivery is broken.
     let req = Request::builder()
         .method("PUT")
         .uri("/channels/slack")
@@ -533,10 +536,41 @@ async fn channels_put_migrating_installation_does_not_carry_secrets() {
             .to_string(),
         ))
         .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "a migrating save without new credentials must be rejected"
+    );
+
+    // The same migration WITH the new installation's bot token succeeds —
+    // and still must not carry the old app's secrets.
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/channels/slack")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "channel_id": "C_MAIN",
+                "team_id": "T1",
+                "app_id": "A_NEW",
+                "bot_token": "xoxb-new",
+                "allowed_users": []
+            })
+            .to_string(),
+        ))
+        .expect("request");
     let resp = app.oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
 
     let effective = state.config.get_effective_value().await;
+    assert_eq!(
+        effective
+            .pointer("/channels/slack/bot_token")
+            .and_then(Value::as_str),
+        Some("xoxb-new"),
+        "the migrated installation must run on the newly supplied token"
+    );
     assert!(
         effective
             .pointer("/channels/slack/signing_secret")

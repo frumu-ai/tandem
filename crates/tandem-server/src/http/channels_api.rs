@@ -1146,12 +1146,13 @@ pub(super) async fn channels_put(
             channels_obj.insert(spec.config_key.to_string(), json!(cfg));
         }
         "slack" => {
+            let mut slack_identity_unchanged = true;
             if let Some(cfg) = input.as_object_mut() {
-                if cfg
+                let bot_token_provided = cfg
                     .get("bot_token")
                     .and_then(Value::as_str)
-                    .is_none_or(|v| v.trim().is_empty())
-                {
+                    .is_some_and(|v| !v.trim().is_empty());
+                if !bot_token_provided {
                     if let Some(existing) = existing_bot_token(spec) {
                         cfg.insert("bot_token".to_string(), Value::String(existing));
                     }
@@ -1220,10 +1221,20 @@ pub(super) async fn channels_put(
                         )
                     };
                     let identity_unchanged = installation(cfg) == installation(existing);
+                    slack_identity_unchanged = identity_unchanged;
                     if identity_unchanged && !cfg.contains_key("signing_secret") {
                         if let Some(value) = existing.get("signing_secret") {
                             cfg.insert("signing_secret".to_string(), value.clone());
                         }
+                    }
+                    // The bot token filled above is the OLD installation's:
+                    // a save that migrates team/app must supply its own
+                    // token (or carry self-declared connections) rather
+                    // than resolve the new installation with the old app's
+                    // credentials — delivery would fail closed on binding
+                    // checks while the save looked usable.
+                    if !identity_unchanged && !bot_token_provided {
+                        cfg.remove("bot_token");
                     }
                     if !cfg.contains_key("connections") {
                         if let Some(Value::Array(entries)) = existing.get("connections") {
@@ -1280,7 +1291,7 @@ pub(super) async fn channels_put(
                 .collect();
             cfg.model_provider_id = trim_optional_string(cfg.model_provider_id);
             cfg.model_id = trim_optional_string(cfg.model_id);
-            if cfg.bot_token.trim().is_empty() {
+            if cfg.bot_token.trim().is_empty() && slack_identity_unchanged {
                 cfg.bot_token = existing_bot_token(spec).unwrap_or_default();
             }
             if cfg.channel_id.trim().is_empty() {

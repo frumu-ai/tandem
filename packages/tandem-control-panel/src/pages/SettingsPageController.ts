@@ -464,6 +464,12 @@ type ChannelConfigRow = {
   model_id?: string;
   style_profile?: string;
   security_profile?: string;
+  // Slack-only snapshot fields (TAN-763): installation identity, signing
+  // secret presence, and the per-connection summary rows.
+  team_id?: string;
+  app_id?: string;
+  has_signing_secret?: boolean;
+  connections_summary?: unknown[];
 };
 
 type ChannelStatusRow = {
@@ -1113,10 +1119,17 @@ export function channelConfigHasSavedSettings(
   channel: string,
   config: ChannelConfigRow | null | undefined
 ) {
-  const row = config && typeof config === "object" ? config : {};
+  const row: ChannelConfigRow = config && typeof config === "object" ? config : {};
   const allowedUsers = normalizeChannelAllowedUsers(row.allowed_users);
   return (
     !!row.has_token ||
+    // Connection-only Slack configs keep everything in `connections[]`
+    // (reported as `connections_summary`) with no top-level channel or
+    // token — they are saved settings all the same, so Remove must enable.
+    (Array.isArray(row.connections_summary) && row.connections_summary.length > 0) ||
+    !!row.has_signing_secret ||
+    !!String(row.team_id || "").trim() ||
+    !!String(row.app_id || "").trim() ||
     allowedUsers.some((user) => user !== "*") ||
     !!row.mention_only ||
     !!row.strict_kb_grounding ||

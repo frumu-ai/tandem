@@ -478,13 +478,26 @@ impl AppState {
     }
 
     /// GOV-B5b: issue a per-identity step-up valid for `ttl_ms`, returning the
-    /// expiry timestamp. Replaces any prior grant for the same channel+user.
-    pub async fn grant_channel_step_up(&self, channel: &str, user_id: &str, ttl_ms: u64) -> u64 {
+    /// expiry timestamp. Replaces any prior grant for the same channel+user
+    /// (+tenant, when the issuer scopes the grant).
+    pub async fn grant_channel_step_up(
+        &self,
+        channel: &str,
+        user_id: &str,
+        ttl_ms: u64,
+        tenant: Option<(&str, &str)>,
+    ) -> u64 {
         let expires_at_ms = crate::now_ms().saturating_add(ttl_ms);
+        let key = match tenant {
+            Some((org_id, workspace_id)) => {
+                tenant_scoped_capability_key(channel, user_id, org_id, workspace_id)
+            }
+            None => channel_user_capability_key(channel, user_id),
+        };
         self.channel_step_up_grants
             .write()
             .await
-            .insert(channel_user_capability_key(channel, user_id), expires_at_ms);
+            .insert(key, expires_at_ms);
         expires_at_ms
     }
 
@@ -492,17 +505,40 @@ impl AppState {
     /// Expired grants are pruned on read. This is the per-user replacement for the
     /// legacy global `TANDEM_CHANNEL_STEP_UP_PIN`, and (unlike the slash-only PIN)
     /// is checkable on the button/interaction path.
-    pub async fn channel_step_up_active(&self, channel: &str, user_id: &str) -> bool {
-        let key = channel_user_capability_key(channel, user_id);
-        let mut guard = self.channel_step_up_grants.write().await;
-        match guard.get(&key).copied() {
-            Some(expires_at_ms) if expires_at_ms > crate::now_ms() => true,
-            Some(_) => {
-                guard.remove(&key);
-                false
-            }
-            None => false,
+    ///
+    /// Tenancy mirrors `channel_user_can_approve`: a tenant-scoped grant only
+    /// satisfies connections bound to that tenant, so a step-up earned while
+    /// approving in tenant A cannot carry over to the same principal's
+    /// approvals in tenant B. An unscoped grant (legacy issuance) satisfies
+    /// any connection.
+    pub async fn channel_step_up_active(
+        &self,
+        channel: &str,
+        user_id: &str,
+        channel_tenant: Option<(&str, &str)>,
+    ) -> bool {
+        let mut keys = Vec::with_capacity(2);
+        if let Some((org_id, workspace_id)) = channel_tenant {
+            keys.push(tenant_scoped_capability_key(
+                channel,
+                user_id,
+                org_id,
+                workspace_id,
+            ));
         }
+        keys.push(channel_user_capability_key(channel, user_id));
+        let now = crate::now_ms();
+        let mut guard = self.channel_step_up_grants.write().await;
+        for key in keys {
+            match guard.get(&key).copied() {
+                Some(expires_at_ms) if expires_at_ms > now => return true,
+                Some(_) => {
+                    guard.remove(&key);
+                }
+                None => {}
+            }
+        }
+        false
     }
 }
 
@@ -873,11 +909,49 @@ mod tests {
         // GOV-B5b: a per-identity step-up is active while unexpired and absent
         // otherwise (a zero-TTL grant is immediately expired).
         let state = AppState::new_starting("test".to_string(), true);
-        assert!(!state.channel_step_up_active("slack", "U-step").await);
-        state.grant_channel_step_up("slack", "U-step", 60_000).await;
-        assert!(state.channel_step_up_active("slack", "U-step").await);
-        state.grant_channel_step_up("slack", "U-step", 0).await;
-        assert!(!state.channel_step_up_active("slack", "U-step").await);
+        assert!(!state.channel_step_up_active("slack", "U-step", None).await);
+        state
+            .grant_channel_step_up("slack", "U-step", 60_000, None)
+            .await;
+        assert!(state.channel_step_up_active("slack", "U-step", None).await);
+        state
+            .grant_channel_step_up("slack", "U-step", 0, None)
+            .await;
+        assert!(!state.channel_step_up_active("slack", "U-step", None).await);
+    }
+
+    #[tokio::test]
+    async fn step_up_grants_are_tenant_scoped() {
+        // A step-up issued for tenant A must not satisfy the same principal's
+        // approvals on a connection bound to tenant B; an unscoped grant
+        // (legacy issuance) satisfies any connection.
+        let state = AppState::new_starting("test".to_string(), true);
+        let tenant_a = Some(("acme", "hq"));
+        let tenant_b = Some(("other", "ops"));
+        state
+            .grant_channel_step_up("slack", "U-step", 60_000, tenant_a)
+            .await;
+        assert!(
+            state
+                .channel_step_up_active("slack", "U-step", tenant_a)
+                .await
+        );
+        assert!(
+            !state
+                .channel_step_up_active("slack", "U-step", tenant_b)
+                .await
+        );
+        assert!(!state.channel_step_up_active("slack", "U-step", None).await);
+
+        state
+            .grant_channel_step_up("slack", "U-open", 60_000, None)
+            .await;
+        assert!(
+            state
+                .channel_step_up_active("slack", "U-open", tenant_a)
+                .await
+        );
+        assert!(state.channel_step_up_active("slack", "U-open", None).await);
     }
 
     #[test]
