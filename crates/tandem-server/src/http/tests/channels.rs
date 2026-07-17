@@ -481,6 +481,71 @@ async fn channels_put_fresh_slack_save_without_allowlist_stays_deny_all() {
     );
 }
 
+/// PR #1910 review: a fresh multi-connection config that carries channel_id
+/// and bot_token only inside `connections[]` is a valid save — startability
+/// is judged on the resolved connections, not the legacy top-level fields.
+#[tokio::test]
+async fn channels_put_accepts_connection_only_slack_configs() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/channels/slack")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "team_id": "T1",
+                "app_id": "A1",
+                "signing_secret": "shh",
+                "events_enabled": true,
+                "connections": [
+                    { "channel_id": "C_SALES", "bot_token": "xoxb-sales" }
+                ]
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "connection-only Slack configs must be accepted"
+    );
+    let effective = state.config.get_effective_value().await;
+    let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
+    assert!(
+        connections
+            .iter()
+            .any(|connection| connection.channel_id == "C_SALES"
+                && connection.bot_token.as_deref() == Some("xoxb-sales")),
+        "the resolved connection must be usable after the save"
+    );
+
+    // A config with no usable connection anywhere is still rejected (fresh
+    // state, so nothing stored can be inherited to make it startable).
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/channels/slack")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "team_id": "T1",
+                "connections": [ { "channel_id": "C_TOKENLESS" } ]
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "a config with no usable connection must still be rejected"
+    );
+}
+
 #[tokio::test]
 async fn channels_put_unknown_channel_returns_not_found() {
     let state = test_state().await;

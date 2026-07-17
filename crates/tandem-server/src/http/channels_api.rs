@@ -1225,9 +1225,21 @@ pub(super) async fn channels_put(
             if cfg.channel_id.trim().is_empty() {
                 cfg.channel_id = existing_channel_id(spec).unwrap_or_default();
             }
-            if (cfg.bot_token.trim().is_empty() || cfg.channel_id.trim().is_empty())
-                && !channel_is_connected(spec)
-            {
+            // Startability is judged on the RESOLVED connections, not the
+            // legacy top-level fields: a config that carries channel_id and
+            // bot_token only inside `connections[]` is just as valid as the
+            // single-channel shape (entries inherit unset fields, so the
+            // legacy shape reduces to the same check).
+            let resolved =
+                crate::config::channels::resolve_slack_connections(&serde_json::json!(cfg));
+            let has_usable_connection = resolved.iter().any(|connection| {
+                !connection.channel_id.is_empty()
+                    && connection
+                        .bot_token
+                        .as_deref()
+                        .is_some_and(|token| !token.trim().is_empty())
+            });
+            if !has_usable_connection && !channel_is_connected(spec) {
                 return Err(StatusCode::BAD_REQUEST);
             }
             channels_obj.insert(spec.config_key.to_string(), json!(cfg));

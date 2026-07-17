@@ -71,7 +71,10 @@ its installation identity and secrets once. Exception: `signing_secret` is an
 app credential and only inherits into entries that keep the top-level
 `app_id` — an entry overriding the app without its own secret resolves
 secretless and fails closed, rather than letting one app's secret vouch for
-another's payloads:
+another's payloads. Per-connection `bot_token`/`signing_secret` values are
+hoisted into the OS secret store and stripped from the persisted config file
+on save (exactly like the top-level token), then re-injected into the
+effective config on read — they never sit on disk in plaintext:
 
 ```json
 {
