@@ -2,6 +2,115 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.7.1 (2026-07-17)
+
+Tandem 0.7.1 delivers the Slack Channel Hardening & Convergence project:
+multi-channel Slack connections with per-department governance, verified
+per-connection credentials, sender-to-department enrollment, and a dedicated
+Channel Connections panel page. The release also redesigns the Runs view,
+hardens generic webhook workflow execution end to end, and removes an
+unintended CI enforcement gate and internal process language that shipped
+with 0.7.0.
+
+### Multi-Channel Slack Connections
+
+`channels.slack.connections[]` turns the single-channel Slack config into a
+set of per-channel connections. Each entry inherits anything it does not set
+from the top level — installation identity, tokens, tenant, allowlist,
+profiles, model override — and signed Events and interaction callbacks route
+by the payload's `(team_id, api_app_id, channel_id)` binding. Signature
+verification is bound to the claimed installation: a payload is only accepted
+when it verifies against that installation's own signing secret, a
+configured-but-secretless installation fails closed, and two workspaces that
+happen to share a channel-id string stay fully isolated. Outbound replies,
+bot-binding verification, and approval-card updates all use the matched
+connection, and approval fan-out builds one notifier per connection with
+per-connection opt-out, tenant filtering, and a lazy bot-binding check so a
+mispasted token can never post another workspace's approval cards. The legacy
+single-channel config resolves as one connection with identical behavior.
+
+### Channel-to-Department Binding, Fail Closed
+
+A connection's `org_units` narrows Slack-originated authority to the
+intersection of the sender's active org-unit memberships and the channel's
+bound departments. Roles, grants, tool capabilities, and the strict memory
+projection all derive from the intersected set, so sales channels cannot
+reach engineering data and vice versa. An empty intersection is an audited
+denial naming both inputs, and approval authority on a department-bound
+channel requires the approver to hold membership in a bound department.
+
+### Sender Discovery, Enrollment, and the Channel Connections Page
+
+`GET /channels/slack/senders` aggregates recently seen senders from the
+protected audit ledger — exact principal strings, accepted/denied counts, the
+latest fail-closed denial reason, and live per-channel mapped status — so an
+operator can see exactly who is knocking and why they were denied. Pairing
+codes can carry `org_units` and a tenant scope: redeeming one establishes
+active org-unit memberships in that tenant, so a department-bound enrollment
+immediately yields a working governed run, and the same Slack principal can
+hold separate grants in different tenants without one overwriting the other.
+The new Channel Connections page (Govern nav) shows one card per connection
+with identity, ingress mode, secret presence, tenant/department bindings, and
+live status, plus a per-connection Verify-bindings action backed by
+`POST /channels/slack/verify` and the sender-mapping UI with inline
+pairing-code issuance.
+
+### Rework Reason Modal
+
+The Rework button on approval cards now opens a Slack modal (after the full
+guard stack) and dispatches the rework gate decision with the collected
+reason on submission. Empty reasons render as inline validation, submissions
+dedupe only after validation succeeds, and free-form reasons decode as UTF-8
+so emoji and non-Latin text survive intact.
+
+### Governed Slack Is Events-Only
+
+A Slack config carrying a tenant or department binding that is not
+events-capable now fails closed at listener startup instead of running
+governed bindings through the unauthenticated legacy poller. The poller
+remains for unbound local configs — including unbound events-capable ones,
+which keep poller ingress rather than losing both paths — and Slack URL
+verification handshakes are scoped to the installation whose signing secret
+actually signed the request.
+
+### Slack Credential Lifecycle Hardening
+
+Slack credentials never persist in plaintext config. Top-level and
+per-connection bot tokens and signing secrets hoist into the OS keystore
+under installation-keyed ids, are stripped from the on-disk file, and are
+injected back into the effective config at read time. Explicitly clearing a
+field revokes the stored secret; removing a connection or deleting the
+channel purges its stored credentials; and a save that migrates the Slack
+team/app identity never carries the old installation's secrets — it must
+supply fresh credentials or it is rejected, so a compromised or rotated
+credential cannot silently resurface under a new identity. Slack allowlists
+are stored faithfully: an empty allowlist means deny-all on signed ingress,
+and opening a channel to everyone requires an operator to explicitly enter
+`*` — no save path synthesizes the wildcard. This surface absorbed 24 rounds
+of automated adversarial review, with every finding fixed and test-covered.
+
+### Runs View Redesign and Webhook Workflow Hardening
+
+The Runs view now has a distinct icon, a responsive single-column run list,
+a large on-demand Run Detail modal, and run-specific debugger deep links,
+with modal backdrops and loading indicators aligned to the active theme.
+Generic webhook workflows got end-to-end hardening: webhook diagnostics with
+delivery rejection reasons, enterprise-scope guidance, and hosted
+proxy/header handling; compact three-stage approval plans are accepted
+instead of being forced into four stages; and Automation V2 artifact
+inference, approval evidence capture, run-scoped output preservation, local
+publication, completion assertions, and operator recovery were hardened so
+approval gates, connector triage, local publications, skipped nodes, and
+webhook event identifiers are no longer misclassified as outbound
+deliverables that block completion.
+
+### Maintenance
+
+The unintended fleet task-scope CI enforcement that shipped in 0.7.0 (the
+`task-scope.yml` workflow and its guard scripts) has been removed, and the
+internal release-process language that leaked into the public v0.7.0 release
+surfaces has been stripped, with a CI guard preventing recurrence.
+
 ## v0.7.0 (2026-07-15)
 
 ### Licensing Boundary Correction

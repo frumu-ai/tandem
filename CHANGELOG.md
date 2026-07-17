@@ -5,6 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-07-17
+
+### Added
+
+- Added multi-channel Slack connections: `channels.slack.connections[]`
+  defines per-channel connections that inherit unset fields from the top
+  level, with signed Events and interaction callbacks routed by the
+  payload's `(team_id, api_app_id, channel_id)` binding. Signature
+  verification is bound to the claimed installation and fails closed for
+  configured-but-secretless installations; outbound replies, bot-binding
+  verification, and approval-card updates use the matched connection; and
+  approval fan-out builds one notifier per connection with per-connection
+  opt-out, tenant filtering, and a lazy bot-binding guard. The legacy
+  single-channel config resolves as one connection with identical behavior.
+  (#1910)
+- Added channel-to-department binding: a connection's `org_units` narrows
+  Slack-originated authority to the intersection of the sender's active
+  org-unit memberships and the channel's bound departments, deriving roles,
+  grants, tool capabilities, and the strict memory projection from the
+  intersected set. Empty intersections fail closed with an audited denial,
+  and approvals on a department-bound channel require membership in a bound
+  department. (#1910)
+- Added `GET /channels/slack/senders` sender discovery (principals,
+  accepted/denied counts, latest denial reason, per-channel mapped status)
+  and department-binding enrollment: pairing codes carry `org_units` and a
+  tenant scope, and redemption establishes active org-unit memberships so a
+  department-bound enrollment immediately yields a working governed run.
+  Capabilities and step-up grants are tenant-scoped, so the same Slack
+  principal can hold separate grants in different tenants. (#1910)
+- Added the Channel Connections control-panel page (Govern nav): one card
+  per connection with identity, ingress mode, secret presence, and
+  tenant/department bindings, per-connection verify backed by new
+  installation-aware support in `POST /channels/slack/verify`, and the
+  sender-mapping UI with inline pairing-code issuance. (#1910)
+- Added the Slack rework-reason modal: the Rework button opens a
+  `views.open` modal after the full guard stack and dispatches the rework
+  gate decision with the collected reason on `view_submission`, with inline
+  validation for empty reasons, dedupe only after validation, and UTF-8
+  decoding of free-form input. (#1910)
+- Added keystore-backed Slack credential storage: top-level and
+  per-connection bot tokens and signing secrets hoist into the OS keystore
+  under installation-keyed ids, are stripped from plaintext config, and are
+  injected into the effective config at read time. Explicit clears revoke
+  the stored secret; removing a connection or deleting the channel purges
+  its stored credentials. (#1910)
+- Added a redesigned Runs view: distinct Runs icon, responsive
+  single-column run list, large on-demand Run Detail modal, and
+  run-specific debugger deep links, with modal backdrops and loading
+  indicators aligned to the active theme. (#1911)
+- Added generic webhook diagnostics: delivery rejection reasons,
+  enterprise-scope guidance, hosted proxy/header handling, and updated
+  setup docs. (#1911)
+
+### Changed
+
+- Governed Slack ingress is now Events-only: a config carrying a tenant or
+  department binding that is not events-capable fails closed at listener
+  startup instead of running governed bindings through the unauthenticated
+  legacy poller. Unbound configs — including unbound events-capable ones —
+  keep the poller, and Slack URL verification is scoped to the installation
+  whose signing secret signed the handshake. (#1910)
+- Slack allowlists are now stored faithfully: an empty allowlist means
+  deny-all on signed ingress, no save path synthesizes a `"*"` wildcard,
+  and opening a channel to everyone requires explicitly entering `*`.
+  Telegram and Discord keep their legacy wildcard normalization. (#1910)
+- `PUT /channels/slack` now preserves echoed sanitized snapshots without
+  losing installation identity, Events ingress, or connection bindings,
+  while identity-gating secrets: a save that migrates the Slack team/app
+  identity must supply fresh credentials or it is rejected, and the old
+  installation's stored token is revoked rather than carried or reinjected
+  under the new identity. Connection-only configs (no top-level channel)
+  are accepted, startable, and manageable from the Settings page. (#1910)
+- Compact three-stage approval workflows are now accepted instead of being
+  forced into a flatter four-stage plan. (#1911)
+
+### Fixed
+
+- Fixed Automation V2 webhook workflow execution: artifact inference,
+  approval evidence capture, run-scoped output preservation, local
+  publication, completion assertions, and operator recovery were hardened
+  so approval gates, connector triage, local publications, skipped nodes,
+  and webhook event identifiers are no longer misclassified as outbound
+  deliverables. (#1911)
+
+### Removed
+
+- Removed the unintended fleet task-scope CI enforcement that shipped in
+  0.7.0 (the `task-scope.yml` workflow, its guard scripts, and related
+  agent instructions). (#1909)
+- Removed internal release-process language from the public v0.7.0 release
+  surfaces and added a CI guard against its reappearance. (#1908)
+
 ## [0.7.0] - 2026-07-15
 
 ### Changed
