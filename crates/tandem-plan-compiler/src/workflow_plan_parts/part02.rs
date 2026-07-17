@@ -977,6 +977,22 @@ The Notion page should include:
     }
 
     #[test]
+    fn infer_explicit_output_targets_accepts_unlisted_file_extensions() {
+        let prompt = "Create Cargo.lock. Generate schema.graphql. Write terraform.tfvars.";
+
+        let targets = infer_explicit_output_targets(prompt);
+
+        assert_eq!(
+            targets,
+            vec![
+                "Cargo.lock".to_string(),
+                "schema.graphql".to_string(),
+                "terraform.tfvars".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn infer_explicit_output_targets_extracts_filenames_from_adjacent_write_lines() {
         let prompt = "Create or append to this daily file in the workspace root:\n\n`job_search_results_YYYY-MM-DD.md`\n\nReplace `YYYY-MM-DD` with the actual resolved date for the run.";
 

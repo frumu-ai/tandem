@@ -1369,10 +1369,10 @@ pub fn infer_explicit_output_targets(prompt: &str) -> Vec<String> {
         if prompt_contains_read_only_intent(prompt, token) {
             continue;
         }
-        if looks_like_path
-            || (output_target_has_known_file_extension(token)
-                && prompt_contains_write_intent(prompt, token))
-        {
+        if output_target_is_webhook_event_identifier(prompt, token) {
+            continue;
+        }
+        if looks_like_path || prompt_contains_write_intent(prompt, token) {
             targets.insert(token.to_string());
         }
     }
