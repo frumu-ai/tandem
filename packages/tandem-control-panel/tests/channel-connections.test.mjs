@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  connectionVerifyKey,
   ingressModeLabel,
   normalizeSlackConnections,
   normalizeSlackSenders,
@@ -142,10 +143,37 @@ test("verifyResultsByChannel indexes verify rows", () => {
       { channel_id: "C_BAD", ok: false, team_ok: false, error: "bot token belongs to team T2" },
     ],
   });
-  assert.equal(byChannel.get("C_OK").ok, true);
-  assert.equal(byChannel.get("C_BAD").ok, false);
-  assert.equal(byChannel.get("C_BAD").teamOk, false);
-  assert.match(byChannel.get("C_BAD").error, /T2/);
+  const ok = byChannel.get(connectionVerifyKey({ channelId: "C_OK" }));
+  const bad = byChannel.get(connectionVerifyKey({ channelId: "C_BAD" }));
+  assert.equal(ok.ok, true);
+  assert.equal(bad.ok, false);
+  assert.equal(bad.teamOk, false);
+  assert.match(bad.error, /T2/);
+});
+
+test("verifyResultsByChannel keeps colliding channel ids apart by installation", () => {
+  const byConnection = verifyResultsByChannel({
+    connections: [
+      { channel_id: "C_SHARED", team_id: "T_A", app_id: "A_A", ok: true, token_ok: true },
+      {
+        channel_id: "C_SHARED",
+        team_id: "T_B",
+        app_id: "A_B",
+        ok: false,
+        error: "bot token belongs to a different Slack app",
+      },
+    ],
+  });
+  assert.equal(byConnection.size, 2, "one row per installation must survive");
+  const a = byConnection.get(
+    connectionVerifyKey({ teamId: "T_A", appId: "A_A", channelId: "C_SHARED" }),
+  );
+  const b = byConnection.get(
+    connectionVerifyKey({ teamId: "T_B", appId: "A_B", channelId: "C_SHARED" }),
+  );
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, false);
+  assert.match(b.error, /different Slack app/);
 });
 
 test("parseOrgUnitsInput trims, drops empties, and dedups", () => {

@@ -845,31 +845,14 @@ async fn run_approval_outbound(state: AppState, cancel: Arc<AtomicBool>) {
         let connections = crate::config::channels::resolve_slack_connections(slack_value);
         let mut usable = 0usize;
         for connection in &connections {
-            let Some(bot_token) = connection.bot_token.clone() else {
+            let Some(notifier) = crate::app::notifiers::slack::from_resolved_connection(
+                connection,
+                message_map.clone(),
+            ) else {
                 continue;
             };
-            if connection.channel_id.is_empty() || !connection.notify_approvals {
-                continue;
-            }
             usable += 1;
-            let slack_config = tandem_channels::config::SlackConfig {
-                bot_token,
-                channel_id: connection.channel_id.clone(),
-                allowed_users: crate::config::channels::normalize_allowed_users_or_wildcard(
-                    connection.allowed_users.clone(),
-                ),
-                mention_only: connection.mention_only,
-                security_profile: connection.security_profile,
-            };
-            let installation = connection.team_id.clone().zip(connection.app_id.clone());
-            notifiers.push(Arc::new(
-                crate::app::notifiers::slack::from_config_with_message_map_and_tenant(
-                    slack_config,
-                    message_map.clone(),
-                    connection.bound_tenant(),
-                    installation,
-                ),
-            ));
+            notifiers.push(Arc::new(notifier));
         }
         if usable == 0 {
             tracing::warn!(

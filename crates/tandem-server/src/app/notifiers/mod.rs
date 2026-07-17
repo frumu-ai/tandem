@@ -157,7 +157,21 @@ pub struct ChannelApprovalNotifier {
     /// recorded on each sent card so decision updates route back through the
     /// same installation even when channel-id strings collide.
     installation: Option<(String, String)>,
+    /// Outbound binding guard, run before the first card is posted: proves
+    /// the bot token actually belongs to this connection's configured
+    /// installation (mirroring the governed reply path's fail-closed
+    /// check), so a token copied from another workspace can never post this
+    /// tenant's approval cards into that workspace. Success is cached;
+    /// failures re-run on the next delivery.
+    binding_check: Option<BindingCheck>,
+    binding_verified: Arc<tokio::sync::OnceCell<()>>,
 }
+
+/// Async check that the notifier's credentials are bound to the expected
+/// installation. `Err(Permanent)` = proven mismatch (never post);
+/// `Err(Transient)` = could not verify right now (retry on a later card).
+pub type BindingCheck =
+    Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<(), NotifierError>> + Send + Sync>;
 
 impl ChannelApprovalNotifier {
     pub fn new(
@@ -181,6 +195,8 @@ impl ChannelApprovalNotifier {
             message_map,
             tenant_filter: None,
             installation: None,
+            binding_check: None,
+            binding_verified: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 
@@ -191,6 +207,11 @@ impl ChannelApprovalNotifier {
 
     pub fn with_installation(mut self, installation: Option<(String, String)>) -> Self {
         self.installation = installation;
+        self
+    }
+
+    pub fn with_binding_check(mut self, check: Option<BindingCheck>) -> Self {
+        self.binding_check = check;
         self
     }
 }
@@ -215,6 +236,12 @@ impl ApprovalNotifier for ChannelApprovalNotifier {
                 "{} channel does not support interactive cards",
                 self.channel.name()
             )));
+        }
+        if let Some(check) = self.binding_check.as_ref() {
+            if self.binding_verified.get().is_none() {
+                check().await?;
+                let _ = self.binding_verified.set(());
+            }
         }
 
         let mut card = approval_request_to_card(request, self.recipient.clone());
@@ -426,6 +453,57 @@ mod tests {
             channel.seen.lock().unwrap().len(),
             1,
             "a tenant-bound channel must never receive another tenant's card"
+        );
+    }
+
+    #[tokio::test]
+    async fn binding_check_gates_delivery_and_caches_success() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // A failing binding check must suppress the card entirely.
+        let channel = Arc::new(FakeChannel {
+            supports_cards: true,
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let failing: BindingCheck = Arc::new(|| {
+            Box::pin(async {
+                Err(NotifierError::Permanent(
+                    "bot token belongs to another workspace".to_string(),
+                ))
+            })
+        });
+        let notifier = ChannelApprovalNotifier::new("fake", "C123", channel.clone())
+            .with_binding_check(Some(failing));
+        let err = notifier.notify(&fake_request()).await.unwrap_err();
+        assert!(matches!(err, NotifierError::Permanent(_)));
+        assert!(
+            channel.seen.lock().unwrap().is_empty(),
+            "no card may post through an unverified binding"
+        );
+
+        // A successful check runs once and is cached across deliveries.
+        let channel = Arc::new(FakeChannel {
+            supports_cards: true,
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let succeeding: BindingCheck = Arc::new(move || {
+            let counter = counter.clone();
+            Box::pin(async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        let notifier = ChannelApprovalNotifier::new("fake", "C123", channel.clone())
+            .with_binding_check(Some(succeeding));
+        notifier.notify(&fake_request()).await.unwrap();
+        notifier.notify(&fake_request()).await.unwrap();
+        assert_eq!(channel.seen.lock().unwrap().len(), 2);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a verified binding must not be re-checked on every card"
         );
     }
 

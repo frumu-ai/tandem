@@ -118,7 +118,12 @@ Semantics:
   receives approval cards; card edits route by the recorded recipient channel
   AND the Slack installation `(team_id, app_id)` that posted the card, so
   channel-id strings colliding across installations never edit the wrong
-  message with the wrong bot token.
+  message with the wrong bot token. Before the first card posts through a
+  connection that declares an installation, the notifier verifies the bot
+  token actually belongs to it (`auth.test` team + `bots.info` app — the
+  same fail-closed check as the governed reply path); a token copied from
+  another workspace suppresses that connection's cards instead of posting
+  this tenant's approvals into the wrong workspace.
   A tenant-bound connection only receives approvals whose request tenant
   matches its binding, so tenant A's approval cards (and action previews)
   never post into tenant B's channel. Within one tenant, departments that

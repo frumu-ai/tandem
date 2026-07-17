@@ -5,6 +5,7 @@ import type { AppPageProps } from "./pageTypes";
 import { Badge } from "../ui/index";
 import { Icon } from "../ui/Icon";
 import {
+  connectionVerifyKey,
   ingressModeLabel,
   normalizeSlackConnections,
   normalizeSlackSenders,
@@ -143,7 +144,7 @@ export function ChannelConnectionsPage({ client, api, toast, navigate }: AppPage
         <div className="grid gap-2">
           {connections.length ? (
             connections.map((connection) => {
-              const verify = verifyResults?.get(connection.channelId);
+              const verify = verifyResults?.get(connectionVerifyKey(connection));
               return (
                 <div key={connection.channelId} className="tcp-list-item">
                   <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
