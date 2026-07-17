@@ -233,7 +233,8 @@ mod tests {
                     "telegram",
                     "4242",
                     ChannelSecurityProfile::PublicDemo,
-                    false
+                    false,
+                    None
                 )
                 .await
         );

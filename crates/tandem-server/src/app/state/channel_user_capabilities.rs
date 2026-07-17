@@ -30,6 +30,15 @@ pub struct ChannelUserCapabilityRecord {
     /// membership rows live in the enterprise org-unit store.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub org_units: Vec<String>,
+    /// Tenant this capability is scoped to (copied from the pairing code).
+    /// A tenant-scoped grant only counts on connections bound to the SAME
+    /// tenant — a code issued for tenant A must not confer the Approve tier
+    /// on tenant B's channels just because the Slack principal string
+    /// matches. Absent on legacy records, which stay channel-global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_org_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -187,6 +196,8 @@ impl AppState {
             enrolled_by: enrolled_by.or(pending.issued_by),
             pinned_workspace_id: pending.pinned_workspace_id,
             org_units: pending.org_units,
+            tenant_org_id: pending.tenant_org_id,
+            tenant_workspace_id: pending.tenant_workspace_id,
         };
         self.upsert_channel_user_capability(record.clone()).await?;
         Ok(record)
@@ -417,12 +428,24 @@ impl AppState {
         user_id: &str,
         fallback_profile: ChannelSecurityProfile,
         is_open_channel: bool,
+        channel_tenant: Option<(&str, &str)>,
     ) -> bool {
         // An explicit per-identity capability grant is authoritative — including a
         // deliberate downgrade below `Approve`.
         let key = channel_user_capability_key(channel, user_id);
         if let Some(record) = self.channel_user_capabilities.read().await.get(&key) {
-            return CommandTier::from(record.max_tier) >= CommandTier::Approve;
+            // A tenant-scoped grant applies ONLY on connections bound to the
+            // same tenant: a code issued for tenant A must not confer
+            // approval authority in tenant B's channels. A grant that does
+            // not apply here is treated as absent (the fallback logic below
+            // still runs); legacy untenanted grants stay channel-global.
+            let record_tenant = record
+                .tenant_org_id
+                .as_deref()
+                .zip(record.tenant_workspace_id.as_deref());
+            if record_tenant.is_none() || record_tenant == channel_tenant {
+                return CommandTier::from(record.max_tier) >= CommandTier::Approve;
+            }
         }
         // GOV-B5a: with no explicit grant, fall back to the channel security profile
         // ONLY on a non-open channel, where the hand-picked `allowed_users` list is a
@@ -532,6 +555,8 @@ mod tests {
                 enrolled_by: Some("admin".to_string()),
                 pinned_workspace_id: None,
                 org_units: Vec::new(),
+                tenant_org_id: None,
+                tenant_workspace_id: None,
             })
             .await
             .unwrap();
@@ -544,6 +569,66 @@ mod tests {
                 .channel_user_capability_tier("slack", "U123", ChannelSecurityProfile::PublicDemo)
                 .await,
             CommandTier::Approve
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_scoped_capability_only_counts_in_its_tenant() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = AppState::new_starting("test".to_string(), true);
+        state.channel_user_capabilities_path = dir.path().join("caps.json");
+        state
+            .upsert_channel_user_capability(ChannelUserCapabilityRecord {
+                channel: "slack".to_string(),
+                user_id: "U-tenant-a".to_string(),
+                max_tier: StoredCommandTier::Approve,
+                enrolled_at_ms: Some(1),
+                enrolled_by: Some("admin".to_string()),
+                pinned_workspace_id: None,
+                org_units: Vec::new(),
+                tenant_org_id: Some("acme".to_string()),
+                tenant_workspace_id: Some("hq".to_string()),
+            })
+            .await
+            .unwrap();
+
+        // The grant applies on a connection bound to the SAME tenant.
+        assert!(
+            state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    Some(("acme", "hq")),
+                )
+                .await
+        );
+        // Another tenant's channel: the grant is absent there, and the
+        // open-channel fallback denies.
+        assert!(
+            !state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    Some(("other", "ops")),
+                )
+                .await,
+            "a code issued for tenant A must not confer approval in tenant B"
+        );
+        // An unbound connection doesn't satisfy a tenant-scoped grant either.
+        assert!(
+            !state
+                .channel_user_can_approve(
+                    "slack",
+                    "U-tenant-a",
+                    ChannelSecurityProfile::PublicDemo,
+                    true,
+                    None,
+                )
+                .await
         );
     }
 
@@ -599,6 +684,7 @@ mod tests {
                     "fake-telegram-user",
                     ChannelSecurityProfile::PublicDemo,
                     false,
+                    None,
                 )
                 .await
         );
@@ -611,7 +697,13 @@ mod tests {
         let state = AppState::new_starting("test".to_string(), true);
         assert!(
             !state
-                .channel_user_can_approve("slack", "U-open", ChannelSecurityProfile::Operator, true)
+                .channel_user_can_approve(
+                    "slack",
+                    "U-open",
+                    ChannelSecurityProfile::Operator,
+                    true,
+                    None
+                )
                 .await,
             "open channel must not auto-confer approval"
         );
@@ -623,7 +715,8 @@ mod tests {
                     "slack",
                     "U-open",
                     ChannelSecurityProfile::Operator,
-                    false
+                    false,
+                    None
                 )
                 .await,
             "non-open Operator channel preserves approval"
@@ -644,6 +737,8 @@ mod tests {
                 enrolled_by: Some("admin".to_string()),
                 pinned_workspace_id: None,
                 org_units: Vec::new(),
+                tenant_org_id: None,
+                tenant_workspace_id: None,
             })
             .await
             .unwrap();
@@ -654,7 +749,8 @@ mod tests {
                     "slack",
                     "U-granted",
                     ChannelSecurityProfile::PublicDemo,
-                    true
+                    true,
+                    None
                 )
                 .await
         );
@@ -665,7 +761,8 @@ mod tests {
                     "slack",
                     "U-nogrant",
                     ChannelSecurityProfile::PublicDemo,
-                    true
+                    true,
+                    None
                 )
                 .await
         );

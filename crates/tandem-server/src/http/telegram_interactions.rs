@@ -239,6 +239,7 @@ pub(crate) async fn telegram_interactions(
             &user_id,
             profile,
             channel_is_open_to_all(&effective_config, ChannelKind::Telegram),
+            None,
         )
         .await
     {

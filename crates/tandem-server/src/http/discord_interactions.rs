@@ -223,6 +223,7 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
             &user_id,
             profile,
             channel_is_open_to_all(&effective_config, ChannelKind::Discord),
+            None,
         )
         .await
     {
@@ -358,6 +359,7 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
             &user_id,
             profile,
             channel_is_open_to_all(&effective_config, ChannelKind::Discord),
+            None,
         )
         .await
     {

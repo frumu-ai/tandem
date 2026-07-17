@@ -651,6 +651,8 @@ async fn slack_capability_and_step_up_do_not_cross_installations() {
                 enrolled_at_ms: Some(crate::now_ms()),
                 enrolled_by: Some("test".to_string()),
                 pinned_workspace_id: None,
+                tenant_org_id: None,
+                tenant_workspace_id: None,
             },
         )
         .await
@@ -662,6 +664,7 @@ async fn slack_capability_and_step_up_do_not_cross_installations() {
                 first,
                 tandem_channels::config::ChannelSecurityProfile::PublicDemo,
                 true,
+                None,
             )
             .await
     );
@@ -672,6 +675,7 @@ async fn slack_capability_and_step_up_do_not_cross_installations() {
                 second,
                 tandem_channels::config::ChannelSecurityProfile::PublicDemo,
                 true,
+                None,
             )
             .await
     );

@@ -178,7 +178,11 @@ Semantics:
   issued tenant (persisted through the governance store) in addition to the
   capability tier, so a department-bound enrollment immediately yields a
   working governed run. The Channel Connections page passes the sender's
-  observed tenant automatically.
+  observed tenant automatically. The capability tier is tenant-scoped too:
+  a pairing code issued for tenant A confers approval authority only on
+  connections bound to tenant A — never in another tenant's channels just
+  because the Slack principal string matches. Legacy untenanted grants
+  stay channel-global.
 - **Diagnostics.** `GET /channels/config` includes a `connections_summary`
   array for Slack with per-connection presence flags (`has_token`,
   `has_signing_secret`, `events_capable`, tenant/org-unit bindings) — never

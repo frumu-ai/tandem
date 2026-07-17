@@ -424,12 +424,16 @@ async fn authorize_slack_approver(
         slack_installation_identity(&installation.team_id, &installation.app_id, surface_user_id)
     });
     let profile = connection.security_profile;
+    let bound_tenant = connection.bound_tenant();
     if !state
         .channel_user_can_approve(
             ChannelKind::Slack.as_str(),
             &approval_identity,
             profile,
             connection.is_open_to_all(),
+            bound_tenant
+                .as_ref()
+                .map(|(org_id, workspace_id)| (org_id.as_str(), workspace_id.as_str())),
         )
         .await
     {

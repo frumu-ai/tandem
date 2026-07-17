@@ -1207,10 +1207,15 @@ async fn enrollment_org_units_resolve_within_the_sender_tenant() {
         .await
         .expect("issue tenant-scoped enrollment code");
     assert_eq!(code.tenant_org_id.as_deref(), Some(ORG_ID));
-    state
+    let capability = state
         .confirm_channel_enrollment_code(&code.code, None)
         .await
         .expect("confirm tenant-scoped enrollment code");
+    assert_eq!(
+        capability.tenant_org_id.as_deref(),
+        Some(ORG_ID),
+        "the capability must inherit the code's tenant scope"
+    );
     let memberships = state.enterprise.org_unit_memberships.read().await;
     let created = memberships
         .values()
