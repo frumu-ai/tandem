@@ -324,6 +324,9 @@ function createDefaultWizardState(
   workspaceRoot = "",
   timezone = detectBrowserTimezone()
 ): WizardState {
+  const normalizedDefaultProvider = String(defaultProvider || "").trim();
+  const normalizedDefaultModel = String(defaultModel || "").trim();
+  const hasPlannerDefault = Boolean(normalizedDefaultProvider && normalizedDefaultModel);
   const defaultPreset = AUTOMATION_WIZARD_CONFIG.schedulePresets.find(
     (preset) => preset.label === AUTOMATION_WIZARD_CONFIG.defaults.schedulePreset
   );
@@ -350,10 +353,10 @@ function createDefaultWizardState(
     maxAgents: AUTOMATION_WIZARD_CONFIG.defaults.maxAgents,
     routedSkill: "",
     routingConfidence: "",
-    modelProvider: String(defaultProvider || ""),
-    modelId: String(defaultModel || ""),
-    plannerModelProvider: String(defaultProvider || ""),
-    plannerModelId: String(defaultModel || ""),
+    modelProvider: normalizedDefaultProvider,
+    modelId: normalizedDefaultModel,
+    plannerModelProvider: hasPlannerDefault ? normalizedDefaultProvider : "",
+    plannerModelId: hasPlannerDefault ? normalizedDefaultModel : "",
     roleModelsJson: "",
     toolAccessMode: "all",
     customToolsText: "",
@@ -728,7 +731,7 @@ export function CreateWizard({
       models,
       configuredDefaultModel
     );
-    const initializePlanner = !plannerDefaultInitializedRef.current;
+    const initializePlanner = !plannerDefaultInitializedRef.current && !!configDefaultModel;
     if (initializePlanner) plannerDefaultInitializedRef.current = true;
     setWizard((current) => {
       return {

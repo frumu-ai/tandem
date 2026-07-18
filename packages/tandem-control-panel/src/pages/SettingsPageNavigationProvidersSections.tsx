@@ -746,7 +746,7 @@ export function SettingsPageNavigationProvidersSections({
                       ).trim();
                       const selectableModels = Array.from(
                         new Set([typedModel, ...models].filter(Boolean))
-                      ).slice(0, 80);
+                      );
                       const badge = providerCatalogBadge(provider, models.length);
                       const subtitle = providerCatalogSubtitle(provider, defaultModel);
                       const providerHint =

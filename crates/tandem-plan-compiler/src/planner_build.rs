@@ -61,7 +61,7 @@ fn normalized_time_token(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn parse_prompt_clock_time(value: &str, allow_bare_hour: bool) -> Option<(u8, u8)> {
+fn parse_prompt_clock_time(value: &str) -> Option<(u8, u8)> {
     let value = normalized_time_token(value);
     let (clock, meridiem) = if let Some(clock) = value.strip_suffix("am") {
         (clock, Some("am"))
@@ -76,7 +76,7 @@ fn parse_prompt_clock_time(value: &str, allow_bare_hour: bool) -> Option<(u8, u8
         }
         (hour.parse::<u8>().ok()?, minute.parse::<u8>().ok()?)
     } else {
-        if meridiem.is_none() && !allow_bare_hour {
+        if meridiem.is_none() {
             return None;
         }
         (clock.parse::<u8>().ok()?, 0)
@@ -111,7 +111,7 @@ fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
             Some("am" | "pm") => format!("{next}{}", tokens[index + 2]),
             _ => next.clone(),
         };
-        if let Some(time) = parse_prompt_clock_time(&combined, true) {
+        if let Some(time) = parse_prompt_clock_time(&combined) {
             return Some(time);
         }
     }
@@ -121,7 +121,7 @@ fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
             _ => token.clone(),
         };
         if combined.contains(':') || combined.ends_with("am") || combined.ends_with("pm") {
-            if let Some(time) = parse_prompt_clock_time(&combined, false) {
+            if let Some(time) = parse_prompt_clock_time(&combined) {
                 return Some(time);
             }
         }
@@ -1505,6 +1505,28 @@ mod tests {
             None,
         );
         assert_eq!(iana_request.fallback_schedule.timezone, "America/New_York");
+    }
+
+    #[test]
+    fn prepare_build_request_does_not_treat_bare_counts_as_clock_times() {
+        let request = prepare_build_request(
+            "wfplan-count".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Create a daily report that looks at 5 repos",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+
+        assert_eq!(
+            request.fallback_schedule.schedule_type,
+            AutomationV2ScheduleType::Manual
+        );
+        assert!(request.explicit_schedule.is_none());
     }
 
     #[test]

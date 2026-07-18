@@ -6,9 +6,7 @@ export const OPENAI_CODEX_DEFAULT_MODEL_ID = "gpt-5.6-terra";
 export function preferredProviderModel(providerId: string, models: string[], configuredModel = "") {
   const availableModels = mergeOptionValues(models, "");
   const configured = String(configuredModel || "").trim();
-  if (configured && (!availableModels.length || availableModels.includes(configured))) {
-    return configured;
-  }
+  if (configured) return configured;
   if (
     String(providerId || "")
       .trim()
@@ -65,7 +63,7 @@ export function ProviderModelSelector({
   disabled?: boolean;
 }) {
   const modelOptions = providers.find((provider) => provider.id === draft.provider)?.models || [];
-  const selectableModels = mergeOptionValues(modelOptions, draft.model).slice(0, 80);
+  const selectableModels = mergeOptionValues(modelOptions, draft.model);
   return (
     <div className="grid gap-3 md:grid-cols-2">
       <label className="block text-sm">
