@@ -549,6 +549,6 @@ async fn workflow_start_inherits_chat_model_and_prompt_schedule() {
     let plan = &stored.draft.as_ref().expect("planner draft").current_plan;
     assert_eq!(
         plan.schedule.cron_expression.as_deref(),
-        Some("0 8 * * 1-5")
+        Some("0 8 * * Mon-Fri")
     );
 }

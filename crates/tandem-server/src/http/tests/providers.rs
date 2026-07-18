@@ -262,7 +262,7 @@ async fn config_providers_heals_retired_codex_default_model() {
             .and_then(|v| v.get("openai-codex"))
             .and_then(|v| v.get("default_model"))
             .and_then(Value::as_str),
-        Some("gpt-5.5")
+        Some(tandem_providers::OPENAI_CODEX_DEFAULT_MODEL)
     );
 }
 
