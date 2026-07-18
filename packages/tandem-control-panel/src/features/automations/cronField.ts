@@ -1,11 +1,18 @@
 export const CRON_WEEKDAY_ALIASES: Readonly<Record<string, number>> = {
   sun: 7,
+  sunday: 7,
   mon: 1,
+  monday: 1,
   tue: 2,
+  tuesday: 2,
   wed: 3,
+  wednesday: 3,
   thu: 4,
+  thursday: 4,
   fri: 5,
+  friday: 5,
   sat: 6,
+  saturday: 6,
 };
 
 function parseCronValue(raw: string, aliases?: Readonly<Record<string, number>>) {
