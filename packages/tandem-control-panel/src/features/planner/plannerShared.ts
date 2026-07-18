@@ -30,9 +30,15 @@ function collectModels(raw: any) {
   return single ? [single] : [];
 }
 
-function isInternalProviderId(providerId: string) {
+export function isInternalProviderId(providerId: string) {
   const normalized = safeString(providerId).toLowerCase();
-  return normalized.startsWith("mcp_header::") || normalized.startsWith("channel::");
+  return (
+    normalized.startsWith("__tenant__") ||
+    normalized.startsWith("mcp_header::") ||
+    normalized.includes("::mcp_header::") ||
+    normalized.startsWith("channel::") ||
+    normalized.includes("::channel::")
+  );
 }
 
 export type PlannerSessionStatus =

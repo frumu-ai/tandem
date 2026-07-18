@@ -994,6 +994,11 @@ mod tests {
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
+        assert_eq!(OPENAI_CODEX_DEFAULT_MODEL, "gpt-5.6-terra");
+        assert_eq!(
+            openai_codex_effective_default_model(None),
+            "gpt-5.6-terra"
+        );
         assert!(ids.contains(&"gpt-5.6-sol"));
         assert!(ids.contains(&"gpt-5.6-terra"));
         assert!(ids.contains(&"gpt-5.6-luna"));

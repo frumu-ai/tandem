@@ -3,7 +3,11 @@ import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JsonObject } from "@frumu/tandem-client";
 import { renderMarkdownSafe } from "../lib/markdown";
-import { ProviderModelSelector } from "../components/ProviderModelSelector";
+import {
+  OPENAI_CODEX_DEFAULT_MODEL_ID,
+  OPENAI_CODEX_PROVIDER_ID,
+  ProviderModelSelector,
+} from "../components/ProviderModelSelector";
 import { McpToolAllowlistEditor } from "../components/McpToolAllowlistEditor";
 import {
   IncidentMonitorExternalProjectsPanel,
@@ -31,7 +35,10 @@ import type { AppPageProps } from "./pageTypes";
 import type { NavigationVisibility } from "../app/navigation";
 import type { RouteId } from "../app/routes";
 import type { IconName } from "../ui/Icon";
-import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
+import {
+  buildPlannerProviderOptions,
+  isInternalProviderId,
+} from "../features/planner/plannerShared";
 import { parseSlackAllowedUsers, sameSlackAllowedUsers } from "./channelConnectionsModel.mjs";
 
 type BrowserBlockingIssue = {
@@ -529,16 +536,8 @@ const BUILTIN_PROVIDER_IDS = new Set([
   "cohere",
 ]);
 
-export const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
-export const OPENAI_CODEX_DEFAULT_MODEL_ID = "gpt-5.5";
+export { OPENAI_CODEX_DEFAULT_MODEL_ID, OPENAI_CODEX_PROVIDER_ID };
 export const CHANNEL_NAMES = ["telegram", "discord", "slack"] as const;
-
-function isInternalConfigProviderId(providerId: string) {
-  const normalized = String(providerId || "")
-    .trim()
-    .toLowerCase();
-  return normalized.startsWith("mcp_header::") || normalized.startsWith("channel::");
-}
 
 export const CHANNEL_TOOL_GROUPS = [
   { label: "File", tools: ["read", "glob", "ls", "list", "grep", "codesearch", "search"] },
@@ -1526,9 +1525,7 @@ export function useSettingsPageController({
         .filter(([providerId]) => {
           const normalized = providerId.trim().toLowerCase();
           return (
-            normalized &&
-            !BUILTIN_PROVIDER_IDS.has(normalized) &&
-            !isInternalConfigProviderId(normalized)
+            normalized && !BUILTIN_PROVIDER_IDS.has(normalized) && !isInternalProviderId(normalized)
           );
         })
         .map(([providerId, value]) => ({

@@ -15,6 +15,7 @@ import type { ExecutionProfile } from "../AutomationsRunHelpers";
 import type { NavigationLockState } from "../../../pages/pageTypes";
 import { Icon } from "../../../ui/Icon";
 import { useEngineStream } from "../../stream/useEngineStream";
+import { preferredProviderModel } from "../../../components/ProviderModelSelector";
 
 type ExecutionMode = "single" | "team" | "swarm";
 type WizardExecutionProfile = "" | ExecutionProfile;
@@ -351,8 +352,8 @@ function createDefaultWizardState(
     routingConfidence: "",
     modelProvider: String(defaultProvider || ""),
     modelId: String(defaultModel || ""),
-    plannerModelProvider: "",
-    plannerModelId: "",
+    plannerModelProvider: String(defaultProvider || ""),
+    plannerModelId: String(defaultModel || ""),
     roleModelsJson: "",
     toolAccessMode: "all",
     customToolsText: "",
@@ -620,6 +621,9 @@ export function CreateWizard({
   const [wizard, setWizard] = useState<WizardState>(() =>
     createDefaultWizardState(defaultProvider, defaultModel)
   );
+  const plannerDefaultInitializedRef = useRef(
+    Boolean(String(defaultProvider || "").trim() && String(defaultModel || "").trim())
+  );
 
   const providersCatalogQuery = useQuery({
     queryKey: ["settings", "providers", "catalog"],
@@ -713,18 +717,30 @@ export function CreateWizard({
     if (!selectedProvider) return;
     const models =
       providerOptions.find((provider) => provider.id === selectedProvider)?.models || [];
-    const configDefaultModel = String(
+    const configuredDefaultModel = String(
       providersConfigQuery.data?.providers?.[selectedProvider]?.default_model ||
+        providersConfigQuery.data?.providers?.[selectedProvider]?.defaultModel ||
         defaultModel ||
-        models[0] ||
         ""
     ).trim();
+    const configDefaultModel = preferredProviderModel(
+      selectedProvider,
+      models,
+      configuredDefaultModel
+    );
+    const initializePlanner = !plannerDefaultInitializedRef.current;
+    if (initializePlanner) plannerDefaultInitializedRef.current = true;
     setWizard((current) => {
-      if (current.modelProvider && current.modelId) return current;
       return {
         ...current,
         modelProvider: current.modelProvider || selectedProvider,
         modelId: current.modelId || configDefaultModel,
+        plannerModelProvider: initializePlanner
+          ? current.plannerModelProvider || selectedProvider
+          : current.plannerModelProvider,
+        plannerModelId: initializePlanner
+          ? current.plannerModelId || configDefaultModel
+          : current.plannerModelId,
       };
     });
   }, [defaultModel, defaultProvider, providerOptions, providersConfigQuery.data]);
@@ -840,8 +856,7 @@ export function CreateWizard({
       toast("err", message);
     },
   });
-  const plannerProviderPending =
-    compileMutation.isPending || planningMessageMutation.isPending;
+  const plannerProviderPending = compileMutation.isPending || planningMessageMutation.isPending;
   useEffect(() => {
     if (!plannerProviderPending) return;
     const startedAt = Date.now();
@@ -869,7 +884,9 @@ export function CreateWizard({
             ? `workflow-plan-revision:${String(planPreview.plan_id).trim()}`
             : "";
         if (!expectedRunID || runID !== expectedRunID) return;
-        const phase = String(properties.phase || "").trim().toLowerCase();
+        const phase = String(properties.phase || "")
+          .trim()
+          .toLowerCase();
         const responseChars = Math.max(0, Number(properties.responseChars) || 0);
         const elapsedMs = Math.max(0, Number(properties.elapsedMs) || 0);
         setPlannerLiveProgress((current) => ({
@@ -1108,6 +1125,9 @@ export function CreateWizard({
         queryClient.invalidateQueries({ queryKey: ["automations"] }),
         queryClient.invalidateQueries({ queryKey: ["mcp"] }),
       ]);
+      plannerDefaultInitializedRef.current = Boolean(
+        String(defaultProvider || "").trim() && String(defaultModel || "").trim()
+      );
       setWizard(
         createDefaultWizardState(
           defaultProvider,
@@ -1367,6 +1387,12 @@ export function CreateWizard({
         const saved = JSON.parse(rawDraft);
         const savedWizard = saved?.wizard;
         if (savedWizard && typeof savedWizard === "object") {
+          if (
+            Object.prototype.hasOwnProperty.call(savedWizard, "plannerModelProvider") ||
+            Object.prototype.hasOwnProperty.call(savedWizard, "plannerModelId")
+          ) {
+            plannerDefaultInitializedRef.current = true;
+          }
           setWizard((current) => ({ ...current, ...(savedWizard as Partial<WizardState>) }));
           const savedStep = Number(saved?.step);
           if (savedStep >= 1 && savedStep <= 4) {
@@ -1568,14 +1594,18 @@ export function CreateWizard({
                 }))
               }
               onModelChange={(v) => setWizard((s) => ({ ...s, modelId: v }))}
-              onPlannerProviderChange={(v) =>
+              onPlannerProviderChange={(v) => {
+                plannerDefaultInitializedRef.current = true;
                 setWizard((s) => ({
                   ...s,
                   plannerModelProvider: v,
                   plannerModelId: v === s.plannerModelProvider ? s.plannerModelId : "",
-                }))
-              }
-              onPlannerModelChange={(v) => setWizard((s) => ({ ...s, plannerModelId: v }))}
+                }));
+              }}
+              onPlannerModelChange={(v) => {
+                plannerDefaultInitializedRef.current = true;
+                setWizard((s) => ({ ...s, plannerModelId: v }));
+              }}
               roleModelsJson={wizard.roleModelsJson}
               onRoleModelsChange={(v) => setWizard((s) => ({ ...s, roleModelsJson: v }))}
               roleModelsError={roleModelsError}
