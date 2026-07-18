@@ -12,6 +12,36 @@ pub(super) async fn workflow_start(
     let (actor, verified) = mutation_actor(args, tenant, chat_session)?;
     let prompt = required_str(args, "prompt")?;
     let key = required_str(args, "idempotency_key")?;
+    let planner_provider = chat_session
+        .model
+        .as_ref()
+        .map(|model| model.provider_id.clone())
+        .unwrap_or_default();
+    let planner_model = chat_session
+        .model
+        .as_ref()
+        .map(|model| model.model_id.clone())
+        .unwrap_or_default();
+    let operator_preferences = match chat_session.model.as_ref() {
+        Some(model) => json!({
+            "source": "authenticated_chat",
+            "actor_id": actor,
+            "chat_session_id": chat_session.id,
+            "model_provider": model.provider_id,
+            "model_id": model.model_id,
+            "role_models": {
+                "planner": {
+                    "provider_id": model.provider_id,
+                    "model_id": model.model_id,
+                }
+            }
+        }),
+        None => json!({
+            "source": "authenticated_chat",
+            "actor_id": actor,
+            "chat_session_id": chat_session.id,
+        }),
+    };
     let workspace_root = if let Some(requested) = optional_str(args, "workspace_root") {
         crate::normalize_absolute_workspace_root(requested).map_err(anyhow::Error::msg)?
     } else {
@@ -113,8 +143,8 @@ pub(super) async fn workflow_start(
         draft: None,
         goal: prompt.to_string(),
         notes: String::new(),
-        planner_provider: String::new(),
-        planner_model: String::new(),
+        planner_provider,
+        planner_model,
         plan_source: "agentic_chat".to_string(),
         allowed_mcp_servers: args
             .get("allowed_mcp_servers")
@@ -127,12 +157,13 @@ pub(super) async fn workflow_start(
                     .collect()
             })
             .unwrap_or_default(),
-        operator_preferences: Some(json!({
-            "source": "authenticated_chat",
-            "actor_id": actor,
-            "chat_session_id": chat_session.id,
-            "chat_run_id": chat_run_id,
-        })),
+        operator_preferences: Some({
+            let mut preferences = operator_preferences;
+            if let Some(object) = preferences.as_object_mut() {
+                object.insert("chat_run_id".to_string(), json!(chat_run_id));
+            }
+            preferences
+        }),
         planning: Some(
             super::workflow_planner::WorkflowPlannerSessionPlanningRecord {
                 mode: "workflow_planning".to_string(),
