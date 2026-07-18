@@ -260,7 +260,7 @@ impl EngineLoop {
             let mut email_action_executed = false;
             let mut latest_email_action_note: Option<String> = None;
             let mut email_tools_ever_offered = false;
-            let router_enabled = tool_router_enabled();
+            let router_applies = should_apply_tool_router(tool_router_enabled(), intent);
             let retrieval_enabled = semantic_tool_retrieval_enabled();
             let retrieval_k = semantic_tool_retrieval_k();
             let mcp_server_names = if mcp_catalog_in_system_prompt_enabled() {
@@ -486,7 +486,7 @@ impl EngineLoop {
                         retrieval_fallback_reason = Some("missing_email_tools_for_delivery_prompt");
                     }
                 }
-                let mut tool_schemas = if !router_enabled {
+                let mut tool_schemas = if !router_applies {
                     candidate_tools
                 } else {
                     match requested_tool_mode {
@@ -1466,7 +1466,7 @@ impl EngineLoop {
                 } else if tool_calls.is_empty() {
                     latest_required_tool_failure_kind = RequiredToolFailureKind::NoToolCallEmitted;
                 }
-                if router_enabled
+                if router_applies
                     && matches!(requested_tool_mode, ToolMode::Auto)
                     && !auto_tools_escalated
                     && iteration == 1
