@@ -86,7 +86,7 @@ pub struct SessionWritePolicy {
 use crate::tool_router::{
     classify_intent, default_mode_name, is_mcp_tool_or_discovery, is_short_simple_prompt,
     product_authoring_execution_scope, product_authoring_needs_catalog_fallback,
-    select_tool_subset, should_escalate_auto_tools, tool_router_enabled,
+    select_tool_subset, should_apply_tool_router, should_escalate_auto_tools, tool_router_enabled,
     tool_survives_explicit_allowlist, ToolIntent, ToolRoutingDecision,
 };
 use crate::{

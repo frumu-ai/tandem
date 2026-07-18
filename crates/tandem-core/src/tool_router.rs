@@ -43,6 +43,10 @@ pub fn tool_router_enabled() -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn should_apply_tool_router(router_enabled: bool, intent: ToolIntent) -> bool {
+    router_enabled || is_product_authoring_intent(intent)
+}
+
 pub fn max_tools_per_call() -> usize {
     std::env::var("TANDEM_TOOL_ROUTER_MAX_TOOLS")
         .ok()
@@ -710,6 +714,21 @@ mod tests {
             classify_intent("Materialize that workflow as a draft"),
             ToolIntent::ProductAuthoring
         );
+    }
+
+    #[test]
+    fn product_authoring_always_uses_the_tool_router() {
+        assert!(should_apply_tool_router(
+            false,
+            ToolIntent::ProductAuthoring
+        ));
+        assert!(should_apply_tool_router(
+            false,
+            ToolIntent::ProductAuthoringWithMcp
+        ));
+        assert!(!should_apply_tool_router(false, ToolIntent::Knowledge));
+        assert!(!should_apply_tool_router(false, ToolIntent::ProductControl));
+        assert!(should_apply_tool_router(true, ToolIntent::Knowledge));
     }
 
     #[test]
