@@ -63,7 +63,8 @@ export function ProviderModelSelector({
   disabled?: boolean;
 }) {
   const modelOptions = providers.find((provider) => provider.id === draft.provider)?.models || [];
-  const selectableModels = mergeOptionValues(modelOptions, draft.model);
+  const catalogModels = mergeOptionValues(modelOptions, "");
+  const catalogModelSelected = catalogModels.includes(draft.model);
   return (
     <div className="grid gap-3 md:grid-cols-2">
       <label className="block text-sm">
@@ -101,22 +102,34 @@ export function ProviderModelSelector({
           <span>{modelLabel}</span>
         </div>
         {modelOptions.length ? (
-          <select
-            aria-label={modelLabel}
-            className="tcp-select h-10 w-full"
-            value={draft.model}
-            onInput={(event) =>
-              onChange({ ...draft, model: (event.target as HTMLSelectElement).value })
-            }
-            disabled={disabled || !draft.provider}
-          >
-            {!draft.model ? <option value="">Select a model</option> : null}
-            {selectableModels.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
+          <div className="grid gap-2">
+            <select
+              aria-label={modelLabel}
+              className="tcp-select h-10 w-full"
+              value={catalogModelSelected ? draft.model : ""}
+              onInput={(event) =>
+                onChange({ ...draft, model: (event.target as HTMLSelectElement).value })
+              }
+              disabled={disabled || !draft.provider}
+            >
+              <option value="">Select a catalog model</option>
+              {catalogModels.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+            <input
+              aria-label={`${modelLabel} custom ID`}
+              className="tcp-input h-10 w-full"
+              value={catalogModelSelected ? "" : draft.model}
+              onInput={(event) =>
+                onChange({ ...draft, model: (event.target as HTMLInputElement).value })
+              }
+              placeholder="Or type a custom model ID"
+              disabled={disabled || !draft.provider}
+            />
+          </div>
         ) : (
           <input
             aria-label={modelLabel}

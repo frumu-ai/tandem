@@ -181,14 +181,22 @@ fn infer_prompt_schedule<M: Clone>(
         || lowered.contains("monday-friday")
         || lowered.contains("mon-fri");
     let mentions_weekends = lowered.contains("weekend");
-    let weekdays = mentions_weekdays && !prompt_negates_cadence(&lowered, "weekday");
-    let weekends = mentions_weekends && !prompt_negates_cadence(&lowered, "weekend");
+    let excludes_weekdays = mentions_weekdays && prompt_negates_cadence(&lowered, "weekday");
+    let excludes_weekends = mentions_weekends && prompt_negates_cadence(&lowered, "weekend");
+    let weekdays = mentions_weekdays && !excludes_weekdays;
+    let weekends = mentions_weekends && !excludes_weekends;
     let daily =
         lowered.contains("daily") || lowered.contains("every day") || lowered.contains("each day");
-    let day_expression = match (weekdays, weekends, daily) {
-        (true, false, _) => "Mon-Fri",
-        (false, true, _) => "Sun,Sat",
-        (false, false, true) => "*",
+    let day_expression = match (
+        weekdays,
+        weekends,
+        daily,
+        excludes_weekdays,
+        excludes_weekends,
+    ) {
+        (true, false, _, _, _) | (false, false, true, false, true) => "Mon-Fri",
+        (false, true, _, _, _) | (false, false, true, true, false) => "Sun,Sat",
+        (false, false, true, false, false) => "*",
         _ => return None,
     };
     let (hour, minute) = prompt_clock_time(prompt)?;
@@ -1505,6 +1513,23 @@ mod tests {
             None,
         );
         assert_eq!(iana_request.fallback_schedule.timezone, "America/New_York");
+
+        let weekdays_only = prepare_build_request(
+            "wfplan-daily-except-weekends".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Run daily except weekends at 8am",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+        assert_eq!(
+            weekdays_only.fallback_schedule.cron_expression.as_deref(),
+            Some("0 8 * * Mon-Fri")
+        );
     }
 
     #[test]

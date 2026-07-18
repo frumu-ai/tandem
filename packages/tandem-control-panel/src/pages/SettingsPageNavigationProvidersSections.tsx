@@ -744,9 +744,7 @@ export function SettingsPageNavigationProvidersSections({
                       const typedModel = String(
                         modelSearchByProvider[providerId] ?? defaultModel
                       ).trim();
-                      const selectableModels = Array.from(
-                        new Set([typedModel, ...models].filter(Boolean))
-                      );
+                      const catalogModelSelected = models.includes(typedModel);
                       const badge = providerCatalogBadge(provider, models.length);
                       const subtitle = providerCatalogSubtitle(provider, defaultModel);
                       const providerHint =
@@ -837,27 +835,43 @@ export function SettingsPageNavigationProvidersSections({
                                 applyDefaultModel(providerId, typedModel);
                               }}
                             >
-                              <div className="flex gap-2">
+                              <div className="flex items-start gap-2">
                                 {models.length ? (
-                                  <select
-                                    className="tcp-select"
-                                    value={typedModel}
-                                    onInput={(e) =>
-                                      setModelSearchByProvider((prev) => ({
-                                        ...prev,
-                                        [providerId]: (e.target as HTMLSelectElement).value,
-                                      }))
-                                    }
-                                  >
-                                    {selectableModels.map((modelId) => (
-                                      <option key={modelId} value={modelId}>
-                                        {modelId}
-                                      </option>
-                                    ))}
-                                  </select>
+                                  <div className="grid min-w-0 flex-1 gap-2">
+                                    <select
+                                      aria-label={`${providerId} catalog model`}
+                                      className="tcp-select"
+                                      value={catalogModelSelected ? typedModel : ""}
+                                      onInput={(e) =>
+                                        setModelSearchByProvider((prev) => ({
+                                          ...prev,
+                                          [providerId]: (e.target as HTMLSelectElement).value,
+                                        }))
+                                      }
+                                    >
+                                      <option value="">Select a catalog model</option>
+                                      {models.map((modelId) => (
+                                        <option key={modelId} value={modelId}>
+                                          {modelId}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <input
+                                      aria-label={`${providerId} custom model ID`}
+                                      className="tcp-input"
+                                      value={catalogModelSelected ? "" : typedModel}
+                                      placeholder="Or type a custom model ID"
+                                      onInput={(e) =>
+                                        setModelSearchByProvider((prev) => ({
+                                          ...prev,
+                                          [providerId]: (e.target as HTMLInputElement).value,
+                                        }))
+                                      }
+                                    />
+                                  </div>
                                 ) : (
                                   <input
-                                    className="tcp-input"
+                                    className="tcp-input min-w-0 flex-1"
                                     value={typedModel}
                                     placeholder={`Type model id for ${providerId}`}
                                     onInput={(e) =>

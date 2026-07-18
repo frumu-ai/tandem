@@ -35,6 +35,7 @@ import {
   CreateWizard as CreateWizardExternal,
 } from "../features/automations/create/CreateWizard";
 import { AutomationComposerPanel } from "../features/automations/create/AutomationComposerPanel";
+import { CRON_WEEKDAY_ALIASES, matchesCronField } from "../features/automations/cronField";
 import { describeScheduleValue } from "../features/automations/scheduleValue";
 import { AdvancedMissionBuilderPanel } from "./AdvancedMissionBuilderPanel";
 import { PageCard, formatJson } from "./ui";
@@ -1054,46 +1055,6 @@ function getAutomationCronExpression(schedule: any) {
   ).trim();
 }
 
-function splitCronField(field: string) {
-  return String(field || "")
-    .trim()
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-}
-
-function matchesCronAtom(atom: string, value: number, min: number, max: number) {
-  const trimmed = String(atom || "").trim();
-  if (!trimmed || trimmed === "*") return true;
-  const stepParts = trimmed.split("/");
-  const base = stepParts[0] || "*";
-  const step = stepParts[1] ? Number.parseInt(stepParts[1], 10) : 1;
-  const normalizedStep = Number.isFinite(step) && step > 0 ? step : 1;
-  const rangeParts = base.split("-");
-  let start = min;
-  let end = max;
-  if (base !== "*") {
-    if (rangeParts.length === 2) {
-      start = Number.parseInt(rangeParts[0], 10);
-      end = Number.parseInt(rangeParts[1], 10);
-    } else {
-      start = Number.parseInt(base, 10);
-      end = start;
-    }
-  }
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
-  const clampedStart = Math.max(min, Math.min(max, start));
-  const clampedEnd = Math.max(min, Math.min(max, end));
-  if (value < clampedStart || value > clampedEnd) return false;
-  return (value - clampedStart) % normalizedStep === 0;
-}
-
-function matchesCronField(field: string, value: number, min: number, max: number) {
-  const atoms = splitCronField(field);
-  if (!atoms.length) return true;
-  return atoms.some((atom) => matchesCronAtom(atom, value, min, max));
-}
-
 function cronMatchesInTimezone(date: Date, expression: string, timezone: string) {
   const fields = String(expression || "")
     .trim()
@@ -1108,7 +1069,8 @@ function cronMatchesInTimezone(date: Date, expression: string, timezone: string)
   const domWildcard = !domField || domField === "*";
   const dowWildcard = !dowField || dowField === "*";
   const domMatch = domWildcard || matchesCronField(domField, dom, 1, 31);
-  const dowMatch = dowWildcard || matchesCronField(dowField, dow === 0 ? 7 : dow, 0, 7);
+  const dowMatch =
+    dowWildcard || matchesCronField(dowField, dow === 0 ? 7 : dow, 0, 7, CRON_WEEKDAY_ALIASES);
   const dayMatch = domWildcard || dowWildcard ? domMatch && dowMatch : domMatch || dowMatch;
   return minuteMatch && hourMatch && monthMatch && dayMatch;
 }
