@@ -1,5 +1,27 @@
 import { Icon } from "../ui/Icon";
-import { SearchInput } from "../ui/index.tsx";
+
+export const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
+export const OPENAI_CODEX_DEFAULT_MODEL_ID = "gpt-5.6-terra";
+
+export function preferredProviderModel(providerId: string, models: string[], configuredModel = "") {
+  const availableModels = mergeOptionValues(models, "");
+  const configured = String(configuredModel || "").trim();
+  if (configured) return configured;
+  if (
+    String(providerId || "")
+      .trim()
+      .toLowerCase() === OPENAI_CODEX_PROVIDER_ID
+  ) {
+    return (
+      availableModels.find((model) => model === OPENAI_CODEX_DEFAULT_MODEL_ID) ||
+      availableModels.find((model) => model.startsWith("gpt-5.6-")) ||
+      availableModels[0] ||
+      configured
+    );
+  }
+  return availableModels[0] || configured;
+}
+
 type ProviderOption = {
   id: string;
   models: string[];
@@ -41,14 +63,8 @@ export function ProviderModelSelector({
   disabled?: boolean;
 }) {
   const modelOptions = providers.find((provider) => provider.id === draft.provider)?.models || [];
-  const filteredModels = mergeOptionValues(modelOptions, draft.model)
-    .filter((model) => {
-      const query = String(draft.model || "")
-        .trim()
-        .toLowerCase();
-      return !query || model.toLowerCase().includes(query);
-    })
-    .slice(0, 80);
+  const catalogModels = mergeOptionValues(modelOptions, "");
+  const catalogModelSelected = catalogModels.includes(draft.model);
   return (
     <div className="grid gap-3 md:grid-cols-2">
       <label className="block text-sm">
@@ -61,7 +77,7 @@ export function ProviderModelSelector({
           onInput={(event) => {
             const provider = (event.target as HTMLSelectElement).value;
             const nextModels = providers.find((row) => row.id === provider)?.models || [];
-            onChange({ provider, model: nextModels[0] || "" });
+            onChange({ provider, model: preferredProviderModel(provider, nextModels) });
           }}
           className="tcp-select h-10 w-full"
           disabled={disabled}
@@ -85,41 +101,47 @@ export function ProviderModelSelector({
           <Icon name="sparkles" />
           <span>{modelLabel}</span>
         </div>
-        <SearchInput
-          aria-label="Filter models"
-          className="tcp-input h-10 w-full"
-          value={draft.model}
-          onInput={(event) =>
-            onChange({ ...draft, model: (event.target as HTMLInputElement).value })
-          }
-          placeholder={draft.provider ? "Type to filter models" : inheritLabel}
-          disabled={disabled || !draft.provider}
-        />
-        <div className="mt-2 max-h-48 overflow-auto rounded-xl border border-slate-700/60 bg-slate-900/20 p-1">
-          {draft.provider ? (
-            filteredModels.length ? (
-              filteredModels.map((model) => (
-                <button
-                  key={model}
-                  type="button"
-                  className={`block w-full rounded-lg px-2 py-1.5 text-left text-sm hover:bg-slate-700/30 ${
-                    model === draft.model ? "bg-slate-700/40" : ""
-                  }`}
-                  onClick={() => onChange({ ...draft, model })}
-                  disabled={disabled}
-                >
+        {modelOptions.length ? (
+          <div className="grid gap-2">
+            <select
+              aria-label={modelLabel}
+              className="tcp-select h-10 w-full"
+              value={catalogModelSelected ? draft.model : ""}
+              onInput={(event) =>
+                onChange({ ...draft, model: (event.target as HTMLSelectElement).value })
+              }
+              disabled={disabled || !draft.provider}
+            >
+              <option value="">Select a catalog model</option>
+              {catalogModels.map((model) => (
+                <option key={model} value={model}>
                   {model}
-                </button>
-              ))
-            ) : (
-              <div className="tcp-subtle px-2 py-1 text-xs">
-                No matching models. Type a model id manually.
-              </div>
-            )
-          ) : (
-            <div className="tcp-subtle px-2 py-1 text-xs">{inheritLabel}</div>
-          )}
-        </div>
+                </option>
+              ))}
+            </select>
+            <input
+              aria-label={`${modelLabel} custom ID`}
+              className="tcp-input h-10 w-full"
+              value={catalogModelSelected ? "" : draft.model}
+              onInput={(event) =>
+                onChange({ ...draft, model: (event.target as HTMLInputElement).value })
+              }
+              placeholder="Or type a custom model ID"
+              disabled={disabled || !draft.provider}
+            />
+          </div>
+        ) : (
+          <input
+            aria-label={modelLabel}
+            className="tcp-input h-10 w-full"
+            value={draft.model}
+            onInput={(event) =>
+              onChange({ ...draft, model: (event.target as HTMLInputElement).value })
+            }
+            placeholder={draft.provider ? "Type model ID" : inheritLabel}
+            disabled={disabled || !draft.provider}
+          />
+        )}
       </label>
     </div>
   );

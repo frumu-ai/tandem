@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import type { RouteId } from "../app/routes";
-import { ProviderModelSelector } from "../components/ProviderModelSelector";
+import { preferredProviderModel, ProviderModelSelector } from "../components/ProviderModelSelector";
 import { RoleSamplingEditor } from "../components/RoleSamplingEditor";
 import { EmptyState } from "./ui";
 import { Badge, PanelCard, Toolbar } from "../ui/index.tsx";
@@ -13,6 +13,7 @@ import {
   useSettingsPageController,
 } from "./SettingsPageController";
 import { Icon } from "../ui/Icon";
+import { isInternalProviderId } from "../features/planner/plannerShared";
 
 type SettingsPageControllerState = ReturnType<typeof useSettingsPageController>;
 
@@ -94,7 +95,9 @@ export function SettingsPageNavigationProvidersSections({
   const safeCustomConfiguredProviders = Array.isArray(customConfiguredProviders)
     ? customConfiguredProviders
     : [];
-  const safeProviders = Array.isArray(providers) ? providers : [];
+  const safeProviders = Array.isArray(providers)
+    ? providers.filter((provider: any) => !isInternalProviderId(String(provider?.id || "")))
+    : [];
   const installMissing = Array.isArray(installProfileQuery.data?.control_panel_config_missing)
     ? installProfileQuery.data.control_panel_config_missing
     : [];
@@ -310,7 +313,9 @@ export function SettingsPageNavigationProvidersSections({
                 {!acaDetected ? (
                   <div className="mt-3 grid gap-1 rounded-xl border border-yellow-500/20 bg-yellow-500/10 px-3 py-2 font-mono text-xs text-yellow-100">
                     <span>ACA_BASE_URL=http://127.0.0.1:39735</span>
-                    <span>ACA_API_TOKEN_FILE=/home/evan/tandem-agents/tandem-data/aca_api_token</span>
+                    <span>
+                      ACA_API_TOKEN_FILE=/home/evan/tandem-agents/tandem-data/aca_api_token
+                    </span>
                   </div>
                 ) : null}
                 {acaReason ? (
@@ -340,7 +345,9 @@ export function SettingsPageNavigationProvidersSections({
               <div className="rounded-2xl border border-slate-700/60 bg-slate-950/25 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div className="font-medium">Install readiness</div>
-                  <Badge tone={installProfileQuery.data?.control_panel_config_ready ? "ok" : "warn"}>
+                  <Badge
+                    tone={installProfileQuery.data?.control_panel_config_ready ? "ok" : "warn"}
+                  >
                     {installProfileQuery.data?.control_panel_config_ready ? "Ready" : "Needs setup"}
                   </Badge>
                 </div>
@@ -454,10 +461,7 @@ export function SettingsPageNavigationProvidersSections({
               </div>
             </div>
 
-            <RoleSamplingEditor
-              configText={installConfigText}
-              onChange={setInstallConfigText}
-            />
+            <RoleSamplingEditor configText={installConfigText} onChange={setInstallConfigText} />
 
             <label className="grid gap-2">
               <span className="text-sm font-medium">Control panel config JSON</span>
@@ -563,10 +567,8 @@ export function SettingsPageNavigationProvidersSections({
                         <div>
                           <div className="font-medium inline-flex items-center gap-2">
                             <Icon
-                              name={
-                                customProviderFormOpen ? "chevron-down" : "chevron-right"
-                              }
-                             />
+                              name={customProviderFormOpen ? "chevron-down" : "chevron-right"}
+                            />
                             <span>
                               {customProviderFormOpen
                                 ? "Hide custom provider form"
@@ -729,20 +731,20 @@ export function SettingsPageNavigationProvidersSections({
                     safeProviders.map((provider: any) => {
                       const providerId = String(provider?.id || "");
                       const models = Object.keys(provider?.models || {});
-                      const defaultModel = String(
+                      const configuredDefaultModel = String(
                         providersConfig.data?.providers?.[providerId]?.default_model ||
-                          models[0] ||
+                          providersConfig.data?.providers?.[providerId]?.defaultModel ||
                           ""
+                      ).trim();
+                      const defaultModel = preferredProviderModel(
+                        providerId,
+                        models,
+                        configuredDefaultModel
                       );
                       const typedModel = String(
                         modelSearchByProvider[providerId] ?? defaultModel
                       ).trim();
-                      const normalizedTyped = typedModel.toLowerCase();
-                      const filteredModels = models
-                        .filter((modelId) =>
-                          normalizedTyped ? modelId.toLowerCase().includes(normalizedTyped) : true
-                        )
-                        .slice(0, 80);
+                      const catalogModelSelected = models.includes(typedModel);
                       const badge = providerCatalogBadge(provider, models.length);
                       const subtitle = providerCatalogSubtitle(provider, defaultModel);
                       const providerHint =
@@ -833,51 +835,63 @@ export function SettingsPageNavigationProvidersSections({
                                 applyDefaultModel(providerId, typedModel);
                               }}
                             >
-                              <div className="flex gap-2">
-                                <input
-                                  className="tcp-input"
-                                  value={typedModel}
-                                  placeholder={`Type model id for ${providerId}`}
-                                  onInput={(e) =>
-                                    setModelSearchByProvider((prev) => ({
-                                      ...prev,
-                                      [providerId]: (e.target as HTMLInputElement).value,
-                                    }))
-                                  }
-                                />
+                              <div className="flex items-start gap-2">
+                                {models.length ? (
+                                  <div className="grid min-w-0 flex-1 gap-2">
+                                    <select
+                                      aria-label={`${providerId} catalog model`}
+                                      className="tcp-select"
+                                      value={catalogModelSelected ? typedModel : ""}
+                                      onInput={(e) =>
+                                        setModelSearchByProvider((prev) => ({
+                                          ...prev,
+                                          [providerId]: (e.target as HTMLSelectElement).value,
+                                        }))
+                                      }
+                                    >
+                                      <option value="">Select a catalog model</option>
+                                      {models.map((modelId) => (
+                                        <option key={modelId} value={modelId}>
+                                          {modelId}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <input
+                                      aria-label={`${providerId} custom model ID`}
+                                      className="tcp-input"
+                                      value={catalogModelSelected ? "" : typedModel}
+                                      placeholder="Or type a custom model ID"
+                                      onInput={(e) =>
+                                        setModelSearchByProvider((prev) => ({
+                                          ...prev,
+                                          [providerId]: (e.target as HTMLInputElement).value,
+                                        }))
+                                      }
+                                    />
+                                  </div>
+                                ) : (
+                                  <input
+                                    className="tcp-input min-w-0 flex-1"
+                                    value={typedModel}
+                                    placeholder={`Type model id for ${providerId}`}
+                                    onInput={(e) =>
+                                      setModelSearchByProvider((prev) => ({
+                                        ...prev,
+                                        [providerId]: (e.target as HTMLInputElement).value,
+                                      }))
+                                    }
+                                  />
+                                )}
                                 <button className="tcp-btn" type="submit">
                                   <Icon name="badge-check" />
                                   Apply
                                 </button>
                               </div>
-                              <div className="max-h-48 overflow-auto rounded-xl border border-slate-700/60 bg-slate-900/20 p-1">
-                                {filteredModels.length ? (
-                                  filteredModels.map((modelId) => (
-                                    <button
-                                      key={modelId}
-                                      type="button"
-                                      className={`block w-full rounded-lg px-2 py-1.5 text-left text-sm hover:bg-slate-700/30 ${
-                                        modelId === defaultModel ? "bg-slate-700/40" : ""
-                                      }`}
-                                      onClick={() => {
-                                        setModelSearchByProvider((prev) => ({
-                                          ...prev,
-                                          [providerId]: modelId,
-                                        }));
-                                        applyDefaultModel(providerId, modelId);
-                                      }}
-                                    >
-                                      {modelId}
-                                    </button>
-                                  ))
-                                ) : (
-                                  <div className="tcp-subtle px-2 py-1 text-xs">
-                                    {models.length
-                                      ? "No matching models."
-                                      : "No live catalog available. Type a model ID manually."}
-                                  </div>
-                                )}
-                              </div>
+                              {!models.length ? (
+                                <div className="tcp-subtle text-xs">
+                                  No live catalog available. Type a model ID manually.
+                                </div>
+                              ) : null}
                             </form>
 
                             {supportsOAuth ? (
@@ -1073,7 +1087,8 @@ export function SettingsPageNavigationProvidersSections({
                                           onClick={() =>
                                             setDefaultsMutation.mutate({
                                               providerId,
-                                              modelId: defaultModel || OPENAI_CODEX_DEFAULT_MODEL_ID,
+                                              modelId:
+                                                defaultModel || OPENAI_CODEX_DEFAULT_MODEL_ID,
                                             })
                                           }
                                         >

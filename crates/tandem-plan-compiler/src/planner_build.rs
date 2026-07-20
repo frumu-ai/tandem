@@ -1,11 +1,14 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
+use chrono_tz::Tz;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_types::ModelSpec;
-use tandem_workflows::plan_package::{AutomationV2Schedule, WorkflowPlan, WorkflowPlanStep};
+use tandem_workflows::plan_package::{
+    AutomationV2Schedule, AutomationV2ScheduleType, WorkflowPlan, WorkflowPlanStep,
+};
 
 use crate::decomposition::{
     derive_workflow_decomposition_profile, workflow_plan_decomposition_observation,
@@ -50,6 +53,162 @@ pub struct PlannerBuildRequest<M> {
     pub operator_preferences: Option<Value>,
 }
 
+fn normalized_time_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == ':')
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn parse_prompt_clock_time(value: &str) -> Option<(u8, u8)> {
+    let value = normalized_time_token(value);
+    let (clock, meridiem) = if let Some(clock) = value.strip_suffix("am") {
+        (clock, Some("am"))
+    } else if let Some(clock) = value.strip_suffix("pm") {
+        (clock, Some("pm"))
+    } else {
+        (value.as_str(), None)
+    };
+    let (hour, minute) = if let Some((hour, minute)) = clock.split_once(':') {
+        if minute.contains(':') {
+            return None;
+        }
+        (hour.parse::<u8>().ok()?, minute.parse::<u8>().ok()?)
+    } else {
+        if meridiem.is_none() {
+            return None;
+        }
+        (clock.parse::<u8>().ok()?, 0)
+    };
+    if minute > 59 {
+        return None;
+    }
+    let hour = match meridiem {
+        Some("am") if (1..=12).contains(&hour) => hour % 12,
+        Some("pm") if (1..=12).contains(&hour) => (hour % 12) + 12,
+        Some(_) => return None,
+        None if hour <= 23 => hour,
+        None => return None,
+    };
+    Some((hour, minute))
+}
+
+fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
+    let tokens = prompt
+        .split_whitespace()
+        .map(normalized_time_token)
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    for (index, token) in tokens.iter().enumerate() {
+        if token != "at" {
+            continue;
+        }
+        let Some(next) = tokens.get(index + 1) else {
+            continue;
+        };
+        let combined = match tokens.get(index + 2).map(String::as_str) {
+            Some("am" | "pm") => format!("{next}{}", tokens[index + 2]),
+            _ => next.clone(),
+        };
+        if let Some(time) = parse_prompt_clock_time(&combined) {
+            return Some(time);
+        }
+    }
+    for (index, token) in tokens.iter().enumerate() {
+        let combined = match tokens.get(index + 1).map(String::as_str) {
+            Some("am" | "pm") => format!("{token}{}", tokens[index + 1]),
+            _ => token.clone(),
+        };
+        if combined.contains(':') || combined.ends_with("am") || combined.ends_with("pm") {
+            if let Some(time) = parse_prompt_clock_time(&combined) {
+                return Some(time);
+            }
+        }
+    }
+    None
+}
+
+fn prompt_negates_cadence(prompt: &str, cadence: &str) -> bool {
+    [
+        "not ",
+        "not on ",
+        "except ",
+        "except on ",
+        "excluding ",
+        "exclude ",
+        "without ",
+    ]
+    .iter()
+    .any(|prefix| prompt.contains(&format!("{prefix}{cadence}")))
+}
+
+fn prompt_timezone(prompt: &str, default_timezone: &str) -> String {
+    for raw_token in prompt.split_whitespace() {
+        let token = raw_token.trim_matches(|ch: char| {
+            !ch.is_ascii_alphanumeric() && !matches!(ch, '/' | '_' | '-' | '+')
+        });
+        if token.is_empty() {
+            continue;
+        }
+        let abbreviation = token.to_ascii_uppercase();
+        let mapped = match abbreviation.as_str() {
+            "PT" | "PST" | "PDT" => Some("America/Los_Angeles"),
+            "MT" | "MST" | "MDT" => Some("America/Denver"),
+            "CT" | "CST" | "CDT" => Some("America/Chicago"),
+            "ET" | "EST" | "EDT" => Some("America/New_York"),
+            _ => None,
+        };
+        if let Some(timezone) = mapped {
+            return timezone.to_string();
+        }
+        if let Ok(timezone) = token.parse::<Tz>() {
+            return timezone.to_string();
+        }
+    }
+    default_timezone.to_string()
+}
+
+fn infer_prompt_schedule<M: Clone>(
+    prompt: &str,
+    timezone: &str,
+    misfire_policy: M,
+) -> Option<AutomationV2Schedule<M>> {
+    let lowered = prompt.trim().to_ascii_lowercase();
+    let mentions_weekdays = lowered.contains("weekday")
+        || lowered.contains("monday through friday")
+        || lowered.contains("monday to friday")
+        || lowered.contains("monday-friday")
+        || lowered.contains("mon-fri");
+    let mentions_weekends = lowered.contains("weekend");
+    let excludes_weekdays = mentions_weekdays && prompt_negates_cadence(&lowered, "weekday");
+    let excludes_weekends = mentions_weekends && prompt_negates_cadence(&lowered, "weekend");
+    let weekdays = mentions_weekdays && !excludes_weekdays;
+    let weekends = mentions_weekends && !excludes_weekends;
+    let daily =
+        lowered.contains("daily") || lowered.contains("every day") || lowered.contains("each day");
+    let day_expression = match (
+        weekdays,
+        weekends,
+        daily,
+        excludes_weekdays,
+        excludes_weekends,
+    ) {
+        (true, false, _, _, _) | (false, false, true, false, true) => "Mon-Fri",
+        (false, true, _, _, _) | (false, false, true, true, false) => "Sun,Sat",
+        (false, false, true, false, false) => "*",
+        _ => return None,
+    };
+    let (hour, minute) = prompt_clock_time(prompt)?;
+    Some(AutomationV2Schedule {
+        schedule_type: AutomationV2ScheduleType::Cron,
+        cron_expression: Some(format!("{minute} {hour} * * {day_expression}")),
+        interval_seconds: None,
+        timezone: prompt_timezone(prompt, timezone),
+        misfire_policy,
+    })
+}
+
 pub fn prepare_build_request<M>(
     plan_id: String,
     planner_version: String,
@@ -67,7 +226,10 @@ where
 {
     let normalized_prompt = normalize_prompt(prompt);
     let explicit_schedule = explicit_schedule
-        .and_then(|value| schedule_from_value(value, default_misfire_policy.clone()));
+        .and_then(|value| schedule_from_value(value, default_misfire_policy.clone()))
+        .or_else(|| {
+            infer_prompt_schedule(prompt, default_timezone, default_misfire_policy.clone())
+        });
     let fallback_schedule = explicit_schedule
         .clone()
         .unwrap_or_else(|| manual_schedule(default_timezone.to_string(), default_misfire_policy));
@@ -1288,6 +1450,134 @@ mod tests {
             AutomationV2ScheduleType::Manual
         );
         assert!(request.explicit_schedule.is_none());
+    }
+
+    #[test]
+    fn prepare_build_request_infers_weekday_schedule_from_prompt() {
+        let request = prepare_build_request(
+            "wfplan-weekday".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Create a disabled support triage automation for weekdays at 08:00",
+            None,
+            "Europe/Berlin",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+
+        assert_eq!(
+            request.fallback_schedule.schedule_type,
+            AutomationV2ScheduleType::Cron
+        );
+        assert_eq!(
+            request.fallback_schedule.cron_expression.as_deref(),
+            Some("0 8 * * Mon-Fri")
+        );
+        assert_eq!(request.fallback_schedule.timezone, "Europe/Berlin");
+        assert!(request.explicit_schedule.is_some());
+    }
+
+    #[test]
+    fn prepare_build_request_respects_negated_cadence_and_prompt_timezone() {
+        let request = prepare_build_request(
+            "wfplan-weekend".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Run on weekends, not weekdays, at 8am PT",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+
+        assert_eq!(
+            request.fallback_schedule.cron_expression.as_deref(),
+            Some("0 8 * * Sun,Sat")
+        );
+        assert_eq!(request.fallback_schedule.timezone, "America/Los_Angeles");
+
+        let iana_request = prepare_build_request(
+            "wfplan-iana-timezone".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Run every weekday at 08:00 America/New_York",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+        assert_eq!(iana_request.fallback_schedule.timezone, "America/New_York");
+
+        let weekdays_only = prepare_build_request(
+            "wfplan-daily-except-weekends".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Run daily except weekends at 8am",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+        assert_eq!(
+            weekdays_only.fallback_schedule.cron_expression.as_deref(),
+            Some("0 8 * * Mon-Fri")
+        );
+    }
+
+    #[test]
+    fn prepare_build_request_does_not_treat_bare_counts_as_clock_times() {
+        let request = prepare_build_request(
+            "wfplan-count".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Create a daily report that looks at 5 repos",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+
+        assert_eq!(
+            request.fallback_schedule.schedule_type,
+            AutomationV2ScheduleType::Manual
+        );
+        assert!(request.explicit_schedule.is_none());
+    }
+
+    #[test]
+    fn prepare_build_request_preserves_structured_schedule_over_prompt() {
+        let schedule = json!({
+            "type": "manual",
+            "timezone": "UTC"
+        });
+        let request = prepare_build_request(
+            "wfplan-explicit".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Create a workflow for weekdays at 08:00",
+            Some(&schedule),
+            "Europe/Berlin",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+
+        assert_eq!(
+            request.fallback_schedule.schedule_type,
+            AutomationV2ScheduleType::Manual
+        );
+        assert!(request.fallback_schedule.cron_expression.is_none());
     }
 
     #[test]

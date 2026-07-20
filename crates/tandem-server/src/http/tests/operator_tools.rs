@@ -4,8 +4,8 @@
 use super::*;
 
 use tandem_types::{
-    AuthorityChain, HumanActor, MessagePartInput, RequestPrincipal, SendMessageRequest, Session,
-    ToolRiskTier, VerifiedTenantContext,
+    AuthorityChain, HumanActor, MessagePartInput, ModelSpec, RequestPrincipal, SendMessageRequest,
+    Session, ToolRiskTier, VerifiedTenantContext,
 };
 
 fn minimal_automation(
@@ -500,4 +500,55 @@ async fn duplicate_workflow_start_keeps_the_original_reservation_in_progress() {
         .expect("reservation remains owned by original call");
     assert_eq!(record.request_fingerprint, fingerprint);
     assert!(record.outcome.is_none());
+}
+
+#[tokio::test]
+async fn workflow_start_inherits_chat_model_and_prompt_schedule() {
+    let state = test_state().await;
+    let tenant = TenantContext::local_implicit();
+    let mut session = chat_session(&state, tenant.clone(), None).await;
+    session.model = Some(ModelSpec {
+        provider_id: "missing-test-provider".to_string(),
+        model_id: "planner-test-model".to_string(),
+    });
+    state
+        .storage
+        .save_session(session.clone())
+        .await
+        .expect("save modeled chat session");
+
+    let result = operator_tool(state.clone(), "workflow_plan_start")
+        .execute_for_tenant(
+            json!({
+                "__dispatch_session_id": session.id,
+                "prompt": "Create a disabled support triage automation for weekdays at 08:00",
+                "idempotency_key": "planner-start-inherits-chat-model"
+            }),
+            tenant,
+        )
+        .await
+        .expect("workflow planner fallback should complete");
+    let planner_session_id = result.metadata["resource"]["id"]
+        .as_str()
+        .expect("planner session id");
+    let stored = state
+        .get_workflow_planner_session(planner_session_id)
+        .await
+        .expect("stored planner session");
+
+    assert_eq!(stored.planner_provider, "missing-test-provider");
+    assert_eq!(stored.planner_model, "planner-test-model");
+    assert_eq!(
+        stored
+            .operator_preferences
+            .as_ref()
+            .and_then(|value| value.pointer("/role_models/planner/provider_id"))
+            .and_then(Value::as_str),
+        Some("missing-test-provider")
+    );
+    let plan = &stored.draft.as_ref().expect("planner draft").current_plan;
+    assert_eq!(
+        plan.schedule.cron_expression.as_deref(),
+        Some("0 8 * * Mon-Fri")
+    );
 }

@@ -431,7 +431,7 @@ pub fn openai_codex_supported_model_rows() -> &'static [(&'static str, &'static 
 
 /// Compiled fallback openai-codex default model. Always a member of
 /// `openai_codex_supported_model_rows`.
-pub const OPENAI_CODEX_DEFAULT_MODEL: &str = "gpt-5.5";
+pub const OPENAI_CODEX_DEFAULT_MODEL: &str = "gpt-5.6-terra";
 
 pub fn openai_codex_model_is_supported(model: &str) -> bool {
     let model = model.trim();
