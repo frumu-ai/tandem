@@ -85,6 +85,9 @@ tandem-browser = { path = "../tandem-browser", version = "0.7.1", optional = tru
 tandem-observability = { path = "../tandem-observability", version = "0.7.1" }
 tandem-plan-compiler = { path = "../tandem-plan-compiler", version = "0.7.1" }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }
+
 [dev-dependencies]
 tempfile = "3"
 tower = "0.5"

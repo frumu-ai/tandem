@@ -397,12 +397,10 @@ pub(super) async fn global_lease_release(
             "released_worktree_failure_count": 0,
         })));
     }
-    let has_managed_worktrees = state
-        .managed_worktrees
-        .read()
-        .await
-        .values()
-        .any(|record| record.lease_id.as_deref() == Some(input.lease_id.as_str()));
+    let has_managed_worktrees = state.managed_worktrees.read().await.values().any(|record| {
+        record.lease_id.as_deref() == Some(input.lease_id.as_str())
+            && record.tenant_context == tenant
+    });
     let caller_authority = if has_managed_worktrees {
         Some(
             authorize_global_host_effect(

@@ -66,6 +66,11 @@ The server loads the session, enforces the same actor, resolves the configured
 workspace, canonicalizes it, and refuses a Git top-level that would widen the
 resource to an ancestor.
 
+File-content reads traverse the canonical workspace using descriptor-relative
+no-follow opens on Unix, so a symlink swap after authorization cannot redirect
+the opened file. Verified file-content reads fail closed on platforms without
+that primitive until an equivalent handle-based implementation is available.
+
 Managed worktree mutations additionally require:
 
 - a stored managed record;
@@ -75,6 +80,13 @@ Managed worktree mutations additionally require:
 - a path below .tandem/worktrees;
 - an exact opaque worktree ID for verified callers; and
 - deployment-admin authority for delete/reset.
+
+Managed worktree parents and targets are checked component-by-component with
+symlink metadata and canonical equality immediately before each effect. All Git
+commands in managed-worktree paths run with a cleared allowlisted environment,
+external helpers disabled, a 15-second deadline, and capped stdout/stderr.
+Removal never uses `--force`; Git performs its own final dirty-state refusal so
+a concurrent modification is preserved instead of erased.
 
 Hosted responses return opaque resource IDs and omit canonical host paths and
 raw process errors.

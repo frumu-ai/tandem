@@ -53,6 +53,12 @@ Destructive managed-worktree delete/reset operations require a stored managed
 record, matching tenant and actor, an active exact lease, and deployment-admin
 authority outside the explicit standalone loopback-owner posture.
 
+Managed-worktree paths with symlinked parents or targets are rejected. Git runs
+with cleared environment and disabled helpers under strict time/output bounds,
+and cleanup/deletion refuses dirty worktrees without force removal. File-content
+reads use descriptor-relative no-follow traversal on Unix to close symlink-swap
+races at open time.
+
 ## Credential response
 
 Do not place production provider, channel, signing, or deployment credentials

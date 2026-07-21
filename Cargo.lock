@@ -8387,6 +8387,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "serde_yaml",

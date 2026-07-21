@@ -2,13 +2,20 @@
 // Licensed under the Business Source License 1.1
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::Command;
 
 use tandem_types::TenantContext;
+
+const MANAGED_GIT_DEADLINE: Duration = Duration::from_secs(15);
+const MANAGED_GIT_OUTPUT_LIMIT: u64 = 256 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManagedWorktreeRecord {
     pub key: String,
@@ -128,6 +135,65 @@ pub fn is_within_managed_worktree_root(repo_root: &str, path: &Path) -> bool {
     path.starts_with(managed_worktree_root(repo_root))
 }
 
+pub(crate) fn validate_managed_worktree_path(
+    repo_root: &str,
+    path: &Path,
+    create_parents: bool,
+) -> anyhow::Result<()> {
+    let canonical_repo = std::fs::canonicalize(repo_root)?;
+    let managed_root = canonical_repo.join(".tandem").join("worktrees");
+    let requested_parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("managed worktree path has no parent"))?;
+    let relative_parent = requested_parent
+        .strip_prefix(&managed_root)
+        .map_err(|_| anyhow::anyhow!("managed worktree path escapes managed root"))?;
+    let mut current = canonical_repo;
+    let root_components = [
+        std::ffi::OsString::from(".tandem"),
+        std::ffi::OsString::from("worktrees"),
+    ];
+    for component in root_components.into_iter().chain(
+        relative_parent
+            .components()
+            .map(|component| component.as_os_str().to_os_string()),
+    ) {
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    anyhow::bail!("managed worktree parent is not a real directory");
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_parents => {
+                match std::fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error.into()),
+                }
+                let metadata = std::fs::symlink_metadata(&current)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    anyhow::bail!("managed worktree parent changed during creation");
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+        if std::fs::canonicalize(&current)? != current {
+            anyhow::bail!("managed worktree parent resolves through a symlink");
+        }
+    }
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!("managed worktree target is a symlink");
+        }
+        let canonical_target = std::fs::canonicalize(path)?;
+        if !canonical_target.starts_with(&managed_root) {
+            anyhow::bail!("managed worktree target escapes managed root");
+        }
+    }
+    Ok(())
+}
+
 pub fn resolve_git_repo_root(candidate: &str) -> Option<String> {
     let output = std::process::Command::new("git")
         .args(["-C", candidate, "rev-parse", "--show-toplevel"])
@@ -201,12 +267,16 @@ pub async fn ensure_managed_worktree(
             });
         }
     }
-    if let Some(parent) = path.parent() {
-        grant
-            .revalidate(state, &effect)
-            .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
-        tokio::fs::create_dir_all(parent).await?;
-    }
+    grant
+        .revalidate(state, &effect)
+        .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
+    let repo_root_for_path = input.repo_root.clone();
+    let path_for_validation = path.clone();
+    tokio::task::spawn_blocking(move || {
+        validate_managed_worktree_path(&repo_root_for_path, &path_for_validation, true)
+    })
+    .await
+    .context("managed worktree path validation failed")??;
     grant
         .revalidate(state, &effect)
         .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
@@ -313,6 +383,13 @@ pub async fn delete_managed_worktree(
     grant
         .revalidate(state, &effect)
         .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
+    let repo_root_for_validation = record.repo_root.clone();
+    let path_for_validation = PathBuf::from(&record.path);
+    tokio::task::spawn_blocking(move || {
+        validate_managed_worktree_path(&repo_root_for_validation, &path_for_validation, false)
+    })
+    .await
+    .context("managed worktree path validation failed")??;
     remove_git_worktree_async(record.repo_root.clone(), record.path.clone()).await?;
     if record.cleanup_branch {
         grant
@@ -331,15 +408,105 @@ pub async fn delete_managed_worktree(
     Ok(())
 }
 
-fn worktree_is_registered(repo_root: &str, path: &str) -> anyhow::Result<bool> {
-    let output = std::process::Command::new("git")
-        .args(["-C", repo_root, "worktree", "list", "--porcelain"])
-        .output()?;
-    if !output.status.success() {
+pub(crate) struct ManagedGitOutput {
+    pub(crate) success: bool,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) stdout_truncated: bool,
+    pub(crate) stderr_truncated: bool,
+}
+
+#[cfg(windows)]
+fn null_device() -> &'static str {
+    "NUL"
+}
+
+#[cfg(not(windows))]
+fn null_device() -> &'static str {
+    "/dev/null"
+}
+
+async fn read_managed_git_output<R>(reader: R) -> std::io::Result<(String, bool)>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    reader
+        .take(MANAGED_GIT_OUTPUT_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    let truncated = bytes.len() as u64 > MANAGED_GIT_OUTPUT_LIMIT;
+    bytes.truncate(MANAGED_GIT_OUTPUT_LIMIT as usize);
+    Ok((String::from_utf8_lossy(&bytes).to_string(), truncated))
+}
+
+pub(crate) async fn run_managed_git(
+    repo_root: &str,
+    args: &[&str],
+) -> anyhow::Result<ManagedGitOutput> {
+    let mut command = Command::new("git");
+    command
+        .arg("--no-pager")
+        .args(["-c", "core.fsmonitor=false"])
+        .arg("-c")
+        .arg(format!("core.hooksPath={}", null_device()))
+        .args(["-c", "diff.external="])
+        .args(["-c", "core.pager=cat"])
+        .args(["-c", "credential.helper="])
+        .args(["-c", "protocol.file.allow=never"])
+        .args(["-c", "submodule.recurse=false"])
+        .args(["-C", repo_root])
+        .args(args)
+        .env_clear()
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", null_device())
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", system_root);
+    }
+    let mut child = command.spawn().context("managed git spawn failed")?;
+    let stdout = child.stdout.take().context("managed git stdout missing")?;
+    let stderr = child.stderr.take().context("managed git stderr missing")?;
+    let execution = tokio::time::timeout(MANAGED_GIT_DEADLINE, async {
+        tokio::try_join!(
+            read_managed_git_output(stdout),
+            read_managed_git_output(stderr),
+            child.wait(),
+        )
+    })
+    .await;
+    let ((stdout, stdout_truncated), (stderr, stderr_truncated), status) = match execution {
+        Ok(result) => result.context("managed git execution failed")?,
+        Err(_) => {
+            let _ = child.kill().await;
+            anyhow::bail!("managed git command timed out");
+        }
+    };
+    Ok(ManagedGitOutput {
+        success: status.success(),
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
+    })
+}
+
+async fn worktree_is_registered_async(repo_root: String, path: String) -> anyhow::Result<bool> {
+    let output = run_managed_git(&repo_root, &["worktree", "list", "--porcelain"]).await?;
+    if !output.success {
         return Ok(false);
     }
     let needle = PathBuf::from(path);
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    for line in output.stdout.lines() {
         if let Some(value) = line.strip_prefix("worktree ") {
             if PathBuf::from(value) == needle {
                 return Ok(true);
@@ -349,76 +516,134 @@ fn worktree_is_registered(repo_root: &str, path: &str) -> anyhow::Result<bool> {
     Ok(false)
 }
 
-async fn worktree_is_registered_async(repo_root: String, path: String) -> anyhow::Result<bool> {
-    tokio::task::spawn_blocking(move || worktree_is_registered(&repo_root, &path))
-        .await
-        .context("git worktree list task failed")?
-}
-
 async fn add_git_worktree_async(
     repo_root: String,
     branch: String,
     path: PathBuf,
     base: String,
 ) -> anyhow::Result<()> {
-    tokio::task::spawn_blocking(move || {
-        let output = std::process::Command::new("git")
-            .args([
-                "-C",
-                &repo_root,
-                "worktree",
-                "add",
-                "-b",
-                &branch,
-                &path.to_string_lossy(),
-                "--",
-                &base,
-            ])
-            .output()?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "git worktree add failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        Ok(())
-    })
-    .await
-    .context("git worktree add task failed")?
+    let path = path.to_string_lossy().to_string();
+    let output = run_managed_git(
+        &repo_root,
+        &["worktree", "add", "-b", &branch, &path, "--", &base],
+    )
+    .await?;
+    if !output.success {
+        anyhow::bail!("git worktree add failed: {}", output.stderr.trim());
+    }
+    Ok(())
 }
 
 async fn remove_git_worktree_async(repo_root: String, path: String) -> anyhow::Result<()> {
-    tokio::task::spawn_blocking(move || {
-        let output = std::process::Command::new("git")
-            .args(["-C", &repo_root, "worktree", "remove", "--force", &path])
-            .output()?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "git worktree remove failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        Ok(())
-    })
-    .await
-    .context("git worktree remove task failed")?
+    let output = run_managed_git(&repo_root, &["worktree", "remove", "--", &path]).await?;
+    if !output.success {
+        anyhow::bail!("git worktree remove failed: {}", output.stderr.trim());
+    }
+    Ok(())
 }
 
 async fn delete_git_branch_async(repo_root: String, branch: String) -> anyhow::Result<()> {
-    tokio::task::spawn_blocking(move || {
-        std::process::Command::new("git")
-            .args(["-C", &repo_root, "branch", "-D", &branch])
-            .output()
-            .map(|_| ())
-            .map_err(Into::into)
-    })
-    .await
-    .context("git branch delete task failed")?
+    let output = run_managed_git(&repo_root, &["branch", "-D", &branch]).await?;
+    if !output.success {
+        anyhow::bail!("git branch delete failed: {}", output.stderr.trim());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::managed_worktree_key;
+    use super::{managed_worktree_key, run_managed_git, validate_managed_worktree_path};
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_worktree_path_rejects_symlinked_root() {
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        std::fs::create_dir(repo.path().join(".tandem")).expect("create tandem directory");
+        std::os::unix::fs::symlink(
+            outside.path(),
+            repo.path().join(".tandem").join("worktrees"),
+        )
+        .expect("create managed-root symlink");
+        let target = repo.path().join(".tandem").join("worktrees").join("task-a");
+
+        assert!(validate_managed_worktree_path(
+            repo.path().to_str().expect("repo utf8"),
+            &target,
+            true,
+        )
+        .is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_git_disables_fsmonitor_and_refuses_dirty_removal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let marker = repo.path().join("fsmonitor-ran");
+        let monitor = repo.path().join("monitor.sh");
+        std::fs::write(&monitor, format!("#!/bin/sh\ntouch {}\n", marker.display()))
+            .expect("write fsmonitor");
+        let mut permissions = std::fs::metadata(&monitor)
+            .expect("fsmonitor metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&monitor, permissions).expect("set fsmonitor executable");
+        let repo_root = repo.path().to_str().expect("repo utf8");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(["-C", repo_root])
+                .args(args)
+                .output()
+                .expect("run git fixture command");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "security-test.test"]);
+        git(&["config", "user.name", "Security Test"]);
+        std::fs::write(repo.path().join("tracked.txt"), b"initial").expect("write tracked file");
+        git(&["add", "tracked.txt"]);
+        git(&["commit", "-m", "initial"]);
+        git(&[
+            "config",
+            "core.fsmonitor",
+            monitor.to_str().expect("monitor utf8"),
+        ]);
+
+        let status = run_managed_git(repo_root, &["status", "--porcelain"])
+            .await
+            .expect("sanitized status");
+        assert!(status.success);
+        assert!(!marker.exists(), "configured fsmonitor must not execute");
+
+        let worktree = repo.path().join("worktree-a");
+        git(&[
+            "worktree",
+            "add",
+            "-b",
+            "test/worktree-a",
+            worktree.to_str().expect("worktree utf8"),
+        ]);
+        std::fs::write(worktree.join("tracked.txt"), b"dirty").expect("dirty worktree");
+        let removal = run_managed_git(
+            repo_root,
+            &[
+                "worktree",
+                "remove",
+                "--",
+                worktree.to_str().expect("worktree utf8"),
+            ],
+        )
+        .await
+        .expect("bounded removal attempt");
+        assert!(!removal.success);
+        assert!(worktree.exists(), "dirty worktree must remain intact");
+    }
 
     #[test]
     fn managed_worktree_key_is_stable_and_opaque() {

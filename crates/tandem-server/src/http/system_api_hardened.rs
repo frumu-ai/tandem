@@ -256,18 +256,33 @@ pub(super) async fn file_content(
     grant
         .revalidate(&state, &effect)
         .map_err(authorization_status)?;
-    let metadata = tokio::fs::metadata(&target)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    #[cfg(not(unix))]
+    if verified.is_some() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let workspace_root_for_open = workspace_root.clone();
+    let file = tokio::task::spawn_blocking(move || {
+        open_workspace_file_no_symlinks(&workspace_root_for_open, &target)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    let file = tokio::fs::File::from_std(file);
+    let metadata = file.metadata().await.map_err(|_| StatusCode::NOT_FOUND)?;
     if !metadata.is_file() {
         return Err(StatusCode::BAD_REQUEST);
     }
     if metadata.len() > MAX_FILE_CONTENT_BYTES {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
-    let content = tokio::fs::read_to_string(&target)
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_CONTENT_BYTES + 1)
+        .read_to_end(&mut bytes)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
+    if bytes.len() as u64 > MAX_FILE_CONTENT_BYTES {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let content = String::from_utf8(bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(Json(json!({"content": content})))
 }
 
@@ -667,6 +682,61 @@ async fn resolve_workspace_path(
     Ok(canonical)
 }
 
+#[cfg(unix)]
+fn open_workspace_file_no_symlinks(
+    workspace_root: &FsPath,
+    target: &FsPath,
+) -> Result<std::fs::File, StatusCode> {
+    use rustix::fs::{open, openat, Mode, OFlags};
+    use std::path::Component;
+
+    let relative = target
+        .strip_prefix(workspace_root)
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    let mut components = relative.components().peekable();
+    let mut directory = open(
+        workspace_root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| StatusCode::FORBIDDEN)?;
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(StatusCode::FORBIDDEN);
+        };
+        if components.peek().is_none() {
+            let file = openat(
+                &directory,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+            return Ok(file.into());
+        }
+        directory = openat(
+            &directory,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    }
+    Err(StatusCode::BAD_REQUEST)
+}
+
+#[cfg(not(unix))]
+fn open_workspace_file_no_symlinks(
+    workspace_root: &FsPath,
+    target: &FsPath,
+) -> Result<std::fs::File, StatusCode> {
+    let canonical = std::fs::canonicalize(target).map_err(|_| StatusCode::NOT_FOUND)?;
+    if !canonical.starts_with(workspace_root) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    std::fs::File::open(canonical).map_err(|_| StatusCode::NOT_FOUND)
+}
+
 fn bounded_walker(root: &FsPath) -> ignore::Walk {
     WalkBuilder::new(root)
         .follow_links(false)
@@ -771,7 +841,8 @@ fn truncate_line(value: &str, max_bytes: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        command_preset, list_files_bounded, resolve_workspace_path, truncate_line, CommandRunInput,
+        command_preset, list_files_bounded, open_workspace_file_no_symlinks,
+        resolve_workspace_path, truncate_line, CommandRunInput,
     };
     use axum::http::StatusCode;
 
@@ -828,6 +899,37 @@ mod tests {
                 Err(StatusCode::FORBIDDEN)
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn descriptor_relative_open_rejects_symlink_swaps() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let root = tokio::fs::canonicalize(workspace.path())
+            .await
+            .expect("canonical workspace");
+        let direct = workspace.path().join("direct.txt");
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&direct, b"allowed").expect("write direct fixture");
+        std::fs::write(&outside_file, b"secret").expect("write outside fixture");
+        let direct_target = resolve_workspace_path(&root, Some("direct.txt"), false)
+            .await
+            .expect("resolve direct target");
+        std::fs::remove_file(&direct).expect("remove direct fixture");
+        std::os::unix::fs::symlink(&outside_file, &direct).expect("swap direct symlink");
+        assert!(open_workspace_file_no_symlinks(&root, &direct_target).is_err());
+
+        let nested = workspace.path().join("nested");
+        std::fs::create_dir(&nested).expect("create nested directory");
+        std::fs::write(nested.join("file.txt"), b"allowed").expect("write nested fixture");
+        let nested_target = resolve_workspace_path(&root, Some("nested/file.txt"), false)
+            .await
+            .expect("resolve nested target");
+        std::fs::remove_file(nested.join("file.txt")).expect("remove nested fixture");
+        std::fs::remove_dir(&nested).expect("remove nested directory");
+        std::os::unix::fs::symlink(outside.path(), &nested).expect("swap parent symlink");
+        assert!(open_workspace_file_no_symlinks(&root, &nested_target).is_err());
     }
 
     #[test]

@@ -80,7 +80,7 @@ pub(in crate::http) async fn create_worktree(
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let repo_root = verify_git_repo_root(&repo_candidate)?;
+    let repo_root = verify_git_repo_root(&repo_candidate).await?;
     let key = crate::runtime::worktrees::managed_worktree_key(
         &repo_root,
         input.task_id.as_deref(),
@@ -102,7 +102,7 @@ pub(in crate::http) async fn create_worktree(
         grant
             .revalidate(&state, &effect)
             .map_err(host_authorization_status)?;
-        if worktree_is_registered(&repo_root, &existing.path)? {
+        if worktree_is_registered(&repo_root, &existing.path).await? {
             return Ok(Json(json!({
                 "ok": true,
                 "worktree_id": existing.key,
@@ -125,13 +125,12 @@ pub(in crate::http) async fn create_worktree(
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    }
+    crate::runtime::worktrees::validate_managed_worktree_path(&repo_root, &path, true)
+        .map_err(|_| StatusCode::FORBIDDEN)?;
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    if path.exists() && !worktree_is_registered(&repo_root, &path_string)? {
+    if path.exists() && !worktree_is_registered(&repo_root, &path_string).await? {
         return Ok(Json(json!({
             "ok": false,
             "worktree_id": worktree_id,
@@ -148,7 +147,7 @@ pub(in crate::http) async fn create_worktree(
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    if worktree_is_registered(&repo_root, &path_string)? {
+    if worktree_is_registered(&repo_root, &path_string).await? {
         let now = crate::now_ms();
         state.managed_worktrees.write().await.insert(
             key.clone(),
@@ -194,20 +193,15 @@ pub(in crate::http) async fn create_worktree(
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let output = std::process::Command::new("git")
-        .args([
-            "-C",
-            &repo_root,
-            "worktree",
-            "add",
-            "-b",
-            &branch,
-            &path_string,
-            &base,
-        ])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let ok = output.status.success();
+    crate::runtime::worktrees::validate_managed_worktree_path(&repo_root, &path, true)
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    let output = crate::runtime::worktrees::run_managed_git(
+        &repo_root,
+        &["worktree", "add", "-b", &branch, &path_string, "--", &base],
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let ok = output.success;
     if ok {
         let now = crate::now_ms();
         state.managed_worktrees.write().await.insert(
@@ -250,7 +244,7 @@ pub(in crate::http) async fn create_worktree(
         "lease_client_id": lease.as_ref().map(|row| row.client_id.clone()),
         "lease_client_type": lease.as_ref().map(|row| row.client_type.clone()),
         "reused": false,
-        "stderr": expose_host_paths.then(|| String::from_utf8_lossy(&output.stderr).to_string())
+        "stderr": expose_host_paths.then(|| output.stderr.clone())
     })))
 }
 
@@ -285,7 +279,7 @@ pub(in crate::http) async fn list_worktrees(
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let repo_root = verify_git_repo_root(&repo_candidate)?;
+    let repo_root = verify_git_repo_root(&repo_candidate).await?;
     let records = state
         .managed_worktrees
         .read()
@@ -308,7 +302,7 @@ pub(in crate::http) async fn list_worktrees(
         grant
             .revalidate(&state, &effect)
             .map_err(host_authorization_status)?;
-        let registered = worktree_is_registered(&repo_root, &record.path)?;
+        let registered = worktree_is_registered(&repo_root, &record.path).await?;
         worktrees.push(json!({
             "worktree_id": record.key,
             "repository_id": record.repository_id,
@@ -405,48 +399,59 @@ pub(in crate::http) async fn delete_worktree(
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let repo_root = verify_git_repo_root(&repo_candidate)?;
+    let repo_root = verify_git_repo_root(&repo_candidate).await?;
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let dirty = std::process::Command::new("git")
-        .args(["-C", &record.path, "status", "--porcelain"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !dirty.status.success() || !dirty.stdout.is_empty() {
+    crate::runtime::worktrees::validate_managed_worktree_path(
+        &repo_root,
+        StdPath::new(&record.path),
+        false,
+    )
+    .map_err(|_| StatusCode::FORBIDDEN)?;
+    let dirty = crate::runtime::worktrees::run_managed_git(
+        &record.path,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !dirty.success || !dirty.stdout.trim().is_empty() {
         return Err(StatusCode::CONFLICT);
     }
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let output = std::process::Command::new("git")
-        .args([
-            "-C",
-            &repo_root,
-            "worktree",
-            "remove",
-            "--force",
-            &record.path,
-        ])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    crate::runtime::worktrees::validate_managed_worktree_path(
+        &repo_root,
+        StdPath::new(&record.path),
+        false,
+    )
+    .map_err(|_| StatusCode::FORBIDDEN)?;
+    let output = crate::runtime::worktrees::run_managed_git(
+        &repo_root,
+        &["worktree", "remove", "--", &record.path],
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut branch_deleted = false;
-    if output.status.success() && record.cleanup_branch {
+    if output.success && record.cleanup_branch {
         grant
             .revalidate(&state, &effect)
             .map_err(host_authorization_status)?;
-        let branch_out = std::process::Command::new("git")
-            .args(["-C", &repo_root, "branch", "-D", &record.branch])
-            .output()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        branch_deleted = branch_out.status.success();
+        let branch_out = crate::runtime::worktrees::run_managed_git(
+            &repo_root,
+            &["branch", "-D", "--", &record.branch],
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        branch_deleted = branch_out.success;
     }
-    if output.status.success() {
+    if output.success {
         state.managed_worktrees.write().await.remove(&record.key);
     }
     let expose_host_paths = verified.is_none();
     Ok(Json(json!({
-        "ok": output.status.success(),
+        "ok": output.success,
         "worktree_id": record.key,
         "repository_id": record.repository_id,
         "repo_root": expose_host_paths.then_some(repo_root),
@@ -454,7 +459,7 @@ pub(in crate::http) async fn delete_worktree(
         "branch": record.branch,
         "cleanup_branch": record.cleanup_branch,
         "branch_deleted": branch_deleted,
-        "stderr": expose_host_paths.then(|| String::from_utf8_lossy(&output.stderr).to_string())
+        "stderr": expose_host_paths.then(|| output.stderr.clone())
     })))
 }
 
@@ -541,50 +546,66 @@ pub(in crate::http) async fn reset_worktree(
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let repo_root = verify_git_repo_root(&repo_candidate)?;
+    let repo_root = verify_git_repo_root(&repo_candidate).await?;
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    if !worktree_is_registered(&repo_root, &record.path)? {
+    if !worktree_is_registered(&repo_root, &record.path).await? {
         return Err(StatusCode::NOT_FOUND);
     }
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let dirty = std::process::Command::new("git")
-        .args(["-C", &record.path, "status", "--porcelain"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !dirty.status.success() || !dirty.stdout.is_empty() {
+    crate::runtime::worktrees::validate_managed_worktree_path(
+        &repo_root,
+        StdPath::new(&record.path),
+        false,
+    )
+    .map_err(|_| StatusCode::FORBIDDEN)?;
+    let dirty = crate::runtime::worktrees::run_managed_git(
+        &record.path,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !dirty.success || !dirty.stdout.trim().is_empty() {
         return Err(StatusCode::CONFLICT);
     }
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let backup = std::process::Command::new("git")
-        .args(["-C", &record.path, "update-ref", &backup_ref, "HEAD"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !backup.status.success() {
+    let backup = crate::runtime::worktrees::run_managed_git(
+        &record.path,
+        &["update-ref", &backup_ref, "HEAD"],
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !backup.success {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let output = std::process::Command::new("git")
-        .args(["-C", &record.path, "reset", "--hard", &target])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    crate::runtime::worktrees::validate_managed_worktree_path(
+        &repo_root,
+        StdPath::new(&record.path),
+        false,
+    )
+    .map_err(|_| StatusCode::FORBIDDEN)?;
+    let output =
+        crate::runtime::worktrees::run_managed_git(&record.path, &["reset", "--hard", &target])
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let expose_host_paths = verified.is_none();
     Ok(Json(json!({
-        "ok": output.status.success(),
+        "ok": output.success,
         "worktree_id": record.key,
         "repository_id": record.repository_id,
         "repo_root": expose_host_paths.then_some(repo_root),
         "path": expose_host_paths.then_some(record.path),
         "target": target,
         "backup_ref": backup_ref,
-        "stderr": expose_host_paths.then(|| String::from_utf8_lossy(&output.stderr).to_string())
+        "stderr": expose_host_paths.then(|| output.stderr.clone())
     })))
 }
 
@@ -594,21 +615,21 @@ struct RegisteredWorktreeEntry {
     branch: Option<String>,
 }
 
-fn parse_registered_worktree_entries(
+async fn parse_registered_worktree_entries(
     repo_root: &str,
 ) -> Result<Vec<RegisteredWorktreeEntry>, StatusCode> {
-    let output = std::process::Command::new("git")
-        .args(["-C", repo_root, "worktree", "list", "--porcelain"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !output.status.success() {
+    let output =
+        crate::runtime::worktrees::run_managed_git(repo_root, &["worktree", "list", "--porcelain"])
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !output.success {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     let mut entries = Vec::new();
     let mut current_path: Option<String> = None;
     let mut current_branch: Option<String> = None;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    for line in output.stdout.lines() {
         if line.is_empty() {
             if let Some(path) = current_path.take() {
                 entries.push(RegisteredWorktreeEntry {
@@ -676,11 +697,12 @@ pub(in crate::http) async fn cleanup_worktrees(
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
-    let repo_root = verify_git_repo_root(&repo_candidate)?;
+    let repo_root = verify_git_repo_root(&repo_candidate).await?;
     let managed_root = crate::runtime::worktrees::managed_worktree_root(&repo_root);
     let managed_root_string = managed_root.to_string_lossy().to_string();
     let records = state.managed_worktrees.read().await.clone();
-    let git_managed_worktrees = parse_registered_worktree_entries(&repo_root)?
+    let git_managed_worktrees = parse_registered_worktree_entries(&repo_root)
+        .await?
         .into_iter()
         .filter(|entry| StdPath::new(&entry.path).starts_with(&managed_root))
         .collect::<Vec<_>>();
@@ -713,18 +735,27 @@ pub(in crate::http) async fn cleanup_worktrees(
             grant
                 .revalidate(&state, &effect)
                 .map_err(host_authorization_status)?;
-            let remove_output = std::process::Command::new("git")
-                .args([
-                    "-C",
-                    &repo_root,
-                    "worktree",
-                    "remove",
-                    "--force",
-                    &entry.path,
-                ])
-                .output();
+            if crate::runtime::worktrees::validate_managed_worktree_path(
+                &repo_root,
+                StdPath::new(&entry.path),
+                false,
+            )
+            .is_err()
+            {
+                failures.push(json!({
+                    "path": entry.path,
+                    "branch": entry.branch,
+                    "code": "WORKTREE_PATH_CONTAINMENT_FAILED",
+                }));
+                continue;
+            }
+            let remove_output = crate::runtime::worktrees::run_managed_git(
+                &repo_root,
+                &["worktree", "remove", "--", &entry.path],
+            )
+            .await;
             match remove_output {
-                Ok(result) if result.status.success() => {
+                Ok(result) if result.success => {
                     state
                         .managed_worktrees
                         .write()
@@ -736,18 +767,18 @@ pub(in crate::http) async fn cleanup_worktrees(
                         grant
                             .revalidate(&state, &effect)
                             .map_err(host_authorization_status)?;
-                        match std::process::Command::new("git")
-                            .args(["-C", &repo_root, "branch", "-D", branch])
-                            .output()
+                        match crate::runtime::worktrees::run_managed_git(
+                            &repo_root,
+                            &["branch", "-D", "--", branch],
+                        )
+                        .await
                         {
-                            Ok(branch_output) if branch_output.status.success() => {
+                            Ok(branch_output) if branch_output.success => {
                                 branch_deleted = Some(true);
                             }
                             Ok(branch_output) => {
                                 branch_deleted = Some(false);
-                                branch_delete_error = Some(
-                                    String::from_utf8_lossy(&branch_output.stderr).to_string(),
-                                );
+                                branch_delete_error = Some(branch_output.stderr.clone());
                             }
                             Err(err) => {
                                 branch_deleted = Some(false);
@@ -768,7 +799,7 @@ pub(in crate::http) async fn cleanup_worktrees(
                         "path": entry.path,
                         "branch": entry.branch,
                         "code": "WORKTREE_REMOVE_FAILED",
-                        "stderr": String::from_utf8_lossy(&result.stderr).to_string(),
+                        "stderr": result.stderr.clone(),
                     }));
                 }
                 Err(err) => {
@@ -793,7 +824,8 @@ pub(in crate::http) async fn cleanup_worktrees(
                 .map(|entry| entry.path.clone())
                 .collect::<std::collections::HashSet<_>>()
         } else {
-            parse_registered_worktree_entries(&repo_root)?
+            parse_registered_worktree_entries(&repo_root)
+                .await?
                 .into_iter()
                 .map(|entry| entry.path)
                 .filter(|path| StdPath::new(path).starts_with(&managed_root))
@@ -801,7 +833,10 @@ pub(in crate::http) async fn cleanup_worktrees(
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 continue;
             }
             let path_string = path.to_string_lossy().to_string();
@@ -821,6 +856,19 @@ pub(in crate::http) async fn cleanup_worktrees(
             grant
                 .revalidate(&state, &effect)
                 .map_err(host_authorization_status)?;
+            if crate::runtime::worktrees::validate_managed_worktree_path(
+                &repo_root,
+                StdPath::new(path),
+                false,
+            )
+            .is_err()
+            {
+                failures.push(json!({
+                    "path": path,
+                    "code": "WORKTREE_PATH_CONTAINMENT_FAILED",
+                }));
+                continue;
+            }
             match std::fs::remove_dir_all(path) {
                 Ok(_) => {
                     orphan_removed.push(json!({
@@ -926,17 +974,16 @@ async fn resolve_worktree_resource_candidate(
     ))
 }
 
-fn verify_git_repo_root(candidate: &str) -> Result<String, StatusCode> {
-    let output = std::process::Command::new("git")
-        .args(["-C", candidate, "rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !output.status.success() {
+async fn verify_git_repo_root(candidate: &str) -> Result<String, StatusCode> {
+    let output =
+        crate::runtime::worktrees::run_managed_git(candidate, &["rev-parse", "--show-toplevel"])
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !output.success {
         return Err(StatusCode::CONFLICT);
     }
-    let resolved =
-        crate::normalize_absolute_workspace_root(String::from_utf8_lossy(&output.stdout).trim())
-            .map_err(|_| StatusCode::CONFLICT)?;
+    let resolved = crate::normalize_absolute_workspace_root(output.stdout.trim())
+        .map_err(|_| StatusCode::CONFLICT)?;
     if resolved != candidate {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -1024,7 +1071,12 @@ pub(in crate::http) async fn cleanup_managed_worktrees_for_lease(
         .read()
         .await
         .values()
-        .filter(|row| row.lease_id.as_deref() == Some(lease_id))
+        .filter(|row| {
+            row.lease_id.as_deref() == Some(lease_id)
+                && caller_authority.is_none_or(|(_, caller_effect)| {
+                    row.tenant_context == caller_effect.resource.tenant_context
+                })
+        })
         .cloned()
         .collect::<Vec<_>>();
     let mut result = LeaseWorktreeCleanupResult::default();
@@ -1089,16 +1141,24 @@ pub(in crate::http) async fn cleanup_managed_worktrees_for_lease(
                 continue;
             }
         }
-        let output = match std::process::Command::new("git")
-            .args([
-                "-C",
-                &record.repo_root,
-                "worktree",
-                "remove",
-                "--force",
-                &record.path,
-            ])
-            .output()
+        if crate::runtime::worktrees::validate_managed_worktree_path(
+            &record.repo_root,
+            StdPath::new(&record.path),
+            false,
+        )
+        .is_err()
+        {
+            result.failures.push(json!({
+                "worktree_id": record.key,
+                "code": "WORKTREE_PATH_CONTAINMENT_FAILED",
+            }));
+            continue;
+        }
+        let output = match crate::runtime::worktrees::run_managed_git(
+            &record.repo_root,
+            &["worktree", "remove", "--", &record.path],
+        )
+        .await
         {
             Ok(output) => output,
             Err(_) => {
@@ -1111,13 +1171,13 @@ pub(in crate::http) async fn cleanup_managed_worktrees_for_lease(
                 continue;
             }
         };
-        if !output.status.success() {
+        if !output.success {
             result.failures.push(json!({
                 "path": record.path,
                 "branch": record.branch,
                 "repo_root": record.repo_root,
                 "code": "WORKTREE_REMOVE_FAILED",
-                "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
+                "stderr": output.stderr.clone(),
             }));
             continue;
         }
@@ -1139,18 +1199,20 @@ pub(in crate::http) async fn cleanup_managed_worktrees_for_lease(
                 }));
                 continue;
             }
-            match std::process::Command::new("git")
-                .args(["-C", &record.repo_root, "branch", "-D", &record.branch])
-                .output()
+            match crate::runtime::worktrees::run_managed_git(
+                &record.repo_root,
+                &["branch", "-D", "--", &record.branch],
+            )
+            .await
             {
-                Ok(branch_output) if branch_output.status.success() => {}
+                Ok(branch_output) if branch_output.success => {}
                 Ok(branch_output) => {
                     result.failures.push(json!({
                         "path": record.path,
                         "branch": record.branch,
                         "repo_root": record.repo_root,
                         "code": "WORKTREE_BRANCH_DELETE_FAILED",
-                        "stderr": String::from_utf8_lossy(&branch_output.stderr).to_string(),
+                        "stderr": branch_output.stderr.clone(),
                     }));
                 }
                 Err(_) => {
@@ -1206,23 +1268,11 @@ fn is_within_managed_worktree_root(repo_root: &str, path: &StdPath) -> bool {
     path.starts_with(managed_root)
 }
 
-fn worktree_is_registered(repo_root: &str, path: &str) -> Result<bool, StatusCode> {
-    let output = std::process::Command::new("git")
-        .args(["-C", repo_root, "worktree", "list", "--porcelain"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !output.status.success() {
-        return Ok(false);
-    }
-    let needle = PathBuf::from(path);
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        if let Some(value) = line.strip_prefix("worktree ") {
-            if PathBuf::from(value) == needle {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+async fn worktree_is_registered(repo_root: &str, path: &str) -> Result<bool, StatusCode> {
+    Ok(parse_registered_worktree_entries(repo_root)
+        .await?
+        .into_iter()
+        .any(|entry| entry.path == path))
 }
 
 fn annotate_managed_worktree(
