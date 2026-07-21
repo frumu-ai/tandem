@@ -69,7 +69,9 @@ The master CLI also understands `tandem service status`, `tandem update`,
 
 ### `status`
 
-Checks engine health by calling `GET /global/health`.
+Checks engine liveness by calling `GET /global/health`. The public response is
+intentionally limited to `healthy` and `ready`; detailed runtime health is
+available to a loopback local operator or deployment administrator at `GET /global/diagnostics`.
 
 ```bash
 tandem-engine status
@@ -122,8 +124,9 @@ Engine runtime now detects host environment once at startup and treats it as can
 - `path_style`: `windows|posix`
 - `arch`: host architecture (for example `x86_64`, `aarch64`)
 
-This environment is injected into run prompts, exposed via `GET /global/health` (`environment`),
-and attached to `session.run.started` events so all clients (Desktop, TUI, HTTP) see identical OS context.
+This environment is injected into run prompts, exposed to authorized operators via
+`GET /global/diagnostics` (`environment`), and attached to `session.run.started`
+events so all clients (Desktop, TUI, HTTP) see identical OS context.
 
 OS-aware prompt behavior can be controlled with:
 
@@ -358,7 +361,8 @@ TANDEM_API_TOKEN="tk_your_token_here" tandem-engine serve --hostname 0.0.0.0 --p
 Send authenticated requests:
 
 ```bash
-curl -s "$API/global/health" -H "Authorization: Bearer $TANDEM_API_TOKEN" | jq .
+curl -s "$API/global/health" | jq .
+curl -s "$API/global/diagnostics" -H "Authorization: Bearer $TANDEM_API_TOKEN" | jq .
 curl -s "$API/config/providers" -H "X-Tandem-Token: $TANDEM_API_TOKEN" | jq .
 ```
 

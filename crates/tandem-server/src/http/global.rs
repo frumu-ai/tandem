@@ -24,15 +24,32 @@ fn event_tenant_context(event: &EngineEvent) -> TenantContext {
 }
 
 pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoResponse {
+    let ready = state.is_ready();
+    Json(json!({
+        "healthy": ready,
+        "ready": ready,
+    }))
+}
+
+pub(super) async fn global_diagnostics(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Result<Json<Value>, StatusCode> {
+    super::host_authority::require_diagnostics_admin(&state, &tenant, verified.as_deref())?;
     let lease_count = prune_expired_leases(&state).await;
     let startup = state.startup_snapshot().await;
     let build = crate::build_provenance();
     let environment = state.host_runtime_context();
-    let workspace_root = match state.runtime.get() {
-        Some(runtime) => runtime.workspace_index.snapshot().await.root,
-        None => String::new(),
-    };
-    let browser = state.browser_health_summary().await;
+    let browser_summary = state.browser_health_summary().await;
+    let browser = json!({
+        "enabled": browser_summary.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+        "runnable": browser_summary.get("runnable").and_then(Value::as_bool).unwrap_or(false),
+        "tools_registered": browser_summary
+            .get("tools_registered")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    });
     let memory_context_policy =
         crate::memory::policy_status::current_memory_context_policy_status();
     let memory_storage = match state.memory_store().await {
@@ -50,38 +67,34 @@ pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoRes
                 "checks": health.checks.into_iter().map(|check| json!({
                     "name": check.name,
                     "healthy": check.healthy,
-                    "detail": check.detail,
                 })).collect::<Vec<_>>(),
             }),
-            Err(error) => json!({ "healthy": false, "error": error.to_string() }),
+            Err(_) => json!({ "healthy": false, "status": "unavailable" }),
         },
-        Err(error) => json!({ "healthy": false, "error": error.to_string() }),
+        Err(_) => json!({ "healthy": false, "status": "unavailable" }),
     };
     let healthy = memory_storage
         .get("healthy")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    Json(json!({
+    Ok(Json(json!({
         "healthy": healthy,
         "ready": state.is_ready() && healthy,
         "apiTokenRequired": state.api_token().await.is_some(),
         "phase": startup.phase,
         "startup_attempt_id": startup.attempt_id,
         "startup_elapsed_ms": startup.elapsed_ms,
-        "last_error": startup.last_error,
+        "startup_error": startup.last_error.is_some(),
         "version": build.version,
         "build_id": build.build_id,
         "git_sha": build.git_sha,
-        "binary_path": build.binary_path,
-        "binary_modified_at_ms": build.binary_modified_at_ms,
         "mode": state.mode_label(),
         "leaseCount": lease_count,
-        "workspace_root": workspace_root,
         "environment": environment,
         "memory_context_policy": memory_context_policy,
         "memory_storage": memory_storage,
         "browser": browser
-    }))
+    })))
 }
 
 pub(super) async fn browser_status(State(state): State<AppState>) -> impl IntoResponse {

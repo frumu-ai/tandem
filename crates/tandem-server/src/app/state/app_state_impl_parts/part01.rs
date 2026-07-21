@@ -378,6 +378,7 @@ impl AppState {
             web_ui_enabled: Arc::new(AtomicBool::new(false)),
             web_ui_prefix: Arc::new(std::sync::RwLock::new("/admin".to_string())),
             server_base_url: Arc::new(std::sync::RwLock::new("http://127.0.0.1:39731".to_string())),
+            host_operations_loopback_only: Arc::new(AtomicBool::new(true)),
             trust_test_tenant_headers: Arc::new(AtomicBool::new(false)),
             allow_unsigned_dev_webhooks: Arc::new(AtomicBool::new(
                 config::env::resolve_allow_unsigned_dev_webhooks(),
@@ -460,6 +461,15 @@ impl AppState {
             .read()
             .map(|v| v.clone())
             .unwrap_or_else(|_| "http://127.0.0.1:39731".to_string())
+    }
+
+    pub fn set_host_operations_loopback_only(&self, loopback_only: bool) {
+        self.host_operations_loopback_only
+            .store(loopback_only, Ordering::Relaxed);
+    }
+
+    pub fn host_operations_loopback_only(&self) -> bool {
+        self.host_operations_loopback_only.load(Ordering::Relaxed)
     }
 
     pub async fn api_token(&self) -> Option<String> {

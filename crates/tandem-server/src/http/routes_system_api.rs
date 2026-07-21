@@ -6,7 +6,8 @@ use axum::Router;
 
 use crate::AppState;
 
-use super::system_api::*;
+use super::system_api::run_shell;
+use super::system_api_hardened::*;
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router

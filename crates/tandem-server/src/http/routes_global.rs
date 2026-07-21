@@ -23,6 +23,7 @@ async fn enterprise_status() -> axum::Json<tandem_enterprise_contract::Enterpris
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router
         .route("/global/health", get(global_health))
+        .route("/global/diagnostics", get(global_diagnostics))
         .route("/enterprise/status", get(enterprise_status))
         .route("/browser/status", get(browser_status))
         .route("/browser/install", post(browser_install))
