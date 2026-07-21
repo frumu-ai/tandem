@@ -1,12 +1,45 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-use axum::http::StatusCode;
-use std::net::IpAddr;
+use axum::extract::Request;
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use std::net::{IpAddr, SocketAddr};
 use tandem_types::{TenantContext, VerifiedTenantContext};
 use url::Url;
 
 use crate::AppState;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct RequestLocality {
+    direct_loopback: bool,
+}
+
+impl RequestLocality {
+    pub(super) fn from_peer_and_headers(peer: Option<SocketAddr>, headers: &HeaderMap) -> Self {
+        Self {
+            direct_loopback: peer.is_some_and(|peer| peer.ip().is_loopback())
+                && !has_proxy_forwarding_headers(headers),
+        }
+    }
+
+    fn is_direct_loopback(self) -> bool {
+        self.direct_loopback
+    }
+}
+
+pub(super) async fn require_direct_loopback_request(request: Request, next: Next) -> Response {
+    if request
+        .extensions()
+        .get::<RequestLocality>()
+        .is_some_and(|locality| locality.is_direct_loopback())
+    {
+        next.run(request).await
+    } else {
+        StatusCode::FORBIDDEN.into_response()
+    }
+}
 
 pub(super) fn require_loopback_local_operator(
     state: &AppState,
@@ -41,8 +74,10 @@ pub(super) fn require_diagnostics_admin(
     state: &AppState,
     tenant: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
+    locality: RequestLocality,
 ) -> Result<(), StatusCode> {
-    if require_loopback_local_operator(state, tenant, verified).is_ok()
+    if (locality.is_direct_loopback()
+        && require_loopback_local_operator(state, tenant, verified).is_ok())
         || verified.is_some_and(verified_has_deployment_admin_authority)
     {
         Ok(())
@@ -71,6 +106,20 @@ fn verified_has_deployment_admin_authority(context: &VerifiedTenantContext) -> b
     })
 }
 
+fn has_proxy_forwarding_headers(headers: &HeaderMap) -> bool {
+    [
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+        "cf-connecting-ip",
+        "true-client-ip",
+    ]
+    .iter()
+    .any(|name| headers.contains_key(*name))
+}
+
 fn server_base_url_is_loopback(value: &str) -> bool {
     let Ok(url) = Url::parse(value) else {
         return false;
@@ -87,7 +136,9 @@ fn server_base_url_is_loopback(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_loopback_local_operator, server_base_url_is_loopback};
+    use super::{is_loopback_local_operator, server_base_url_is_loopback, RequestLocality};
+    use axum::http::HeaderMap;
+    use std::net::SocketAddr;
     use tandem_types::TenantContext;
 
     #[test]
@@ -134,5 +185,25 @@ mod tests {
             &hosted,
             false
         ));
+    }
+    #[test]
+    fn direct_loopback_locality_fails_closed_for_missing_remote_or_proxied_peers() {
+        let headers = HeaderMap::new();
+        let loopback: SocketAddr = "127.0.0.1:43123".parse().expect("loopback peer");
+        let remote: SocketAddr = "192.0.2.10:43123".parse().expect("remote peer");
+        assert!(
+            RequestLocality::from_peer_and_headers(Some(loopback), &headers).is_direct_loopback()
+        );
+        assert!(
+            !RequestLocality::from_peer_and_headers(Some(remote), &headers).is_direct_loopback()
+        );
+        assert!(!RequestLocality::from_peer_and_headers(None, &headers).is_direct_loopback());
+
+        let mut forwarded = HeaderMap::new();
+        forwarded.insert("x-forwarded-for", "198.51.100.9".parse().expect("header"));
+        assert!(
+            !RequestLocality::from_peer_and_headers(Some(loopback), &forwarded)
+                .is_direct_loopback()
+        );
     }
 }

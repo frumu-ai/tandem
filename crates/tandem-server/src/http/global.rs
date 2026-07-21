@@ -30,18 +30,41 @@ pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoRes
         "ready": ready,
     }))
 }
+pub(super) async fn global_workspace(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
+) -> Result<Json<Value>, StatusCode> {
+    super::host_authority::require_diagnostics_admin(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+    )?;
+    let workspace_root = state.workspace_index.snapshot().await.root;
+    Ok(Json(json!({ "workspace_root": workspace_root })))
+}
 
 pub(super) async fn global_diagnostics(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
     verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
 ) -> Result<Json<Value>, StatusCode> {
-    super::host_authority::require_diagnostics_admin(&state, &tenant, verified.as_deref())?;
+    super::host_authority::require_diagnostics_admin(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+    )?;
     let lease_count = prune_expired_leases(&state).await;
     let startup = state.startup_snapshot().await;
     let build = crate::build_provenance();
     let environment = state.host_runtime_context();
-    let browser_summary = state.browser_health_summary().await;
+    let browser_summary = serde_json::to_value(state.browser_health_summary().await)
+        .unwrap_or_else(|_| json!({ "enabled": false }));
+
     let browser = json!({
         "enabled": browser_summary.get("enabled").and_then(Value::as_bool).unwrap_or(false),
         "runnable": browser_summary.get("runnable").and_then(Value::as_bool).unwrap_or(false),

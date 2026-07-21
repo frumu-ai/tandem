@@ -469,6 +469,12 @@ export class TandemClient {
     return parseResponse(SystemHealthSchema, raw, "/global/health", 200);
   }
 
+  /** Return authenticated workspace metadata for local/admin control surfaces. */
+  async workspace(): Promise<SystemHealth> {
+    const raw = await this._request<unknown>("/global/workspace");
+    return parseResponse(SystemHealthSchema, raw, "/global/workspace", 200);
+  }
+
   // ─── Tools ────────────────────────────────────────────────────────────────
 
   /** List all tool IDs registered in the engine. */

@@ -195,7 +195,11 @@ fn tenant_request(
         }
         None => Body::empty(),
     };
-    builder.body(body).expect("tenant request")
+    let mut request = builder.body(body).expect("tenant request");
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 43123)),
+    ));
+    request
 }
 
 async fn create_tenant_session(

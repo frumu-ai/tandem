@@ -24,6 +24,7 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router
         .route("/global/health", get(global_health))
         .route("/global/diagnostics", get(global_diagnostics))
+        .route("/global/workspace", get(global_workspace))
         .route("/enterprise/status", get(enterprise_status))
         .route("/browser/status", get(browser_status))
         .route("/browser/install", post(browser_install))

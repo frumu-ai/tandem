@@ -740,7 +740,11 @@ pub async fn serve_with_route_extensions(
     // the HTTP server lifecycle.
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let result = after_http_server_stops(
-        axum::serve(listener, app).with_graceful_shutdown(wait_for_shutdown_signal()),
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(wait_for_shutdown_signal()),
         || async move {
             approval_outbound_cancel_for_shutdown.store(true, Ordering::Relaxed);
             shutdown_state.stop_provider_oauth_refresh().await;

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::header;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
@@ -13,6 +13,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use tandem_types::{
     AccessPermission, DataBoundary, DataClass, GrantSource, HeaderTenantContextResolver,
@@ -36,6 +37,13 @@ pub(super) async fn auth_gate(
     mut request: Request,
     next: Next,
 ) -> Response {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0);
+    let locality =
+        super::host_authority::RequestLocality::from_peer_and_headers(peer, request.headers());
+    request.extensions_mut().insert(locality);
     if request.method() == Method::OPTIONS {
         return next.run(request).await;
     }
