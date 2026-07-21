@@ -302,6 +302,8 @@ async fn prepare_coder_worker_workspace(
         state,
         crate::runtime::worktrees::ManagedWorktreeEnsureInput {
             repo_root,
+            repository_id: None,
+            tenant_context: tandem_types::TenantContext::local_implicit(),
             task_id: task_id.map(ToString::to_string),
             owner_run_id: Some(owner_run_id.to_string()),
             lease_id: None,

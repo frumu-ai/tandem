@@ -147,6 +147,7 @@ async fn insert_test_lease(state: &AppState, lease_id: &str) {
             acquired_at_ms: now,
             last_renewed_at_ms: now,
             ttl_ms: 60_000,
+            tenant_context: tandem_types::TenantContext::local_implicit(),
         },
     );
 }
@@ -431,29 +432,30 @@ async fn stale_worktree_cleanup_removes_untracked_managed_worktrees() {
         .oneshot(cleanup_req)
         .await
         .expect("cleanup worktree response");
-    assert_eq!(cleanup_resp.status(), StatusCode::OK);
-    let cleanup_payload: Value = serde_json::from_slice(
-        &to_bytes(cleanup_resp.into_body(), usize::MAX)
-            .await
-            .expect("cleanup worktree body"),
-    )
-    .expect("cleanup worktree json");
-    assert_eq!(
-        cleanup_payload.get("ok").and_then(Value::as_bool),
-        Some(true)
-    );
-    assert!(cleanup_payload
-        .get("stale_paths")
-        .and_then(Value::as_array)
-        .is_some_and(|rows| rows.iter().any(|row| {
-            row.get("path").and_then(Value::as_str) == Some(worktree_path.as_str())
-        })));
-    assert!(cleanup_payload
-        .get("cleaned_worktrees")
-        .and_then(Value::as_array)
-        .is_some_and(|rows| rows.iter().any(|row| {
-            row.get("path").and_then(Value::as_str) == Some(worktree_path.as_str())
-        })));
+    if cleanup_resp.status() == StatusCode::NOT_FOUND {
+        let remove = Command::new("git")
+            .args([
+                "-C",
+                &repo_root_str,
+                "worktree",
+                "remove",
+                "--force",
+                &worktree_path,
+            ])
+            .output()
+            .expect("remove test worktree");
+        assert!(remove.status.success());
+        let delete_branch = Command::new("git")
+            .args(["-C", &repo_root_str, "branch", "-D", &branch])
+            .output()
+            .expect("delete test worktree branch");
+        assert!(delete_branch.status.success());
+    } else {
+        panic!(
+            "unsafe public worktree cleanup route must be unavailable, got {}",
+            cleanup_resp.status()
+        );
+    }
     assert!(!std::path::Path::new(&worktree_path).exists());
 
     let branch_output = Command::new("git")
@@ -706,6 +708,7 @@ async fn expired_leases_are_pruned_and_cleanup_managed_worktrees() {
             acquired_at_ms: now.saturating_sub(120_000),
             last_renewed_at_ms: now.saturating_sub(120_000),
             ttl_ms: 5_000,
+            tenant_context: tandem_types::TenantContext::local_implicit(),
         },
     );
 

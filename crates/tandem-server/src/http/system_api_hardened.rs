@@ -20,12 +20,17 @@ use tandem_types::{TenantContext, VerifiedTenantContext};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
-use crate::AppState;
-
 use super::sessions_actor_scope::ensure_same_session_actor;
 use super::system_api::{
     self, FileContentQuery, FileListQuery, FindFileQuery, FindTextQuery, LspQuery, PathInfoQuery,
     PtyUpdateInput,
+};
+use crate::{
+    action_authorization::{
+        authorize_host_effect, CanonicalHostResource, HostAction, HostAuthorizationError,
+        HostEffectRequest,
+    },
+    AppState,
 };
 
 const MAX_SEARCH_RESULTS: usize = 200;
@@ -49,18 +54,57 @@ fn require_local(
 ) -> Result<(), StatusCode> {
     super::host_authority::require_loopback_local_operator(state, tenant, verified)
 }
+fn authorization_status(error: HostAuthorizationError) -> StatusCode {
+    match error {
+        HostAuthorizationError::AuditPersistenceFailed => StatusCode::INTERNAL_SERVER_ERROR,
+        HostAuthorizationError::InvalidEffectArguments => StatusCode::BAD_REQUEST,
+        _ => StatusCode::FORBIDDEN,
+    }
+}
 
 pub(super) async fn find_text(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     verified: Option<Extension<VerifiedTenantContext>>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
     Query(query): Query<FindTextQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_local(&state, &tenant, verified.as_deref())?;
-    let workspace_root = canonical_workspace_root().await?;
+    let (resource, workspace_root) = resolve_workspace_resource(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        query.resource_id.as_deref(),
+    )
+    .await?;
+    let limit = query.limit.unwrap_or(100).clamp(1, MAX_SEARCH_RESULTS);
+    let effect = HostEffectRequest::new(
+        HostAction::FileSearch,
+        resource,
+        json!({
+            "operation": "find_text",
+            "path": query.path.as_deref().unwrap_or("."),
+            "pattern": &query.pattern,
+            "result_limit": limit,
+            "file_limit": MAX_SEARCH_FILES,
+            "file_byte_limit": MAX_SEARCH_FILE_BYTES,
+            "depth_limit": MAX_SEARCH_DEPTH,
+            "deadline_ms": SEARCH_DEADLINE.as_millis(),
+        }),
+    );
+    let grant = authorize_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality.is_direct_loopback(),
+        &effect,
+    )
+    .await
+    .map_err(authorization_status)?;
     let root = resolve_workspace_path(&workspace_root, query.path.as_deref(), true).await?;
     let regex = Regex::new(&query.pattern).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let limit = query.limit.unwrap_or(100).clamp(1, MAX_SEARCH_RESULTS);
+    grant
+        .revalidate(&state, &effect)
+        .map_err(authorization_status)?;
     let matches = tokio::task::spawn_blocking(move || {
         search_text_bounded(&workspace_root, &root, &regex, limit)
     })
@@ -73,13 +117,44 @@ pub(super) async fn find_file(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     verified: Option<Extension<VerifiedTenantContext>>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
     Query(query): Query<FindFileQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_local(&state, &tenant, verified.as_deref())?;
-    let workspace_root = canonical_workspace_root().await?;
+    let (resource, workspace_root) = resolve_workspace_resource(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        query.resource_id.as_deref(),
+    )
+    .await?;
+    let limit = query.limit.unwrap_or(100).clamp(1, MAX_SEARCH_RESULTS);
+    let effect = HostEffectRequest::new(
+        HostAction::FileSearch,
+        resource,
+        json!({
+            "operation": "find_file",
+            "path": query.path.as_deref().unwrap_or("."),
+            "query": &query.q,
+            "result_limit": limit,
+            "file_limit": MAX_SEARCH_FILES,
+            "depth_limit": MAX_SEARCH_DEPTH,
+            "deadline_ms": SEARCH_DEADLINE.as_millis(),
+        }),
+    );
+    let grant = authorize_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality.is_direct_loopback(),
+        &effect,
+    )
+    .await
+    .map_err(authorization_status)?;
     let root = resolve_workspace_path(&workspace_root, query.path.as_deref(), true).await?;
     let needle = query.q.to_lowercase();
-    let limit = query.limit.unwrap_or(100).clamp(1, MAX_SEARCH_RESULTS);
+    grant
+        .revalidate(&state, &effect)
+        .map_err(authorization_status)?;
     let files = tokio::task::spawn_blocking(move || {
         search_files_bounded(&workspace_root, &root, &needle, limit)
     })
@@ -92,21 +167,52 @@ pub(super) async fn find_symbol(
     state: State<AppState>,
     tenant: Extension<TenantContext>,
     verified: Option<Extension<VerifiedTenantContext>>,
+    locality: Extension<super::host_authority::RequestLocality>,
     query: Query<FindTextQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    find_text(state, tenant, verified, query).await
+    find_text(state, tenant, verified, locality, query).await
 }
 
 pub(super) async fn file_list(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     verified: Option<Extension<VerifiedTenantContext>>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
     Query(query): Query<FileListQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_local(&state, &tenant, verified.as_deref())?;
-    let workspace_root = canonical_workspace_root().await?;
-    let root = resolve_workspace_path(&workspace_root, query.path.as_deref(), true).await?;
+    let (resource, workspace_root) = resolve_workspace_resource(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        query.resource_id.as_deref(),
+    )
+    .await?;
     let limit = query.limit.unwrap_or(200).clamp(1, MAX_SEARCH_RESULTS);
+    let effect = HostEffectRequest::new(
+        HostAction::FileSearch,
+        resource,
+        json!({
+            "operation": "file_list",
+            "path": query.path.as_deref().unwrap_or("."),
+            "result_limit": limit,
+            "file_limit": MAX_SEARCH_FILES,
+            "depth_limit": MAX_SEARCH_DEPTH,
+            "deadline_ms": SEARCH_DEADLINE.as_millis(),
+        }),
+    );
+    let grant = authorize_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality.is_direct_loopback(),
+        &effect,
+    )
+    .await
+    .map_err(authorization_status)?;
+    let root = resolve_workspace_path(&workspace_root, query.path.as_deref(), true).await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(authorization_status)?;
     let files =
         tokio::task::spawn_blocking(move || list_files_bounded(&workspace_root, &root, limit))
             .await
@@ -118,11 +224,38 @@ pub(super) async fn file_content(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     verified: Option<Extension<VerifiedTenantContext>>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
     Query(query): Query<FileContentQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_local(&state, &tenant, verified.as_deref())?;
-    let workspace_root = canonical_workspace_root().await?;
+    let (resource, workspace_root) = resolve_workspace_resource(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        query.resource_id.as_deref(),
+    )
+    .await?;
+    let effect = HostEffectRequest::new(
+        HostAction::FileRead,
+        resource,
+        json!({
+            "operation": "file_content",
+            "path": &query.path,
+            "byte_limit": MAX_FILE_CONTENT_BYTES,
+        }),
+    );
+    let grant = authorize_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality.is_direct_loopback(),
+        &effect,
+    )
+    .await
+    .map_err(authorization_status)?;
     let target = resolve_workspace_path(&workspace_root, Some(&query.path), false).await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(authorization_status)?;
     let metadata = tokio::fs::metadata(&target)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
@@ -255,6 +388,7 @@ pub(super) async fn run_command(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     verified: Option<Extension<VerifiedTenantContext>>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
     headers: HeaderMap,
     Path(session_id): Path<String>,
     Json(input): Json<CommandRunInput>,
@@ -268,7 +402,6 @@ pub(super) async fn run_command(
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
     ensure_same_session_actor(&tenant, &session.tenant_context)?;
-    require_local(&state, &tenant, verified.as_deref())?;
     let lookup_ms = lookup_started.elapsed().as_millis();
 
     let workspace = session
@@ -287,6 +420,32 @@ pub(super) async fn run_command(
     }
 
     let (executable, args) = command_preset(&input.id).ok_or(StatusCode::BAD_REQUEST)?;
+    let effect = HostEffectRequest::new(
+        HostAction::CommandExecute,
+        CanonicalHostResource::new(
+            "session_workspace",
+            session_id.clone(),
+            session.tenant_context.clone(),
+        ),
+        json!({
+            "command_id": input.id,
+            "executable": executable,
+            "args": args,
+            "canonical_workspace": cwd.to_string_lossy(),
+            "environment": ["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_OPTIONAL_LOCKS", "GIT_TERMINAL_PROMPT", "LC_ALL", "PATH"],
+            "wall_time_ms": COMMAND_DEADLINE.as_millis(),
+            "output_limit_bytes": MAX_COMMAND_OUTPUT_BYTES,
+        }),
+    );
+    let grant = authorize_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality.is_direct_loopback(),
+        &effect,
+    )
+    .await
+    .map_err(authorization_status)?;
     let mut command = Command::new(executable);
     command
         .args(args)
@@ -308,6 +467,9 @@ pub(super) async fn run_command(
         command.env("SystemRoot", system_root);
     }
 
+    grant
+        .revalidate(&state, &effect)
+        .map_err(authorization_status)?;
     let command_started = Instant::now();
     let mut child = command
         .spawn()
@@ -424,6 +586,50 @@ where
     Ok((String::from_utf8_lossy(&bytes).to_string(), truncated))
 }
 
+async fn resolve_workspace_resource(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    resource_id: Option<&str>,
+) -> Result<(CanonicalHostResource, PathBuf), StatusCode> {
+    if let Some(resource_id) = resource_id
+        .map(str::trim)
+        .filter(|resource_id| !resource_id.is_empty())
+    {
+        let session = state
+            .storage
+            .get_session(resource_id)
+            .await
+            .ok_or(StatusCode::NOT_FOUND)?;
+        ensure_same_session_actor(tenant, &session.tenant_context)?;
+        let workspace = session
+            .workspace_root
+            .as_deref()
+            .unwrap_or(session.directory.as_str());
+        let root = tokio::fs::canonicalize(workspace)
+            .await
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        if !tokio::fs::metadata(&root)
+            .await
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false)
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        return Ok((
+            CanonicalHostResource::new("session_workspace", resource_id, session.tenant_context),
+            root,
+        ));
+    }
+    if verified.is_some() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let root = canonical_workspace_root().await?;
+    Ok((
+        CanonicalHostResource::new("local_workspace", "local-workspace", tenant.clone()),
+        root,
+    ))
+}
 async fn canonical_workspace_root() -> Result<PathBuf, StatusCode> {
     let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tokio::fs::canonicalize(cwd)

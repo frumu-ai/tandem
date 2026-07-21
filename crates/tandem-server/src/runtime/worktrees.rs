@@ -5,11 +5,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
+use tandem_types::TenantContext;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManagedWorktreeRecord {
     pub key: String,
     pub repo_root: String,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    #[serde(default = "TenantContext::local_implicit")]
+    pub tenant_context: TenantContext,
     pub path: String,
     pub branch: String,
     pub base: String,
@@ -26,6 +32,8 @@ pub struct ManagedWorktreeRecord {
 pub struct ManagedWorktreeEnsureInput {
     pub repo_root: String,
     pub task_id: Option<String>,
+    pub repository_id: Option<String>,
+    pub tenant_context: TenantContext,
     pub owner_run_id: Option<String>,
     pub lease_id: Option<String>,
     pub branch_hint: Option<String>,
@@ -149,7 +157,39 @@ pub async fn ensure_managed_worktree(
         &path_string,
         &branch,
     );
+    if input.base.trim_start().starts_with('-') {
+        anyhow::bail!("git worktree base ref cannot start with '-'");
+    }
+    let effect = crate::action_authorization::HostEffectRequest::new(
+        crate::action_authorization::HostAction::WorktreeCreate,
+        crate::action_authorization::CanonicalHostResource::new(
+            "repository",
+            input
+                .repository_id
+                .clone()
+                .unwrap_or_else(|| "local-repository".to_string()),
+            input.tenant_context.clone(),
+        ),
+        json!({
+            "repo_root": &input.repo_root,
+            "path": &path_string,
+            "branch": &branch,
+            "base": &input.base,
+            "lease_id": &input.lease_id,
+            "cleanup_branch": input.cleanup_branch,
+        }),
+    );
+    let grant = crate::action_authorization::authorize_internal_host_effect(
+        state,
+        "runtime.worktrees.ensure_managed_worktree",
+        &effect,
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("worktree authorization failed: {}", error.code()))?;
     if let Some(existing) = state.managed_worktrees.read().await.get(&key).cloned() {
+        grant
+            .revalidate(state, &effect)
+            .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
         if worktree_is_registered_async(input.repo_root.clone(), existing.path.clone()).await? {
             return Ok(ManagedWorktreeEnsureResult {
                 record: existing,
@@ -158,18 +198,29 @@ pub async fn ensure_managed_worktree(
         }
     }
     if let Some(parent) = path.parent() {
+        grant
+            .revalidate(state, &effect)
+            .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
         tokio::fs::create_dir_all(parent).await?;
     }
+    grant
+        .revalidate(state, &effect)
+        .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
     if tokio::fs::try_exists(&path).await?
         && !worktree_is_registered_async(input.repo_root.clone(), path_string.clone()).await?
     {
         anyhow::bail!("managed worktree path conflict: {path_string}");
     }
     let now = crate::now_ms();
+    grant
+        .revalidate(state, &effect)
+        .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
     if worktree_is_registered_async(input.repo_root.clone(), path_string.clone()).await? {
         let record = ManagedWorktreeRecord {
             key: key.clone(),
             repo_root: input.repo_root.clone(),
+            repository_id: input.repository_id.clone(),
+            tenant_context: input.tenant_context.clone(),
             path: path_string,
             branch,
             base: input.base,
@@ -191,9 +242,9 @@ pub async fn ensure_managed_worktree(
             reused: true,
         });
     }
-    if input.base.trim_start().starts_with('-') {
-        anyhow::bail!("git worktree base ref cannot start with '-'");
-    }
+    grant
+        .revalidate(state, &effect)
+        .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
     add_git_worktree_async(
         input.repo_root.clone(),
         branch.clone(),
@@ -204,6 +255,8 @@ pub async fn ensure_managed_worktree(
     let record = ManagedWorktreeRecord {
         key: key.clone(),
         repo_root: input.repo_root,
+        repository_id: input.repository_id,
+        tenant_context: input.tenant_context,
         path: path.to_string_lossy().to_string(),
         branch,
         base: input.base,
@@ -230,10 +283,42 @@ pub async fn delete_managed_worktree(
     state: &crate::AppState,
     record: &ManagedWorktreeRecord,
 ) -> anyhow::Result<()> {
+    let effect = crate::action_authorization::HostEffectRequest::new(
+        crate::action_authorization::HostAction::WorktreeDelete,
+        crate::action_authorization::CanonicalHostResource::new(
+            "managed_worktree",
+            record.key.clone(),
+            record.tenant_context.clone(),
+        ),
+        json!({
+            "repository_id": &record.repository_id,
+            "repo_root": &record.repo_root,
+            "path": &record.path,
+            "branch": &record.branch,
+            "lease_id": &record.lease_id,
+            "cleanup_branch": record.cleanup_branch,
+        }),
+    );
+    let grant = crate::action_authorization::authorize_internal_host_effect(
+        state,
+        "runtime.worktrees.delete_managed_worktree",
+        &effect,
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("worktree authorization failed: {}", error.code()))?;
+    grant
+        .revalidate(state, &effect)
+        .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
     remove_git_worktree_async(record.repo_root.clone(), record.path.clone()).await?;
     if record.cleanup_branch {
+        grant
+            .revalidate(state, &effect)
+            .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
         let _ = delete_git_branch_async(record.repo_root.clone(), record.branch.clone()).await;
     }
+    grant
+        .revalidate(state, &effect)
+        .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
     state
         .managed_worktrees
         .write()

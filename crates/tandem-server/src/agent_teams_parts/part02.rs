@@ -62,6 +62,8 @@ async fn prepare_agent_instance_workspace(
         state,
         crate::runtime::worktrees::ManagedWorktreeEnsureInput {
             repo_root,
+            repository_id: None,
+            tenant_context: tandem_types::TenantContext::local_implicit(),
             task_id: mission_id.map(ToString::to_string),
             owner_run_id: Some(instance_id.to_string()),
             lease_id: None,
@@ -100,6 +102,8 @@ async fn cleanup_instance_managed_worktree(state: &AppState, instance: &AgentIns
             branch,
         ),
         repo_root: repo_root.to_string(),
+        repository_id: None,
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         path: path.to_string(),
         branch: branch.to_string(),
         base: "HEAD".to_string(),

@@ -24,7 +24,7 @@ impl RequestLocality {
         }
     }
 
-    fn is_direct_loopback(self) -> bool {
+    pub(super) fn is_direct_loopback(self) -> bool {
         self.direct_loopback
     }
 }

@@ -23,6 +23,8 @@ use crate::AppState;
 #[derive(Debug, Deserialize)]
 pub(super) struct FindTextQuery {
     pub pattern: String,
+    #[serde(default, alias = "resourceId")]
+    pub resource_id: Option<String>,
     pub path: Option<String>,
     pub limit: Option<usize>,
 }
@@ -30,18 +32,24 @@ pub(super) struct FindTextQuery {
 #[derive(Debug, Deserialize)]
 pub(super) struct FindFileQuery {
     pub q: String,
+    #[serde(default, alias = "resourceId")]
+    pub resource_id: Option<String>,
     pub path: Option<String>,
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct FileListQuery {
+    #[serde(default, alias = "resourceId")]
+    pub resource_id: Option<String>,
     pub path: Option<String>,
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct FileContentQuery {
+    #[serde(default, alias = "resourceId")]
+    pub resource_id: Option<String>,
     pub path: String,
 }
 
