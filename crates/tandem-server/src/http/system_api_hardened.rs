@@ -375,8 +375,27 @@ pub(super) async fn scheduler_metrics(
 
 fn command_preset(id: &str) -> Option<(&'static str, &'static [&'static str])> {
     match id {
-        "git-status" => Some(("git", &["status", "--short", "--untracked-files=no"])),
-        "git-branch" => Some(("git", &["branch", "--show-current"])),
+        "git-status" => Some((
+            "git",
+            &[
+                "--no-pager",
+                "-c",
+                "core.fsmonitor=false",
+                "status",
+                "--short",
+                "--untracked-files=no",
+            ],
+        )),
+        "git-branch" => Some((
+            "git",
+            &[
+                "--no-pager",
+                "-c",
+                "core.fsmonitor=false",
+                "branch",
+                "--show-current",
+            ],
+        )),
         _ => None,
     }
 }
@@ -554,6 +573,12 @@ mod tests {
     fn command_presets_do_not_accept_executables_or_interpreters() {
         assert!(command_preset("git-status").is_some());
         assert!(command_preset("git-branch").is_some());
+        let (executable, status_args) = command_preset("git-status").expect("git status preset");
+        assert_eq!(executable, "git");
+        assert!(status_args.contains(&"--no-pager"));
+        assert!(status_args
+            .windows(2)
+            .any(|pair| pair == ["-c", "core.fsmonitor=false"]));
         for denied in ["git", "bash", "sh", "python", "python3", "cargo-check"] {
             assert!(command_preset(denied).is_none(), "{denied} must be denied");
         }

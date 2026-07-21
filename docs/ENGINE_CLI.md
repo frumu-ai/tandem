@@ -362,11 +362,15 @@ Send authenticated requests:
 
 ```bash
 curl -s "$API/global/health" | jq .
-curl -s "$API/global/diagnostics" -H "Authorization: Bearer $TANDEM_API_TOKEN" | jq .
 curl -s "$API/config/providers" -H "X-Tandem-Token: $TANDEM_API_TOKEN" | jq .
 ```
 
+`GET /global/diagnostics` deliberately rejects a bearer token with only local implicit authority
+when the engine is publicly bound. Query diagnostics through a loopback-only listener, or configure
+the deployment identity layer to supply a verified administrator context with
+`diagnostics.read`/`deployment.admin` authority.
 Rotate token at runtime (requires current token header):
+
 
 ```bash
 curl -s -X POST "$API/auth/token/generate" \

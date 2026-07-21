@@ -24,26 +24,18 @@ fn event_tenant_context(event: &EngineEvent) -> TenantContext {
 }
 
 pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoResponse {
+    let _ = prune_expired_leases(&state).await;
     let ready = state.is_ready();
     Json(json!({
         "healthy": ready,
         "ready": ready,
     }))
 }
-pub(super) async fn global_workspace(
-    State(state): State<AppState>,
-    Extension(tenant): Extension<TenantContext>,
-    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
-    Extension(locality): Extension<super::host_authority::RequestLocality>,
-) -> Result<Json<Value>, StatusCode> {
-    super::host_authority::require_diagnostics_admin(
-        &state,
-        &tenant,
-        verified.as_deref(),
-        locality,
-    )?;
+pub(super) async fn global_workspace(State(state): State<AppState>) -> Json<Value> {
+    // The central auth gate protects this route. Do not require a direct peer here:
+    // the shipped control panel reaches the engine through its authenticated proxy.
     let workspace_root = state.workspace_index.snapshot().await.root;
-    Ok(Json(json!({ "workspace_root": workspace_root })))
+    Json(json!({ "workspace_root": workspace_root }))
 }
 
 pub(super) async fn global_diagnostics(

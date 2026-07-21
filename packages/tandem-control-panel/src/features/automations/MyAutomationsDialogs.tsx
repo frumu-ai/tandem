@@ -427,10 +427,10 @@ export function WorkflowAutomationEditDialog({
   const [workspaceBrowserSearch, setWorkspaceBrowserSearch] = useState("");
   const [exportingAutomation, setExportingAutomation] = useState(false);
   const [selectedFlowNodeId, setSelectedFlowNodeId] = useState("");
-  const healthQuery = useQuery({
-    queryKey: ["global", "health", "workflow-edit"],
+  const workspaceQuery = useQuery({
+    queryKey: ["global", "workspace", "workflow-edit"],
     enabled: !!workflowEditDraft,
-    queryFn: () => client?.health?.().catch(() => ({})) ?? Promise.resolve({}),
+    queryFn: () => client?.workspace?.().catch(() => ({})) ?? Promise.resolve({}),
     refetchInterval: 30000,
   });
   const workspaceBrowserQuery = useQuery({
@@ -625,8 +625,8 @@ export function WorkflowAutomationEditDialog({
                 onOpen={() => {
                   const seed = String(
                     workflowEditDraft.workspaceRoot ||
-                      (healthQuery.data as any)?.workspaceRoot ||
-                      (healthQuery.data as any)?.workspace_root ||
+                      (workspaceQuery.data as any)?.workspaceRoot ||
+                      (workspaceQuery.data as any)?.workspace_root ||
                       "/"
                   ).trim();
                   setWorkspaceBrowserDir(seed || "/");

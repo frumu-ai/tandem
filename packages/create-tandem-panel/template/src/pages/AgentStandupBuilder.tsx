@@ -104,19 +104,21 @@ export function AgentStandupBuilder({
       Promise.resolve({ templates: [] }),
     refetchInterval: 12000,
   });
-  const healthQuery = useQuery({
-    queryKey: ["teams", "standup", "health"],
-    queryFn: () => client?.health?.().catch(() => ({})) ?? Promise.resolve({}),
+  const workspaceQuery = useQuery({
+    queryKey: ["teams", "standup", "workspace"],
+    queryFn: () => client?.workspace?.().catch(() => ({})) ?? Promise.resolve({}),
     refetchInterval: 30000,
   });
 
   useEffect(() => {
     const defaultWorkspaceRoot = String(
-      (healthQuery.data as any)?.workspaceRoot || (healthQuery.data as any)?.workspace_root || ""
+      (workspaceQuery.data as any)?.workspaceRoot ||
+        (workspaceQuery.data as any)?.workspace_root ||
+        ""
     ).trim();
     if (!defaultWorkspaceRoot) return;
     setWorkspaceRoot((current) => current || defaultWorkspaceRoot);
-  }, [healthQuery.data]);
+  }, [workspaceQuery.data]);
 
   const templates = useMemo(
     () =>

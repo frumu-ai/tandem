@@ -164,7 +164,7 @@ async fn automations_v2_run_recover_resets_terminal_node_for_run_level_deliverab
 }
 
 #[tokio::test]
-async fn global_workspace_accepts_direct_loopback_and_rejects_proxy_markers() {
+async fn global_workspace_is_available_through_authenticated_proxy_routes() {
     let state = test_state().await;
     let expected = state.workspace_index.snapshot().await.root;
     let app = app_router(state);
@@ -197,8 +197,5 @@ async fn global_workspace_accepts_direct_loopback_and_rejects_proxy_markers() {
         .body(Body::empty())
         .expect("request");
     let proxied_resp = app.oneshot(proxied).await.expect("response");
-    assert_eq!(
-        proxied_resp.status(),
-        StatusCode::FORBIDDEN
-    );
+    assert_eq!(proxied_resp.status(), StatusCode::OK);
 }

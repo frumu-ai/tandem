@@ -12,8 +12,8 @@ importers:
         specifier: ^0.6.6
         version: 0.6.6
       '@frumu/tandem-client':
-        specifier: ^0.6.6
-        version: 0.6.6
+        specifier: ^0.7.1
+        version: 0.7.1
       '@fullcalendar/core':
         specifier: 6.1.20
         version: 6.1.20
@@ -379,8 +379,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@frumu/tandem-client@0.6.6':
-    resolution: {integrity: sha512-7eFRlkvrqe2qSh8T/bro8ryZShSfHUGXI2/TUsYz+KSihZVkSpegudWCt2LAPh+sESeBfba2D3oesdzZ7CjazA==}
+  '@frumu/tandem-client@0.7.1':
+    resolution: {integrity: sha512-rL5va9F6v0p1GiPZDRjCaQIVpclF9t5Vw1bXifq/mMIIBngbRW1BkaH6g0r0UKcXC5pgHp6ACI57x6hNGNUGRQ==}
     engines: {node: '>=18'}
 
   '@frumu/tandem@0.6.6':
@@ -1999,7 +1999,7 @@ snapshots:
   '@esbuild/win32-x64@0.27.7':
     optional: true
 
-  '@frumu/tandem-client@0.6.6':
+  '@frumu/tandem-client@0.7.1':
     dependencies:
       zod: 4.4.3
 
