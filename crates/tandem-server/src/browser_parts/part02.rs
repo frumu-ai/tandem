@@ -31,8 +31,12 @@ impl RuntimeState {
         self.browser.smoke_test(url).await
     }
 
-    pub async fn install_browser_sidecar(&self) -> anyhow::Result<BrowserSidecarInstallResult> {
-        self.browser.install_sidecar().await
+    pub async fn install_browser_sidecar<F>(
+        &self,
+        authorize_write: F,
+    ) -> anyhow::Result<BrowserSidecarInstallResult>
+    where F: Fn() -> anyhow::Result<()> + Send + Sync {
+        self.browser.install_sidecar(authorize_write).await
     }
 
     pub async fn browser_health_summary(&self) -> BrowserHealthSummary {
@@ -68,11 +72,15 @@ impl AppState {
         runtime.browser_smoke_test(url).await
     }
 
-    pub async fn install_browser_sidecar(&self) -> anyhow::Result<BrowserSidecarInstallResult> {
+    pub async fn install_browser_sidecar<F>(
+        &self,
+        authorize_write: F,
+    ) -> anyhow::Result<BrowserSidecarInstallResult>
+    where F: Fn() -> anyhow::Result<()> + Send + Sync {
         let Some(runtime) = self.runtime.get() else {
             anyhow::bail!("runtime not ready");
         };
-        runtime.install_browser_sidecar().await
+        runtime.install_browser_sidecar(authorize_write).await
     }
 
     pub async fn browser_health_summary(&self) -> BrowserHealthSummary {
@@ -168,9 +176,11 @@ fn probe_binary_version(path: &Path) -> anyhow::Result<String> {
     Ok(stdout)
 }
 
-pub async fn install_browser_sidecar(
+pub async fn install_browser_sidecar<F>(
     config: &BrowserConfig,
-) -> anyhow::Result<BrowserSidecarInstallResult> {
+    authorize_write: F,
+) -> anyhow::Result<BrowserSidecarInstallResult>
+where F: Fn() -> anyhow::Result<()> + Send + Sync {
     let version = env!("CARGO_PKG_VERSION").to_string();
     let release = fetch_release_for_version(&version).await?;
     let asset_name = browser_release_asset_name()?;
@@ -189,12 +199,13 @@ pub async fn install_browser_sidecar(
     let parent = install_path
         .parent()
         .ok_or_else(|| anyhow!("invalid install path `{}`", install_path.display()))?;
+    let archive_bytes = download_release_asset(asset).await?;
+    let downloaded_bytes = archive_bytes.len() as u64;
+    authorize_write()?;
     fs::create_dir_all(parent)
         .await
         .with_context(|| format!("failed to create `{}`", parent.display()))?;
-
-    let archive_bytes = download_release_asset(asset).await?;
-    let downloaded_bytes = archive_bytes.len() as u64;
+    authorize_write()?;
     let install_path_for_unpack = install_path.clone();
     let asset_name_for_unpack = asset.name.clone();
     let unpacked = tokio::task::spawn_blocking(move || {

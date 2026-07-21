@@ -218,7 +218,13 @@ impl AppState {
         anyhow::bail!("browser feature disabled")
     }
 
-    pub async fn install_browser_sidecar(&self) -> anyhow::Result<serde_json::Value> {
+    pub async fn install_browser_sidecar<F>(
+        &self,
+        _authorize_write: F,
+    ) -> anyhow::Result<serde_json::Value>
+    where
+        F: Fn() -> anyhow::Result<()> + Send + Sync,
+    {
         anyhow::bail!("browser feature disabled")
     }
 

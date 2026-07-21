@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use tandem_types::TenantContext;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -106,10 +107,13 @@ pub fn managed_worktree_key(
     path: &str,
     branch: &str,
 ) -> String {
-    let task_id = task_id.unwrap_or("");
-    let owner_run_id = owner_run_id.unwrap_or("");
-    let lease_id = lease_id.unwrap_or("");
-    format!("{repo_root}::{task_id}::{owner_run_id}::{lease_id}::{path}::{branch}")
+    let identity = format!(
+        "{repo_root}::{}::{}::{}::{path}::{branch}",
+        task_id.unwrap_or(""),
+        owner_run_id.unwrap_or(""),
+        lease_id.unwrap_or("")
+    );
+    format!("wt_{:x}", Sha256::digest(identity.as_bytes()))
 }
 
 pub fn managed_worktree_root(repo_root: &str) -> PathBuf {
@@ -410,4 +414,41 @@ async fn delete_git_branch_async(repo_root: String, branch: String) -> anyhow::R
     })
     .await
     .context("git branch delete task failed")?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::managed_worktree_key;
+
+    #[test]
+    fn managed_worktree_key_is_stable_and_opaque() {
+        let repo_root = "/srv/private/customer-repository";
+        let path = "/srv/private/customer-repository/.tandem/worktrees/task-a";
+        let key = managed_worktree_key(
+            repo_root,
+            Some("task-a"),
+            Some("run-a"),
+            Some("lease-a"),
+            path,
+            "tandem/task-a",
+        );
+        let repeated = managed_worktree_key(
+            repo_root,
+            Some("task-a"),
+            Some("run-a"),
+            Some("lease-a"),
+            path,
+            "tandem/task-a",
+        );
+
+        assert_eq!(key, repeated);
+        assert!(key.starts_with("wt_"));
+        assert_eq!(key.len(), 67);
+        assert!(!key.contains(repo_root));
+        assert!(!key.contains(path));
+        assert_ne!(
+            key,
+            managed_worktree_key(repo_root, None, None, None, "/different", "branch")
+        );
+    }
 }

@@ -16,8 +16,8 @@ use crate::action_authorization::{
 #[path = "global_worktrees.rs"]
 mod worktrees;
 pub(super) use worktrees::{
-    cleanup_managed_worktrees_for_lease, create_worktree, delete_worktree, list_worktrees,
-    prune_expired_leases, reset_worktree, LeaseWorktreeCleanupResult,
+    cleanup_managed_worktrees_for_lease, cleanup_worktrees, create_worktree, delete_worktree,
+    list_worktrees, prune_expired_leases, reset_worktree, LeaseWorktreeCleanupResult,
 };
 
 #[derive(Debug, Deserialize)]
@@ -152,8 +152,43 @@ pub(super) async fn global_diagnostics(
     })))
 }
 
-pub(super) async fn browser_status(State(state): State<AppState>) -> impl IntoResponse {
-    Json(json!(state.browser_status().await))
+fn redact_browser_host_details(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("installed_path");
+            object.remove("path");
+            object.remove("last_error");
+            object.remove("install_hints");
+            object.remove("recommendations");
+            if let Some(Value::Array(issues)) = object.get_mut("blocking_issues") {
+                for issue in issues {
+                    if let Some(issue) = issue.as_object_mut() {
+                        issue.remove("message");
+                    }
+                }
+            }
+            for child in object.values_mut() {
+                redact_browser_host_details(child);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                redact_browser_host_details(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(super) async fn browser_status(
+    State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> impl IntoResponse {
+    let mut payload = json!(state.browser_status().await);
+    if verified.is_some() {
+        redact_browser_host_details(&mut payload);
+    }
+    Json(payload)
 }
 
 pub(super) async fn browser_install(
@@ -183,17 +218,35 @@ pub(super) async fn browser_install(
     if let Err(error) = grant.revalidate(&state, &effect) {
         return host_authorization_status(error).into_response();
     }
-    match state.install_browser_sidecar().await {
-        Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "ok": false,
-                "code": "browser_install_failed",
-                "error": err.to_string(),
-            })),
-        )
-            .into_response(),
+    let authorization_state = state.clone();
+    let expose_host_details = verified.is_none();
+    match state
+        .install_browser_sidecar(move || {
+            grant
+                .revalidate(&authorization_state, &effect)
+                .map_err(|error| anyhow::anyhow!(error.code()))
+        })
+        .await
+    {
+        Ok(result) => {
+            let mut payload = json!(result);
+            if !expose_host_details {
+                redact_browser_host_details(&mut payload);
+            }
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Err(err) => {
+            let detail = expose_host_details.then(|| err.to_string());
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "ok": false,
+                    "code": "browser_install_failed",
+                    "error": detail,
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -231,17 +284,27 @@ pub(super) async fn browser_smoke_test(
     if let Err(error) = grant.revalidate(&state, &effect) {
         return host_authorization_status(error).into_response();
     }
+    let expose_host_details = verified.is_none();
     match state.browser_smoke_test(input.url).await {
-        Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "ok": false,
-                "code": "browser_smoke_test_failed",
-                "error": err.to_string(),
-            })),
-        )
-            .into_response(),
+        Ok(result) => {
+            let mut payload = json!(result);
+            if !expose_host_details {
+                redact_browser_host_details(&mut payload);
+            }
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Err(err) => {
+            let detail = expose_host_details.then(|| err.to_string());
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "ok": false,
+                    "code": "browser_smoke_test_failed",
+                    "error": detail,
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -277,7 +340,7 @@ pub(super) async fn global_lease_acquire(
     leases.insert(lease_id.clone(), lease.clone());
     drop(leases);
     for expired_lease_id in expired {
-        cleanup_managed_worktrees_for_lease(&state, &expired_lease_id).await;
+        cleanup_managed_worktrees_for_lease(&state, &expired_lease_id, None).await;
     }
     let lease_count = state.engine_leases.read().await.len();
     Json(json!({
@@ -315,9 +378,50 @@ pub(super) async fn global_lease_renew(
 pub(super) async fn global_lease_release(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<EngineLeaseReleaseInput>,
-) -> Json<Value> {
+) -> Result<Json<Value>, StatusCode> {
     prune_expired_leases(&state).await;
+    let lease_owned = state
+        .engine_leases
+        .read()
+        .await
+        .get(&input.lease_id)
+        .is_some_and(|lease| lease.tenant_context == tenant);
+    if !lease_owned {
+        return Ok(Json(json!({
+            "ok": false,
+            "lease_count": state.engine_leases.read().await.len(),
+            "released_worktree_count": 0,
+            "released_worktree_failure_count": 0,
+        })));
+    }
+    let has_managed_worktrees = state
+        .managed_worktrees
+        .read()
+        .await
+        .values()
+        .any(|record| record.lease_id.as_deref() == Some(input.lease_id.as_str()));
+    let caller_authority = if has_managed_worktrees {
+        Some(
+            authorize_global_host_effect(
+                &state,
+                &tenant,
+                verified.as_deref(),
+                locality,
+                HostAction::WorktreeCleanup,
+                CanonicalHostResource::new("engine_lease", &input.lease_id, tenant.clone()),
+                json!({
+                    "lease_id": &input.lease_id,
+                    "reason": "caller_requested_release",
+                }),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let removed = {
         let mut leases = state.engine_leases.write().await;
         if leases
@@ -331,21 +435,28 @@ pub(super) async fn global_lease_release(
         }
     };
     let cleanup = if removed {
-        cleanup_managed_worktrees_for_lease(&state, &input.lease_id).await
+        cleanup_managed_worktrees_for_lease(
+            &state,
+            &input.lease_id,
+            caller_authority
+                .as_ref()
+                .map(|(grant, effect)| (grant, effect)),
+        )
+        .await
     } else {
         LeaseWorktreeCleanupResult::default()
     };
     let released_worktree_count = cleanup.cleaned_paths.len();
     let released_worktree_failure_count = cleanup.failures.len();
-    let expose_host_details = tenant.is_local_implicit();
-    Json(json!({
+    let expose_host_details = verified.is_none() && tenant.is_local_implicit();
+    Ok(Json(json!({
         "ok": removed,
         "lease_count": state.engine_leases.read().await.len(),
         "released_worktree_count": released_worktree_count,
         "released_worktree_failure_count": released_worktree_failure_count,
         "released_worktrees": expose_host_details.then_some(cleanup.cleaned_paths),
         "released_worktree_failures": expose_host_details.then_some(cleanup.failures),
-    }))
+    })))
 }
 
 pub(super) async fn global_storage_repair(

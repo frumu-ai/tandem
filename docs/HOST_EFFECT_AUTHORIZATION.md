@@ -57,7 +57,7 @@ handler.
 | Worktree delete/reset/cleanup | action-specific capability | Yes |
 | Browser install/smoke test | action-specific capability | Yes |
 | Storage repair/global dispose | action-specific capability | Yes |
-| Pack reads/detect/install/uninstall/export | action-specific capability | Mutation requirements are classified in code; pack migration remains pending |
+| Pack reads/detect/install/uninstall/export | action-specific capability | Hosted host-path operations are disabled; full managed-resource migration remains pending |
 
 ## Resource rules
 
@@ -78,6 +78,15 @@ Managed worktree mutations additionally require:
 
 Hosted responses return opaque resource IDs and omit canonical host paths and
 raw process errors.
+
+The compatibility `/worktree/cleanup` route is available to the standalone
+loopback owner. In a verified deployment it resolves an opaque tenant-owned
+repository resource, requires deployment-admin authority, binds the cleanup
+options into the exact effect digest, revalidates before every removal, and
+returns counts without host paths or raw Git errors.
+
+Pack host-path operations fail closed outside the standalone loopback-local
+posture until their inputs are migrated to managed resource IDs and grants.
 
 ## Migration rule
 

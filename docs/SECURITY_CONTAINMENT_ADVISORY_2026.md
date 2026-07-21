@@ -39,8 +39,12 @@ standalone loopback owner:
 - permission/question decisions and workflow/governance approval mutation; and
 - browser-sidecar download or installation.
 
-Direct PTY routes and public orphan-worktree cleanup are intentionally absent.
-The legacy /session/{id}/shell alias returns 403. The remaining direct command
+Pack install, attachment install, uninstall, export, and detect handlers also
+fail closed in verified/non-local postures. The compatibility worktree cleanup
+route is restricted to the standalone loopback owner or a verified
+deployment-admin grant over an opaque tenant-owned repository.
+
+Direct PTY routes are intentionally absent. The legacy /session/{id}/shell alias returns 403. The remaining direct command
 endpoint accepts only fixed, non-interpreter Git inspection presets and applies
 an exact capability/resource/effect grant before process creation.
 
@@ -82,9 +86,11 @@ After starting:
 
 1. verify GET /global/health returns only liveness/readiness fields;
 2. probe the engine port from a non-loopback host and confirm it is unreachable;
-3. verify /pty, /pty/{id}, and /worktree/cleanup return 404;
+3. verify /pty and /pty/{id} return 404;
 4. verify /session/{id}/shell returns 403; and
-5. verify an ordinary authenticated principal cannot invoke browser install,
+5. verify an ordinary authenticated principal cannot invoke `/worktree/cleanup`
+   or any hosted pack host-path operation; and
+6. verify an ordinary authenticated principal cannot invoke browser install,
    browser smoke testing, storage repair, global disposal, or destructive
    worktree mutation.
 

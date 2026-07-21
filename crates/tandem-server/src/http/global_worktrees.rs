@@ -454,7 +454,7 @@ pub(in crate::http) async fn delete_worktree(
         "branch": record.branch,
         "cleanup_branch": record.cleanup_branch,
         "branch_deleted": branch_deleted,
-        "stderr": String::from_utf8_lossy(&output.stderr).to_string()
+        "stderr": expose_host_paths.then(|| String::from_utf8_lossy(&output.stderr).to_string())
     })))
 }
 
@@ -584,7 +584,7 @@ pub(in crate::http) async fn reset_worktree(
         "path": expose_host_paths.then_some(record.path),
         "target": target,
         "backup_ref": backup_ref,
-        "stderr": String::from_utf8_lossy(&output.stderr).to_string()
+        "stderr": expose_host_paths.then(|| String::from_utf8_lossy(&output.stderr).to_string())
     })))
 }
 
@@ -639,16 +639,44 @@ fn parse_registered_worktree_entries(
     Ok(entries)
 }
 
-pub(super) async fn cleanup_worktrees(
+pub(in crate::http) async fn cleanup_worktrees(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     payload: Option<Json<WorktreeCleanupInput>>,
 ) -> Result<Json<Value>, StatusCode> {
     let input = payload
         .map(|Json(value)| value)
         .unwrap_or_else(WorktreeCleanupInput::default);
-    let repo_root = resolve_worktree_repo_root(&state, input.repo_root.as_deref()).await?;
     let dry_run = input.dry_run.unwrap_or(false);
     let remove_orphan_dirs = input.remove_orphan_dirs.unwrap_or(true);
+    let (resource, repo_candidate) = resolve_worktree_resource_candidate(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        input.repository_id.as_deref(),
+        input.repo_root.as_deref(),
+    )
+    .await?;
+    let (grant, effect) = authorize_global_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        HostAction::WorktreeCleanup,
+        resource,
+        json!({
+            "repository_candidate": repo_candidate,
+            "dry_run": dry_run,
+            "remove_orphan_dirs": remove_orphan_dirs,
+        }),
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(host_authorization_status)?;
+    let repo_root = verify_git_repo_root(&repo_candidate)?;
     let managed_root = crate::runtime::worktrees::managed_worktree_root(&repo_root);
     let managed_root_string = managed_root.to_string_lossy().to_string();
     let records = state.managed_worktrees.read().await.clone();
@@ -682,6 +710,9 @@ pub(super) async fn cleanup_worktrees(
     let mut failures = Vec::new();
     if !dry_run {
         for entry in &stale {
+            grant
+                .revalidate(&state, &effect)
+                .map_err(host_authorization_status)?;
             let remove_output = std::process::Command::new("git")
                 .args([
                     "-C",
@@ -702,6 +733,9 @@ pub(super) async fn cleanup_worktrees(
                     let mut branch_deleted = None;
                     let mut branch_delete_error = None;
                     if let Some(branch) = entry.branch.as_deref() {
+                        grant
+                            .revalidate(&state, &effect)
+                            .map_err(host_authorization_status)?;
                         match std::process::Command::new("git")
                             .args(["-C", &repo_root, "branch", "-D", branch])
                             .output()
@@ -784,6 +818,9 @@ pub(super) async fn cleanup_worktrees(
     let mut orphan_removed = Vec::new();
     if !dry_run && remove_orphan_dirs {
         for path in &orphan_dirs {
+            grant
+                .revalidate(&state, &effect)
+                .map_err(host_authorization_status)?;
             match std::fs::remove_dir_all(path) {
                 Ok(_) => {
                     orphan_removed.push(json!({
@@ -802,21 +839,29 @@ pub(super) async fn cleanup_worktrees(
         }
     }
 
+    let expose_host_details = verified.is_none();
     Ok(Json(json!({
         "ok": failures.is_empty(),
         "dry_run": dry_run,
-        "repo_root": repo_root,
-        "managed_root": managed_root_string,
-        "tracked_paths": tracked_paths,
-        "active_paths": active,
-        "stale_paths": stale.iter().map(|entry| json!({
+        "repo_root": expose_host_details.then_some(repo_root),
+        "managed_root": expose_host_details.then_some(managed_root_string),
+        "tracked_path_count": tracked_paths.len(),
+        "active_path_count": active.len(),
+        "stale_path_count": stale.len(),
+        "cleaned_worktree_count": cleaned.len(),
+        "orphan_dir_count": orphan_dirs.len(),
+        "orphan_dir_removed_count": orphan_removed.len(),
+        "failure_count": failures.len(),
+        "tracked_paths": expose_host_details.then_some(tracked_paths),
+        "active_paths": expose_host_details.then_some(active),
+        "stale_paths": expose_host_details.then(|| stale.iter().map(|entry| json!({
             "path": entry.path,
             "branch": entry.branch,
-        })).collect::<Vec<_>>(),
-        "cleaned_worktrees": cleaned,
-        "orphan_dirs": orphan_dirs,
-        "orphan_dirs_removed": orphan_removed,
-        "failures": failures,
+        })).collect::<Vec<_>>()),
+        "cleaned_worktrees": expose_host_details.then_some(cleaned),
+        "orphan_dirs": expose_host_details.then_some(orphan_dirs),
+        "orphan_dirs_removed": expose_host_details.then_some(orphan_removed),
+        "failures": expose_host_details.then_some(failures),
     })))
 }
 
@@ -897,33 +942,6 @@ fn verify_git_repo_root(candidate: &str) -> Result<String, StatusCode> {
     }
     Ok(resolved)
 }
-async fn resolve_worktree_repo_root(
-    state: &AppState,
-    repo_root: Option<&str>,
-) -> Result<String, StatusCode> {
-    let requested = if let Some(repo_root) = repo_root {
-        crate::normalize_absolute_workspace_root(repo_root).map_err(|_| StatusCode::BAD_REQUEST)?
-    } else {
-        let root = state.workspace_index.snapshot().await.root;
-        if StdPath::new(&root).is_absolute() {
-            crate::normalize_absolute_workspace_root(&root).map_err(|_| StatusCode::BAD_REQUEST)?
-        } else {
-            let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let joined = cwd.join(root);
-            crate::normalize_absolute_workspace_root(&joined.to_string_lossy())
-                .map_err(|_| StatusCode::BAD_REQUEST)?
-        }
-    };
-    let output = std::process::Command::new("git")
-        .args(["-C", &requested, "rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !output.status.success() {
-        return Err(StatusCode::CONFLICT);
-    }
-    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    crate::normalize_absolute_workspace_root(&resolved).map_err(|_| StatusCode::CONFLICT)
-}
 
 async fn validate_managed_worktree_lease(
     state: &AppState,
@@ -960,7 +978,7 @@ pub(in crate::http) async fn prune_expired_leases(state: &AppState) -> usize {
         expired
     };
     for lease_id in expired {
-        cleanup_managed_worktrees_for_lease(state, &lease_id).await;
+        cleanup_managed_worktrees_for_lease(state, &lease_id, None).await;
     }
     state.engine_leases.read().await.len()
 }
@@ -999,6 +1017,7 @@ pub(in crate::http) struct LeaseWorktreeCleanupResult {
 pub(in crate::http) async fn cleanup_managed_worktrees_for_lease(
     state: &AppState,
     lease_id: &str,
+    caller_authority: Option<(&AuthorizedHostEffect, &HostEffectRequest)>,
 ) -> LeaseWorktreeCleanupResult {
     let records = state
         .managed_worktrees
@@ -1010,6 +1029,16 @@ pub(in crate::http) async fn cleanup_managed_worktrees_for_lease(
         .collect::<Vec<_>>();
     let mut result = LeaseWorktreeCleanupResult::default();
     for record in records {
+        if let Some((caller_grant, caller_effect)) = caller_authority {
+            if let Err(error) = caller_grant.revalidate(state, caller_effect) {
+                result.failures.push(json!({
+                    "worktree_id": record.key,
+                    "code": error.code(),
+                    "authority": "caller",
+                }));
+                continue;
+            }
+        }
         let effect = HostEffectRequest::new(
             HostAction::WorktreeCleanup,
             CanonicalHostResource::new(
@@ -1050,6 +1079,16 @@ pub(in crate::http) async fn cleanup_managed_worktrees_for_lease(
             }));
             continue;
         }
+        if let Some((caller_grant, caller_effect)) = caller_authority {
+            if let Err(error) = caller_grant.revalidate(state, caller_effect) {
+                result.failures.push(json!({
+                    "worktree_id": record.key,
+                    "code": error.code(),
+                    "authority": "caller",
+                }));
+                continue;
+            }
+        }
         let output = match std::process::Command::new("git")
             .args([
                 "-C",
@@ -1083,6 +1122,16 @@ pub(in crate::http) async fn cleanup_managed_worktrees_for_lease(
             continue;
         }
         if record.cleanup_branch {
+            if let Some((caller_grant, caller_effect)) = caller_authority {
+                if let Err(error) = caller_grant.revalidate(state, caller_effect) {
+                    result.failures.push(json!({
+                        "worktree_id": record.key,
+                        "code": error.code(),
+                        "authority": "caller",
+                    }));
+                    continue;
+                }
+            }
             if let Err(error) = grant.revalidate(state, &effect) {
                 result.failures.push(json!({
                     "worktree_id": record.key,

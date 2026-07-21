@@ -11,6 +11,18 @@ use std::path::PathBuf;
 
 use crate::http::global::sanitize_relative_subpath;
 
+fn require_local_pack_host_effect(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    locality: crate::http::host_authority::RequestLocality,
+) -> Result<(), StatusCode> {
+    if !locality.is_direct_loopback() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    crate::http::host_authority::require_loopback_local_operator(state, tenant, verified)
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct PackSelectorPath {
     pub selector: String,
@@ -114,7 +126,18 @@ pub(super) async fn packs_file_get(
 
 pub(super) async fn packs_install(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<PackInstallRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    require_local_pack_host_effect(&state, &tenant, verified.as_deref(), locality)?;
+    install_pack(state, input).await
+}
+
+async fn install_pack(
+    state: AppState,
+    input: PackInstallRequest,
 ) -> Result<Json<Value>, StatusCode> {
     state.event_bus.publish(EngineEvent::new(
         "pack.install.started",
@@ -156,8 +179,12 @@ pub(super) async fn packs_install(
 
 pub(super) async fn packs_install_from_attachment(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<PackInstallFromAttachmentInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    require_local_pack_host_effect(&state, &tenant, verified.as_deref(), locality)?;
     let source = json!({
         "kind": "attachment",
         "attachment_id": input.attachment_id,
@@ -165,21 +192,25 @@ pub(super) async fn packs_install_from_attachment(
         "channel_id": input.channel_id,
         "sender_id": input.sender_id,
     });
-    packs_install(
-        State(state),
-        Json(PackInstallRequest {
+    install_pack(
+        state,
+        PackInstallRequest {
             path: Some(input.path),
             url: None,
             source,
-        }),
+        },
     )
     .await
 }
 
 pub(super) async fn packs_uninstall(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<PackUninstallRequest>,
 ) -> Result<Json<Value>, StatusCode> {
+    require_local_pack_host_effect(&state, &tenant, verified.as_deref(), locality)?;
     let removed = state.pack_manager.uninstall(input).await.map_err(|err| {
         if err.to_string().contains("not found") {
             StatusCode::NOT_FOUND
@@ -197,8 +228,12 @@ pub(super) async fn packs_uninstall(
 
 pub(super) async fn packs_export(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<PackExportRequest>,
 ) -> Result<Json<Value>, StatusCode> {
+    require_local_pack_host_effect(&state, &tenant, verified.as_deref(), locality)?;
     let exported = state.pack_manager.export(input).await.map_err(|err| {
         tracing::warn!("pack export failed: {}", err);
         StatusCode::BAD_REQUEST
@@ -298,8 +333,12 @@ pub(super) async fn packs_update_post(
 
 pub(super) async fn packs_detect(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<PackDetectInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    require_local_pack_host_effect(&state, &tenant, verified.as_deref(), locality)?;
     let path = PathBuf::from(&input.path);
     let is_pack = state.pack_manager.detect(&path).await.map_err(|err| {
         tracing::warn!("pack detect failed: {}", err);
