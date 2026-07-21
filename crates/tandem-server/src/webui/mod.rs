@@ -16,7 +16,7 @@ pub fn web_ui_router<S>(prefix: &str) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    let base = normalize_prefix(prefix);
+    let base = crate::config::webui::normalize_web_ui_prefix(prefix);
     let wildcard = format!("{}/{{*path}}", base);
     Router::new()
         .route(&base, get(serve_index))
@@ -53,17 +53,4 @@ async fn serve_index() -> impl IntoResponse {
         HeaderValue::from_static("no-referrer"),
     );
     response
-}
-
-fn normalize_prefix(prefix: &str) -> String {
-    let raw = prefix.trim();
-    if raw.is_empty() || raw == "/" {
-        return "/admin".to_string();
-    }
-    let with_leading = if raw.starts_with('/') {
-        raw.to_string()
-    } else {
-        format!("/{raw}")
-    };
-    with_leading.trim_end_matches('/').to_string()
 }

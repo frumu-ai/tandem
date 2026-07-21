@@ -1171,7 +1171,7 @@ async fn create_branched_test_automation_v2(
 }
 
 #[tokio::test]
-async fn global_health_route_returns_healthy_shape() {
+async fn global_health_route_returns_only_minimal_public_shape() {
     let state = test_state().await;
     let app = app_router(state);
     let req = Request::builder()
@@ -1185,23 +1185,39 @@ async fn global_health_route_returns_healthy_shape() {
     let payload: Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(payload.get("healthy").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(payload.get("ready").and_then(|v| v.as_bool()), Some(true));
-    assert!(payload.get("phase").is_some());
-    assert!(payload.get("startup_attempt_id").is_some());
-    assert!(payload.get("startup_elapsed_ms").is_some());
-    assert!(payload.get("version").and_then(|v| v.as_str()).is_some());
-    assert!(payload.get("build_id").and_then(|v| v.as_str()).is_some());
-    assert!(payload
-        .get("binary_path")
-        .and_then(|v| v.as_str())
-        .is_some());
-    assert!(payload
-        .get("binary_modified_at_ms")
-        .and_then(|v| v.as_u64())
-        .is_some());
-    assert!(payload.get("mode").and_then(|v| v.as_str()).is_some());
-    assert!(payload.get("environment").is_some());
+    assert_eq!(payload.as_object().map(|object| object.len()), Some(2));
 }
 
+#[tokio::test]
+async fn global_diagnostics_route_is_authenticated_and_redacted() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("GET")
+        .uri("/global/diagnostics")
+        .extension(axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 43123))))
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert!(payload.get("phase").is_some());
+    assert!(payload.get("version").and_then(Value::as_str).is_some());
+    assert!(payload.get("memory_storage").is_some());
+    assert!(payload.get("environment").is_some());
+    for forbidden in [
+        "binary_path",
+        "binary_modified_at_ms",
+        "workspace_root",
+        "last_error",
+    ] {
+        assert!(
+            payload.get(forbidden).is_none(),
+            "diagnostics leaked forbidden field {forbidden}"
+        );
+    }
+}
 #[tokio::test]
 async fn browser_status_route_returns_browser_readiness_shape() {
     let state = test_state().await;

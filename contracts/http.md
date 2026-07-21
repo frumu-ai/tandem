@@ -5,8 +5,12 @@ This document establishes the expected payloads and canonical behavior for the c
 ## 1. Global Health (`/global/health`)
 
 - **Method:** `GET`
-- **Wire Response:** `{"ready": true, "phase": "startup"}`
+- **Wire Response:** `{"healthy": true, "ready": true}`
 - **SDK Normalized Response:** `SystemHealth`
+
+Detailed build, startup, browser, storage, and runtime information is available from authenticated
+`GET /global/diagnostics`. Authenticated clients can obtain the engine workspace default from
+`GET /global/workspace`, whose response is `{"workspace_root":"/absolute/path"}`.
 
 ## 2. Session List (`/session`)
 

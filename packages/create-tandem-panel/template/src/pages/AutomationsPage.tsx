@@ -2509,7 +2509,7 @@ function CreateWizard({
 
   const healthQuery = useQuery({
     queryKey: ["global", "health"],
-    queryFn: () => client.health().catch(() => ({})),
+    queryFn: () => client.workspace().catch(() => ({})),
     refetchInterval: 30000,
   });
   const workspaceBrowserQuery = useQuery({

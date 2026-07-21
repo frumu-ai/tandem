@@ -47,7 +47,7 @@
   "author": "Frumu Ltd",
   "dependencies": {
     "@frumu/tandem": "^0.6.6",
-    "@frumu/tandem-client": "^0.6.6",
+    "@frumu/tandem-client": "^0.7.1",
     "@fullcalendar/core": "6.1.20",
     "@fullcalendar/interaction": "6.1.20",
     "@fullcalendar/react": "6.1.20",

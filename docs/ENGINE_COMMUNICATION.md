@@ -55,7 +55,9 @@ Core session/run endpoints:
 - `POST /session/{id}/run/{run_id}/cancel` cancel by run ID
 - `POST /session/{id}/cancel` cancel active run
 - `GET /event` SSE stream
-- `GET /global/health` readiness/phase/build info
+- `GET /global/health` minimal public health/readiness booleans
+- `GET /global/diagnostics` authenticated build/startup/runtime details
+- `GET /global/workspace` authenticated engine workspace default
 
 Compatibility aliases under `/api/...` are maintained where noted in server routes.
 
@@ -172,7 +174,10 @@ Desktop/TUI map these into their request-center UI flows.
 ## Observability and Diagnostics
 
 - Health/readiness:
-  - `GET /global/health`
+  - `GET /global/health` returns only `healthy` and `ready`
+- Authenticated diagnostics:
+  - `GET /global/diagnostics` returns redacted build/startup/runtime detail to a loopback operator or verified deployment administrator
+  - `GET /global/workspace` returns the workspace default without granting host-operation authority
 - Structured logs:
   - Desktop: `tandem.desktop.*.jsonl`
   - Engine: `tandem.engine.*.jsonl`

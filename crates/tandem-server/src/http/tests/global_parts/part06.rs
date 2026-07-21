@@ -162,3 +162,40 @@ async fn automations_v2_run_recover_resets_terminal_node_for_run_level_deliverab
         .iter()
         .any(|entry| entry.event == "run_recovered"));
 }
+
+#[tokio::test]
+async fn global_workspace_is_available_through_authenticated_proxy_routes() {
+    let state = test_state().await;
+    let expected = state.workspace_index.snapshot().await.root;
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("GET")
+        .uri("/global/workspace")
+        .extension(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            43123,
+        ))))
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("workspace_root").and_then(Value::as_str),
+        Some(expected.as_str())
+    );
+
+    let proxied = Request::builder()
+        .method("GET")
+        .uri("/global/workspace")
+        .header("x-forwarded-for", "198.51.100.9")
+        .extension(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            43123,
+        ))))
+        .body(Body::empty())
+        .expect("request");
+    let proxied_resp = app.oneshot(proxied).await.expect("response");
+    assert_eq!(proxied_resp.status(), StatusCode::OK);
+}

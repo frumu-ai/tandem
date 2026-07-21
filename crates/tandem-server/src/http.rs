@@ -80,6 +80,7 @@ mod goal_capability_learning;
 mod goals_api;
 mod goals_projection;
 pub(crate) mod governance;
+mod host_authority;
 pub(crate) mod incident_monitor;
 mod marketplace;
 pub(crate) mod mcp;
@@ -151,6 +152,7 @@ mod stateful_runtime_api;
 mod stateful_runtime_observability;
 mod stateful_runtime_reliability;
 mod system_api;
+mod system_api_hardened;
 mod task_intake;
 mod telegram_interactions;
 mod tenant_rate_limit;
@@ -463,6 +465,7 @@ pub async fn serve_with_route_extensions(
     state: AppState,
     route_extensions: &[RouteRegistrar],
 ) -> anyhow::Result<()> {
+    state.set_host_operations_loopback_only(addr.ip().is_loopback());
     apply_strict_tenant_enforcement_defaults()?;
     slack_interactions::start_slack_event_recovery_worker(&state).await?;
     let reaper_state = state.clone();
@@ -737,7 +740,11 @@ pub async fn serve_with_route_extensions(
     // the HTTP server lifecycle.
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let result = after_http_server_stops(
-        axum::serve(listener, app).with_graceful_shutdown(wait_for_shutdown_signal()),
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(wait_for_shutdown_signal()),
         || async move {
             approval_outbound_cancel_for_shutdown.store(true, Ordering::Relaxed);
             shutdown_state.stop_provider_oauth_refresh().await;

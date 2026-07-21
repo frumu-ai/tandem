@@ -105,7 +105,7 @@ export function OptimizationCampaignsPanel({
 
   const healthQuery = useQuery({
     queryKey: ["optimizations", "health"],
-    queryFn: () => client.health().catch(() => ({})),
+    queryFn: () => client.workspace().catch(() => ({})),
     refetchInterval: 30000,
   });
 

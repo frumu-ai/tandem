@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::header;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
@@ -13,6 +13,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use tandem_types::{
     AccessPermission, DataBoundary, DataClass, GrantSource, HeaderTenantContextResolver,
@@ -36,11 +37,20 @@ pub(super) async fn auth_gate(
     mut request: Request,
     next: Next,
 ) -> Response {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0);
+    let locality =
+        super::host_authority::RequestLocality::from_peer_and_headers(peer, request.headers());
+    request.extensions_mut().insert(locality);
     if request.method() == Method::OPTIONS {
         return next.run(request).await;
     }
     let path = request.uri().path();
-    if state.web_ui_enabled() && request.uri().path().starts_with(&state.web_ui_prefix()) {
+    if state.web_ui_enabled()
+        && is_public_web_ui_request(request.method(), path, &state.web_ui_prefix())
+    {
         return next.run(request).await;
     }
     if path == "/global/health" {
@@ -350,6 +360,16 @@ fn is_public_automation_webhook_path(path: &str) -> bool {
         .filter(|suffix| suffix.starts_with('/'))
         .unwrap_or(path);
     trimmed.starts_with("/webhooks/automations/")
+}
+
+fn is_public_web_ui_request(method: &Method, path: &str, prefix: &str) -> bool {
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        return false;
+    }
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 /// The signed Slack Events webhook (`/channels/slack/events`) authenticates via the
@@ -1662,6 +1682,37 @@ mod slack_events_bypass_tests {
         assert!(!is_public_slack_events_path("/channels/slack/interactions"));
         assert!(!is_public_slack_events_path("/channels/discord/events"));
         assert!(!is_public_slack_events_path("/global/health"));
+    }
+}
+
+#[cfg(test)]
+mod web_ui_bypass_tests {
+    use super::is_public_web_ui_request;
+    use axum::http::Method;
+
+    #[test]
+    fn web_ui_bypass_is_method_and_segment_exact() {
+        assert!(is_public_web_ui_request(&Method::GET, "/admin", "/admin"));
+        assert!(is_public_web_ui_request(
+            &Method::HEAD,
+            "/ui/operators/assets/app.js",
+            "/ui/operators"
+        ));
+        assert!(!is_public_web_ui_request(
+            &Method::POST,
+            "/admin/token/generate",
+            "/admin"
+        ));
+        assert!(!is_public_web_ui_request(
+            &Method::GET,
+            "/administrator",
+            "/admin"
+        ));
+        assert!(!is_public_web_ui_request(
+            &Method::GET,
+            "/admin%2fapi",
+            "/admin"
+        ));
     }
 }
 

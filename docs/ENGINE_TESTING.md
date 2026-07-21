@@ -165,8 +165,11 @@ cargo run -p tandem-ai -- serve --host 127.0.0.1 --port 39731 --state-dir .tande
 In a second terminal:
 
 ```bash
-# Health remains public
+# Liveness remains public and returns only {"healthy":...,"ready":...}
 curl -s http://127.0.0.1:39731/global/health | jq .
+
+# Detailed, redacted diagnostics require operator authentication
+curl -s http://127.0.0.1:39731/global/diagnostics -H "X-Tandem-Token: tk_test_token" | jq .
 
 # Non-health endpoints require token
 curl -i -s http://127.0.0.1:39731/config/providers
@@ -193,7 +196,7 @@ deployments.
 Validate that engine-detected environment is surfaced to every client path:
 
 ```bash
-curl -s http://127.0.0.1:39731/global/health | jq .environment
+curl -s http://127.0.0.1:39731/global/diagnostics -H "X-Tandem-Token: tk_test_token" | jq .environment
 ```
 
 Expected fields:
@@ -285,6 +288,7 @@ cargo test -p tandem-server -p tandem-core -p tandem-ai
 Coverage includes route shape/contracts like:
 
 - `/global/health`
+- `/global/diagnostics`
 - `/provider`
 - `/api/session` alias behavior
 - `/mission` create/list/get/apply-event

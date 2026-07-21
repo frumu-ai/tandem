@@ -372,7 +372,7 @@ export function AutomationComposerPanel({
 
   const healthQuery = useQuery({
     queryKey: ["automations", "composer", "health"],
-    queryFn: () => client.health().catch(() => ({})),
+    queryFn: () => client.workspace().catch(() => ({})),
     refetchInterval: 30000,
   });
   const mcpQuery = useQuery({

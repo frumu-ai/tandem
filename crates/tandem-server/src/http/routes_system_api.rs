@@ -6,10 +6,11 @@ use axum::Router;
 
 use crate::AppState;
 
-use super::system_api::*;
+use super::system_api::run_shell;
+use super::system_api_hardened::*;
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
-    router
+    let host_routes = Router::<AppState>::new()
         .route("/find", get(find_text))
         .route("/find/file", get(find_file))
         .route("/find/symbol", get(find_symbol))
@@ -27,4 +28,8 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route("/session/{id}/shell", post(run_shell))
         .route("/path", get(path_info))
         .route("/scheduler/metrics", get(scheduler_metrics))
+        .route_layer(axum::middleware::from_fn(
+            super::host_authority::require_direct_loopback_request,
+        ));
+    router.merge(host_routes)
 }

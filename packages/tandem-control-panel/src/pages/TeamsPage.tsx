@@ -159,13 +159,15 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
   const agentsSectionRef = useRef<HTMLDivElement | null>(null);
   const caps = useCapabilities();
   const agentTeamsAvailable = caps.data?.agent_teams === true;
-  const healthQuery = useQuery({
-    queryKey: ["teams", "health"],
-    queryFn: () => client?.health?.().catch(() => ({})) ?? Promise.resolve({}),
+  const workspaceQuery = useQuery({
+    queryKey: ["teams", "workspace"],
+    queryFn: () => client?.workspace?.().catch(() => ({})) ?? Promise.resolve({}),
     refetchInterval: 30000,
   });
   const defaultWorkspaceRoot = String(
-    (healthQuery.data as any)?.workspaceRoot || (healthQuery.data as any)?.workspace_root || ""
+    (workspaceQuery.data as any)?.workspaceRoot ||
+      (workspaceQuery.data as any)?.workspace_root ||
+      ""
   ).trim();
   const effectiveWorkspaceRoot = String(workspaceRoot || defaultWorkspaceRoot || "").trim();
 
