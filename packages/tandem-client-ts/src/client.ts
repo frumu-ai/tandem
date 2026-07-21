@@ -681,9 +681,10 @@ class Storage {
 class Worktrees {
   constructor(private req: TandemClient["_request"]) {}
 
-  /** Preview or apply stale managed-worktree cleanup for a repository root. */
+  /** Preview or apply stale managed-worktree cleanup by local root or opaque repository ID. */
   async cleanup(options?: {
     repoRoot?: string;
+    repositoryId?: string;
     dryRun?: boolean;
     removeOrphanDirs?: boolean;
   }): Promise<WorktreeCleanupResponse> {
@@ -691,6 +692,7 @@ class Worktrees {
       method: "POST",
       body: JSON.stringify({
         repo_root: options?.repoRoot,
+        repository_id: options?.repositoryId,
         dry_run: options?.dryRun ?? false,
         remove_orphan_dirs: options?.removeOrphanDirs ?? true,
       }),

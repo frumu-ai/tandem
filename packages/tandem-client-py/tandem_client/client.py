@@ -377,16 +377,19 @@ class _Worktrees:
         self,
         *,
         repo_root: Optional[str] = None,
+        repository_id: Optional[str] = None,
         dry_run: bool = False,
         remove_orphan_dirs: bool = True,
     ) -> WorktreeCleanupResponse:
-        """Preview or apply stale managed-worktree cleanup for a repository root."""
+        """Preview or apply cleanup by local root or opaque repository ID."""
         payload: dict[str, Any] = {
             "dry_run": dry_run,
             "remove_orphan_dirs": remove_orphan_dirs,
         }
         if repo_root:
             payload["repo_root"] = repo_root
+        if repository_id:
+            payload["repository_id"] = repository_id
         res = await self._http.post("/worktree/cleanup", json=payload)
         res.raise_for_status()
         return WorktreeCleanupResponse.model_validate(res.json())

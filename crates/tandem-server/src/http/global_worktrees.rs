@@ -1225,10 +1225,25 @@ pub(in crate::http) async fn cleanup_managed_worktrees_for_lease(
                 }
             }
         }
-        state
-            .managed_worktrees
-            .write()
-            .await
+        let mut managed_worktrees = state.managed_worktrees.write().await;
+        if let Some((caller_grant, caller_effect)) = caller_authority {
+            if let Err(error) = caller_grant.revalidate(state, caller_effect) {
+                result.failures.push(json!({
+                    "worktree_id": record.key,
+                    "code": error.code(),
+                    "authority": "caller",
+                }));
+                continue;
+            }
+        }
+        if let Err(error) = grant.revalidate(state, &effect) {
+            result.failures.push(json!({
+                "worktree_id": record.key,
+                "code": error.code(),
+            }));
+            continue;
+        }
+        managed_worktrees
             .retain(|_, row| !(row.repo_root == record.repo_root && row.path == record.path));
         result.cleaned_paths.push(record.path);
     }
