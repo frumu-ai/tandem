@@ -2,6 +2,31 @@
 // Licensed under the Business Source License 1.1
 
 impl AppState {
+    pub async fn can_mutate_automation(
+        &self,
+        automation_id: &str,
+        actor: &GovernanceActorRef,
+        destructive: bool,
+        tenant_context: &tandem_types::TenantContext,
+    ) -> Result<AutomationGovernanceRecord, GovernanceError> {
+        let guard = self.automation_governance.read().await;
+        let Some(record) = guard.records.get(automation_id).cloned() else {
+            return Err(GovernanceError::forbidden(
+                "AUTOMATION_V2_GOVERNANCE_MISSING",
+                "automation governance record not found",
+            ));
+        };
+        if !governance_record_owned_by(&record, tenant_context) {
+            return Err(GovernanceError::forbidden(
+                "AUTOMATION_V2_TENANT_MISMATCH",
+                "automation governance record not found",
+            ));
+        }
+        self.governance_engine
+            .authorize_mutation(&record, actor, destructive)?;
+        Ok(record)
+    }
+
     pub async fn retire_automation_v2(
         &self,
         automation_id: &str,

@@ -317,11 +317,24 @@ pub(super) async fn governance_policy_decisions_list(
 pub(super) async fn governance_approvals_list(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
-    let rows = state
+    let mut rows = state
         .list_approval_requests_for_tenant(None, None, &tenant_context)
         .await;
+    if !super::workflows::workflow_reviewer_is_eligible(&tenant_context, verified.as_deref()) {
+        let actor = resolve_governance_actor(&headers, &tenant_context, &request_principal);
+        let caller = governance_actor_id(&actor);
+        rows.retain(|approval| {
+            caller.is_some_and(|caller| {
+                governance_actor_id(&approval.requested_by)
+                    .is_some_and(|requester| requester.eq_ignore_ascii_case(caller))
+            })
+        });
+    }
     Ok(Json(json!({
         "approvals": rows.iter().map(approval_request_wire).collect::<Vec<_>>(),
         "count": rows.len(),
@@ -791,7 +804,9 @@ pub(super) async fn automation_grant_create(
         ));
     }
     require_active_automation_owner(&state, &id, &tenant_context).await?;
-    let mutation = state.can_mutate_automation(&id, &granted_by, false).await;
+    let mutation = state
+        .can_mutate_automation(&id, &granted_by, false, &tenant_context)
+        .await;
     enforce_mutation_or_audit(&state, &tenant_context, &id, &granted_by, mutation).await?;
     require_independent_mutation_approval(
         &state,
@@ -859,7 +874,9 @@ pub(super) async fn automation_grant_revoke(
         ));
     }
     require_active_automation_owner(&state, &id, &tenant_context).await?;
-    let mutation = state.can_mutate_automation(&id, &revoked_by, true).await;
+    let mutation = state
+        .can_mutate_automation(&id, &revoked_by, true, &tenant_context)
+        .await;
     enforce_mutation_or_audit(&state, &tenant_context, &id, &revoked_by, mutation).await?;
     require_independent_mutation_approval(
         &state,
@@ -970,7 +987,9 @@ pub(super) async fn automation_restore(
                 "AUTOMATION_GOVERNANCE_RESTORE_NOT_FOUND",
             )
         })?;
-    let mutation = state.can_mutate_automation(&id, &actor, true).await;
+    let mutation = state
+        .can_mutate_automation(&id, &actor, true, &tenant_context)
+        .await;
     enforce_mutation_or_audit(&state, &tenant_context, &id, &actor, mutation).await?;
     let approval_id = approval_id_from_headers(&headers);
     require_independent_mutation_approval(
@@ -1040,7 +1059,9 @@ pub(super) async fn automation_retire(
         ));
     }
     require_active_automation_owner(&state, &id, &tenant_context).await?;
-    let mutation = state.can_mutate_automation(&id, &actor, true).await;
+    let mutation = state
+        .can_mutate_automation(&id, &actor, true, &tenant_context)
+        .await;
     enforce_mutation_or_audit(&state, &tenant_context, &id, &actor, mutation).await?;
     require_independent_mutation_approval(
         &state,
@@ -1108,7 +1129,9 @@ pub(super) async fn automation_extend(
         ));
     }
     require_active_automation_owner(&state, &id, &tenant_context).await?;
-    let mutation = state.can_mutate_automation(&id, &actor, false).await;
+    let mutation = state
+        .can_mutate_automation(&id, &actor, false, &tenant_context)
+        .await;
     enforce_mutation_or_audit(&state, &tenant_context, &id, &actor, mutation).await?;
     require_independent_mutation_approval(
         &state,

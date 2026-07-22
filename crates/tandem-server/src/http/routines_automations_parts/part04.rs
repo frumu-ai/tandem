@@ -31,7 +31,7 @@ pub(super) async fn automations_v2_pause(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false).await,
+        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
     )
     .await?;
     automation.status = AutomationV2Status::Paused;
@@ -122,7 +122,7 @@ pub(super) async fn automations_v2_resume(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false).await,
+        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
     )
     .await?;
     automation.status = AutomationV2Status::Active;

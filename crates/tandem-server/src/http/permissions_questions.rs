@@ -2,6 +2,7 @@
 // Licensed under the Business Source License 1.1
 
 use super::*;
+use std::collections::HashSet;
 use tandem_types::VerifiedTenantContext;
 
 type QueueError = (StatusCode, Json<ErrorEnvelope>);
@@ -83,6 +84,48 @@ fn ensure_independent_permission_reviewer(
         ));
     }
     Ok(())
+}
+
+async fn queue_session_visibility(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    request_principal: &RequestPrincipal,
+    verified: Option<&VerifiedTenantContext>,
+) -> Option<HashSet<String>> {
+    if super::workflows::workflow_reviewer_is_eligible(tenant_context, verified) {
+        return None;
+    }
+    let mut caller_tenant = tenant_context.clone();
+    caller_tenant.actor_id = request_principal
+        .actor_id
+        .clone()
+        .or(caller_tenant.actor_id);
+    Some(
+        state
+            .storage
+            .list_session_summaries()
+            .await
+            .into_iter()
+            .filter(|session| {
+                super::sessions_actor_scope::session_visible_to_actor(
+                    &caller_tenant,
+                    &session.tenant_context,
+                )
+            })
+            .map(|session| session.id)
+            .collect(),
+    )
+}
+
+fn queue_record_owned_by(
+    requested_by: Option<&str>,
+    session_id: Option<&str>,
+    caller: Option<&str>,
+    visible_sessions: &HashSet<String>,
+) -> bool {
+    caller.is_some_and(|actor| {
+        requested_by.is_some_and(|requester| requester.eq_ignore_ascii_case(actor))
+    }) || session_id.is_some_and(|id| visible_sessions.contains(id))
 }
 
 fn map_permission_reply_error(error: tandem_core::PermissionReplyError) -> QueueError {
@@ -210,11 +253,54 @@ async fn apply_permission_reply(
 pub(super) async fn list_permissions(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
 ) -> Json<Value> {
+    let mut requests = state.permissions.list_for_tenant(&tenant_context).await;
+    let mut rules = state
+        .permissions
+        .list_rules_for_tenant(&tenant_context)
+        .await;
+    let mut decisions = state
+        .permissions
+        .list_decisions_for_tenant(&tenant_context)
+        .await;
+    if let Some(visible_sessions) = queue_session_visibility(
+        &state,
+        &tenant_context,
+        &request_principal,
+        verified.as_deref(),
+    )
+    .await
+    {
+        let caller = request_principal
+            .actor_id
+            .as_deref()
+            .or(tenant_context.actor_id.as_deref());
+        requests.retain(|request| {
+            queue_record_owned_by(
+                request.requested_by.as_deref(),
+                request.session_id.as_deref(),
+                caller,
+                &visible_sessions,
+            )
+        });
+        rules.retain(|rule| {
+            rule.session_id
+                .as_deref()
+                .is_some_and(|id| visible_sessions.contains(id))
+        });
+        decisions.retain(|decision| {
+            decision
+                .session_id
+                .as_deref()
+                .is_some_and(|id| visible_sessions.contains(id))
+        });
+    }
     Json(json!({
-        "requests": state.permissions.list_for_tenant(&tenant_context).await,
-        "rules": state.permissions.list_rules_for_tenant(&tenant_context).await,
-        "decisions": state.permissions.list_decisions_for_tenant(&tenant_context).await
+        "requests": requests,
+        "rules": rules,
+        "decisions": decisions
     }))
 }
 
@@ -308,13 +394,35 @@ pub(super) async fn deny_tool_by_call(
 pub(super) async fn list_questions(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
 ) -> Json<Value> {
-    Json(json!(
-        state
-            .storage
-            .list_question_requests_for_tenant(&tenant_context)
-            .await
-    ))
+    let mut questions = state
+        .storage
+        .list_question_requests_for_tenant(&tenant_context)
+        .await;
+    if let Some(visible_sessions) = queue_session_visibility(
+        &state,
+        &tenant_context,
+        &request_principal,
+        verified.as_deref(),
+    )
+    .await
+    {
+        let caller = request_principal
+            .actor_id
+            .as_deref()
+            .or(tenant_context.actor_id.as_deref());
+        questions.retain(|question| {
+            queue_record_owned_by(
+                question.requested_by.as_deref(),
+                Some(&question.session_id),
+                caller,
+                &visible_sessions,
+            )
+        });
+    }
+    Json(json!(questions))
 }
 
 fn map_question_lookup_error(error: anyhow::Error) -> QueueError {
@@ -365,6 +473,17 @@ async fn apply_question_reply(
             )
         })?;
     let reviewer = ensure_queue_reviewer(headers, tenant_context, request_principal, verified)?;
+    if request
+        .requested_by
+        .as_deref()
+        .is_some_and(|requester| requester.eq_ignore_ascii_case(&reviewer))
+    {
+        return Err(queue_error(
+            StatusCode::FORBIDDEN,
+            "question responses require an independent reviewer",
+            ErrorCode::TenantContextDenied,
+        ));
+    }
     crate::audit::append_protected_audit_event(
         state,
         event_type,

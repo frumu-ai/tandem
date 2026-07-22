@@ -1315,7 +1315,7 @@ pub(super) async fn automations_v2_patch(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false).await,
+        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
     )
     .await?;
     let previous_declared_capabilities = governance.declared_capabilities.clone();
@@ -1489,7 +1489,7 @@ pub(super) async fn automations_v2_share(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false).await,
+        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
     )
     .await?;
     apply_automation_v2_share_metadata(&mut automation, input, verified)?;
@@ -1549,7 +1549,7 @@ pub(super) async fn automations_v2_delete(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, true).await,
+        state.can_mutate_automation(&id, &actor, true, &tenant_context).await,
     )
     .await?;
     let deleted = state
@@ -1614,7 +1614,7 @@ pub(super) async fn automations_v2_run_now(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false).await,
+        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
     )
     .await?;
     let dry_run = input.dry_run;
