@@ -712,31 +712,67 @@ pub(in crate::http) async fn cleanup_worktrees(
     let repo_root = verify_git_repo_root(&repo_candidate).await?;
     let managed_root = crate::runtime::worktrees::managed_worktree_root(&repo_root);
     let managed_root_string = managed_root.to_string_lossy().to_string();
-    let records = state.managed_worktrees.read().await.clone();
+    let now = crate::now_ms();
+    let active_lease_ids = state
+        .engine_leases
+        .read()
+        .await
+        .iter()
+        .filter(|(_, lease)| lease.tenant_context == tenant && !lease.is_expired(now))
+        .map(|(lease_id, _)| lease_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let records = state
+        .managed_worktrees
+        .read()
+        .await
+        .values()
+        .filter(|row| {
+            row.repo_root == repo_root
+                && row.repository_id == input.repository_id
+                && row.tenant_context == tenant
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let owned_by_path = records
+        .iter()
+        .map(|row| (row.path.clone(), row.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let stale_owned_paths = records
+        .iter()
+        .filter(|row| {
+            row.lease_id
+                .as_ref()
+                .is_some_and(|lease_id| !active_lease_ids.contains(lease_id))
+        })
+        .map(|row| row.path.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let active_paths = records
+        .iter()
+        .filter(|row| !stale_owned_paths.contains(&row.path))
+        .map(|row| row.path.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let tracked_paths = records
+        .iter()
+        .map(|row| row.path.clone())
+        .collect::<Vec<_>>();
     let git_managed_worktrees = parse_registered_worktree_entries(&repo_root)
         .await?
         .into_iter()
         .filter(|entry| StdPath::new(&entry.path).starts_with(&managed_root))
         .collect::<Vec<_>>();
 
-    let active_paths = records
-        .values()
-        .filter(|row| row.repo_root == repo_root)
-        .map(|row| row.path.clone())
-        .collect::<std::collections::HashSet<_>>();
-    let tracked_paths = records
-        .values()
-        .filter(|row| row.repo_root == repo_root)
-        .map(|row| row.path.clone())
-        .collect::<Vec<_>>();
-
     let mut stale = Vec::new();
     let mut active = Vec::new();
+    let mut unknown = Vec::new();
     for entry in &git_managed_worktrees {
         if active_paths.contains(&entry.path) {
             active.push(entry.path.clone());
-        } else {
+        } else if stale_owned_paths.contains(&entry.path) {
             stale.push(entry.clone());
+        } else {
+            // No durable ownership record means no cleanup authority. This is
+            // intentionally fail-closed after restart and for shared checkouts.
+            unknown.push(entry.clone());
         }
     }
 
@@ -744,6 +780,13 @@ pub(in crate::http) async fn cleanup_worktrees(
     let mut failures = Vec::new();
     if !dry_run {
         for entry in &stale {
+            let Some(record) = owned_by_path.get(&entry.path) else {
+                failures.push(json!({
+                    "path": entry.path,
+                    "code": "WORKTREE_OWNERSHIP_UNKNOWN",
+                }));
+                continue;
+            };
             grant
                 .revalidate(&state, &effect)
                 .map_err(host_authorization_status)?;
@@ -772,35 +815,44 @@ pub(in crate::http) async fn cleanup_worktrees(
                         .managed_worktrees
                         .write()
                         .await
-                        .retain(|_, row| row.repo_root != repo_root || row.path != entry.path);
+                        .retain(|_, row| row.key != record.key || row.tenant_context != tenant);
                     let mut branch_deleted = None;
                     let mut branch_delete_error = None;
-                    if let Some(branch) = entry.branch.as_deref() {
-                        grant
-                            .revalidate(&state, &effect)
-                            .map_err(host_authorization_status)?;
-                        match crate::runtime::worktrees::run_managed_git(
-                            &repo_root,
-                            &["branch", "-D", "--", branch],
-                        )
-                        .await
-                        {
-                            Ok(branch_output) if branch_output.success => {
-                                branch_deleted = Some(true);
-                            }
-                            Ok(branch_output) => {
-                                branch_deleted = Some(false);
-                                branch_delete_error = Some(branch_output.stderr.clone());
-                            }
-                            Err(err) => {
-                                branch_deleted = Some(false);
-                                branch_delete_error = Some(err.to_string());
+                    if record.cleanup_branch {
+                        if entry.branch.as_deref() != Some(record.branch.as_str()) {
+                            branch_deleted = Some(false);
+                            branch_delete_error = Some(
+                                "registered branch does not match the owned cleanup record"
+                                    .to_string(),
+                            );
+                        } else {
+                            grant
+                                .revalidate(&state, &effect)
+                                .map_err(host_authorization_status)?;
+                            match crate::runtime::worktrees::run_managed_git(
+                                &repo_root,
+                                &["branch", "-D", "--", &record.branch],
+                            )
+                            .await
+                            {
+                                Ok(branch_output) if branch_output.success => {
+                                    branch_deleted = Some(true);
+                                }
+                                Ok(branch_output) => {
+                                    branch_deleted = Some(false);
+                                    branch_delete_error = Some(branch_output.stderr.clone());
+                                }
+                                Err(err) => {
+                                    branch_deleted = Some(false);
+                                    branch_delete_error = Some(err.to_string());
+                                }
                             }
                         }
                     }
                     cleaned.push(json!({
+                        "worktree_id": record.key,
                         "path": entry.path,
-                        "branch": entry.branch,
+                        "branch": record.branch,
                         "branch_deleted": branch_deleted,
                         "branch_delete_error": branch_delete_error,
                         "via": "git_worktree_remove",
@@ -855,7 +907,9 @@ pub(in crate::http) async fn cleanup_worktrees(
             if registered_paths.contains(&path_string) {
                 continue;
             }
-            if active_paths.contains(&path_string) {
+            if !stale_owned_paths.contains(&path_string) {
+                // Directories without an exact caller-owned stale record are
+                // unknown and must survive cleanup, including after restart.
                 continue;
             }
             orphan_dirs.push(path_string);
@@ -887,6 +941,13 @@ pub(in crate::http) async fn cleanup_worktrees(
                 verified.is_none(),
             ) {
                 Ok(_) => {
+                    if let Some(record) = owned_by_path.get(path) {
+                        state
+                            .managed_worktrees
+                            .write()
+                            .await
+                            .retain(|_, row| row.key != record.key || row.tenant_context != tenant);
+                    }
                     orphan_removed.push(json!({
                         "path": path,
                         "via": "descriptor_relative_remove_dir_all",
@@ -912,6 +973,7 @@ pub(in crate::http) async fn cleanup_worktrees(
         "tracked_path_count": tracked_paths.len(),
         "active_path_count": active.len(),
         "stale_path_count": stale.len(),
+        "unknown_registered_path_count": unknown.len(),
         "cleaned_worktree_count": cleaned.len(),
         "orphan_dir_count": orphan_dirs.len(),
         "orphan_dir_removed_count": orphan_removed.len(),
@@ -919,6 +981,10 @@ pub(in crate::http) async fn cleanup_worktrees(
         "tracked_paths": expose_host_details.then_some(tracked_paths),
         "active_paths": expose_host_details.then_some(active),
         "stale_paths": expose_host_details.then(|| stale.iter().map(|entry| json!({
+            "path": entry.path,
+            "branch": entry.branch,
+        })).collect::<Vec<_>>()),
+        "unknown_registered_paths": expose_host_details.then(|| unknown.iter().map(|entry| json!({
             "path": entry.path,
             "branch": entry.branch,
         })).collect::<Vec<_>>()),

@@ -13,12 +13,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     path::{Path as FsPath, PathBuf},
-    process::Stdio,
     time::{Duration, Instant},
 };
 use tandem_types::{TenantContext, VerifiedTenantContext};
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::Command;
+use tokio::io::AsyncReadExt;
 
 use super::sessions_actor_scope::ensure_same_session_actor;
 use super::system_api::{
@@ -38,7 +36,7 @@ const MAX_SEARCH_FILES: usize = 10_000;
 const MAX_SEARCH_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_SEARCH_DEPTH: usize = 32;
 const MAX_FILE_CONTENT_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_COMMAND_OUTPUT_BYTES: u64 = 1024 * 1024;
+const MAX_COMMAND_OUTPUT_BYTES: u64 = 256 * 1024;
 const SEARCH_DEADLINE: Duration = Duration::from_secs(2);
 const COMMAND_DEADLINE: Duration = Duration::from_secs(15);
 
@@ -447,7 +445,7 @@ pub(super) async fn run_command(
             "executable": executable,
             "args": args,
             "canonical_workspace": cwd.to_string_lossy(),
-            "environment": ["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_OPTIONAL_LOCKS", "GIT_TERMINAL_PROMPT", "LC_ALL", "PATH"],
+            "environment": ["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_ATTR_NOSYSTEM", "GIT_ATTR_GLOBAL", "GIT_CONFIG_COUNT", "GIT_OPTIONAL_LOCKS", "GIT_TERMINAL_PROMPT", "LC_ALL", "PATH"],
             "wall_time_ms": COMMAND_DEADLINE.as_millis(),
             "output_limit_bytes": MAX_COMMAND_OUTPUT_BYTES,
         }),
@@ -461,54 +459,16 @@ pub(super) async fn run_command(
     )
     .await
     .map_err(authorization_status)?;
-    let mut command = Command::new(executable);
-    command
-        .args(args)
-        .current_dir(&cwd)
-        .env_clear()
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", null_device())
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .kill_on_drop(true)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(path) = std::env::var_os("PATH") {
-        command.env("PATH", path);
-    }
-    #[cfg(windows)]
-    if let Some(system_root) = std::env::var_os("SystemRoot") {
-        command.env("SystemRoot", system_root);
-    }
-
     grant
         .revalidate(&state, &effect)
         .map_err(authorization_status)?;
     let command_started = Instant::now();
-    let mut child = command
-        .spawn()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let execution = tokio::time::timeout(COMMAND_DEADLINE, async {
-        tokio::try_join!(read_limited(stdout), read_limited(stderr), child.wait(),)
-    })
-    .await;
-    let ((stdout, stdout_truncated), (stderr, stderr_truncated), status) = match execution {
-        Ok(Ok(result)) => result,
-        Ok(Err(_)) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(_) => {
-            let _ = child.kill().await;
-            return Err(StatusCode::REQUEST_TIMEOUT);
-        }
-    };
+    let output = crate::runtime::worktrees::run_managed_git(
+        cwd.to_str().ok_or(StatusCode::BAD_REQUEST)?,
+        args,
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let command_ms = command_started.elapsed().as_millis();
     let elapsed_ms = started.elapsed().as_millis();
     tracing::info!(
@@ -516,18 +476,18 @@ pub(super) async fn run_command(
         request_id,
         session_id,
         input.id,
-        status.success(),
+        output.success,
         elapsed_ms,
         lookup_ms,
         command_ms
     );
     Ok(Json(json!({
-        "ok": status.success(),
+        "ok": output.success,
         "command_id": input.id,
-        "stdout": stdout,
-        "stderr": stderr,
-        "stdout_truncated": stdout_truncated,
-        "stderr_truncated": stderr_truncated,
+        "stdout": output.stdout,
+        "stderr": output.stderr,
+        "stdout_truncated": output.stdout_truncated,
+        "stderr_truncated": output.stderr_truncated,
     })))
 }
 
@@ -575,30 +535,6 @@ fn command_preset(id: &str) -> Option<(&'static str, &'static [&'static str])> {
         )),
         _ => None,
     }
-}
-
-#[cfg(windows)]
-fn null_device() -> &'static str {
-    "NUL"
-}
-
-#[cfg(not(windows))]
-fn null_device() -> &'static str {
-    "/dev/null"
-}
-
-async fn read_limited<R>(reader: R) -> std::io::Result<(String, bool)>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut bytes = Vec::new();
-    reader
-        .take(MAX_COMMAND_OUTPUT_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .await?;
-    let truncated = bytes.len() as u64 > MAX_COMMAND_OUTPUT_BYTES;
-    bytes.truncate(MAX_COMMAND_OUTPUT_BYTES as usize);
-    Ok((String::from_utf8_lossy(&bytes).to_string(), truncated))
 }
 
 async fn resolve_workspace_resource(

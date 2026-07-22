@@ -9,18 +9,47 @@ use axum::response::Response;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
+use crate::action_authorization::{
+    authorize_host_effect, AuthorizedHostEffect, CanonicalHostResource, HostAction,
+    HostAuthorizationError, HostEffectRequest,
+};
 use crate::http::global::sanitize_relative_subpath;
 
-fn require_local_pack_host_effect(
+fn pack_authorization_status(error: HostAuthorizationError) -> StatusCode {
+    match error {
+        HostAuthorizationError::AuditPersistenceFailed => StatusCode::INTERNAL_SERVER_ERROR,
+        HostAuthorizationError::InvalidEffectArguments => StatusCode::BAD_REQUEST,
+        _ => StatusCode::FORBIDDEN,
+    }
+}
+
+async fn authorize_local_pack_host_effect(
     state: &AppState,
     tenant: &TenantContext,
     verified: Option<&tandem_types::VerifiedTenantContext>,
     locality: crate::http::host_authority::RequestLocality,
-) -> Result<(), StatusCode> {
+    action: HostAction,
+    arguments: Value,
+) -> Result<(AuthorizedHostEffect, HostEffectRequest), StatusCode> {
     if !locality.is_direct_loopback() {
         return Err(StatusCode::FORBIDDEN);
     }
-    crate::http::host_authority::require_loopback_local_operator(state, tenant, verified)
+    crate::http::host_authority::require_loopback_local_operator(state, tenant, verified)?;
+    let effect = HostEffectRequest::new(
+        action,
+        CanonicalHostResource::new("local_pack_store", "local-pack-store", tenant.clone()),
+        arguments,
+    );
+    let grant = authorize_host_effect(
+        state,
+        tenant,
+        verified,
+        locality.is_direct_loopback(),
+        &effect,
+    )
+    .await
+    .map_err(pack_authorization_status)?;
+    Ok((grant, effect))
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,7 +63,7 @@ pub(super) struct PackSelectorFilePath {
     pub path: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(super) struct PackDetectInput {
     pub path: String,
     #[serde(default)]
@@ -47,7 +76,7 @@ pub(super) struct PackDetectInput {
     pub sender_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(super) struct PackInstallFromAttachmentInput {
     pub attachment_id: String,
     pub path: String,
@@ -131,13 +160,27 @@ pub(super) async fn packs_install(
     verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<PackInstallRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_local_pack_host_effect(&state, &tenant, verified.as_deref(), locality)?;
-    install_pack(state, input).await
+    let arguments = serde_json::to_value(&input).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let (grant, effect) = authorize_local_pack_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        HostAction::PackInstall,
+        arguments,
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(pack_authorization_status)?;
+    install_pack(state, input, &grant, &effect).await
 }
 
 async fn install_pack(
     state: AppState,
     input: PackInstallRequest,
+    grant: &AuthorizedHostEffect,
+    effect: &HostEffectRequest,
 ) -> Result<Json<Value>, StatusCode> {
     state.event_bus.publish(EngineEvent::new(
         "pack.install.started",
@@ -147,6 +190,9 @@ async fn install_pack(
             "url": input.url,
         }),
     ));
+    grant
+        .revalidate(&state, effect)
+        .map_err(pack_authorization_status)?;
     let result = state.pack_manager.install(input).await;
     match result {
         Ok(installed) => {
@@ -184,23 +230,32 @@ pub(super) async fn packs_install_from_attachment(
     verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<PackInstallFromAttachmentInput>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_local_pack_host_effect(&state, &tenant, verified.as_deref(), locality)?;
     let source = json!({
         "kind": "attachment",
-        "attachment_id": input.attachment_id,
-        "connector": input.connector,
-        "channel_id": input.channel_id,
-        "sender_id": input.sender_id,
+        "attachment_id": &input.attachment_id,
+        "connector": &input.connector,
+        "channel_id": &input.channel_id,
+        "sender_id": &input.sender_id,
     });
-    install_pack(
-        state,
-        PackInstallRequest {
-            path: Some(input.path),
-            url: None,
-            source,
-        },
+    let request = PackInstallRequest {
+        path: Some(input.path),
+        url: None,
+        source,
+    };
+    let arguments = serde_json::to_value(&request).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let (grant, effect) = authorize_local_pack_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        HostAction::PackInstall,
+        arguments,
     )
-    .await
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(pack_authorization_status)?;
+    install_pack(state, request, &grant, &effect).await
 }
 
 pub(super) async fn packs_uninstall(
@@ -210,7 +265,19 @@ pub(super) async fn packs_uninstall(
     verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<PackUninstallRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_local_pack_host_effect(&state, &tenant, verified.as_deref(), locality)?;
+    let arguments = serde_json::to_value(&input).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let (grant, effect) = authorize_local_pack_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        HostAction::PackUninstall,
+        arguments,
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(pack_authorization_status)?;
     let removed = state.pack_manager.uninstall(input).await.map_err(|err| {
         if err.to_string().contains("not found") {
             StatusCode::NOT_FOUND
@@ -233,7 +300,19 @@ pub(super) async fn packs_export(
     verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<PackExportRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_local_pack_host_effect(&state, &tenant, verified.as_deref(), locality)?;
+    let arguments = serde_json::to_value(&input).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let (grant, effect) = authorize_local_pack_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        HostAction::PackExport,
+        arguments,
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(pack_authorization_status)?;
     let exported = state.pack_manager.export(input).await.map_err(|err| {
         tracing::warn!("pack export failed: {}", err);
         StatusCode::BAD_REQUEST
@@ -338,7 +417,19 @@ pub(super) async fn packs_detect(
     verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<PackDetectInput>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_local_pack_host_effect(&state, &tenant, verified.as_deref(), locality)?;
+    let arguments = serde_json::to_value(&input).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let (grant, effect) = authorize_local_pack_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        HostAction::PackDetect,
+        arguments,
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(pack_authorization_status)?;
     let path = PathBuf::from(&input.path);
     let is_pack = state.pack_manager.detect(&path).await.map_err(|err| {
         tracing::warn!("pack detect failed: {}", err);

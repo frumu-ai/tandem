@@ -79,6 +79,22 @@ impl HostAction {
                 | Self::PackExport
         )
     }
+
+    /// Git consumes repository-local configuration and attributes that can be
+    /// changed concurrently by another host principal. Until managed Git runs
+    /// against an immutable metadata snapshot, these effects are deliberately
+    /// restricted to the standalone loopback owner boundary.
+    fn requires_standalone_git_boundary(self) -> bool {
+        matches!(
+            self,
+            Self::CommandExecute
+                | Self::WorktreeList
+                | Self::WorktreeCreate
+                | Self::WorktreeDelete
+                | Self::WorktreeReset
+                | Self::WorktreeCleanup
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +184,14 @@ impl AuthorizedHostEffect {
         {
             return Err(HostAuthorizationError::LocalOwnerPostureUnavailable);
         }
+        if self.source == AuthoritySource::InternalRuntime
+            && standalone_git_capability(self.capability)
+            && (!state.host_operations_loopback_only()
+                || !base_url_is_loopback(&state.server_base_url())
+                || !self.tenant_context.is_local_implicit())
+        {
+            return Err(HostAuthorizationError::HostedGitBoundaryUnavailable);
+        }
         Ok(())
     }
 }
@@ -180,6 +204,7 @@ pub enum HostAuthorizationError {
     AssertionExpired,
     MissingCapability,
     LocalOwnerPostureUnavailable,
+    HostedGitBoundaryUnavailable,
     InvalidEffectArguments,
     AuditPersistenceFailed,
     GrantExpired,
@@ -195,6 +220,7 @@ impl HostAuthorizationError {
             Self::AssertionExpired => "verified_context_expired",
             Self::MissingCapability => "missing_capability",
             Self::LocalOwnerPostureUnavailable => "local_owner_posture_unavailable",
+            Self::HostedGitBoundaryUnavailable => "hosted_git_boundary_unavailable",
             Self::InvalidEffectArguments => "invalid_effect_arguments",
             Self::AuditPersistenceFailed => "audit_persistence_failed",
             Self::GrantExpired => "authorization_grant_expired",
@@ -249,6 +275,17 @@ pub async fn authorize_host_effect(
             )
             .await;
             return Err(HostAuthorizationError::AssertionExpired);
+        }
+        if request.action.requires_standalone_git_boundary() {
+            audit_denial(
+                state,
+                tenant,
+                Some(verified),
+                request,
+                HostAuthorizationError::HostedGitBoundaryUnavailable,
+            )
+            .await;
+            return Err(HostAuthorizationError::HostedGitBoundaryUnavailable);
         }
         let exact = verified
             .capabilities
@@ -343,6 +380,21 @@ pub async fn authorize_internal_host_effect(
     caller: &'static str,
     request: &HostEffectRequest,
 ) -> Result<AuthorizedHostEffect, HostAuthorizationError> {
+    if request.action.requires_standalone_git_boundary()
+        && (!state.host_operations_loopback_only()
+            || !base_url_is_loopback(&state.server_base_url())
+            || !request.resource.tenant_context.is_local_implicit())
+    {
+        audit_denial(
+            state,
+            &request.resource.tenant_context,
+            None,
+            request,
+            HostAuthorizationError::HostedGitBoundaryUnavailable,
+        )
+        .await;
+        return Err(HostAuthorizationError::HostedGitBoundaryUnavailable);
+    }
     let now = crate::now_ms();
     let expires_at_ms = now.saturating_add(HOST_EFFECT_GRANT_TTL_MS);
     let request_digest = request.digest()?;
@@ -401,6 +453,11 @@ fn same_tenant(left: &TenantContext, right: &TenantContext) -> bool {
         && left.workspace_id == right.workspace_id
         && left.deployment_id == right.deployment_id
         && left.actor_id == right.actor_id
+}
+
+fn standalone_git_capability(capability: &str) -> bool {
+    capability == HostAction::CommandExecute.capability()
+        || capability.starts_with("host.worktree.")
 }
 
 fn base_url_is_loopback(value: &str) -> bool {
@@ -491,13 +548,13 @@ mod tests {
         let tenant = tenant("actor-a");
         let verified = verified(
             tenant.clone(),
-            &[HostAction::WorktreeDelete.capability()],
+            &[HostAction::PackUninstall.capability()],
             &[],
         );
         let request = HostEffectRequest::new(
-            HostAction::WorktreeDelete,
-            CanonicalHostResource::new("managed_worktree", "worktree-a", tenant.clone()),
-            json!({"lease_id": "lease-a"}),
+            HostAction::PackUninstall,
+            CanonicalHostResource::new("local_pack_store", "local-pack-store", tenant.clone()),
+            json!({"pack_id": "pack-a"}),
         );
 
         let error = authorize_host_effect(&state, &tenant, Some(&verified), false, &request)
@@ -505,6 +562,49 @@ mod tests {
             .expect_err("destructive host actions require deployment.admin");
 
         assert_eq!(error, HostAuthorizationError::MissingCapability);
+    }
+
+    #[tokio::test]
+    async fn hosted_git_effects_fail_closed_even_for_deployment_admin() {
+        let state = crate::test_support::test_state().await;
+        let tenant = tenant("actor-a");
+        let verified = verified(tenant.clone(), &["deployment.admin"], &[]);
+        for action in [
+            HostAction::CommandExecute,
+            HostAction::WorktreeList,
+            HostAction::WorktreeCreate,
+            HostAction::WorktreeDelete,
+            HostAction::WorktreeReset,
+            HostAction::WorktreeCleanup,
+        ] {
+            let request = HostEffectRequest::new(
+                action,
+                CanonicalHostResource::new("repository", "repository-a", tenant.clone()),
+                json!({"operation": "test"}),
+            );
+            let error = authorize_host_effect(&state, &tenant, Some(&verified), false, &request)
+                .await
+                .expect_err(
+                    "mutable local Git metadata must not be reachable from hosted authority",
+                );
+            assert_eq!(error, HostAuthorizationError::HostedGitBoundaryUnavailable);
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_hosted_worktree_effect_fails_closed() {
+        let state = crate::test_support::test_state().await;
+        let tenant = tenant("actor-a");
+        let request = HostEffectRequest::new(
+            HostAction::WorktreeCreate,
+            CanonicalHostResource::new("repository", "repository-a", tenant),
+            json!({"operation": "test"}),
+        );
+
+        let error = authorize_internal_host_effect(&state, "test", &request)
+            .await
+            .expect_err("internal callers must not bypass the standalone Git boundary");
+        assert_eq!(error, HostAuthorizationError::HostedGitBoundaryUnavailable);
     }
 
     #[tokio::test]
@@ -547,6 +647,9 @@ mod tests {
     async fn audit_persistence_failure_prevents_grant_issuance() {
         let mut state = crate::test_support::test_state().await;
         let blocked_parent = state.protected_audit_path.with_extension("blocked");
+        if let Some(parent) = blocked_parent.parent() {
+            std::fs::create_dir_all(parent).expect("create audit test directory");
+        }
         std::fs::write(&blocked_parent, b"not a directory").expect("create blocked parent");
         state.protected_audit_path = blocked_parent.join("audit.jsonl");
         let tenant = tenant("actor-a");
