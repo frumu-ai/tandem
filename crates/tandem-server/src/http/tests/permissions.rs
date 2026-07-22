@@ -144,7 +144,31 @@ async fn hosted_queue_lists_hide_sibling_actor_records() {
         )
         .await
         .expect("add question");
-    let app = app_router(state);
+    let reviewer_tenant = TenantContext::explicit(
+        "queue-org",
+        "queue-workspace",
+        Some("reviewer-a".to_string()),
+    );
+    let reviewer_principal =
+        tandem_types::RequestPrincipal::authenticated_user("reviewer-a", "tandem-test");
+    let verified = tandem_types::VerifiedTenantContext {
+        tenant_context: reviewer_tenant,
+        human_actor: tandem_types::HumanActor::tandem_user("reviewer-a"),
+        authority_chain: tandem_types::AuthorityChain::from_request(reviewer_principal),
+        roles: vec!["admin".to_string()],
+        org_units: Vec::new(),
+        capabilities: vec!["governance.review".to_string()],
+        policy_version: None,
+        strict_projection: None,
+        issuer: "tandem-test".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1,
+        expires_at_ms: 9_999_999_999_999,
+        assertion_id: "queue-agent-reviewer".to_string(),
+        assertion_key_id: None,
+    };
+    let app = app_router(state.clone());
+    let agent_app = app_router(state).layer(axum::Extension(verified));
 
     for (uri, record_key) in [("/permission", "requests"), ("/question", "")] {
         let response = app
@@ -203,6 +227,35 @@ async fn hosted_queue_lists_hide_sibling_actor_records() {
         .expect("owner question list response");
     let question_body = response_json(question_response).await;
     assert_eq!(question_body[0]["id"], question.id);
+
+    for (uri, record_key) in [("/permission", "requests"), ("/question", "")] {
+        let response = agent_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header("x-tandem-org-id", "queue-org")
+                    .header("x-tandem-workspace-id", "queue-workspace")
+                    .header("x-tandem-actor-id", "reviewer-a")
+                    .header("x-tandem-agent-id", "agent-reviewer")
+                    .body(Body::empty())
+                    .expect("agent reviewer list request"),
+            )
+            .await
+            .expect("agent reviewer list response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let records = if record_key.is_empty() {
+            body.as_array().expect("question list")
+        } else {
+            body[record_key].as_array().expect("permission list")
+        };
+        assert!(
+            records.is_empty(),
+            "authoritative agent must not inherit reviewer-wide access to {uri}"
+        );
+    }
 }
 
 #[cfg(feature = "premium-governance")]

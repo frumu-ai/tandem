@@ -124,7 +124,7 @@ async fn incident_monitor_assessment_report_payload(
     generated_at_ms: u64,
 ) -> Value {
     let authority_inventory =
-        incident_monitor_authority_inventory_payload(state, tenant_context.clone(), verified).await;
+        incident_monitor_authority_inventory_payload(state, tenant_context.clone(), verified, None).await;
     let status = state.incident_monitor_status_snapshot().await;
     let policy = incident_monitor_assessment_report_posture_policy(input);
     let findings = incident_monitor_security_posture_findings(&authority_inventory, &policy);

@@ -100,7 +100,7 @@ fn governance_mutation_admin_allowed(
     tenant_context: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
-    if verified.is_none() && super::tenant_is_standalone_local(tenant_context) {
+    if tenant_context.is_local_implicit() {
         return true;
     }
     let Some(verified) = verified else {
@@ -167,7 +167,7 @@ async fn require_independent_mutation_approval(
     action: &str,
     allowed_types: &[GovernanceApprovalRequestType],
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    if super::tenant_is_standalone_local(tenant_context) {
+    if tenant_context.is_local_implicit() {
         return Ok(());
     }
     let approval_id = approval_id
@@ -325,8 +325,12 @@ pub(super) async fn governance_approvals_list(
     let mut rows = state
         .list_approval_requests_for_tenant(None, None, &tenant_context)
         .await;
-    if !super::workflows::workflow_reviewer_is_eligible(&tenant_context, verified.as_deref()) {
-        let actor = resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    let actor = resolve_governance_actor(&headers, &tenant_context, &request_principal);
+    let standalone_local_owner =
+        tenant_context.is_local_implicit() && actor.kind == GovernanceActorKind::System;
+    let reviewer_wide = (actor.kind == GovernanceActorKind::Human || standalone_local_owner)
+        && super::workflows::workflow_reviewer_is_eligible(&tenant_context, verified.as_deref());
+    if !reviewer_wide {
         let caller = governance_actor_id(&actor);
         rows.retain(|approval| {
             caller.is_some_and(|caller| {
@@ -483,7 +487,12 @@ pub(super) async fn governance_approval_approve(
                     )
                     .await;
             }
-            "automation" if trigger == "run_drift" || trigger == "health_drift" => {
+            "automation"
+                if matches!(
+                    trigger,
+                    "run_drift" | "health_drift" | "tenant_ownership_mismatch"
+                ) =>
+            {
                 let _ = state
                     .acknowledge_automation_review(
                         &reviewed.target_resource.id,
@@ -586,7 +595,7 @@ pub(super) async fn automation_governance_get(
             spend.push(agent_spend_wire(&summary));
         }
     }
-    let agent_review = if super::tenant_is_standalone_local(&caller_tenant)
+    let agent_review = if caller_tenant.is_local_implicit()
         && record.provenance.creator.kind == GovernanceActorKind::Agent
     {
         if let Some(agent_id) = record.provenance.creator.actor_id.as_deref() {
@@ -618,7 +627,7 @@ pub(super) async fn governance_reviews_list(
     Extension(tenant_context): Extension<TenantContext>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
-    let agent_reviews = if super::tenant_is_standalone_local(&tenant_context) {
+    let agent_reviews = if tenant_context.is_local_implicit() {
         state
             .list_agent_creation_review_summaries()
             .await

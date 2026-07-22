@@ -145,7 +145,7 @@ async fn incident_monitor_deployment_cards_payload(
     generated_at_ms: u64,
 ) -> Value {
     let authority_inventory =
-        incident_monitor_authority_inventory_payload(state, tenant_context.clone(), verified).await;
+        incident_monitor_authority_inventory_payload(state, tenant_context.clone(), verified, None).await;
     let policy = IncidentMonitorPostureRulePolicy {
         mode: "dry_run".to_string(),
         enabled_rules: INCIDENT_MONITOR_POSTURE_RULES

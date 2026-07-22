@@ -14,23 +14,6 @@ use crate::{now_ms, AppState};
 
 const GOVERNANCE_AUDIT_EVENT_PREFIX: &str = "automation.governance";
 
-fn governance_tenant_scope(
-    tenant_context: &tandem_types::TenantContext,
-) -> tandem_types::TenantContext {
-    let mut scope = tenant_context.clone();
-    scope.actor_id = None;
-    scope
-}
-
-fn governance_tenant_matches(
-    left: &tandem_types::TenantContext,
-    right: &tandem_types::TenantContext,
-) -> bool {
-    left.org_id == right.org_id
-        && left.workspace_id == right.workspace_id
-        && left.deployment_id == right.deployment_id
-}
-
 fn bind_governance_record_to_tenant(
     record: &mut AutomationGovernanceRecord,
     tenant_context: &tandem_types::TenantContext,
@@ -523,9 +506,10 @@ impl AppState {
         let now = now_ms();
         let mut changed = 0usize;
         let previous = self.automation_governance.read().await.clone();
+        let mut quarantined_automations = Vec::new();
         {
             let mut guard = self.automation_governance.write().await;
-            for automation in automations {
+            for mut automation in automations {
                 let tenant_context = automation.tenant_context();
                 if let Some(record) = guard.records.get_mut(&automation.automation_id) {
                     match bind_governance_record_to_tenant(record, &tenant_context) {
@@ -535,12 +519,9 @@ impl AppState {
                         }
                         Ok(false) => {}
                         Err(_) => {
-                            record.modify_grants.clear();
-                            record.capability_grants.clear();
-                            record.creation_paused = true;
-                            record.paused_for_lifecycle = true;
-                            record.review_required = true;
-                            record.updated_at_ms = now;
+                            quarantine_governance_record_for_tenant(record, &tenant_context, now);
+                            automation.status = crate::AutomationV2Status::Paused;
+                            quarantined_automations.push(automation);
                             changed += 1;
                         }
                     }
@@ -564,6 +545,12 @@ impl AppState {
             }
             if changed > 0 {
                 guard.updated_at_ms = now;
+            }
+        }
+        for automation in quarantined_automations {
+            if let Err(error) = self.put_automation_v2(automation).await {
+                *self.automation_governance.write().await = previous;
+                return Err(error);
             }
         }
         if changed > 0 {
@@ -629,20 +616,26 @@ impl AppState {
             .get_automation_governance(&automation.automation_id)
             .await
         {
-            let quarantine = match bind_governance_record_to_tenant(&mut record, &tenant_context) {
-                Ok(true) => self
-                    .upsert_automation_governance(record.clone())
-                    .await
-                    .is_err(),
-                Ok(false) => false,
-                Err(_) => true,
-            };
-            if quarantine {
-                record.modify_grants.clear();
-                record.capability_grants.clear();
-                record.creation_paused = true;
-                record.paused_for_lifecycle = true;
-                record.review_required = true;
+            match bind_governance_record_to_tenant(&mut record, &tenant_context) {
+                Ok(true) => {
+                    if self
+                        .upsert_automation_governance(record.clone())
+                        .await
+                        .is_err()
+                    {
+                        record.creation_paused = true;
+                        record.paused_for_lifecycle = true;
+                        record.review_required = true;
+                    }
+                }
+                Ok(false) => {}
+                Err(_) => {
+                    quarantine_governance_record_for_tenant(&mut record, &tenant_context, now_ms());
+                    let _ = self.upsert_automation_governance(record.clone()).await;
+                    let mut quarantined = automation.clone();
+                    quarantined.status = crate::AutomationV2Status::Paused;
+                    let _ = self.put_automation_v2(quarantined).await;
+                }
             }
             return record;
         }

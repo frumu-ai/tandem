@@ -244,7 +244,7 @@ pub(super) fn workflow_reviewer_is_eligible(
     tenant_context: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
-    if verified.is_none() && super::tenant_is_standalone_local(tenant_context) {
+    if tenant_context.is_local_implicit() {
         return true;
     }
     let Some(verified) = verified else {
@@ -289,7 +289,7 @@ async fn ensure_workflow_gate_digest_current(
                     })),
                 )
             })?;
-    if gate.action_digest.is_empty() && super::tenant_is_standalone_local(tenant_context) {
+    if gate.action_digest.is_empty() && tenant_context.is_local_implicit() {
         return Ok(());
     }
     if gate.action_digest != current {
@@ -402,7 +402,7 @@ pub(super) async fn workflow_run_gate_decide(
             })),
         ));
     }
-    if !super::tenant_is_standalone_local(&tenant_context)
+    if !tenant_context.is_local_implicit()
         && (gate.expires_at_ms == 0
             || gate.action_digest.is_empty()
             || gate.nonce.is_empty()

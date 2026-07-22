@@ -394,6 +394,7 @@ async fn governance_approvals_list_is_tenant_scoped() {
         "reviewer-a",
     );
     let resp = reviewer_app
+        .clone()
         .oneshot(list_for("org-a", "workspace-a", "reviewer-a"))
         .await
         .expect("reviewer list response");
@@ -404,6 +405,29 @@ async fn governance_approvals_list_is_tenant_scoped() {
         .expect("approvals array")
         .iter()
         .any(|row| row["approval_id"] == approval_id));
+
+    let resp = reviewer_app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/governance/approvals")
+                .header("x-tandem-org-id", "org-a")
+                .header("x-tandem-workspace-id", "workspace-a")
+                .header("x-tandem-actor-id", "reviewer-a")
+                .header("x-tandem-agent-id", "agent-reviewer")
+                .body(Body::empty())
+                .expect("agent reviewer list request"),
+        )
+        .await
+        .expect("agent reviewer list response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        response_json(resp).await["approvals"]
+            .as_array()
+            .expect("approvals array")
+            .is_empty(),
+        "authoritative agent must not inherit reviewer-wide approval access"
+    );
 }
 
 #[cfg(feature = "premium-governance")]
@@ -712,11 +736,73 @@ async fn governance_bootstrap_persists_quarantine_for_tenant_mismatch() {
         .get_automation_governance(automation_id)
         .await
         .expect("quarantined record");
+    let owner = record.tenant_context.as_ref().expect("quarantine owner");
+    assert_eq!(owner.org_id, "org-owner");
+    assert_eq!(owner.workspace_id, "workspace-owner");
     assert!(record.creation_paused);
     assert!(record.paused_for_lifecycle);
     assert!(record.review_required);
+    assert_eq!(
+        record.review_kind,
+        Some(
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::TenantOwnershipMismatch
+        )
+    );
     assert!(record.modify_grants.is_empty());
     assert!(record.capability_grants.is_empty());
+    let quarantine_finding = record
+        .health_findings
+        .iter()
+        .find(|finding| {
+            finding.kind
+                == crate::automation_v2::governance::AutomationLifecycleReviewKind::TenantOwnershipMismatch
+        })
+        .expect("tenant mismatch finding");
+    assert_eq!(
+        quarantine_finding
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.pointer("/foreignTenant/org_id"))
+            .and_then(Value::as_str),
+        Some("org-foreign")
+    );
+    assert!(state
+        .get_automation_governance_for_tenant(automation_id, &tenant)
+        .await
+        .is_some());
+    let automation = state
+        .get_automation_v2(automation_id)
+        .await
+        .expect("quarantined automation");
+    assert_eq!(automation.status, crate::AutomationV2Status::Paused);
+    #[cfg(feature = "premium-governance")]
+    assert!(state
+        .create_automation_v2_run(&automation, "webhook")
+        .await
+        .is_err());
+    #[cfg(feature = "premium-governance")]
+    {
+        let response = app_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/governance/reviews")
+                    .header("x-tandem-org-id", "org-owner")
+                    .header("x-tandem-workspace-id", "workspace-owner")
+                    .header("x-tandem-actor-id", "owner")
+                    .body(Body::empty())
+                    .expect("quarantine review list request"),
+            )
+            .await
+            .expect("quarantine review list response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["automation_lifecycle_reviews"]
+            .as_array()
+            .expect("lifecycle reviews")
+            .iter()
+            .any(|review| review["automation_id"] == automation_id));
+    }
     assert!(state
         .can_mutate_automation(
             automation_id,
@@ -746,6 +832,12 @@ async fn governance_bootstrap_persists_quarantine_for_tenant_mismatch() {
         .await
         .expect("reloaded quarantine");
     assert!(reloaded.creation_paused && reloaded.paused_for_lifecycle && reloaded.review_required);
+    let owner = reloaded
+        .tenant_context
+        .as_ref()
+        .expect("reloaded quarantine owner");
+    assert_eq!(owner.org_id, "org-owner");
+    assert_eq!(owner.workspace_id, "workspace-owner");
 }
 
 #[cfg(feature = "premium-governance")]

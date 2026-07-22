@@ -1120,6 +1120,8 @@ impl AppState {
         >,
     ) -> anyhow::Result<AutomationV2RunRecord> {
         let now = now_ms();
+        self.ensure_automation_governance_run_allowed(automation)
+            .await?;
         self.validate_automation_enterprise_delegation_grants(automation)
             .await?;
         let runtime_context = self
@@ -1226,6 +1228,8 @@ impl AppState {
         >,
     ) -> anyhow::Result<AutomationV2RunRecord> {
         let now = now_ms();
+        self.ensure_automation_governance_run_allowed(automation)
+            .await?;
         self.validate_automation_enterprise_delegation_grants(automation)
             .await?;
         let runtime_context = self

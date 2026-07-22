@@ -1,7 +1,93 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
+fn governance_tenant_scope(
+    tenant_context: &tandem_types::TenantContext,
+) -> tandem_types::TenantContext {
+    let mut scope = tenant_context.clone();
+    scope.actor_id = None;
+    scope
+}
+
+fn governance_tenant_matches(
+    left: &tandem_types::TenantContext,
+    right: &tandem_types::TenantContext,
+) -> bool {
+    left.org_id == right.org_id
+        && left.workspace_id == right.workspace_id
+        && left.deployment_id == right.deployment_id
+}
+
+fn quarantine_governance_record_for_tenant(
+    record: &mut AutomationGovernanceRecord,
+    tenant_context: &tandem_types::TenantContext,
+    observed_at_ms: u64,
+) {
+    let foreign_tenant = record.tenant_context.as_ref().map(governance_tenant_scope);
+    let foreign_grant_tenants = record
+        .modify_grants
+        .iter()
+        .chain(record.capability_grants.iter())
+        .filter_map(|grant| grant.tenant_context.as_ref().map(governance_tenant_scope))
+        .collect::<Vec<_>>();
+    let cleared_modify_grants = record.modify_grants.len();
+    let cleared_capability_grants = record.capability_grants.len();
+
+    record.tenant_context = Some(governance_tenant_scope(tenant_context));
+    record.modify_grants.clear();
+    record.capability_grants.clear();
+    record.creation_paused = true;
+    record.paused_for_lifecycle = true;
+    record.review_required = true;
+    record.review_kind = Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch);
+    record.review_requested_at_ms = Some(observed_at_ms);
+    record.review_request_id = None;
+    record.health_last_checked_at_ms = Some(observed_at_ms);
+    record
+        .health_findings
+        .retain(|finding| finding.kind != AutomationLifecycleReviewKind::TenantOwnershipMismatch);
+    record.health_findings.push(AutomationLifecycleFinding {
+        finding_id: format!("tenant-ownership-mismatch:{}", record.automation_id),
+        kind: AutomationLifecycleReviewKind::TenantOwnershipMismatch,
+        severity: AutomationLifecycleFindingSeverity::Critical,
+        summary: "Governance tenant ownership mismatch quarantined".to_string(),
+        detail: Some("Foreign governance state was detached; grants were cleared and execution remains paused pending independent review.".to_string()),
+        observed_at_ms,
+        automation_run_id: None,
+        approval_id: None,
+        evidence: Some(json!({
+            "foreignTenant": foreign_tenant,
+            "foreignGrantTenants": foreign_grant_tenants,
+            "clearedModifyGrants": cleared_modify_grants,
+            "clearedCapabilityGrants": cleared_capability_grants,
+        })),
+    });
+    record.updated_at_ms = observed_at_ms;
+}
+
 impl AppState {
+    pub async fn ensure_automation_governance_run_allowed(
+        &self,
+        automation: &crate::AutomationV2Spec,
+    ) -> anyhow::Result<()> {
+        if !self.premium_governance_enabled() {
+            return Ok(());
+        }
+        let tenant_context = automation.tenant_context();
+        let record = self
+            .get_or_bootstrap_automation_governance(automation)
+            .await;
+        if !governance_record_owned_by(&record, &tenant_context)
+            || record.creation_paused
+            || record.paused_for_lifecycle
+        {
+            anyhow::bail!(
+                "automation governance is quarantined or paused pending independent review"
+            );
+        }
+        Ok(())
+    }
+
     pub async fn can_mutate_automation(
         &self,
         automation_id: &str,
@@ -20,6 +106,15 @@ impl AppState {
             return Err(GovernanceError::forbidden(
                 "AUTOMATION_V2_TENANT_MISMATCH",
                 "automation governance record not found",
+            ));
+        }
+        if record.review_required
+            && record.review_kind
+                == Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch)
+        {
+            return Err(GovernanceError::forbidden(
+                "AUTOMATION_V2_TENANT_QUARANTINED",
+                "automation governance is quarantined pending independent review",
             ));
         }
         self.governance_engine

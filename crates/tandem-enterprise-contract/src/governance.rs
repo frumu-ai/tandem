@@ -199,6 +199,7 @@ pub enum AutomationLifecycleReviewKind {
     Expired,
     DependencyRevoked,
     Retired,
+    TenantOwnershipMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

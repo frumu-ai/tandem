@@ -113,7 +113,7 @@ pub(super) async fn get_incident_monitor_security_posture_checks(
 ) -> Response {
     let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let authority_inventory =
-        incident_monitor_authority_inventory_payload(&state, tenant_context, verified).await;
+        incident_monitor_authority_inventory_payload(&state, tenant_context, verified, None).await;
     let policy = IncidentMonitorPostureRulePolicy::from_query(&query);
     let findings = incident_monitor_security_posture_findings(&authority_inventory, &policy);
     let counts = json!({

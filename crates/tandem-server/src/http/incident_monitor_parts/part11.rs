@@ -59,7 +59,7 @@ pub(super) async fn run_incident_monitor_security_assessment_probes(
     let dry_run = mode != "disabled";
     let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let authority_inventory =
-        incident_monitor_authority_inventory_payload(&state, tenant_context.clone(), verified).await;
+        incident_monitor_authority_inventory_payload(&state, tenant_context.clone(), verified, None).await;
     let status = state.incident_monitor_status_snapshot().await;
     let include_draft_suggestions = input.include_draft_suggestions.unwrap_or(true);
 

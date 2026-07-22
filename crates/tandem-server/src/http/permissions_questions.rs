@@ -91,30 +91,35 @@ async fn queue_session_visibility(
     tenant_context: &TenantContext,
     request_principal: &RequestPrincipal,
     verified: Option<&VerifiedTenantContext>,
-) -> Option<HashSet<String>> {
-    if super::workflows::workflow_reviewer_is_eligible(tenant_context, verified) {
+    headers: &HeaderMap,
+) -> Option<(HashSet<String>, Option<String>)> {
+    let actor =
+        super::governance::resolve_governance_actor(headers, tenant_context, request_principal);
+    let standalone_local_owner = tenant_context.is_local_implicit()
+        && actor.kind == crate::automation_v2::governance::GovernanceActorKind::System;
+    if (actor.kind == crate::automation_v2::governance::GovernanceActorKind::Human
+        || standalone_local_owner)
+        && super::workflows::workflow_reviewer_is_eligible(tenant_context, verified)
+    {
         return None;
     }
+    let caller = actor.actor_id.or(actor.source);
     let mut caller_tenant = tenant_context.clone();
-    caller_tenant.actor_id = request_principal
-        .actor_id
-        .clone()
-        .or(caller_tenant.actor_id);
-    Some(
-        state
-            .storage
-            .list_session_summaries()
-            .await
-            .into_iter()
-            .filter(|session| {
-                super::sessions_actor_scope::session_visible_to_actor(
-                    &caller_tenant,
-                    &session.tenant_context,
-                )
-            })
-            .map(|session| session.id)
-            .collect(),
-    )
+    caller_tenant.actor_id = caller.clone().or(caller_tenant.actor_id);
+    let visible_sessions = state
+        .storage
+        .list_session_summaries()
+        .await
+        .into_iter()
+        .filter(|session| {
+            super::sessions_actor_scope::session_visible_to_actor(
+                &caller_tenant,
+                &session.tenant_context,
+            )
+        })
+        .map(|session| session.id)
+        .collect();
+    Some((visible_sessions, caller))
 }
 
 fn queue_record_owned_by(
@@ -255,6 +260,7 @@ pub(super) async fn list_permissions(
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
     verified: Option<Extension<VerifiedTenantContext>>,
+    headers: HeaderMap,
 ) -> Json<Value> {
     let mut requests = state.permissions.list_for_tenant(&tenant_context).await;
     let mut rules = state
@@ -265,23 +271,20 @@ pub(super) async fn list_permissions(
         .permissions
         .list_decisions_for_tenant(&tenant_context)
         .await;
-    if let Some(visible_sessions) = queue_session_visibility(
+    if let Some((visible_sessions, caller)) = queue_session_visibility(
         &state,
         &tenant_context,
         &request_principal,
         verified.as_deref(),
+        &headers,
     )
     .await
     {
-        let caller = request_principal
-            .actor_id
-            .as_deref()
-            .or(tenant_context.actor_id.as_deref());
         requests.retain(|request| {
             queue_record_owned_by(
                 request.requested_by.as_deref(),
                 request.session_id.as_deref(),
-                caller,
+                caller.as_deref(),
                 &visible_sessions,
             )
         });
@@ -396,28 +399,26 @@ pub(super) async fn list_questions(
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
     verified: Option<Extension<VerifiedTenantContext>>,
+    headers: HeaderMap,
 ) -> Json<Value> {
     let mut questions = state
         .storage
         .list_question_requests_for_tenant(&tenant_context)
         .await;
-    if let Some(visible_sessions) = queue_session_visibility(
+    if let Some((visible_sessions, caller)) = queue_session_visibility(
         &state,
         &tenant_context,
         &request_principal,
         verified.as_deref(),
+        &headers,
     )
     .await
     {
-        let caller = request_principal
-            .actor_id
-            .as_deref()
-            .or(tenant_context.actor_id.as_deref());
         questions.retain(|question| {
             queue_record_owned_by(
                 question.requested_by.as_deref(),
                 Some(&question.session_id),
-                caller,
+                caller.as_deref(),
                 &visible_sessions,
             )
         });

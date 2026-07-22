@@ -1,6 +1,13 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
+async fn incident_monitor_response_json(response: axum::response::Response) -> Value {
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("incident monitor response body");
+    serde_json::from_slice(&body).expect("incident monitor response json")
+}
+
 #[tokio::test]
 #[serial_test::serial(incident_monitor_http)]
 async fn incident_monitor_authority_inventory_returns_empty_sections() {
@@ -35,6 +42,146 @@ async fn incident_monitor_authority_inventory_returns_empty_sections() {
         .is_empty());
     assert!(payload["inventory"]["mcp"]["servers"].as_array().is_some());
     assert_eq!(payload["counts"]["automation_specs"], json!(0));
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+#[serial_test::serial(incident_monitor_http)]
+async fn incident_monitor_authority_inventory_filters_governance_approvals_by_actor() {
+    let state = test_state().await;
+    let tenant = TenantContext::explicit(
+        "inventory-org",
+        "inventory-workspace",
+        Some("alice".to_string()),
+    );
+    let target = |id: &str| {
+        crate::automation_v2::governance::GovernanceResourceRef {
+            resource_type: "agent".to_string(),
+            id: id.to_string(),
+        }
+    };
+    let alice = state
+        .request_approval(
+            crate::automation_v2::governance::GovernanceApprovalRequestType::CapabilityRequest,
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("alice".to_string()),
+                "test",
+            ),
+            target("agent-alice"),
+            "alice request".to_string(),
+            json!({}),
+            None,
+            &tenant,
+        )
+        .await
+        .expect("alice approval");
+    let bob = state
+        .request_approval(
+            crate::automation_v2::governance::GovernanceApprovalRequestType::CapabilityRequest,
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("bob".to_string()),
+                "test",
+            ),
+            target("agent-bob"),
+            "bob request".to_string(),
+            json!({}),
+            None,
+            &tenant,
+        )
+        .await
+        .expect("bob approval");
+    let agent = state
+        .request_approval(
+            crate::automation_v2::governance::GovernanceApprovalRequestType::CapabilityRequest,
+            crate::automation_v2::governance::GovernanceActorRef::agent(
+                Some("agent-reviewer".to_string()),
+                "test",
+            ),
+            target("agent-owned"),
+            "agent request".to_string(),
+            json!({}),
+            None,
+            &tenant,
+        )
+        .await
+        .expect("agent approval");
+
+    let reviewer_tenant = TenantContext::explicit(
+        "inventory-org",
+        "inventory-workspace",
+        Some("reviewer-a".to_string()),
+    );
+    let principal =
+        tandem_types::RequestPrincipal::authenticated_user("reviewer-a", "tandem-test");
+    let verified = tandem_types::VerifiedTenantContext {
+        tenant_context: reviewer_tenant,
+        human_actor: tandem_types::HumanActor::tandem_user("reviewer-a"),
+        authority_chain: tandem_types::AuthorityChain::from_request(principal),
+        roles: vec!["admin".to_string()],
+        org_units: Vec::new(),
+        capabilities: vec!["governance.review".to_string()],
+        policy_version: None,
+        strict_projection: None,
+        issuer: "tandem-test".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1,
+        expires_at_ms: 9_999_999_999_999,
+        assertion_id: "authority-inventory-reviewer".to_string(),
+        assertion_key_id: None,
+    };
+    let ordinary_app = app_router(state.clone());
+    let reviewer_app = app_router(state).layer(axum::Extension(verified));
+    let request = |actor: &str, agent_id: Option<&str>| {
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri("/incident-monitor/security/authority-inventory")
+            .header("x-tandem-org-id", "inventory-org")
+            .header("x-tandem-workspace-id", "inventory-workspace")
+            .header("x-tandem-actor-id", actor);
+        if let Some(agent_id) = agent_id {
+            builder = builder.header("x-tandem-agent-id", agent_id);
+        }
+        builder.body(Body::empty()).expect("inventory request")
+    };
+    let approval_ids = |payload: &Value| {
+        payload["inventory"]["governance_approval_requests"]
+            .as_array()
+            .expect("governance approval inventory")
+            .iter()
+            .filter_map(|row| row["approval_id"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+
+    let alice_payload = incident_monitor_response_json(
+        ordinary_app
+            .oneshot(request("alice", None))
+            .await
+            .expect("alice inventory response"),
+    )
+    .await;
+    assert_eq!(approval_ids(&alice_payload), vec![alice.approval_id.clone()]);
+
+    let reviewer_payload = incident_monitor_response_json(
+        reviewer_app
+            .clone()
+            .oneshot(request("reviewer-a", None))
+            .await
+            .expect("reviewer inventory response"),
+    )
+    .await;
+    let reviewer_ids = approval_ids(&reviewer_payload);
+    assert!(reviewer_ids.contains(&alice.approval_id));
+    assert!(reviewer_ids.contains(&bob.approval_id));
+    assert!(reviewer_ids.contains(&agent.approval_id));
+
+    let agent_payload = incident_monitor_response_json(
+        reviewer_app
+            .oneshot(request("reviewer-a", Some("agent-reviewer")))
+            .await
+            .expect("agent inventory response"),
+    )
+    .await;
+    assert_eq!(approval_ids(&agent_payload), vec![agent.approval_id.clone()]);
 }
 
 #[tokio::test]
