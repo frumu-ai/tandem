@@ -513,7 +513,7 @@ pub async fn delete_managed_worktree(
         grant
             .revalidate(state, &effect)
             .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
-        let _ = delete_git_branch_async(record.repo_root.clone(), record.branch.clone()).await;
+        delete_git_branch_async(record.repo_root.clone(), record.branch.clone()).await?;
     }
     grant
         .revalidate(state, &effect)
@@ -548,13 +548,15 @@ async fn read_managed_git_output<R>(reader: R) -> std::io::Result<(String, bool)
 where
     R: AsyncRead + Unpin,
 {
+    let mut reader = reader;
     let mut bytes = Vec::new();
-    reader
+    (&mut reader)
         .take(MANAGED_GIT_OUTPUT_LIMIT + 1)
         .read_to_end(&mut bytes)
         .await?;
     let truncated = bytes.len() as u64 > MANAGED_GIT_OUTPUT_LIMIT;
     bytes.truncate(MANAGED_GIT_OUTPUT_LIMIT as usize);
+    tokio::io::copy(&mut reader, &mut tokio::io::sink()).await?;
     Ok((String::from_utf8_lossy(&bytes).to_string(), truncated))
 }
 
@@ -768,9 +770,31 @@ async fn delete_git_branch_async(repo_root: String, branch: String) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::{
-        managed_worktree_key, remove_managed_worktree_dir, run_managed_git,
-        validate_managed_worktree_path, worktree_registration_matches_async,
+        managed_worktree_key, read_managed_git_output, remove_managed_worktree_dir,
+        run_managed_git, validate_managed_worktree_path, worktree_registration_matches_async,
     };
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn managed_git_output_is_capped_while_the_pipe_is_fully_drained() {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let payload = vec![b'x'; super::MANAGED_GIT_OUTPUT_LIMIT as usize * 2];
+        let write = tokio::spawn(async move {
+            writer.write_all(&payload).await?;
+            writer.shutdown().await
+        });
+
+        let (output, truncated) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_managed_git_output(reader),
+        )
+        .await
+        .expect("bounded reader must not deadlock")
+        .expect("read managed output");
+        write.await.expect("join writer").expect("drain writer");
+        assert!(truncated);
+        assert_eq!(output.len(), super::MANAGED_GIT_OUTPUT_LIMIT as usize);
+    }
 
     #[cfg(unix)]
     #[test]

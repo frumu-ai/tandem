@@ -218,44 +218,6 @@ where
     }
 }
 
-fn init_coder_git_repo() -> std::path::PathBuf {
-    let repo_root =
-        std::env::temp_dir().join(format!("tandem-coder-worktree-test-{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&repo_root).expect("create repo dir");
-    let status = std::process::Command::new("git")
-        .args(["init", "-b", "main"])
-        .current_dir(&repo_root)
-        .status()
-        .expect("git init");
-    assert!(status.success());
-    let status = std::process::Command::new("git")
-        .args(["config", "user.email", "tests@tandem.local"])
-        .current_dir(&repo_root)
-        .status()
-        .expect("git config email");
-    assert!(status.success());
-    let status = std::process::Command::new("git")
-        .args(["config", "user.name", "Tandem Tests"])
-        .current_dir(&repo_root)
-        .status()
-        .expect("git config name");
-    assert!(status.success());
-    std::fs::write(repo_root.join("README.md"), "# coder test\n").expect("seed readme");
-    let status = std::process::Command::new("git")
-        .args(["add", "README.md"])
-        .current_dir(&repo_root)
-        .status()
-        .expect("git add");
-    assert!(status.success());
-    let status = std::process::Command::new("git")
-        .args(["commit", "-m", "init"])
-        .current_dir(&repo_root)
-        .status()
-        .expect("git commit");
-    assert!(status.success());
-    repo_root
-}
-
 async fn create_coder_run_for_replay(app: axum::Router, body: Value) -> (Value, String) {
     let create_req = Request::builder()
         .method("POST")

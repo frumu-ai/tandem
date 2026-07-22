@@ -410,6 +410,32 @@ pub(in crate::http) async fn delete_worktree(
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
+    if !StdPath::new(&record.path).exists() {
+        if !record.cleanup_branch {
+            return Err(StatusCode::CONFLICT);
+        }
+        let branch_out = crate::runtime::worktrees::run_managed_git(
+            &repo_root,
+            &["branch", "-D", "--", &record.branch],
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if branch_out.success {
+            state.managed_worktrees.write().await.remove(&record.key);
+        }
+        let expose_host_paths = verified.is_none();
+        return Ok(Json(json!({
+            "ok": branch_out.success,
+            "worktree_id": record.key,
+            "repository_id": record.repository_id,
+            "repo_root": expose_host_paths.then_some(repo_root),
+            "path": expose_host_paths.then_some(record.path),
+            "branch": record.branch,
+            "cleanup_branch": true,
+            "branch_deleted": branch_out.success,
+            "stderr": expose_host_paths.then(|| branch_out.stderr.clone())
+        })));
+    }
     crate::runtime::worktrees::validate_managed_worktree_path(
         &repo_root,
         StdPath::new(&record.path),
@@ -462,12 +488,12 @@ pub(in crate::http) async fn delete_worktree(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         branch_deleted = branch_out.success;
     }
-    if output.success {
+    if output.success && (!record.cleanup_branch || branch_deleted) {
         state.managed_worktrees.write().await.remove(&record.key);
     }
     let expose_host_paths = verified.is_none();
     Ok(Json(json!({
-        "ok": output.success,
+        "ok": output.success && (!record.cleanup_branch || branch_deleted),
         "worktree_id": record.key,
         "repository_id": record.repository_id,
         "repo_root": expose_host_paths.then_some(repo_root),
@@ -856,11 +882,6 @@ pub(in crate::http) async fn cleanup_worktrees(
             .await;
             match remove_output {
                 Ok(result) if result.success => {
-                    state
-                        .managed_worktrees
-                        .write()
-                        .await
-                        .retain(|_, row| row.key != record.key || row.tenant_context != tenant);
                     let mut branch_deleted = None;
                     let mut branch_delete_error = None;
                     if record.cleanup_branch {
@@ -893,6 +914,13 @@ pub(in crate::http) async fn cleanup_worktrees(
                                 }
                             }
                         }
+                    }
+                    if !record.cleanup_branch || branch_deleted == Some(true) {
+                        state
+                            .managed_worktrees
+                            .write()
+                            .await
+                            .retain(|_, row| row.key != record.key || row.tenant_context != tenant);
                     }
                     cleaned.push(json!({
                         "worktree_id": record.key,
