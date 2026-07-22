@@ -838,6 +838,146 @@ async fn governance_bootstrap_persists_quarantine_for_tenant_mismatch() {
         .expect("reloaded quarantine owner");
     assert_eq!(owner.org_id, "org-owner");
     assert_eq!(owner.workspace_id, "workspace-owner");
+
+    #[cfg(feature = "premium-governance")]
+    {
+        let approval = state
+            .request_approval(
+                crate::automation_v2::governance::GovernanceApprovalRequestType::LifecycleReview,
+                crate::automation_v2::governance::GovernanceActorRef::system(
+                    "tenant_ownership_quarantine",
+                ),
+                crate::automation_v2::governance::GovernanceResourceRef {
+                    resource_type: "automation".to_string(),
+                    id: automation_id.to_string(),
+                },
+                "independent tenant ownership review".to_string(),
+                json!({"trigger": "tenant_ownership_mismatch"}),
+                None,
+                &tenant,
+            )
+            .await
+            .expect("quarantine lifecycle approval");
+
+        tokio::fs::remove_file(&state.protected_audit_path)
+            .await
+            .expect("remove protected audit ledger");
+        tokio::fs::create_dir_all(&state.protected_audit_path)
+            .await
+            .expect("make protected audit path unwritable as a file");
+        crate::audit::reset_protected_audit_tail_for_test(&state.protected_audit_path).await;
+        let failed = state
+            .decide_approval_request(
+                &approval.approval_id,
+                crate::automation_v2::governance::GovernanceActorRef::human(
+                    Some("owner".to_string()),
+                    "test",
+                ),
+                true,
+                Some("audit must succeed".to_string()),
+                &tenant,
+            )
+            .await;
+        assert!(failed.is_err());
+        assert_eq!(
+            state
+                .get_governance_approval_request_for_tenant(&approval.approval_id, &tenant)
+                .await
+                .expect("approval remains visible")
+                .status,
+            crate::automation_v2::governance::GovernanceApprovalStatus::Pending
+        );
+        let still_quarantined = state
+            .get_automation_governance(automation_id)
+            .await
+            .expect("quarantine survives failed review audit");
+        assert!(still_quarantined.review_required);
+        assert_eq!(
+            still_quarantined.review_kind,
+            Some(
+                crate::automation_v2::governance::AutomationLifecycleReviewKind::TenantOwnershipMismatch
+            )
+        );
+        tokio::fs::remove_dir_all(&state.protected_audit_path)
+            .await
+            .expect("remove audit failure directory");
+        crate::audit::reset_protected_audit_tail_for_test(&state.protected_audit_path).await;
+
+        let reviewer_app =
+            verified_governance_app(state.clone(), "org-owner", "workspace-owner", "owner");
+        let approve = reviewer_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/governance/approvals/{}/approve",
+                        approval.approval_id
+                    ))
+                    .header("content-type", "application/json")
+                    .header("x-tandem-org-id", "org-owner")
+                    .header("x-tandem-workspace-id", "workspace-owner")
+                    .header("x-tandem-actor-id", "owner")
+                    .body(Body::from(json!({"notes": "ownership verified"}).to_string()))
+                    .expect("approve quarantine review"),
+            )
+            .await
+            .expect("approve quarantine response");
+        assert_eq!(approve.status(), StatusCode::OK);
+        let acknowledged = state
+            .get_automation_governance(automation_id)
+            .await
+            .expect("acknowledged quarantine");
+        assert!(!acknowledged.review_required);
+        assert!(acknowledged.creation_paused && acknowledged.paused_for_lifecycle);
+        assert_eq!(
+            acknowledged.review_kind,
+            Some(
+                crate::automation_v2::governance::AutomationLifecycleReviewKind::TenantOwnershipMismatch
+            )
+        );
+        assert!(state
+            .create_automation_v2_run(
+                &state
+                    .get_automation_v2(automation_id)
+                    .await
+                    .expect("still paused automation"),
+                "manual",
+            )
+            .await
+            .is_err());
+
+        let resume = reviewer_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/automations/v2/{automation_id}/resume"))
+                    .header("x-tandem-org-id", "org-owner")
+                    .header("x-tandem-workspace-id", "workspace-owner")
+                    .header("x-tandem-actor-id", "owner")
+                    .body(Body::empty())
+                    .expect("resume quarantined automation"),
+            )
+            .await
+            .expect("resume quarantine response");
+        assert_eq!(resume.status(), StatusCode::OK);
+        let restored_record = state
+            .get_automation_governance(automation_id)
+            .await
+            .expect("restored governance");
+        assert!(!restored_record.creation_paused);
+        assert!(!restored_record.paused_for_lifecycle);
+        assert_eq!(restored_record.review_kind, None);
+        let restored = state
+            .get_automation_v2(automation_id)
+            .await
+            .expect("restored automation");
+        assert_eq!(restored.status, crate::AutomationV2Status::Active);
+        state
+            .create_automation_v2_run(&restored, "manual")
+            .await
+            .expect("reviewed and explicitly resumed run");
+    }
 }
 
 #[cfg(feature = "premium-governance")]

@@ -51,9 +51,13 @@ async fn arrange_governed_awaiting_publish_gate(
     requester_id: &str,
     metadata: serde_json::Value,
 ) -> crate::automation_v2::types::AutomationV2RunRecord {
-    let mut automation = create_branched_test_automation_v2(state, automation_id).await;
+    let mut automation = create_branched_test_automation_v2_for_tenant(
+        state,
+        automation_id,
+        &tenant_context,
+    )
+    .await;
     automation.creator_id = requester_id.to_string();
-    automation.set_tenant_context(&tenant_context);
     state
         .put_automation_v2(automation.clone())
         .await

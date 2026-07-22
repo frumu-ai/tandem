@@ -25,6 +25,7 @@ pub(super) struct IncidentMonitorAssessmentProbeRunInput {
 pub(super) async fn run_incident_monitor_security_assessment_probes(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Json(input): Json<IncidentMonitorAssessmentProbeRunInput>,
@@ -52,6 +53,11 @@ pub(super) async fn run_incident_monitor_security_assessment_probes(
         }
     }
 
+    let actor = super::governance::resolve_governance_actor(
+        &headers,
+        &tenant_context,
+        &request_principal,
+    );
     let requested_mode = input.mode.as_deref().unwrap_or("dry_run");
     let mode = incident_monitor_assessment_mode(Some(requested_mode));
     let selected_probe_ids = incident_monitor_assessment_selected_probe_ids(&input.probes);
@@ -59,7 +65,12 @@ pub(super) async fn run_incident_monitor_security_assessment_probes(
     let dry_run = mode != "disabled";
     let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let authority_inventory =
-        incident_monitor_authority_inventory_payload(&state, tenant_context.clone(), verified, None).await;
+        incident_monitor_authority_inventory_payload(
+            &state,
+            tenant_context.clone(),
+            verified,
+            IncidentMonitorApprovalInventoryAccess::Caller(&actor),
+        ).await;
     let status = state.incident_monitor_status_snapshot().await;
     let include_draft_suggestions = input.include_draft_suggestions.unwrap_or(true);
 

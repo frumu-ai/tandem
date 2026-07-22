@@ -1186,83 +1186,6 @@ impl AppState {
             .collect()
     }
 
-    pub async fn decide_approval_request(
-        &self,
-        approval_id: &str,
-        reviewer: GovernanceActorRef,
-        approved: bool,
-        notes: Option<String>,
-        tenant_context: &tandem_types::TenantContext,
-    ) -> anyhow::Result<Option<GovernanceApprovalRequest>> {
-        let existing = {
-            let guard = self.automation_governance.read().await;
-            let Some(request) = guard.approvals.get(approval_id).cloned() else {
-                return Ok(None);
-            };
-            request
-        };
-        // CT-09: reject cross-tenant receipt replay. A receipt issued in tenant A
-        // must not be approved or revoked from tenant B. The denial is audited under
-        // the requesting tenant, and the caller sees the same `None` (HTTP 404) as a
-        // missing receipt so existence is not leaked across the tenant boundary.
-        if !approval_receipt_matches_tenant(&existing, tenant_context) {
-            append_protected_audit_event(
-                self,
-                format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.cross_tenant_denied"),
-                tenant_context,
-                reviewer
-                    .actor_id
-                    .clone()
-                    .or_else(|| reviewer.source.clone()),
-                json!({
-                    "approvalID": approval_id,
-                    "decision": if approved { "approve" } else { "deny" },
-                    "reason": "cross_tenant_receipt_replay",
-                }),
-            )
-            .await?;
-            return Ok(None);
-        }
-        let stored = self
-            .governance_engine
-            .decide_approval_request(
-                &existing,
-                reviewer.clone(),
-                approved,
-                notes.clone(),
-                now_ms(),
-            )
-            .map_err(|error| anyhow::anyhow!(error.message))?;
-        // Persist protected audit before making the decision visible. If the
-        // tamper-evident ledger is unavailable, the approval remains pending.
-        append_protected_audit_event(
-            self,
-            format!(
-                "{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.{}",
-                if approved { "approved" } else { "denied" }
-            ),
-            tenant_context,
-            reviewer
-                .actor_id
-                .clone()
-                .or_else(|| reviewer.source.clone()),
-            json!({
-                "approvalID": approval_id,
-                "approval": &stored,
-            }),
-        )
-        .await?;
-        {
-            let mut guard = self.automation_governance.write().await;
-            guard
-                .approvals
-                .insert(approval_id.to_string(), stored.clone());
-            guard.updated_at_ms = now_ms();
-        }
-        self.persist_automation_governance().await?;
-        Ok(Some(stored))
-    }
-
     pub async fn delete_automation_v2_with_governance(
         &self,
         automation_id: &str,
@@ -1550,21 +1473,14 @@ impl AppState {
         notes: Option<String>,
     ) -> anyhow::Result<()> {
         let now = now_ms();
-        {
-            let mut guard = self.automation_governance.write().await;
-            let existing = guard.agent_creation_reviews.get(agent_id).cloned();
-            let summary = self.governance_engine.acknowledge_creation_review(
-                existing,
-                agent_id,
-                notes.clone(),
-                now,
-            );
-            guard
-                .agent_creation_reviews
-                .insert(agent_id.to_string(), summary);
-            guard.updated_at_ms = now;
-        }
-        self.persist_automation_governance().await?;
+        let mut guard = self.automation_governance.write().await;
+        let existing = guard.agent_creation_reviews.get(agent_id).cloned();
+        let summary = self.governance_engine.acknowledge_creation_review(
+            existing,
+            agent_id,
+            notes.clone(),
+            now,
+        );
         append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.review.agent_acknowledged"),
@@ -1580,6 +1496,16 @@ impl AppState {
             }),
         )
         .await?;
+        let previous = guard.clone();
+        guard
+            .agent_creation_reviews
+            .insert(agent_id.to_string(), summary);
+        guard.updated_at_ms = now;
+        drop(guard);
+        if let Err(error) = self.persist_automation_governance().await {
+            *self.automation_governance.write().await = previous;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -1589,28 +1515,27 @@ impl AppState {
         reviewer: GovernanceActorRef,
         notes: Option<String>,
     ) -> anyhow::Result<Option<AutomationGovernanceRecord>> {
-        let stored = {
-            let mut guard = self.automation_governance.write().await;
-            let stored = {
-                let Some(record) = guard.records.get(automation_id) else {
-                    return Ok(None);
-                };
-                let updated = self
-                    .governance_engine
-                    .acknowledge_automation_review(record, now_ms());
-                guard
-                    .records
-                    .insert(automation_id.to_string(), updated.clone());
-                updated
-            };
-            guard.updated_at_ms = now_ms();
-            stored
+        let now = now_ms();
+        let mut guard = self.automation_governance.write().await;
+        let Some(record) = guard.records.get(automation_id) else {
+            return Ok(None);
         };
-        self.persist_automation_governance().await?;
+        let tenant_context = record
+            .tenant_context
+            .clone()
+            .unwrap_or_else(tandem_types::TenantContext::local_implicit);
+        let tenant_ownership_quarantine =
+            record.review_kind == Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch);
+        let mut stored = self
+            .governance_engine
+            .acknowledge_automation_review(record, now);
+        if tenant_ownership_quarantine {
+            stored.review_kind = Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch);
+        }
         append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.review.automation_acknowledged"),
-            &tandem_types::TenantContext::local_implicit(),
+            &tenant_context,
             reviewer
                 .actor_id
                 .clone()
@@ -1619,9 +1544,20 @@ impl AppState {
                 "automationID": automation_id,
                 "reviewer": reviewer,
                 "notes": notes,
+                "reviewKind": stored.review_kind,
             }),
         )
         .await?;
+        let previous = guard.clone();
+        guard
+            .records
+            .insert(automation_id.to_string(), stored.clone());
+        guard.updated_at_ms = now;
+        drop(guard);
+        if let Err(error) = self.persist_automation_governance().await {
+            *self.automation_governance.write().await = previous;
+            return Err(error);
+        }
         Ok(Some(stored))
     }
 

@@ -118,11 +118,8 @@ async fn wait_for_automation_v2_run_failure(
     }
 }
 
-pub(in crate::http::tests) async fn create_test_automation_v2(
-    state: &AppState,
-    automation_id: &str,
-) -> crate::AutomationV2Spec {
-    let automation = crate::AutomationV2Spec {
+fn test_automation_v2_spec(automation_id: &str) -> crate::AutomationV2Spec {
+    crate::AutomationV2Spec {
         automation_id: automation_id.to_string(),
         name: "Test Automation".to_string(),
         description: Some("automation for runtime regression coverage".to_string()),
@@ -276,18 +273,34 @@ pub(in crate::http::tests) async fn create_test_automation_v2(
         scope_policy: None,
         watch_conditions: Vec::new(),
         handoff_config: None,
-    };
+    }
+}
+
+pub(in crate::http::tests) async fn create_test_automation_v2(
+    state: &AppState,
+    automation_id: &str,
+) -> crate::AutomationV2Spec {
     state
-        .put_automation_v2(automation)
+        .put_automation_v2(test_automation_v2_spec(automation_id))
         .await
         .expect("store automation")
 }
 
-async fn create_branched_test_automation_v2(
+pub(in crate::http::tests) async fn create_test_automation_v2_for_tenant(
     state: &AppState,
     automation_id: &str,
+    tenant_context: &tandem_types::TenantContext,
 ) -> crate::AutomationV2Spec {
-    let automation = crate::AutomationV2Spec {
+    let mut automation = test_automation_v2_spec(automation_id);
+    automation.set_tenant_context(tenant_context);
+    state
+        .put_automation_v2(automation)
+        .await
+        .expect("store tenant automation")
+}
+
+fn branched_test_automation_v2_spec(automation_id: &str) -> crate::AutomationV2Spec {
+    crate::AutomationV2Spec {
         automation_id: automation_id.to_string(),
         name: "Branched Test Automation".to_string(),
         description: Some("automation for branched runtime regression coverage".to_string()),
@@ -462,11 +475,30 @@ async fn create_branched_test_automation_v2(
         scope_policy: None,
         watch_conditions: Vec::new(),
         handoff_config: None,
-    };
+    }
+}
+
+async fn create_branched_test_automation_v2(
+    state: &AppState,
+    automation_id: &str,
+) -> crate::AutomationV2Spec {
+    state
+        .put_automation_v2(branched_test_automation_v2_spec(automation_id))
+        .await
+        .expect("store automation")
+}
+
+async fn create_branched_test_automation_v2_for_tenant(
+    state: &AppState,
+    automation_id: &str,
+    tenant_context: &tandem_types::TenantContext,
+) -> crate::AutomationV2Spec {
+    let mut automation = branched_test_automation_v2_spec(automation_id);
+    automation.set_tenant_context(tenant_context);
     state
         .put_automation_v2(automation)
         .await
-        .expect("store automation")
+        .expect("store tenant automation")
 }
 
 #[tokio::test]

@@ -66,6 +66,131 @@ fn quarantine_governance_record_for_tenant(
 }
 
 impl AppState {
+    pub async fn decide_approval_request(
+        &self,
+        approval_id: &str,
+        reviewer: GovernanceActorRef,
+        approved: bool,
+        notes: Option<String>,
+        tenant_context: &tandem_types::TenantContext,
+    ) -> anyhow::Result<Option<GovernanceApprovalRequest>> {
+        let now = now_ms();
+        let mut guard = self.automation_governance.write().await;
+        let Some(existing) = guard.approvals.get(approval_id).cloned() else {
+            return Ok(None);
+        };
+        // CT-09: reject cross-tenant receipt replay without exposing whether the
+        // receipt exists. The denial receipt is durable before returning.
+        if !approval_receipt_matches_tenant(&existing, tenant_context) {
+            append_protected_audit_event(
+                self,
+                format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.cross_tenant_denied"),
+                tenant_context,
+                reviewer
+                    .actor_id
+                    .clone()
+                    .or_else(|| reviewer.source.clone()),
+                json!({
+                    "approvalID": approval_id,
+                    "decision": if approved { "approve" } else { "deny" },
+                    "reason": "cross_tenant_receipt_replay",
+                }),
+            )
+            .await?;
+            return Ok(None);
+        }
+        let stored = self
+            .governance_engine
+            .decide_approval_request(&existing, reviewer.clone(), approved, notes.clone(), now)
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+        let trigger = stored
+            .context
+            .get("trigger")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let automation_review = if approved
+            && stored.status == GovernanceApprovalStatus::Approved
+            && stored.request_type == GovernanceApprovalRequestType::LifecycleReview
+            && stored.target_resource.resource_type == "automation"
+            && matches!(
+                trigger,
+                "run_drift" | "health_drift" | "dependency_revoked" | "tenant_ownership_mismatch"
+            ) {
+            let record = guard
+                .records
+                .get(&stored.target_resource.id)
+                .ok_or_else(|| anyhow::anyhow!("automation governance record not found"))?;
+            if !governance_record_owned_by(record, tenant_context) {
+                anyhow::bail!("automation governance record not found");
+            }
+            let tenant_ownership_quarantine =
+                record.review_kind == Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch);
+            let mut updated = self
+                .governance_engine
+                .acknowledge_automation_review(record, now);
+            // Acknowledgment authorizes a separate explicit resume, but does not
+            // itself reactivate a quarantined automation. Keep the marker until
+            // the resume transaction clears both pause flags.
+            if tenant_ownership_quarantine {
+                updated.review_kind = Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch);
+            }
+            Some(updated)
+        } else {
+            None
+        };
+
+        // Both required receipts must persist before either state transition is
+        // made visible. A later governance-store failure restores the snapshot.
+        append_protected_audit_event(
+            self,
+            format!(
+                "{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.{}",
+                if approved { "approved" } else { "denied" }
+            ),
+            tenant_context,
+            reviewer
+                .actor_id
+                .clone()
+                .or_else(|| reviewer.source.clone()),
+            json!({
+                "approvalID": approval_id,
+                "approval": &stored,
+            }),
+        )
+        .await?;
+        if let Some(record) = automation_review.as_ref() {
+            append_protected_audit_event(
+                self,
+                format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.review.automation_acknowledged"),
+                tenant_context,
+                reviewer
+                    .actor_id
+                    .clone()
+                    .or_else(|| reviewer.source.clone()),
+                json!({
+                    "automationID": stored.target_resource.id,
+                    "reviewer": reviewer,
+                    "notes": notes,
+                    "reviewKind": record.review_kind,
+                }),
+            )
+            .await?;
+        }
+        let previous = guard.clone();
+        guard
+            .approvals
+            .insert(approval_id.to_string(), stored.clone());
+        if let Some(record) = automation_review {
+            guard.records.insert(record.automation_id.clone(), record);
+        }
+        guard.updated_at_ms = now;
+        drop(guard);
+        if let Err(error) = self.persist_automation_governance().await {
+            *self.automation_governance.write().await = previous;
+            return Err(error);
+        }
+        Ok(Some(stored))
+    }
     pub async fn ensure_automation_governance_run_allowed(
         &self,
         automation: &crate::AutomationV2Spec,
@@ -77,15 +202,70 @@ impl AppState {
         let record = self
             .get_or_bootstrap_automation_governance(automation)
             .await;
+        let tenant_ownership_quarantine = record.review_kind
+            == Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch);
         if !governance_record_owned_by(&record, &tenant_context)
-            || record.creation_paused
-            || record.paused_for_lifecycle
+            || tenant_ownership_quarantine
         {
             anyhow::bail!(
-                "automation governance is quarantined or paused pending independent review"
+                "automation governance tenant ownership is quarantined or paused pending independent review"
             );
         }
         Ok(())
+    }
+
+    pub async fn complete_tenant_ownership_quarantine_restore(
+        &self,
+        automation_id: &str,
+        restored_by: &GovernanceActorRef,
+        tenant_context: &tandem_types::TenantContext,
+    ) -> anyhow::Result<bool> {
+        let now = now_ms();
+        let mut guard = self.automation_governance.write().await;
+        let Some(record) = guard.records.get(automation_id) else {
+            return Ok(false);
+        };
+        if !governance_record_owned_by(record, tenant_context) {
+            anyhow::bail!("automation governance record not found");
+        }
+        if record.review_kind
+            != Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch)
+        {
+            return Ok(false);
+        }
+        if record.review_required {
+            anyhow::bail!("tenant ownership quarantine requires independent review before resume");
+        }
+        append_protected_audit_event(
+            self,
+            format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.tenant_quarantine.restored"),
+            tenant_context,
+            restored_by
+                .actor_id
+                .clone()
+                .or_else(|| restored_by.source.clone()),
+            json!({
+                "automationID": automation_id,
+                "restoredBy": restored_by,
+            }),
+        )
+        .await?;
+        let previous = guard.clone();
+        let record = guard
+            .records
+            .get_mut(automation_id)
+            .expect("quarantine record remains present");
+        record.creation_paused = false;
+        record.paused_for_lifecycle = false;
+        record.review_kind = None;
+        record.updated_at_ms = now;
+        guard.updated_at_ms = now;
+        drop(guard);
+        if let Err(error) = self.persist_automation_governance().await {
+            *self.automation_governance.write().await = previous;
+            return Err(error);
+        }
+        Ok(true)
     }
 
     pub async fn can_mutate_automation(

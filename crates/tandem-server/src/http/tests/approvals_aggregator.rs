@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-use super::global::create_test_automation_v2;
+use super::global::{create_test_automation_v2, create_test_automation_v2_for_tenant};
 use super::*;
 
 use axum::body::{to_bytes, Body};
@@ -698,23 +698,15 @@ async fn approvals_pending_endpoint_scopes_results_to_request_tenant() {
         "actor-b",
     );
 
-    let mut automation_a = create_test_automation_v2(&state, "auto-v2-approvals-tenant-a").await;
-    automation_a.set_tenant_context(&tenant_a);
-    state
-        .put_automation_v2(automation_a.clone())
-        .await
-        .expect("store tenant a automation");
+    let automation_a =
+        create_test_automation_v2_for_tenant(&state, "auto-v2-approvals-tenant-a", &tenant_a).await;
     let run_a = state
         .create_automation_v2_run(&automation_a, "manual")
         .await
         .expect("tenant a run");
 
-    let mut automation_b = create_test_automation_v2(&state, "auto-v2-approvals-tenant-b").await;
-    automation_b.set_tenant_context(&tenant_b);
-    state
-        .put_automation_v2(automation_b.clone())
-        .await
-        .expect("store tenant b automation");
+    let automation_b =
+        create_test_automation_v2_for_tenant(&state, "auto-v2-approvals-tenant-b", &tenant_b).await;
     let run_b = state
         .create_automation_v2_run(&automation_b, "manual")
         .await
@@ -816,12 +808,8 @@ async fn approvals_pending_endpoint_applies_tenant_scope_before_run_cap() {
         "actor-b",
     );
 
-    let mut automation_b = create_test_automation_v2(&state, "auto-v2-approvals-cap-b").await;
-    automation_b.set_tenant_context(&tenant_b);
-    state
-        .put_automation_v2(automation_b.clone())
-        .await
-        .expect("store tenant b automation");
+    let automation_b =
+        create_test_automation_v2_for_tenant(&state, "auto-v2-approvals-cap-b", &tenant_b).await;
     let run_b = state
         .create_automation_v2_run(&automation_b, "manual")
         .await
@@ -845,12 +833,8 @@ async fn approvals_pending_endpoint_applies_tenant_scope_before_run_cap() {
         });
     }
 
-    let mut automation_a = create_test_automation_v2(&state, "auto-v2-approvals-cap-a").await;
-    automation_a.set_tenant_context(&tenant_a);
-    state
-        .put_automation_v2(automation_a.clone())
-        .await
-        .expect("store tenant a automation");
+    let automation_a =
+        create_test_automation_v2_for_tenant(&state, "auto-v2-approvals-cap-a", &tenant_a).await;
     let run_a_template = state
         .create_automation_v2_run(&automation_a, "manual")
         .await

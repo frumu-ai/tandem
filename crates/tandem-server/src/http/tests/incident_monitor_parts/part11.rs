@@ -130,7 +130,7 @@ async fn incident_monitor_authority_inventory_filters_governance_approvals_by_ac
         assertion_key_id: None,
     };
     let ordinary_app = app_router(state.clone());
-    let reviewer_app = app_router(state).layer(axum::Extension(verified));
+    let reviewer_app = app_router(state.clone()).layer(axum::Extension(verified));
     let request = |actor: &str, agent_id: Option<&str>| {
         let mut builder = Request::builder()
             .method("GET")
@@ -176,12 +176,62 @@ async fn incident_monitor_authority_inventory_filters_governance_approvals_by_ac
 
     let agent_payload = incident_monitor_response_json(
         reviewer_app
+            .clone()
             .oneshot(request("reviewer-a", Some("agent-reviewer")))
             .await
             .expect("agent inventory response"),
     )
     .await;
     assert_eq!(approval_ids(&agent_payload), vec![agent.approval_id.clone()]);
+
+    let assessment_payload = incident_monitor_response_json(
+        reviewer_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/incident-monitor/security/assessment-report")
+                    .header("content-type", "application/json")
+                    .header("x-tandem-org-id", "inventory-org")
+                    .header("x-tandem-workspace-id", "inventory-workspace")
+                    .header("x-tandem-actor-id", "reviewer-a")
+                    .header("x-tandem-agent-id", "agent-reviewer")
+                    .body(Body::from(
+                        json!({
+                            "include_probe_results": false,
+                            "persist_artifact": false
+                        })
+                        .to_string(),
+                    ))
+                    .expect("agent assessment request"),
+            )
+            .await
+            .expect("agent assessment response"),
+    )
+    .await;
+    assert_eq!(
+        assessment_payload
+            .pointer("/sections/authority_inventory/counts/governance_approval_requests")
+            .and_then(Value::as_u64),
+        Some(1),
+        "assessment callers must retain authoritative agent requester scope",
+    );
+
+    let background_payload = crate::http::incident_monitor::incident_monitor_authority_inventory_payload(
+        &state,
+        TenantContext::explicit(
+            "inventory-org",
+            "inventory-workspace",
+            Some("scheduler".to_string()),
+        ),
+        None,
+        crate::http::incident_monitor::IncidentMonitorApprovalInventoryAccess::Omit,
+    )
+    .await;
+    assert!(approval_ids(&background_payload).is_empty());
+    assert_eq!(
+        background_payload["counts"]["governance_approval_requests"],
+        json!(0)
+    );
 }
 
 #[tokio::test]

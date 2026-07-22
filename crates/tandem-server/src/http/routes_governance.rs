@@ -479,36 +479,33 @@ pub(super) async fn governance_approval_approve(
             resolve_governance_actor(&headers, &tenant_context, &request_principal);
         match reviewed.target_resource.resource_type.as_str() {
             "agent" if trigger == "creation_quota" => {
-                let _ = state
+                state
                     .acknowledge_agent_creation_review(
                         &reviewed.target_resource.id,
                         reviewer_actor,
                         notes.clone(),
                     )
-                    .await;
+                    .await
+                    .map_err(|error| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({
+                                "error": error.to_string(),
+                                "code": "GOVERNANCE_REVIEW_ACKNOWLEDGEMENT_FAILED",
+                            })),
+                        )
+                    })?;
             }
             "automation"
                 if matches!(
                     trigger,
-                    "run_drift" | "health_drift" | "tenant_ownership_mismatch"
+                    "run_drift"
+                        | "health_drift"
+                        | "dependency_revoked"
+                        | "tenant_ownership_mismatch"
                 ) =>
             {
-                let _ = state
-                    .acknowledge_automation_review(
-                        &reviewed.target_resource.id,
-                        reviewer_actor,
-                        notes.clone(),
-                    )
-                    .await;
-            }
-            "automation" if trigger == "dependency_revoked" => {
-                let _ = state
-                    .acknowledge_automation_review(
-                        &reviewed.target_resource.id,
-                        reviewer_actor,
-                        notes.clone(),
-                    )
-                    .await;
+                // Automation acknowledgement is committed atomically with the approval.
             }
             _ => {}
         }

@@ -30,6 +30,7 @@ pub(super) struct IncidentMonitorAssessmentReportInput {
 pub(super) async fn generate_incident_monitor_security_assessment_report(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Json(input): Json<IncidentMonitorAssessmentReportInput>,
@@ -58,11 +59,17 @@ pub(super) async fn generate_incident_monitor_security_assessment_report(
     }
 
     let generated_at_ms = crate::now_ms();
+    let actor = super::governance::resolve_governance_actor(
+        &headers,
+        &tenant_context,
+        &request_principal,
+    );
     let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let mut report = incident_monitor_assessment_report_payload(
         &state,
         tenant_context.clone(),
         verified,
+        IncidentMonitorApprovalInventoryAccess::Caller(&actor),
         &input,
         generated_at_ms,
     )
@@ -120,11 +127,17 @@ async fn incident_monitor_assessment_report_payload(
     state: &AppState,
     tenant_context: TenantContext,
     verified: Option<&VerifiedTenantContext>,
+    approval_access: IncidentMonitorApprovalInventoryAccess<'_>,
     input: &IncidentMonitorAssessmentReportInput,
     generated_at_ms: u64,
 ) -> Value {
     let authority_inventory =
-        incident_monitor_authority_inventory_payload(state, tenant_context.clone(), verified, None).await;
+        incident_monitor_authority_inventory_payload(
+            state,
+            tenant_context.clone(),
+            verified,
+            approval_access,
+        ).await;
     let status = state.incident_monitor_status_snapshot().await;
     let policy = incident_monitor_assessment_report_posture_policy(input);
     let findings = incident_monitor_security_posture_findings(&authority_inventory, &policy);
