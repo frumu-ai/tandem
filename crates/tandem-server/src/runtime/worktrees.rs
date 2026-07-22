@@ -353,7 +353,13 @@ pub async fn ensure_managed_worktree(
         grant
             .revalidate(state, &effect)
             .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
-        if worktree_is_registered_async(input.repo_root.clone(), existing.path.clone()).await? {
+        if worktree_registration_matches_async(
+            input.repo_root.clone(),
+            existing.path.clone(),
+            existing.branch.clone(),
+        )
+        .await?
+        {
             return Ok(ManagedWorktreeEnsureResult {
                 record: existing,
                 reused: true,
@@ -374,7 +380,12 @@ pub async fn ensure_managed_worktree(
         .revalidate(state, &effect)
         .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
     if tokio::fs::try_exists(&path).await?
-        && !worktree_is_registered_async(input.repo_root.clone(), path_string.clone()).await?
+        && !worktree_registration_matches_async(
+            input.repo_root.clone(),
+            path_string.clone(),
+            branch.clone(),
+        )
+        .await?
     {
         anyhow::bail!("managed worktree path conflict: {path_string}");
     }
@@ -382,7 +393,13 @@ pub async fn ensure_managed_worktree(
     grant
         .revalidate(state, &effect)
         .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
-    if worktree_is_registered_async(input.repo_root.clone(), path_string.clone()).await? {
+    if worktree_registration_matches_async(
+        input.repo_root.clone(),
+        path_string.clone(),
+        branch.clone(),
+    )
+    .await?
+    {
         let record = ManagedWorktreeRecord {
             key: key.clone(),
             repo_root: input.repo_root.clone(),
@@ -483,7 +500,15 @@ pub async fn delete_managed_worktree(
     })
     .await
     .context("managed worktree path validation failed")??;
-    remove_git_worktree_async(record.repo_root.clone(), record.path.clone()).await?;
+    remove_git_worktree_async(
+        state,
+        &grant,
+        &effect,
+        record.repo_root.clone(),
+        record.path.clone(),
+        record.branch.clone(),
+    )
+    .await?;
     if record.cleanup_branch {
         grant
             .revalidate(state, &effect)
@@ -665,18 +690,28 @@ pub(crate) async fn run_managed_git(
     run_managed_git_with_filter_overrides(repo_root, args, &filter_drivers).await
 }
 
-async fn worktree_is_registered_async(repo_root: String, path: String) -> anyhow::Result<bool> {
+async fn worktree_registration_matches_async(
+    repo_root: String,
+    path: String,
+    expected_branch: String,
+) -> anyhow::Result<bool> {
     let output = run_managed_git(&repo_root, &["worktree", "list", "--porcelain"]).await?;
     if !output.success {
         return Ok(false);
     }
     let needle = PathBuf::from(path);
-    for line in output.stdout.lines() {
-        if let Some(value) = line.strip_prefix("worktree ") {
-            if PathBuf::from(value) == needle {
-                return Ok(true);
-            }
+    for block in output.stdout.split("\n\n") {
+        let registered_path = block
+            .lines()
+            .find_map(|line| line.strip_prefix("worktree ").map(PathBuf::from));
+        if registered_path.as_ref() != Some(&needle) {
+            continue;
         }
+        let registered_branch = block.lines().find_map(|line| {
+            line.strip_prefix("branch ")
+                .and_then(|value| value.strip_prefix("refs/heads/"))
+        });
+        return Ok(registered_branch == Some(expected_branch.as_str()));
     }
     Ok(false)
 }
@@ -699,7 +734,22 @@ async fn add_git_worktree_async(
     Ok(())
 }
 
-async fn remove_git_worktree_async(repo_root: String, path: String) -> anyhow::Result<()> {
+async fn remove_git_worktree_async(
+    state: &crate::AppState,
+    grant: &crate::action_authorization::AuthorizedHostEffect,
+    effect: &crate::action_authorization::HostEffectRequest,
+    repo_root: String,
+    path: String,
+    expected_branch: String,
+) -> anyhow::Result<()> {
+    if !worktree_registration_matches_async(repo_root.clone(), path.clone(), expected_branch)
+        .await?
+    {
+        anyhow::bail!("managed worktree registration does not match the owned branch");
+    }
+    grant
+        .revalidate(state, effect)
+        .map_err(|error| anyhow::anyhow!("worktree grant invalid: {}", error.code()))?;
     let output = run_managed_git(&repo_root, &["worktree", "remove", "--", &path]).await?;
     if !output.success {
         anyhow::bail!("git worktree remove failed: {}", output.stderr.trim());
@@ -719,7 +769,7 @@ async fn delete_git_branch_async(repo_root: String, branch: String) -> anyhow::R
 mod tests {
     use super::{
         managed_worktree_key, remove_managed_worktree_dir, run_managed_git,
-        validate_managed_worktree_path,
+        validate_managed_worktree_path, worktree_registration_matches_async,
     };
 
     #[cfg(unix)]
@@ -886,6 +936,26 @@ mod tests {
         assert!(
             !filter_marker.exists(),
             "configured content filter must not execute"
+        );
+        assert!(
+            worktree_registration_matches_async(
+                repo_root.to_string(),
+                worktree.to_string_lossy().to_string(),
+                "test/worktree-a".to_string(),
+            )
+            .await
+            .expect("matching registration query"),
+            "owned branch must match its registered worktree"
+        );
+        assert!(
+            !worktree_registration_matches_async(
+                repo_root.to_string(),
+                worktree.to_string_lossy().to_string(),
+                "test/other-branch".to_string(),
+            )
+            .await
+            .expect("mismatched registration query"),
+            "path-only registration must not match another branch"
         );
         std::fs::write(worktree.join("tracked.txt"), b"dirty").expect("dirty worktree");
         let reset = run_managed_git(
