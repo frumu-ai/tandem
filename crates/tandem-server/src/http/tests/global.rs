@@ -9,6 +9,7 @@ fn direct_loopback_peer() -> axum::extract::ConnectInfo<std::net::SocketAddr> {
 }
 
 include!("global_parts/part01.rs");
+include!("global_parts/part07.rs");
 include!("global_parts/part02.rs");
 include!("global_parts/part03.rs");
 include!("global_parts/part05.rs");

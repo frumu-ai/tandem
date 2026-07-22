@@ -554,12 +554,20 @@ where
         .take(MANAGED_GIT_OUTPUT_LIMIT + 1)
         .read_to_end(&mut bytes)
         .await?;
-    let truncated = bytes.len() as u64 > MANAGED_GIT_OUTPUT_LIMIT;
+    let mut truncated = bytes.len() as u64 > MANAGED_GIT_OUTPUT_LIMIT;
     bytes.truncate(MANAGED_GIT_OUTPUT_LIMIT as usize);
     tokio::io::copy(&mut reader, &mut tokio::io::sink()).await?;
-    Ok((String::from_utf8_lossy(&bytes).to_string(), truncated))
+    let mut output = String::from_utf8_lossy(&bytes).into_owned();
+    if output.len() > MANAGED_GIT_OUTPUT_LIMIT as usize {
+        let mut boundary = MANAGED_GIT_OUTPUT_LIMIT as usize;
+        while !output.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        output.truncate(boundary);
+        truncated = true;
+    }
+    Ok((output, truncated))
 }
-
 async fn run_managed_git_with_filter_overrides(
     repo_root: &str,
     args: &[&str],
@@ -654,6 +662,9 @@ async fn managed_git_filter_drivers(repo_root: &str) -> anyhow::Result<Vec<Strin
         &[],
     )
     .await?;
+    if output.stdout_truncated || output.stderr_truncated {
+        anyhow::bail!("managed Git filter discovery output was truncated");
+    }
     if !output.success && (!output.stdout.is_empty() || !output.stderr.is_empty()) {
         anyhow::bail!("managed Git filter discovery failed");
     }
@@ -794,6 +805,24 @@ mod tests {
         write.await.expect("join writer").expect("drain writer");
         assert!(truncated);
         assert_eq!(output.len(), super::MANAGED_GIT_OUTPUT_LIMIT as usize);
+    }
+
+    #[tokio::test]
+    async fn managed_git_output_remains_capped_after_lossy_utf8_conversion() {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let payload = vec![0xff; super::MANAGED_GIT_OUTPUT_LIMIT as usize];
+        let write = tokio::spawn(async move {
+            writer.write_all(&payload).await?;
+            writer.shutdown().await
+        });
+
+        let (output, truncated) = read_managed_git_output(reader)
+            .await
+            .expect("read managed output");
+        write.await.expect("join writer").expect("drain writer");
+        assert!(truncated);
+        assert!(output.len() <= super::MANAGED_GIT_OUTPUT_LIMIT as usize);
+        assert!(output.is_char_boundary(output.len()));
     }
 
     #[cfg(unix)]

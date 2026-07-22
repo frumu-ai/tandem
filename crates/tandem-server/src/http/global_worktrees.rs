@@ -891,6 +891,11 @@ pub(in crate::http) async fn cleanup_worktrees(
                                 "registered branch does not match the owned cleanup record"
                                     .to_string(),
                             );
+                            failures.push(json!({
+                                "worktree_id": record.key,
+                                "branch": record.branch,
+                                "code": "WORKTREE_BRANCH_MISMATCH",
+                            }));
                         } else {
                             grant
                                 .revalidate(&state, &effect)
@@ -907,10 +912,20 @@ pub(in crate::http) async fn cleanup_worktrees(
                                 Ok(branch_output) => {
                                     branch_deleted = Some(false);
                                     branch_delete_error = Some(branch_output.stderr.clone());
+                                    failures.push(json!({
+                                        "worktree_id": record.key,
+                                        "branch": record.branch,
+                                        "code": "WORKTREE_BRANCH_DELETE_FAILED",
+                                    }));
                                 }
                                 Err(err) => {
                                     branch_deleted = Some(false);
                                     branch_delete_error = Some(err.to_string());
+                                    failures.push(json!({
+                                        "worktree_id": record.key,
+                                        "branch": record.branch,
+                                        "code": "WORKTREE_BRANCH_DELETE_FAILED",
+                                    }));
                                 }
                             }
                         }
@@ -1014,15 +1029,54 @@ pub(in crate::http) async fn cleanup_worktrees(
                 verified.is_none(),
             ) {
                 Ok(_) => {
+                    let mut branch_deleted = None;
+                    let mut branch_delete_error = None;
                     if let Some(record) = owned_by_path.get(path) {
-                        state
-                            .managed_worktrees
-                            .write()
+                        if record.cleanup_branch {
+                            grant
+                                .revalidate(&state, &effect)
+                                .map_err(host_authorization_status)?;
+                            match crate::runtime::worktrees::run_managed_git(
+                                &repo_root,
+                                &["branch", "-D", "--", &record.branch],
+                            )
                             .await
-                            .retain(|_, row| row.key != record.key || row.tenant_context != tenant);
+                            {
+                                Ok(branch_output) if branch_output.success => {
+                                    branch_deleted = Some(true);
+                                }
+                                Ok(branch_output) => {
+                                    branch_deleted = Some(false);
+                                    branch_delete_error = Some(branch_output.stderr.clone());
+                                    failures.push(json!({
+                                        "worktree_id": record.key,
+                                        "path": path,
+                                        "branch": record.branch,
+                                        "code": "WORKTREE_BRANCH_DELETE_FAILED",
+                                    }));
+                                }
+                                Err(err) => {
+                                    branch_deleted = Some(false);
+                                    branch_delete_error = Some(err.to_string());
+                                    failures.push(json!({
+                                        "worktree_id": record.key,
+                                        "path": path,
+                                        "branch": record.branch,
+                                        "code": "WORKTREE_BRANCH_DELETE_FAILED",
+                                    }));
+                                }
+                            }
+                        }
+                        if !record.cleanup_branch || branch_deleted == Some(true) {
+                            state.managed_worktrees.write().await.retain(|_, row| {
+                                row.key != record.key || row.tenant_context != tenant
+                            });
+                        }
                     }
                     orphan_removed.push(json!({
                         "path": path,
+                        "branch_deleted": branch_deleted,
+                        "branch_delete_error": branch_delete_error,
                         "via": "descriptor_relative_remove_dir_all",
                     }));
                 }

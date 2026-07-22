@@ -168,6 +168,7 @@ pub(in crate::http::global) async fn cleanup_managed_worktrees_for_lease(
             }));
             continue;
         }
+        let mut branch_cleanup_complete = true;
         if record.cleanup_branch {
             if let Some((caller_grant, caller_effect)) = caller_authority {
                 if let Err(error) = caller_grant.revalidate(state, caller_effect) {
@@ -194,6 +195,7 @@ pub(in crate::http::global) async fn cleanup_managed_worktrees_for_lease(
             {
                 Ok(branch_output) if branch_output.success => {}
                 Ok(branch_output) => {
+                    branch_cleanup_complete = false;
                     result.failures.push(json!({
                         "path": record.path,
                         "branch": record.branch,
@@ -203,6 +205,7 @@ pub(in crate::http::global) async fn cleanup_managed_worktrees_for_lease(
                     }));
                 }
                 Err(_) => {
+                    branch_cleanup_complete = false;
                     result.failures.push(json!({
                         "path": record.path,
                         "branch": record.branch,
@@ -211,6 +214,9 @@ pub(in crate::http::global) async fn cleanup_managed_worktrees_for_lease(
                     }));
                 }
             }
+        }
+        if !branch_cleanup_complete {
+            continue;
         }
         let mut managed_worktrees = state.managed_worktrees.write().await;
         if let Some((caller_grant, caller_effect)) = caller_authority {
