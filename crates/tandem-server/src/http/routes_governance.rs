@@ -158,6 +158,11 @@ fn governance_actor_id(actor: &GovernanceActorRef) -> Option<&str> {
         .filter(|actor_id| !actor_id.is_empty())
 }
 
+struct GovernanceMutationApprovalReservation {
+    approval_id: String,
+    reservation_id: String,
+}
+
 async fn require_independent_mutation_approval(
     state: &AppState,
     tenant_context: &TenantContext,
@@ -165,10 +170,11 @@ async fn require_independent_mutation_approval(
     automation_id: &str,
     approval_id: Option<&str>,
     action: &str,
+    parameters: &Value,
     allowed_types: &[GovernanceApprovalRequestType],
-) -> Result<(), (StatusCode, Json<Value>)> {
+) -> Result<Option<GovernanceMutationApprovalReservation>, (StatusCode, Json<Value>)> {
     if tenant_context.is_local_implicit() {
-        return Ok(());
+        return Ok(None);
     }
     let approval_id = approval_id
         .map(str::trim)
@@ -208,11 +214,16 @@ async fn require_independent_mutation_approval(
         .get("action")
         .and_then(Value::as_str)
         .is_some_and(|approved_action| approved_action == action);
+    let parameters_match = approval.context.get("parameters") == Some(parameters);
+    let unconsumed = approval.context.get("_mutation_reservation").is_none()
+        && approval.context.get("_mutation_consumption").is_none();
     if approval.status != GovernanceApprovalStatus::Approved
         || crate::now_ms() >= approval.expires_at_ms
         || !allowed_types.contains(&approval.request_type)
         || !target_matches
         || !action_matches
+        || !parameters_match
+        || !unconsumed
         || requested_by.is_none_or(|requester| !requester.eq_ignore_ascii_case(actor_id))
         || reviewed_by.is_none()
         || reviewed_by.is_some_and(|reviewer| reviewer.eq_ignore_ascii_case(actor_id))
@@ -223,7 +234,54 @@ async fn require_independent_mutation_approval(
             "AUTOMATION_GOVERNANCE_APPROVAL_INVALID",
         ));
     }
-    Ok(())
+    let reservation_id = state
+        .reserve_governance_mutation_approval(
+            approval_id,
+            actor,
+            automation_id,
+            action,
+            parameters,
+            allowed_types,
+            tenant_context,
+        )
+        .await
+        .map_err(|error| {
+            governance_route_error(
+                StatusCode::CONFLICT,
+                error.to_string(),
+                "AUTOMATION_GOVERNANCE_APPROVAL_RESERVATION_FAILED",
+            )
+        })?;
+    Ok(Some(GovernanceMutationApprovalReservation {
+        approval_id: approval_id.to_string(),
+        reservation_id,
+    }))
+}
+
+async fn commit_mutation_approval_reservation(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    actor: &GovernanceActorRef,
+    reservation: Option<&GovernanceMutationApprovalReservation>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let Some(reservation) = reservation else {
+        return Ok(());
+    };
+    state
+        .commit_governance_mutation_approval(
+            &reservation.approval_id,
+            &reservation.reservation_id,
+            actor,
+            tenant_context,
+        )
+        .await
+        .map_err(|error| {
+            governance_route_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.to_string(),
+                "AUTOMATION_GOVERNANCE_APPROVAL_COMMIT_FAILED",
+            )
+        })
 }
 
 fn approval_id_from_headers(headers: &HeaderMap) -> Option<&str> {
@@ -814,13 +872,18 @@ pub(super) async fn automation_grant_create(
         .can_mutate_automation(&id, &granted_by, false, &tenant_context)
         .await;
     enforce_mutation_or_audit(&state, &tenant_context, &id, &granted_by, mutation).await?;
-    require_independent_mutation_approval(
+    let approval_parameters = json!({
+        "grantedToAgentID": input.granted_to_agent_id,
+        "reason": input.reason,
+    });
+    let approval_reservation = require_independent_mutation_approval(
         &state,
         &tenant_context,
         &granted_by,
         &id,
         input.approval_id.as_deref(),
         "grant_modify_access",
+        &approval_parameters,
         &[
             GovernanceApprovalRequestType::CapabilityRequest,
             GovernanceApprovalRequestType::ElevatedCapability,
@@ -835,7 +898,7 @@ pub(super) async fn automation_grant_create(
                 Some(input.granted_to_agent_id.clone()),
                 "automation_grant_create",
             ),
-            granted_by,
+            granted_by.clone(),
             input.reason,
             &tenant_context,
         )
@@ -849,6 +912,13 @@ pub(super) async fn automation_grant_create(
                 })),
             )
         })?;
+    commit_mutation_approval_reservation(
+        &state,
+        &tenant_context,
+        &granted_by,
+        approval_reservation.as_ref(),
+    )
+    .await?;
     Ok(Json(json!({
         "grant": automation_grant_wire(&grant),
     })))
@@ -884,13 +954,18 @@ pub(super) async fn automation_grant_revoke(
         .can_mutate_automation(&id, &revoked_by, true, &tenant_context)
         .await;
     enforce_mutation_or_audit(&state, &tenant_context, &id, &revoked_by, mutation).await?;
-    require_independent_mutation_approval(
+    let approval_parameters = json!({
+        "grantID": grant_id,
+        "reason": input.reason,
+    });
+    let approval_reservation = require_independent_mutation_approval(
         &state,
         &tenant_context,
         &revoked_by,
         &id,
         input.approval_id.as_deref(),
         "revoke_modify_access",
+        &approval_parameters,
         &[
             GovernanceApprovalRequestType::CapabilityRequest,
             GovernanceApprovalRequestType::ElevatedCapability,
@@ -953,6 +1028,13 @@ pub(super) async fn automation_grant_revoke(
                 })),
             )
         })?;
+    commit_mutation_approval_reservation(
+        &state,
+        &tenant_context,
+        &revoked_by,
+        approval_reservation.as_ref(),
+    )
+    .await?;
     Ok(Json(json!({
         "grant": automation_grant_wire(&grant),
     })))
@@ -998,13 +1080,15 @@ pub(super) async fn automation_restore(
         .await;
     enforce_mutation_or_audit(&state, &tenant_context, &id, &actor, mutation).await?;
     let approval_id = approval_id_from_headers(&headers);
-    require_independent_mutation_approval(
+    let approval_parameters = json!({});
+    let approval_reservation = require_independent_mutation_approval(
         &state,
         &tenant_context,
         &actor,
         &id,
         approval_id,
         "restore_automation",
+        &approval_parameters,
         &[
             GovernanceApprovalRequestType::RetirementAction,
             GovernanceApprovalRequestType::LifecycleReview,
@@ -1012,7 +1096,12 @@ pub(super) async fn automation_restore(
     )
     .await?;
     let Some(restored) = state
-        .restore_deleted_automation_v2(&id, actor, approval_id.map(str::to_string), &tenant_context)
+        .restore_deleted_automation_v2(
+            &id,
+            actor.clone(),
+            approval_id.map(str::to_string),
+            &tenant_context,
+        )
         .await
         .map_err(|error| {
             (
@@ -1033,6 +1122,13 @@ pub(super) async fn automation_restore(
             })),
         ));
     };
+    commit_mutation_approval_reservation(
+        &state,
+        &tenant_context,
+        &actor,
+        approval_reservation.as_ref(),
+    )
+    .await?;
     debug_assert_eq!(deleted.automation_id, restored.automation_id);
     Ok(Json(json!({
         "automation": restored,
@@ -1069,13 +1165,17 @@ pub(super) async fn automation_retire(
         .can_mutate_automation(&id, &actor, true, &tenant_context)
         .await;
     enforce_mutation_or_audit(&state, &tenant_context, &id, &actor, mutation).await?;
-    require_independent_mutation_approval(
+    let approval_parameters = json!({
+        "reason": input.reason,
+    });
+    let approval_reservation = require_independent_mutation_approval(
         &state,
         &tenant_context,
         &actor,
         &id,
         input.approval_id.as_deref(),
         "retire_automation",
+        &approval_parameters,
         &[
             GovernanceApprovalRequestType::RetirementAction,
             GovernanceApprovalRequestType::LifecycleReview,
@@ -1083,7 +1183,13 @@ pub(super) async fn automation_retire(
     )
     .await?;
     let Some(automation) = state
-        .retire_automation_v2(&id, actor, input.reason, input.approval_id, &tenant_context)
+        .retire_automation_v2(
+            &id,
+            actor.clone(),
+            input.reason,
+            input.approval_id,
+            &tenant_context,
+        )
         .await
         .map_err(|error| {
             (
@@ -1104,6 +1210,13 @@ pub(super) async fn automation_retire(
             })),
         ));
     };
+    commit_mutation_approval_reservation(
+        &state,
+        &tenant_context,
+        &actor,
+        approval_reservation.as_ref(),
+    )
+    .await?;
     Ok(Json(json!({
         "automation": automation,
     })))
@@ -1139,13 +1252,18 @@ pub(super) async fn automation_extend(
         .can_mutate_automation(&id, &actor, false, &tenant_context)
         .await;
     enforce_mutation_or_audit(&state, &tenant_context, &id, &actor, mutation).await?;
-    require_independent_mutation_approval(
+    let approval_parameters = json!({
+        "expiresAtMs": input.expires_at_ms,
+        "reason": input.reason,
+    });
+    let approval_reservation = require_independent_mutation_approval(
         &state,
         &tenant_context,
         &actor,
         &id,
         input.approval_id.as_deref(),
         "extend_automation_retirement",
+        &approval_parameters,
         &[
             GovernanceApprovalRequestType::RetirementAction,
             GovernanceApprovalRequestType::LifecycleReview,
@@ -1155,7 +1273,7 @@ pub(super) async fn automation_extend(
     let Some(automation) = state
         .extend_automation_v2_retirement(
             &id,
-            actor,
+            actor.clone(),
             input.expires_at_ms,
             input.reason,
             input.approval_id,
@@ -1181,6 +1299,13 @@ pub(super) async fn automation_extend(
             })),
         ));
     };
+    commit_mutation_approval_reservation(
+        &state,
+        &tenant_context,
+        &actor,
+        approval_reservation.as_ref(),
+    )
+    .await?;
     Ok(Json(json!({
         "automation": automation,
     })))

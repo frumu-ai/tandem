@@ -529,7 +529,13 @@ async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
                 "request_type": "capability_request",
                 "target_resource": { "type": "automation", "id": automation_id },
                 "rationale": "allow a tenant-scoped automation modifier",
-                "context": { "action": "grant_modify_access" }
+                "context": {
+                    "action": "grant_modify_access",
+                    "parameters": {
+                        "grantedToAgentID": "agent-modifier",
+                        "reason": "reviewed delegation"
+                    }
+                }
             })
             .to_string(),
         ))
@@ -565,7 +571,7 @@ async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
         StatusCode::OK
     );
 
-    let create_grant = |org: &str, workspace: &str, actor: &str| {
+    let create_grant = |org: &str, workspace: &str, actor: &str, agent_id: &str| {
         Request::builder()
             .method("POST")
             .uri(format!("/automations/v2/{automation_id}/grants"))
@@ -576,7 +582,7 @@ async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
             .body(Body::from(
                 json!({
                     "approval_id": approval_id,
-                    "granted_to_agent_id": "agent-modifier",
+                    "granted_to_agent_id": agent_id,
                     "reason": "reviewed delegation"
                 })
                 .to_string(),
@@ -585,13 +591,36 @@ async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
     };
 
     let cross_tenant = tenant_b_app
-        .oneshot(create_grant("org-b", "workspace-b", "operator-b"))
+        .oneshot(create_grant(
+            "org-b",
+            "workspace-b",
+            "operator-b",
+            "agent-modifier",
+        ))
         .await
         .expect("cross-tenant grant response");
     assert_eq!(cross_tenant.status(), StatusCode::NOT_FOUND);
 
+    let mismatched_payload = requester_app
+        .clone()
+        .oneshot(create_grant(
+            "org-a",
+            "workspace-a",
+            "operator-a",
+            "agent-not-reviewed",
+        ))
+        .await
+        .expect("mismatched grant response");
+    assert_eq!(mismatched_payload.status(), StatusCode::FORBIDDEN);
+
     let response = requester_app
-        .oneshot(create_grant("org-a", "workspace-a", "operator-a"))
+        .clone()
+        .oneshot(create_grant(
+            "org-a",
+            "workspace-a",
+            "operator-a",
+            "agent-modifier",
+        ))
         .await
         .expect("authorized grant response");
     assert_eq!(response.status(), StatusCode::OK);
@@ -599,6 +628,145 @@ async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
         response_json(response).await["grant"]["granted_to"]["actor_id"].as_str(),
         Some("agent-modifier")
     );
+
+    let replay = requester_app
+        .oneshot(create_grant(
+            "org-a",
+            "workspace-a",
+            "operator-a",
+            "agent-modifier",
+        ))
+        .await
+        .expect("replayed grant response");
+    assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn approved_lifecycle_retry_does_not_acknowledge_newer_review() {
+    let state = test_state().await;
+    let tenant = TenantContext::explicit(
+        "org-review-retry",
+        "workspace-review-retry",
+        Some("owner".to_string()),
+    );
+    let automation = super::global::create_test_automation_v2_for_tenant(
+        &state,
+        "auto-governance-review-retry",
+        &tenant,
+    )
+    .await;
+    {
+        let mut governance = state.automation_governance.write().await;
+        let record = governance
+            .records
+            .get_mut(&automation.automation_id)
+            .expect("governance record");
+        record.review_required = true;
+        record.review_kind = Some(
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::RunDrift,
+        );
+        record.paused_for_lifecycle = true;
+        record.review_request_id = None;
+    }
+    let approval = state
+        .request_approval(
+            crate::automation_v2::governance::GovernanceApprovalRequestType::LifecycleReview,
+            crate::automation_v2::governance::GovernanceActorRef::system("run_review"),
+            crate::automation_v2::governance::GovernanceResourceRef {
+                resource_type: "automation".to_string(),
+                id: automation.automation_id.clone(),
+            },
+            "review run drift".to_string(),
+            json!({"trigger": "run_drift"}),
+            None,
+            &tenant,
+        )
+        .await
+        .expect("request lifecycle review");
+    let reviewer = crate::automation_v2::governance::GovernanceActorRef::human(
+        Some("reviewer".to_string()),
+        "test",
+    );
+    state
+        .decide_approval_request(
+            &approval.approval_id,
+            reviewer.clone(),
+            true,
+            Some("reviewed".to_string()),
+            &tenant,
+        )
+        .await
+        .expect("approve old review")
+        .expect("approved receipt");
+    {
+        let mut governance = state.automation_governance.write().await;
+        let record = governance
+            .records
+            .get_mut(&automation.automation_id)
+            .expect("governance record");
+        record.review_required = true;
+        record.review_kind = Some(
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::HealthDrift,
+        );
+        record.paused_for_lifecycle = true;
+        record.review_request_id = Some("apr-newer-review".to_string());
+    }
+    state
+        .decide_approval_request(
+            &approval.approval_id,
+            reviewer,
+            true,
+            Some("retry old receipt".to_string()),
+            &tenant,
+        )
+        .await
+        .expect("retry is idempotent")
+        .expect("existing approved receipt");
+    let record = state
+        .get_automation_governance(&automation.automation_id)
+        .await
+        .expect("new review remains");
+    assert!(record.review_required);
+    assert!(record.paused_for_lifecycle);
+    assert_eq!(
+        record.review_kind,
+        Some(crate::automation_v2::governance::AutomationLifecycleReviewKind::HealthDrift)
+    );
+    assert_eq!(record.review_request_id.as_deref(), Some("apr-newer-review"));
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn lifecycle_pause_blocks_run_creation_outside_tenant_quarantine() {
+    let state = test_state().await;
+    let tenant = TenantContext::explicit(
+        "org-lifecycle-pause",
+        "workspace-lifecycle-pause",
+        Some("owner".to_string()),
+    );
+    let automation = super::global::create_test_automation_v2_for_tenant(
+        &state,
+        "auto-governance-lifecycle-pause",
+        &tenant,
+    )
+    .await;
+    {
+        let mut governance = state.automation_governance.write().await;
+        let record = governance
+            .records
+            .get_mut(&automation.automation_id)
+            .expect("governance record");
+        record.review_required = true;
+        record.review_kind = Some(
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::DependencyRevoked,
+        );
+        record.paused_for_lifecycle = true;
+    }
+    assert!(state
+        .create_automation_v2_run(&automation, "scheduler")
+        .await
+        .is_err());
 }
 
 #[tokio::test]

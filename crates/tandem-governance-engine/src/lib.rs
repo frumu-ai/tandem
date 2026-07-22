@@ -779,6 +779,14 @@ impl GovernancePolicyEngine for DefaultGovernanceEngine {
             }
         }
 
+        if record.review_kind == Some(AutomationLifecycleReviewKind::HealthDrift) {
+            record.review_request_id = approval_requests
+                .iter()
+                .find(|approval| {
+                    approval.request_type == GovernanceApprovalRequestType::LifecycleReview
+                })
+                .map(|approval| approval.approval_id.clone());
+        }
         record.health_findings = findings;
         record.updated_at_ms = now_ms;
 

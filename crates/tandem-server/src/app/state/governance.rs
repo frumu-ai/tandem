@@ -486,13 +486,18 @@ impl AppState {
     }
 
     pub async fn persist_automation_governance(&self) -> anyhow::Result<()> {
+        let guard = self.automation_governance.read().await;
+        self.persist_automation_governance_snapshot(&guard).await
+    }
+
+    async fn persist_automation_governance_snapshot(
+        &self,
+        governance: &GovernanceState,
+    ) -> anyhow::Result<()> {
         if let Some(parent) = self.automation_governance_path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        let payload = {
-            let guard = self.automation_governance.read().await;
-            serde_json::to_string_pretty(&*guard)?
-        };
+        let payload = serde_json::to_string_pretty(governance)?;
         fs::write(&self.automation_governance_path, payload).await?;
         Ok(())
     }
@@ -1048,80 +1053,6 @@ impl AppState {
         Ok(Some(stored))
     }
 
-    pub async fn request_approval(
-        &self,
-        request_type: GovernanceApprovalRequestType,
-        requested_by: GovernanceActorRef,
-        target_resource: GovernanceResourceRef,
-        rationale: String,
-        context: Value,
-        expires_at_ms: Option<u64>,
-        tenant_context: &tandem_types::TenantContext,
-    ) -> anyhow::Result<GovernanceApprovalRequest> {
-        let now = now_ms();
-        let request = {
-            let mut guard = self.automation_governance.write().await;
-            if super::governance_action_gate::is_action_gate_context(&context) {
-                if let Some(existing) = guard.approvals.values().find(|request| {
-                    request.request_type == request_type
-                        && super::governance_action_gate::same_action_gate_scope(
-                            &request.context,
-                            &context,
-                        )
-                        && approval_receipt_matches_tenant(request, tenant_context)
-                }) {
-                    return Ok(existing.clone());
-                }
-            }
-
-            let snapshot = self.governance_snapshot(&guard);
-            let mut request = self
-                .governance_engine
-                .create_approval_request(
-                    &snapshot,
-                    GovernanceApprovalDraftInput {
-                        request_type,
-                        requested_by,
-                        target_resource,
-                        rationale,
-                        context,
-                        expires_at_ms,
-                    },
-                    now,
-                )
-                .map_err(|error| anyhow::anyhow!(error.message))?;
-            // CT-09: bind the issuing tenant to the receipt so it cannot later be
-            // replayed (approved or revoked) from a different tenant.
-            if !tenant_context.is_local_implicit() {
-                request.tenant_context = Some(tenant_context.clone());
-            }
-            // Audit the exact tenant-bound request before publishing it to the shared
-            // governance store. A ledger failure leaves no discoverable request behind.
-            append_protected_audit_event(
-                self,
-                format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
-                tenant_context,
-                request
-                    .requested_by
-                    .actor_id
-                    .clone()
-                    .or_else(|| request.requested_by.source.clone()),
-                json!({
-                    "approvalID": request.approval_id,
-                    "request": &request,
-                }),
-            )
-            .await?;
-            guard
-                .approvals
-                .insert(request.approval_id.clone(), request.clone());
-            guard.updated_at_ms = now;
-            request
-        };
-        self.persist_automation_governance().await?;
-        Ok(request)
-    }
-
     pub async fn list_approval_requests(
         &self,
         request_type: Option<GovernanceApprovalRequestType>,
@@ -1464,101 +1395,6 @@ impl AppState {
             .await?;
         }
         Ok(())
-    }
-
-    pub async fn acknowledge_agent_creation_review(
-        &self,
-        agent_id: &str,
-        reviewer: GovernanceActorRef,
-        notes: Option<String>,
-    ) -> anyhow::Result<()> {
-        let now = now_ms();
-        let mut guard = self.automation_governance.write().await;
-        let existing = guard.agent_creation_reviews.get(agent_id).cloned();
-        let summary = self.governance_engine.acknowledge_creation_review(
-            existing,
-            agent_id,
-            notes.clone(),
-            now,
-        );
-        append_protected_audit_event(
-            self,
-            format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.review.agent_acknowledged"),
-            &tandem_types::TenantContext::local_implicit(),
-            reviewer
-                .actor_id
-                .clone()
-                .or_else(|| reviewer.source.clone()),
-            json!({
-                "agentID": agent_id,
-                "reviewer": reviewer,
-                "notes": notes,
-            }),
-        )
-        .await?;
-        let previous = guard.clone();
-        guard
-            .agent_creation_reviews
-            .insert(agent_id.to_string(), summary);
-        guard.updated_at_ms = now;
-        drop(guard);
-        if let Err(error) = self.persist_automation_governance().await {
-            *self.automation_governance.write().await = previous;
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub async fn acknowledge_automation_review(
-        &self,
-        automation_id: &str,
-        reviewer: GovernanceActorRef,
-        notes: Option<String>,
-    ) -> anyhow::Result<Option<AutomationGovernanceRecord>> {
-        let now = now_ms();
-        let mut guard = self.automation_governance.write().await;
-        let Some(record) = guard.records.get(automation_id) else {
-            return Ok(None);
-        };
-        let tenant_context = record
-            .tenant_context
-            .clone()
-            .unwrap_or_else(tandem_types::TenantContext::local_implicit);
-        let tenant_ownership_quarantine =
-            record.review_kind == Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch);
-        let mut stored = self
-            .governance_engine
-            .acknowledge_automation_review(record, now);
-        if tenant_ownership_quarantine {
-            stored.review_kind = Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch);
-        }
-        append_protected_audit_event(
-            self,
-            format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.review.automation_acknowledged"),
-            &tenant_context,
-            reviewer
-                .actor_id
-                .clone()
-                .or_else(|| reviewer.source.clone()),
-            json!({
-                "automationID": automation_id,
-                "reviewer": reviewer,
-                "notes": notes,
-                "reviewKind": stored.review_kind,
-            }),
-        )
-        .await?;
-        let previous = guard.clone();
-        guard
-            .records
-            .insert(automation_id.to_string(), stored.clone());
-        guard.updated_at_ms = now;
-        drop(guard);
-        if let Err(error) = self.persist_automation_governance().await {
-            *self.automation_governance.write().await = previous;
-            return Err(error);
-        }
-        Ok(Some(stored))
     }
 
     pub async fn pause_automation_for_dependency_revocation(
