@@ -701,7 +701,15 @@ async fn update_session_refreshes_mcp_permissions() {
     let resp = app.oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let action = state.permissions.evaluate("mcp_list", "mcp_list").await;
+    let action = state
+        .permissions
+        .evaluate_for_tenant_and_session(
+            &TenantContext::local_implicit(),
+            Some(&session_id),
+            "mcp_list",
+            "mcp_list",
+        )
+        .await;
     assert!(matches!(action, tandem_core::PermissionAction::Allow));
 }
 
@@ -731,13 +739,36 @@ async fn create_session_applies_deny_permission_rules_and_ignores_invalid_entrie
     let resp = app.oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let todo_action = state.permissions.evaluate("todo_write", "todo_write").await;
+    let rules = state.permissions.list_rules().await;
+    let session_id = rules[0].session_id.as_deref().expect("session-scoped rule");
+    let todo_action = state
+        .permissions
+        .evaluate_for_tenant_and_session(
+            &TenantContext::local_implicit(),
+            Some(session_id),
+            "todo_write",
+            "todo_write",
+        )
+        .await;
     assert!(matches!(todo_action, tandem_core::PermissionAction::Deny));
-    let mcp_action = state.permissions.evaluate("mcp_list", "anything").await;
+    let mcp_action = state
+        .permissions
+        .evaluate_for_tenant_and_session(
+            &TenantContext::local_implicit(),
+            Some(session_id),
+            "mcp_list",
+            "anything",
+        )
+        .await;
     assert!(matches!(mcp_action, tandem_core::PermissionAction::Deny));
     let ignored_action = state
         .permissions
-        .evaluate("ignored_bad_action", "anything")
+        .evaluate_for_tenant_and_session(
+            &TenantContext::local_implicit(),
+            Some(session_id),
+            "ignored_bad_action",
+            "anything",
+        )
         .await;
     assert!(matches!(ignored_action, tandem_core::PermissionAction::Ask));
     assert_eq!(state.permissions.list_rules().await.len(), 2);

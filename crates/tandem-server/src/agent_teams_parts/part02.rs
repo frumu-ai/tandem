@@ -215,7 +215,12 @@ async fn evaluate_capability_deny(
                     .unwrap_or_else(tandem_types::TenantContext::local_implicit);
                 let action = state
                     .permissions
-                    .evaluate_for_tenant(&tenant_context, "git_push", "git_push")
+                    .evaluate_for_tenant_and_session(
+                        &tenant_context,
+                        Some(session_id),
+                        "git_push",
+                        "git_push",
+                    )
                     .await;
                 match action {
                     tandem_core::PermissionAction::Allow => {}

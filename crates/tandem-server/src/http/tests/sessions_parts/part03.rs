@@ -1230,17 +1230,55 @@ async fn create_session_permission_rules_enforce_allow_deny_and_default_ask() {
     let resp = app.oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
 
+    let rules = state.permissions.list_rules().await;
+    let session_id = rules[0].session_id.as_deref().expect("session-scoped rule");
     assert!(matches!(
-        state.permissions.evaluate("write", "anything").await,
+        state
+            .permissions
+            .evaluate_for_tenant_and_session(
+                &TenantContext::local_implicit(),
+                Some(session_id),
+                "write",
+                "anything",
+            )
+            .await,
         tandem_core::PermissionAction::Allow
     ));
     assert!(matches!(
-        state.permissions.evaluate("todo_write", "todo_write").await,
+        state
+            .permissions
+            .evaluate_for_tenant_and_session(
+                &TenantContext::local_implicit(),
+                Some(session_id),
+                "todo_write",
+                "todo_write",
+            )
+            .await,
         tandem_core::PermissionAction::Deny
+    ));
+    assert!(matches!(
+        state
+            .permissions
+            .evaluate_for_tenant_and_session(
+                &TenantContext::local_implicit(),
+                Some("different-session"),
+                "write",
+                "anything",
+            )
+            .await,
+        tandem_core::PermissionAction::Ask
     ));
     // A tool with no matching rule falls back to Ask (operator approval required).
     assert!(matches!(
-        state.permissions.evaluate("unmatched_tool", "x").await,
+        state
+            .permissions
+            .evaluate_for_tenant_and_session(
+                &TenantContext::local_implicit(),
+                Some(session_id),
+                "unmatched_tool",
+                "x",
+            )
+            .await,
         tandem_core::PermissionAction::Ask
     ));
 }

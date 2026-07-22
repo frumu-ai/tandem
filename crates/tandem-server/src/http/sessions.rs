@@ -282,7 +282,13 @@ pub(super) async fn create_session(
             tracing::error!(error = %error, session_id = %session.id, "failed to save created session");
             persistence_error(format!("Failed to save session: {error}"))
         })?;
-    apply_session_permission_rules(&state, &tenant_context, requested_permission_rules).await;
+    apply_session_permission_rules(
+        &state,
+        &tenant_context,
+        &session.id,
+        requested_permission_rules,
+    )
+    .await;
     publish_tenant_event(
         &state,
         &session.tenant_context,
@@ -295,6 +301,7 @@ pub(super) async fn create_session(
 pub(super) async fn apply_session_permission_rules(
     state: &AppState,
     tenant_context: &TenantContext,
+    session_id: &str,
     rules: Option<Vec<serde_json::Value>>,
 ) {
     let Some(rules) = rules else {
@@ -306,7 +313,7 @@ pub(super) async fn apply_session_permission_rules(
         };
         let _ = state
             .permissions
-            .add_rule_for_tenant(tenant_context, permission, pattern, action)
+            .add_rule_for_session(tenant_context, session_id, permission, pattern, action)
             .await;
     }
 }
@@ -1702,7 +1709,7 @@ pub(super) async fn update_session(
     if let Some(title) = input.title {
         session.title = title;
     }
-    apply_session_permission_rules(&state, &tenant_context, input.permission).await;
+    apply_session_permission_rules(&state, &tenant_context, &id, input.permission).await;
     session.time.updated = chrono::Utc::now();
     state
         .storage

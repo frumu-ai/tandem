@@ -981,7 +981,7 @@ async fn get_or_create_governed_slack_session(
         sampling: SamplingParams::default(),
         source_kind: Some("channel".to_string()),
         source_metadata: Some(slack_session_metadata(event, installation)),
-        permission: Some(build_channel_session_permissions(security_profile)),
+        permission: None,
     };
     let created = super::super::sessions::create_session(
         State(state.clone()),
@@ -991,7 +991,19 @@ async fn get_or_create_governed_slack_session(
     )
     .await
     .map_err(|(status, _)| anyhow::anyhow!("session creation failed with {status}"))?;
-    Ok(created.0.id)
+    let session_id = created.0.id;
+    // These rules are derived from the administrator-controlled channel
+    // security profile, not the Slack caller. Apply them through the internal
+    // seam after the public session route has rejected caller-authored hosted
+    // rules, and bind them to this exact session.
+    super::super::sessions::apply_session_permission_rules(
+        state,
+        &verified.tenant_context,
+        &session_id,
+        Some(build_channel_session_permissions(security_profile)),
+    )
+    .await;
+    Ok(session_id)
 }
 
 fn slack_session_metadata(

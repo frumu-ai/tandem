@@ -380,7 +380,11 @@ impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
         };
         let permission_action = runtime
             .permissions
-            .evaluate_tool_for_tenant(&context.tenant_context, &dispatch_tool)
+            .evaluate_tool_for_tenant_and_session(
+                &context.tenant_context,
+                context.source.session_id.as_deref(),
+                &dispatch_tool,
+            )
             .await;
         if matches!(permission_action, tandem_core::PermissionAction::Deny) {
             return Ok(ToolDispatchDecision::deny(format!(

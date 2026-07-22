@@ -16,7 +16,7 @@ use tandem_types::{EngineEvent, TenantContext};
 
 use crate::event_bus::EventBus;
 
-const PERMISSION_STATE_SCHEMA_VERSION: u32 = 2;
+const PERMISSION_STATE_SCHEMA_VERSION: u32 = 3;
 const PERMISSION_REQUEST_TTL_MS: u64 = 15 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +32,8 @@ pub struct PermissionRule {
     pub id: String,
     #[serde(default = "TenantContext::local_implicit", rename = "tenantContext")]
     pub tenant_context: TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "sessionID")]
+    pub session_id: Option<String>,
     pub permission: String,
     pub pattern: String,
     pub action: PermissionAction,
@@ -349,9 +351,10 @@ impl PermissionManager {
         Ok(restarted_pending)
     }
 
-    pub async fn evaluate_for_tenant(
+    pub async fn evaluate_for_tenant_and_session(
         &self,
         tenant_context: &TenantContext,
+        session_id: Option<&str>,
         permission: &str,
         pattern: &str,
     ) -> PermissionAction {
@@ -360,6 +363,10 @@ impl PermissionManager {
         let rules = self.rules.read().await;
         let matches_rule = |rule: &&PermissionRule| {
             permission_tenant_matches(&rule.tenant_context, tenant_context)
+                && match rule.session_id.as_deref() {
+                    Some(rule_session_id) => Some(rule_session_id) == session_id,
+                    None => true,
+                }
                 && wildcard_matches(&normalize_permission_alias(&rule.permission), &permission)
                 && wildcard_matches(&normalize_permission_alias(&rule.pattern), &pattern)
         };
@@ -374,6 +381,16 @@ impl PermissionManager {
             return rule.action.clone();
         }
         PermissionAction::Ask
+    }
+
+    pub async fn evaluate_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+        permission: &str,
+        pattern: &str,
+    ) -> PermissionAction {
+        self.evaluate_for_tenant_and_session(tenant_context, None, permission, pattern)
+            .await
     }
 
     pub async fn evaluate(&self, permission: &str, pattern: &str) -> PermissionAction {
@@ -394,6 +411,16 @@ impl PermissionManager {
         tool_name: &str,
     ) -> PermissionAction {
         self.evaluate_for_tenant(tenant_context, tool_name, tool_name)
+            .await
+    }
+
+    pub async fn evaluate_tool_for_tenant_and_session(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: Option<&str>,
+        tool_name: &str,
+    ) -> PermissionAction {
+        self.evaluate_for_tenant_and_session(tenant_context, session_id, tool_name, tool_name)
             .await
     }
 
@@ -610,9 +637,40 @@ impl PermissionManager {
         pattern: impl Into<String>,
         action: PermissionAction,
     ) -> PermissionRule {
+        self.add_rule_for_scope(tenant_context, None, permission, pattern, action)
+            .await
+    }
+
+    pub async fn add_rule_for_session(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: &str,
+        permission: impl Into<String>,
+        pattern: impl Into<String>,
+        action: PermissionAction,
+    ) -> PermissionRule {
+        self.add_rule_for_scope(
+            tenant_context,
+            Some(session_id.to_string()),
+            permission,
+            pattern,
+            action,
+        )
+        .await
+    }
+
+    async fn add_rule_for_scope(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: Option<String>,
+        permission: impl Into<String>,
+        pattern: impl Into<String>,
+        action: PermissionAction,
+    ) -> PermissionRule {
         let rule = PermissionRule {
             id: Uuid::new_v4().to_string(),
             tenant_context: tenant_context.clone(),
+            session_id,
             permission: permission.into(),
             pattern: pattern.into(),
             action,
@@ -625,6 +683,7 @@ impl PermissionManager {
         let mut rules = self.rules.write().await;
         if rules.iter().any(|existing| {
             permission_tenant_matches(&existing.tenant_context, tenant_context)
+                && existing.session_id == rule.session_id
                 && existing.permission == rule.permission
                 && existing.pattern == rule.pattern
                 && std::mem::discriminant(&existing.action) == std::mem::discriminant(&rule.action)
@@ -728,6 +787,7 @@ impl PermissionManager {
                 let standing_rule = PermissionRule {
                     id: Uuid::new_v4().to_string(),
                     tenant_context: request.tenant_context.clone(),
+                    session_id: request.session_id.clone(),
                     permission: request.permission.clone(),
                     pattern: request.pattern.clone(),
                     action: PermissionAction::Allow,
@@ -743,6 +803,7 @@ impl PermissionManager {
             let standing_rule = PermissionRule {
                 id: Uuid::new_v4().to_string(),
                 tenant_context: request.tenant_context.clone(),
+                session_id: request.session_id.clone(),
                 permission: request.permission.clone(),
                 pattern: request.pattern.clone(),
                 action: PermissionAction::Deny,
@@ -1063,6 +1124,20 @@ mod tests {
         assert_eq!(asked.event_type, "permission.asked");
 
         assert!(manager.reply(&request.id, "allow").await);
+        let rules = manager.list_rules().await;
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].session_id.as_deref(), Some("ses_1"));
+        assert!(matches!(
+            manager
+                .evaluate_for_tenant_and_session(
+                    &TenantContext::local_implicit(),
+                    Some("ses_2"),
+                    "read",
+                    "read",
+                )
+                .await,
+            PermissionAction::Ask
+        ));
         let replied = rx.recv().await.expect("replied event");
         assert_eq!(replied.event_type, "permission.replied");
         assert_eq!(
@@ -1088,6 +1163,7 @@ mod tests {
         manager.rules.write().await.push(PermissionRule {
             id: Uuid::new_v4().to_string(),
             tenant_context: TenantContext::local_implicit(),
+            session_id: None,
             permission: "todowrite".to_string(),
             pattern: "todowrite".to_string(),
             action: PermissionAction::Allow,
@@ -1108,6 +1184,7 @@ mod tests {
         manager.rules.write().await.push(PermissionRule {
             id: Uuid::new_v4().to_string(),
             tenant_context: TenantContext::local_implicit(),
+            session_id: None,
             permission: "mcp*".to_string(),
             pattern: "*".to_string(),
             action: PermissionAction::Allow,
@@ -1208,7 +1285,14 @@ mod tests {
             .expect("persisted request");
         assert_eq!(recovered.status, "runtime_restarted");
         assert!(matches!(
-            restarted.evaluate("read", "read").await,
+            restarted
+                .evaluate_for_tenant_and_session(
+                    &TenantContext::local_implicit(),
+                    Some("ses_1"),
+                    "read",
+                    "read",
+                )
+                .await,
             PermissionAction::Ask
         ));
         assert!(restarted
@@ -1230,7 +1314,14 @@ mod tests {
             .is_none());
         assert_eq!(restarted.list_decisions().await.len(), decision_count);
         assert!(matches!(
-            restarted.evaluate("read", "read").await,
+            restarted
+                .evaluate_for_tenant_and_session(
+                    &TenantContext::local_implicit(),
+                    Some("ses_1"),
+                    "read",
+                    "read"
+                )
+                .await,
             PermissionAction::Ask
         ));
 
@@ -1289,11 +1380,25 @@ mod tests {
             .await
             .expect("restarted manager");
         assert!(matches!(
-            restarted.evaluate("read", "read").await,
+            restarted
+                .evaluate_for_tenant_and_session(
+                    &TenantContext::local_implicit(),
+                    Some("ses_1"),
+                    "read",
+                    "read"
+                )
+                .await,
             PermissionAction::Allow
         ));
         assert!(matches!(
-            restarted.evaluate("bash", "bash").await,
+            restarted
+                .evaluate_for_tenant_and_session(
+                    &TenantContext::local_implicit(),
+                    Some("ses_1"),
+                    "bash",
+                    "bash",
+                )
+                .await,
             PermissionAction::Ask
         ));
         assert!(restarted

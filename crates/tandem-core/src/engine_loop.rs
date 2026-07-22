@@ -859,7 +859,12 @@ impl EngineLoop {
         }
         let rule = self.plugins.permission_override(&tool).await.unwrap_or(
             self.permissions
-                .evaluate_for_tenant(&permission_tenant_context, &tool, &tool)
+                .evaluate_for_tenant_and_session(
+                    &permission_tenant_context,
+                    Some(session_id),
+                    &tool,
+                    &tool,
+                )
                 .await,
         );
         if matches!(rule, PermissionAction::Deny) {
@@ -1433,7 +1438,12 @@ impl EngineLoop {
                 // sub-tools that would require Ask are skipped like explicit Deny.
                 let sub_rule = self.plugins.permission_override(&sub_tool).await.unwrap_or(
                     self.permissions
-                        .evaluate_for_tenant(&permission_tenant_context, &sub_tool, &sub_tool)
+                        .evaluate_for_tenant_and_session(
+                            &permission_tenant_context,
+                            Some(session_id),
+                            &sub_tool,
+                            &sub_tool,
+                        )
                         .await,
                 );
                 if matches!(sub_rule, PermissionAction::Deny | PermissionAction::Ask) {
