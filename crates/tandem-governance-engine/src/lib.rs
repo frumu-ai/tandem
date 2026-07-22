@@ -780,12 +780,15 @@ impl GovernancePolicyEngine for DefaultGovernanceEngine {
         }
 
         if record.review_kind == Some(AutomationLifecycleReviewKind::HealthDrift) {
-            record.review_request_id = approval_requests
+            if let Some(review_request_id) = approval_requests
                 .iter()
                 .find(|approval| {
                     approval.request_type == GovernanceApprovalRequestType::LifecycleReview
                 })
-                .map(|approval| approval.approval_id.clone());
+                .map(|approval| approval.approval_id.clone())
+            {
+                record.review_request_id = Some(review_request_id);
+            }
         }
         record.health_findings = findings;
         record.updated_at_ms = now_ms;
@@ -1017,5 +1020,65 @@ impl GovernancePolicyEngine for DefaultGovernanceEngine {
         }
 
         Ok(evaluation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn health_input(
+        current_record: Option<AutomationGovernanceRecord>,
+    ) -> GovernanceHealthCheckInput {
+        GovernanceHealthCheckInput {
+            automation_id: "automation-health-receipt".to_string(),
+            current_record,
+            default_provenance: AutomationProvenanceRecord::human(
+                Some("owner".to_string()),
+                "test",
+            ),
+            declared_capabilities: AutomationDeclaredCapabilities::default(),
+            terminal_run_count: 1,
+            failure_count: 0,
+            empty_output_count: 1,
+            guardrail_stop_count: 0,
+            last_terminal_run_id: Some("run-empty-output".to_string()),
+        }
+    }
+
+    #[test]
+    fn repeated_health_evaluation_preserves_pending_review_receipt() {
+        let engine = DefaultGovernanceEngine;
+        let mut snapshot = GovernanceContextSnapshot::default();
+        let first = engine
+            .evaluate_health_check(&snapshot, health_input(None), 1_000)
+            .expect("first health evaluation")
+            .expect("health finding");
+        let approval = first
+            .approval_requests
+            .first()
+            .cloned()
+            .expect("lifecycle approval");
+        assert_eq!(
+            first.record.review_request_id.as_deref(),
+            Some(approval.approval_id.as_str())
+        );
+        snapshot
+            .records
+            .insert(first.record.automation_id.clone(), first.record.clone());
+        snapshot
+            .approvals
+            .insert(approval.approval_id.clone(), approval.clone());
+
+        let second = engine
+            .evaluate_health_check(&snapshot, health_input(Some(first.record)), 1_001)
+            .expect("repeat health evaluation")
+            .expect("repeated health finding");
+
+        assert!(second.approval_requests.is_empty());
+        assert_eq!(
+            second.record.review_request_id.as_deref(),
+            Some(approval.approval_id.as_str())
+        );
     }
 }

@@ -736,39 +736,6 @@ async fn approved_lifecycle_retry_does_not_acknowledge_newer_review() {
     assert_eq!(record.review_request_id.as_deref(), Some("apr-newer-review"));
 }
 
-#[cfg(feature = "premium-governance")]
-#[tokio::test]
-async fn lifecycle_pause_blocks_run_creation_outside_tenant_quarantine() {
-    let state = test_state().await;
-    let tenant = TenantContext::explicit(
-        "org-lifecycle-pause",
-        "workspace-lifecycle-pause",
-        Some("owner".to_string()),
-    );
-    let automation = super::global::create_test_automation_v2_for_tenant(
-        &state,
-        "auto-governance-lifecycle-pause",
-        &tenant,
-    )
-    .await;
-    {
-        let mut governance = state.automation_governance.write().await;
-        let record = governance
-            .records
-            .get_mut(&automation.automation_id)
-            .expect("governance record");
-        record.review_required = true;
-        record.review_kind = Some(
-            crate::automation_v2::governance::AutomationLifecycleReviewKind::DependencyRevoked,
-        );
-        record.paused_for_lifecycle = true;
-    }
-    assert!(state
-        .create_automation_v2_run(&automation, "scheduler")
-        .await
-        .is_err());
-}
-
 #[tokio::test]
 async fn governance_bootstrap_migrates_unscoped_record_and_grant_tenant() {
     let state = test_state().await;

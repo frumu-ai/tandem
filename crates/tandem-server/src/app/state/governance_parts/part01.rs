@@ -68,6 +68,25 @@ fn quarantine_governance_record_for_tenant(
 const MUTATION_APPROVAL_RESERVATION_KEY: &str = "_mutation_reservation";
 const MUTATION_APPROVAL_CONSUMPTION_KEY: &str = "_mutation_consumption";
 
+pub(crate) fn ensure_governance_record_allows_run(
+    record: &AutomationGovernanceRecord,
+    tenant_context: &tandem_types::TenantContext,
+) -> anyhow::Result<()> {
+    let tenant_ownership_quarantine = record.review_kind
+        == Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch);
+    if !governance_record_owned_by(record, tenant_context)
+        || record.review_required
+        || record.creation_paused
+        || record.paused_for_lifecycle
+        || tenant_ownership_quarantine
+    {
+        anyhow::bail!(
+            "automation governance tenant ownership is quarantined or paused pending independent review"
+        );
+    }
+    Ok(())
+}
+
 fn mutation_approval_actor_id(actor: &GovernanceActorRef) -> Option<&str> {
     actor
         .actor_id
@@ -525,19 +544,7 @@ impl AppState {
         let record = self
             .get_or_bootstrap_automation_governance(automation)
             .await;
-        let tenant_ownership_quarantine = record.review_kind
-            == Some(AutomationLifecycleReviewKind::TenantOwnershipMismatch);
-        if !governance_record_owned_by(&record, &tenant_context)
-            || record.review_required
-            || record.creation_paused
-            || record.paused_for_lifecycle
-            || tenant_ownership_quarantine
-        {
-            anyhow::bail!(
-                "automation governance tenant ownership is quarantined or paused pending independent review"
-            );
-        }
-        Ok(())
+        ensure_governance_record_allows_run(&record, &tenant_context)
     }
 
     pub async fn complete_tenant_ownership_quarantine_restore(
@@ -750,37 +757,41 @@ impl AppState {
             .await?;
         automation.status = crate::AutomationV2Status::Paused;
         let stored = self.put_automation_v2(automation).await?;
+        {
+            let mut guard = self.automation_governance.write().await;
+            let current_record = guard.records.get(automation_id).cloned();
+            let mut record = self
+                .governance_engine
+                .evaluate_retirement(
+                    GovernanceRetirementInput {
+                        automation_id: automation_id.to_string(),
+                        current_record,
+                        default_provenance: default_human_provenance(
+                            Some(stored.creator_id.clone()),
+                            "retire_default",
+                        ),
+                        declared_capabilities: declared_capabilities_for_automation(&stored),
+                        reason: reason.clone(),
+                    },
+                    now,
+                )
+                .map_err(|error| anyhow::anyhow!(error.message))?;
+            bind_governance_record_to_tenant(&mut record, tenant_context)?;
+            let previous = guard.clone();
+            guard.records.insert(automation_id.to_string(), record);
+            guard.updated_at_ms = now;
+            if let Err(error) = self.persist_automation_governance_snapshot(&guard).await {
+                *guard = previous;
+                return Err(error);
+            }
+        }
         let _ = self
             .pause_running_automation_v2_runs(
                 automation_id,
-                reason.clone(),
+                reason,
                 crate::AutomationStopKind::OperatorStopped,
             )
             .await;
-        let current_record = self.get_automation_governance(automation_id).await;
-        let mut record = self
-            .governance_engine
-            .evaluate_retirement(
-                GovernanceRetirementInput {
-                    automation_id: automation_id.to_string(),
-                    current_record,
-                    default_provenance: default_human_provenance(
-                        Some(stored.creator_id.clone()),
-                        "retire_default",
-                    ),
-                    declared_capabilities: declared_capabilities_for_automation(&stored),
-                    reason,
-                },
-                now,
-            )
-            .map_err(|error| anyhow::anyhow!(error.message))?;
-        bind_governance_record_to_tenant(&mut record, tenant_context)?;
-        {
-            let mut guard = self.automation_governance.write().await;
-            guard.records.insert(automation_id.to_string(), record);
-            guard.updated_at_ms = now;
-        }
-        self.persist_automation_governance().await?;
         Ok(Some(stored))
     }
 

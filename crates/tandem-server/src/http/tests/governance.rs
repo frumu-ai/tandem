@@ -1673,3 +1673,4 @@ async fn automations_v2_mcp_policy_narrowing_pauses_automation_and_requests_depe
 }
 
 include!("governance_parts/part01.rs");
+include!("governance_parts/part02.rs");
