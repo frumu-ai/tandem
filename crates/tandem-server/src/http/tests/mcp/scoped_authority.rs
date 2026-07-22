@@ -277,7 +277,9 @@ async fn mcp_bridge_denies_empty_dispatch_context_authority() {
     );
     state
         .permissions
-        .add_rule(
+        .add_rule_for_session(
+            &tenant,
+            "session-empty",
             "mcp.notion.alice_search",
             "mcp.notion.alice_search",
             tandem_core::PermissionAction::Allow,

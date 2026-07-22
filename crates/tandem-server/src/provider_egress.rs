@@ -356,9 +356,11 @@ mod tests {
         ]);
 
         let state = crate::test_support::test_state().await;
+        let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
         let mut published_events = state.event_bus.subscribe();
         let mut events = state.event_bus.subscribe();
         let permissions = state.runtime.wait().permissions.clone();
+        let approval_tenant = tenant.clone();
         let reply_task = tokio::spawn(async move {
             tokio::time::timeout(APPROVAL_RESPONDER_TIMEOUT, async move {
                 loop {
@@ -369,14 +371,24 @@ mod tests {
                     let request_id = event.properties["requestID"]
                         .as_str()
                         .expect("permission request id");
-                    assert!(permissions.reply(request_id, "allow").await);
+                    assert!(permissions
+                        .reply_with_provenance_for_tenant(
+                            &approval_tenant,
+                            Some("session-a"),
+                            request_id,
+                            "allow",
+                            Some("test-reviewer".to_string()),
+                            Some("provider-egress-test".to_string()),
+                        )
+                        .await
+                        .expect("scoped permission reply")
+                        .is_some());
                     break;
                 }
             })
             .await
             .expect("approval responder timed out");
         });
-        let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
         let messages = [ChatMessage {
             role: "user".to_string(),
             content: "ordinary mission content".to_string(),

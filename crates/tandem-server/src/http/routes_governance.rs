@@ -100,7 +100,7 @@ fn governance_mutation_admin_allowed(
     tenant_context: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
-    if tenant_context.is_local_implicit() {
+    if verified.is_none() && super::tenant_is_standalone_local(tenant_context) {
         return true;
     }
     let Some(verified) = verified else {
@@ -167,7 +167,7 @@ async fn require_independent_mutation_approval(
     action: &str,
     allowed_types: &[GovernanceApprovalRequestType],
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    if tenant_context.is_local_implicit() {
+    if super::tenant_is_standalone_local(tenant_context) {
         return Ok(());
     }
     let approval_id = approval_id
@@ -586,7 +586,7 @@ pub(super) async fn automation_governance_get(
             spend.push(agent_spend_wire(&summary));
         }
     }
-    let agent_review = if caller_tenant.is_local_implicit()
+    let agent_review = if super::tenant_is_standalone_local(&caller_tenant)
         && record.provenance.creator.kind == GovernanceActorKind::Agent
     {
         if let Some(agent_id) = record.provenance.creator.actor_id.as_deref() {
@@ -618,7 +618,7 @@ pub(super) async fn governance_reviews_list(
     Extension(tenant_context): Extension<TenantContext>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
-    let agent_reviews = if tenant_context.is_local_implicit() {
+    let agent_reviews = if super::tenant_is_standalone_local(&tenant_context) {
         state
             .list_agent_creation_review_summaries()
             .await

@@ -999,6 +999,10 @@ fn tenant_matches(a: &TenantContext, b: &TenantContext) -> bool {
     a.org_id == b.org_id && a.workspace_id == b.workspace_id && a.deployment_id == b.deployment_id
 }
 
+fn tenant_is_standalone_local(tenant: &TenantContext) -> bool {
+    tenant_matches(tenant, &TenantContext::local_implicit())
+}
+
 fn ensure_same_tenant(
     request_tenant: &TenantContext,
     resource_tenant: &TenantContext,
