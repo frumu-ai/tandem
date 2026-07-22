@@ -493,7 +493,7 @@ async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
     let reviewer_app =
         verified_governance_app(state.clone(), "org-a", "workspace-a", "reviewer-a");
     let tenant_b_app =
-        verified_governance_app(state, "org-b", "workspace-b", "operator-b");
+        verified_governance_app(state.clone(), "org-b", "workspace-b", "operator-b");
     let automation_id = "auto-governance-positive-grant";
 
     let create = Request::builder()
@@ -612,6 +612,37 @@ async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
         .await
         .expect("mismatched grant response");
     assert_eq!(mismatched_payload.status(), StatusCode::FORBIDDEN);
+
+    // Simulate an earlier attempt that persisted its exact mutation
+    // reservation but failed before the mutation completed. The same actor and
+    // payload must be able to reuse that reservation as an idempotency token.
+    let tenant = TenantContext::explicit(
+        "org-a",
+        "workspace-a",
+        Some("operator-a".to_string()),
+    );
+    state
+        .reserve_governance_mutation_approval(
+            &approval_id,
+            &crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("operator-a".to_string()),
+                "governance_mutation_retry_test",
+            ),
+            automation_id,
+            "grant_modify_access",
+            &json!({
+                "grantedToAgentID": "agent-modifier",
+                "reason": "reviewed delegation"
+            }),
+            &[
+                crate::automation_v2::governance::GovernanceApprovalRequestType::CapabilityRequest,
+                crate::automation_v2::governance::GovernanceApprovalRequestType::ElevatedCapability,
+                crate::automation_v2::governance::GovernanceApprovalRequestType::LifecycleReview,
+            ],
+            &tenant,
+        )
+        .await
+        .expect("persist exact mutation reservation");
 
     let response = requester_app
         .clone()

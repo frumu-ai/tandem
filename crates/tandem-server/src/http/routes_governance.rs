@@ -215,8 +215,23 @@ async fn require_independent_mutation_approval(
         .and_then(Value::as_str)
         .is_some_and(|approved_action| approved_action == action);
     let parameters_match = approval.context.get("parameters") == Some(parameters);
-    let unconsumed = approval.context.get("_mutation_reservation").is_none()
-        && approval.context.get("_mutation_consumption").is_none();
+    let existing_reservation = approval.context.get("_mutation_reservation");
+    let reusable_reservation_id = existing_reservation.and_then(|reservation| {
+        let reservation_id = reservation
+            .get("reservationID")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|reservation_id| !reservation_id.is_empty())?;
+        let reserved_action = reservation.get("action").and_then(Value::as_str)?;
+        let reserved_actor = reservation.get("actorID").and_then(Value::as_str)?;
+        (reserved_action == action && reserved_actor.eq_ignore_ascii_case(actor_id))
+            .then(|| reservation_id.to_string())
+    });
+    // A reservation is also the idempotency token for an exact retry. Reuse it
+    // when a prior attempt failed after reserving (for example after durably
+    // revoking a grant but before persisting the dependency pause).
+    let unconsumed = approval.context.get("_mutation_consumption").is_none()
+        && (existing_reservation.is_none() || reusable_reservation_id.is_some());
     if approval.status != GovernanceApprovalStatus::Approved
         || crate::now_ms() >= approval.expires_at_ms
         || !allowed_types.contains(&approval.request_type)
@@ -233,6 +248,12 @@ async fn require_independent_mutation_approval(
             "Governance approval is not bound to this tenant, actor, resource, and action",
             "AUTOMATION_GOVERNANCE_APPROVAL_INVALID",
         ));
+    }
+    if let Some(reservation_id) = reusable_reservation_id {
+        return Ok(Some(GovernanceMutationApprovalReservation {
+            approval_id: approval_id.to_string(),
+            reservation_id,
+        }));
     }
     let reservation_id = state
         .reserve_governance_mutation_approval(

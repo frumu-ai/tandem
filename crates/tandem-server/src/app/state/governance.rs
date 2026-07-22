@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use anyhow::Context;
 use serde_json::json;
 use serde_json::Value;
 use tokio::fs;
@@ -1000,12 +1001,19 @@ impl AppState {
                 record
                     .modify_grants
                     .iter()
-                    .find(|grant| grant.grant_id == grant_id && grant.revoked_at_ms.is_none())
+                    .find(|grant| grant.grant_id == grant_id)
                     .cloned()
             })
         else {
             return Ok(None);
         };
+        // A revoke may have been durably written before the fail-closed
+        // dependency pause could be persisted. Treat an exact retry as
+        // idempotent so the route can finish (and durably retry) the lifecycle
+        // transition instead of returning Grant not found forever.
+        if stored.revoked_at_ms.is_some() {
+            return Ok(Some(stored));
+        }
         stored.revoked_at_ms = Some(now_ms());
         stored.revoke_reason = reason.clone();
         append_protected_audit_event(
@@ -1440,7 +1448,7 @@ impl AppState {
                     reason.clone(),
                     crate::AutomationStopKind::GuardrailStopped,
                 )
-                .await;
+                .await?;
             let dependency_context = json!({
                 "trigger": "dependency_revoked",
                 "reason": reason.clone(),
@@ -1556,65 +1564,128 @@ impl AppState {
         automation_id: &str,
         reason: String,
         stop_kind: crate::AutomationStopKind,
-    ) -> Vec<String> {
+    ) -> anyhow::Result<Vec<String>> {
         // Nonterminal runs live in the hot map and are claimable from there.
-        // Scan the complete map rather than the public history API, whose
-        // bounded result would leave older queued work runnable.
-        let runs = self
-            .automation_v2_runs
-            .read()
-            .await
-            .values()
-            .filter(|run| run.automation_id == automation_id)
-            .filter(|run| {
-                matches!(
-                    run.status,
-                    crate::AutomationRunStatus::Queued
-                        | crate::AutomationRunStatus::Running
-                        | crate::AutomationRunStatus::Pausing
-                )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut paused_runs = Vec::new();
-        for run in runs {
-            let session_ids = run.active_session_ids.clone();
-            let instance_ids = run.active_instance_ids.clone();
-            let _ = self
-                .update_automation_v2_run(&run.run_id, |row| {
-                    row.status = crate::AutomationRunStatus::Pausing;
-                    row.pause_reason = Some(reason.clone());
-                })
+        // Mutate the complete map in one critical section rather than using the
+        // bounded public history API. Persisting once per phase keeps the work
+        // O(run count) instead of rewriting the full run history twice per row.
+        let (pausing_transitions, cancellations) = {
+            let mut guard = self.automation_v2_runs.write().await;
+            let mut transitions = Vec::new();
+            let mut cancellations = Vec::new();
+            for run in guard.values_mut().filter(|run| {
+                run.automation_id == automation_id
+                    && matches!(
+                        run.status,
+                        crate::AutomationRunStatus::Queued
+                            | crate::AutomationRunStatus::Running
+                            | crate::AutomationRunStatus::Pausing
+                    )
+            }) {
+                let previous_status = run.status.clone();
+                let previous_gate = run.checkpoint.awaiting_gate.clone();
+                cancellations.push((
+                    run.run_id.clone(),
+                    run.active_session_ids.clone(),
+                    run.active_instance_ids.clone(),
+                ));
+                run.status = crate::AutomationRunStatus::Pausing;
+                run.pause_reason = Some(reason.clone());
+                run.scheduler = None;
+                run.execution_claim = None;
+                run.updated_at_ms = now_ms();
+                transitions.push((previous_status, previous_gate, run.clone()));
+            }
+            (transitions, cancellations)
+        };
+
+        if cancellations.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // This first checkpoint is best-effort: even if storage is temporarily
+        // unavailable, cancellation and the final Paused checkpoint must still
+        // run so the in-memory state remains fail closed.
+        let _ = self.persist_automation_v2_runs().await;
+        for (previous_status, previous_gate, run) in pausing_transitions {
+            self.sync_automation_scheduler_for_run_transition(previous_status.clone(), &run)
                 .await;
-            for session_id in &session_ids {
+            let _ = self.persist_automation_v2_run_status_json(&run).await;
+            self.project_automation_v2_stateful_boundaries_or_warn(&run)
+                .await;
+            self.sync_automation_v2_durable_wait_transition(previous_status, previous_gate, &run)
+                .await;
+        }
+
+        for (_, session_ids, instance_ids) in &cancellations {
+            for session_id in session_ids {
                 let _ = self.cancellations.cancel(session_id).await;
             }
             for instance_id in instance_ids {
                 let _ = self
                     .agent_teams
-                    .cancel_instance(self, &instance_id, &reason)
+                    .cancel_instance(self, instance_id, &reason)
                     .await;
             }
-            self.forget_automation_v2_sessions(&session_ids).await;
-            let _ = self
-                .update_automation_v2_run(&run.run_id, |row| {
-                    row.status = crate::AutomationRunStatus::Paused;
-                    row.active_session_ids.clear();
-                    row.active_instance_ids.clear();
-                    row.pause_reason = Some(reason.clone());
-                    row.stop_kind = Some(stop_kind.clone());
-                    row.stop_reason = Some(reason.clone());
-                    crate::app::state::automation::lifecycle::record_automation_lifecycle_event(
-                        row,
-                        "run_paused_governance",
-                        Some(reason.clone()),
-                        Some(stop_kind.clone()),
-                    );
-                })
-                .await;
-            paused_runs.push(run.run_id);
+            self.forget_automation_v2_sessions(session_ids).await;
         }
-        paused_runs
+
+        let paused_transitions = {
+            let mut guard = self.automation_v2_runs.write().await;
+            let mut transitions = Vec::new();
+            for (run_id, _, _) in &cancellations {
+                let Some(run) = guard.get_mut(run_id) else {
+                    continue;
+                };
+                if !matches!(
+                    run.status,
+                    crate::AutomationRunStatus::Queued
+                        | crate::AutomationRunStatus::Running
+                        | crate::AutomationRunStatus::Pausing
+                ) {
+                    continue;
+                }
+                let previous_status = run.status.clone();
+                let previous_gate = run.checkpoint.awaiting_gate.clone();
+                run.status = crate::AutomationRunStatus::Paused;
+                run.active_session_ids.clear();
+                run.active_instance_ids.clear();
+                run.pause_reason = Some(reason.clone());
+                run.stop_kind = Some(stop_kind.clone());
+                run.stop_reason = Some(reason.clone());
+                run.scheduler = None;
+                run.execution_claim = None;
+                run.updated_at_ms = now_ms();
+                crate::app::state::automation::lifecycle::record_automation_lifecycle_event(
+                    run,
+                    "run_paused_governance",
+                    Some(reason.clone()),
+                    Some(stop_kind.clone()),
+                );
+                transitions.push((previous_status, previous_gate, run.clone()));
+            }
+            transitions
+        };
+
+        if !paused_transitions.is_empty() {
+            self.persist_automation_v2_runs().await.context(
+                "failed to persist governance-paused automation runs; runs remain paused in memory",
+            )?;
+        }
+        for (previous_status, previous_gate, run) in paused_transitions {
+            self.sync_automation_scheduler_for_run_transition(previous_status.clone(), &run)
+                .await;
+            let _ = self.persist_automation_v2_run_status_json(&run).await;
+            self.project_automation_v2_stateful_boundaries_or_warn(&run)
+                .await;
+            self.sync_automation_v2_durable_wait_transition(previous_status, previous_gate, &run)
+                .await;
+        }
+
+        Ok(cancellations
+            .into_iter()
+            .map(|(run_id, _, _)| run_id)
+            .collect())
     }
 
     pub async fn record_automation_review_progress(
