@@ -4,12 +4,12 @@
 use super::*;
 
 #[derive(Default)]
-pub(in crate::http) struct LeaseWorktreeCleanupResult {
-    pub(in crate::http) cleaned_paths: Vec<String>,
-    pub(in crate::http) failures: Vec<Value>,
+pub(in crate::http::global) struct LeaseWorktreeCleanupResult {
+    pub(in crate::http::global) cleaned_paths: Vec<String>,
+    pub(in crate::http::global) failures: Vec<Value>,
 }
 
-pub(in crate::http) async fn cleanup_managed_worktrees_for_lease(
+pub(in crate::http::global) async fn cleanup_managed_worktrees_for_lease(
     state: &AppState,
     lease_id: &str,
     caller_authority: Option<(&AuthorizedHostEffect, &HostEffectRequest)>,

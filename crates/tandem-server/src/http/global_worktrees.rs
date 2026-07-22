@@ -5,7 +5,7 @@ use super::*;
 
 #[path = "global_worktree_lease_cleanup.rs"]
 mod lease_cleanup;
-pub(in crate::http) use lease_cleanup::{
+pub(in crate::http::global) use lease_cleanup::{
     cleanup_managed_worktrees_for_lease, LeaseWorktreeCleanupResult,
 };
 

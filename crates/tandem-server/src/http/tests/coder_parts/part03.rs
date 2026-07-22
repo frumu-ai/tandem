@@ -536,10 +536,12 @@ async fn coder_pr_review_evidence_advances_review_run() {
     );
 }
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn coder_pr_review_execute_next_drives_task_runtime_to_completion() {
+fn coder_pr_review_execute_next_drives_task_runtime_to_completion() {
+    run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
+    let repo_root = init_coder_git_repo();
     state
         .capability_resolver
         .refresh_builtin_bindings()
@@ -558,7 +560,7 @@ async fn coder_pr_review_execute_next_drives_task_runtime_to_completion() {
                 "repo_binding": {
                     "project_id": "proj-engine",
                     "workspace_id": "ws-tandem",
-                    "workspace_root": "/tmp/tandem-repo",
+                    "workspace_root": repo_root.to_string_lossy(),
                     "repo_slug": "user123/tandem",
                     "default_branch": "main"
                 },
@@ -676,6 +678,7 @@ async fn coder_pr_review_execute_next_drives_task_runtime_to_completion() {
             "expected {workflow_node_id} to be done"
         );
     }
+    });
 }
 
 #[tokio::test]
@@ -1464,10 +1467,12 @@ async fn coder_merge_readiness_report_advances_merge_run() {
     );
 }
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn coder_merge_recommendation_execute_next_drives_task_runtime_to_completion() {
+fn coder_merge_recommendation_execute_next_drives_task_runtime_to_completion() {
+    run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
+    let repo_root = init_coder_git_repo();
     state
         .capability_resolver
         .refresh_builtin_bindings()
@@ -1486,7 +1491,7 @@ async fn coder_merge_recommendation_execute_next_drives_task_runtime_to_completi
                 "repo_binding": {
                     "project_id": "proj-engine",
                     "workspace_id": "ws-tandem",
-                    "workspace_root": "/tmp/tandem-repo",
+                    "workspace_root": repo_root.to_string_lossy(),
                     "repo_slug": "user123/tandem"
                 },
                 "github_ref": {
@@ -1603,6 +1608,7 @@ async fn coder_merge_recommendation_execute_next_drives_task_runtime_to_completi
             "expected {workflow_node_id} to be done"
         );
     }
+    });
 }
 
 #[tokio::test]

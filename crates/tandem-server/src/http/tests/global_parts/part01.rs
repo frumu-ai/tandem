@@ -162,6 +162,7 @@ async fn managed_worktree_endpoints_are_idempotent_and_cleanup_branch() {
 
     let create_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -214,6 +215,7 @@ async fn managed_worktree_endpoints_are_idempotent_and_cleanup_branch() {
 
     let create_again_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -254,6 +256,7 @@ async fn managed_worktree_endpoints_are_idempotent_and_cleanup_branch() {
 
     let list_req = Request::builder()
         .method("GET")
+        .extension(direct_loopback_peer())
         .uri(format!(
             "/worktree?repo_root={}&managed_only=true",
             repo_root.to_string_lossy()
@@ -284,6 +287,7 @@ async fn managed_worktree_endpoints_are_idempotent_and_cleanup_branch() {
 
     let delete_req = Request::builder()
         .method("DELETE")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -344,6 +348,7 @@ async fn managed_worktree_create_rejects_unknown_lease() {
 
     let create_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -367,7 +372,7 @@ async fn managed_worktree_create_rejects_unknown_lease() {
 }
 
 #[tokio::test]
-async fn stale_worktree_cleanup_removes_untracked_managed_worktrees() {
+async fn stale_worktree_cleanup_preserves_unknown_restart_worktrees() {
     let state = test_state().await;
     let app = app_router(state.clone());
     let repo_root = init_git_repo();
@@ -376,6 +381,7 @@ async fn stale_worktree_cleanup_removes_untracked_managed_worktrees() {
 
     let create_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -418,6 +424,7 @@ async fn stale_worktree_cleanup_removes_untracked_managed_worktrees() {
 
     let cleanup_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree/cleanup")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -432,41 +439,53 @@ async fn stale_worktree_cleanup_removes_untracked_managed_worktrees() {
         .oneshot(cleanup_req)
         .await
         .expect("cleanup worktree response");
-    if cleanup_resp.status() == StatusCode::NOT_FOUND {
-        let remove = Command::new("git")
-            .args([
-                "-C",
-                &repo_root_str,
-                "worktree",
-                "remove",
-                "--force",
-                &worktree_path,
-            ])
-            .output()
-            .expect("remove test worktree");
-        assert!(remove.status.success());
-        let delete_branch = Command::new("git")
-            .args(["-C", &repo_root_str, "branch", "-D", &branch])
-            .output()
-            .expect("delete test worktree branch");
-        assert!(delete_branch.status.success());
-    } else {
-        panic!(
-            "unsafe public worktree cleanup route must be unavailable, got {}",
-            cleanup_resp.status()
-        );
-    }
-    assert!(!std::path::Path::new(&worktree_path).exists());
+    assert_eq!(cleanup_resp.status(), StatusCode::OK);
+    let cleanup_payload: Value = serde_json::from_slice(
+        &to_bytes(cleanup_resp.into_body(), usize::MAX)
+            .await
+            .expect("cleanup worktree body"),
+    )
+    .expect("cleanup worktree json");
+    assert_eq!(
+        cleanup_payload
+            .get("unknown_registered_path_count")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        cleanup_payload
+            .get("cleaned_worktree_count")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(std::path::Path::new(&worktree_path).exists());
 
     let branch_output = Command::new("git")
         .args(["branch", "--list", &branch])
         .current_dir(&repo_root)
         .output()
         .expect("git branch list");
-    assert!(String::from_utf8_lossy(&branch_output.stdout)
+    assert!(!String::from_utf8_lossy(&branch_output.stdout)
         .trim()
         .is_empty());
 
+    let remove = Command::new("git")
+        .args([
+            "-C",
+            &repo_root_str,
+            "worktree",
+            "remove",
+            "--force",
+            &worktree_path,
+        ])
+        .output()
+        .expect("remove preserved test worktree");
+    assert!(remove.status.success());
+    let delete_branch = Command::new("git")
+        .args(["-C", &repo_root_str, "branch", "-D", &branch])
+        .output()
+        .expect("delete preserved test worktree branch");
+    assert!(delete_branch.status.success());
     let _ = std::fs::remove_dir_all(repo_root);
 }
 
@@ -480,6 +499,7 @@ async fn managed_worktree_create_rejects_external_path_override() {
 
     let create_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -498,7 +518,7 @@ async fn managed_worktree_create_rejects_external_path_override() {
         .oneshot(create_req)
         .await
         .expect("create worktree response");
-    assert_eq!(create_resp.status(), StatusCode::CONFLICT);
+    assert_eq!(create_resp.status(), StatusCode::BAD_REQUEST);
     assert!(!external_path.exists());
 
     let _ = std::fs::remove_dir_all(repo_root);
@@ -513,6 +533,7 @@ async fn managed_worktree_mutations_require_matching_active_lease() {
 
     let create_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -545,6 +566,7 @@ async fn managed_worktree_mutations_require_matching_active_lease() {
 
     let reset_without_lease = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree/reset")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -564,6 +586,7 @@ async fn managed_worktree_mutations_require_matching_active_lease() {
 
     let delete_wrong_lease = Request::builder()
         .method("DELETE")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -584,6 +607,7 @@ async fn managed_worktree_mutations_require_matching_active_lease() {
 
     let delete_req = Request::builder()
         .method("DELETE")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -614,6 +638,7 @@ async fn releasing_lease_cleans_up_managed_worktrees() {
 
     let create_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -651,6 +676,7 @@ async fn releasing_lease_cleans_up_managed_worktrees() {
 
     let release_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/global/lease/release")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -714,6 +740,7 @@ async fn expired_leases_are_pruned_and_cleanup_managed_worktrees() {
 
     let create_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -737,6 +764,7 @@ async fn expired_leases_are_pruned_and_cleanup_managed_worktrees() {
     insert_test_lease(&state, "lease-fresh").await;
     let create_req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/worktree")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -1254,6 +1282,7 @@ async fn browser_install_route_is_registered() {
     let app = app_router(state);
     let req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/browser/install")
         .body(Body::empty())
         .expect("request");
@@ -1277,6 +1306,7 @@ async fn browser_smoke_test_route_is_registered() {
     let app = app_router(state);
     let req = Request::builder()
         .method("POST")
+        .extension(direct_loopback_peer())
         .uri("/browser/smoke-test")
         .header("content-type", "application/json")
         .body(Body::from(r#"{"url":"https://example.com"}"#))

@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn coder_merge_recommendation_execute_all_runs_to_completion() {
+fn coder_merge_recommendation_execute_all_runs_to_completion() {
+    run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
+    let repo_root = init_coder_git_repo();
     state
         .capability_resolver
         .refresh_builtin_bindings()
@@ -23,7 +25,7 @@ async fn coder_merge_recommendation_execute_all_runs_to_completion() {
                 "repo_binding": {
                     "project_id": "proj-engine",
                     "workspace_id": "ws-tandem",
-                    "workspace_root": "/tmp/tandem-repo",
+                    "workspace_root": repo_root.to_string_lossy(),
                     "repo_slug": "user123/tandem"
                 },
                 "github_ref": {
@@ -82,6 +84,7 @@ async fn coder_merge_recommendation_execute_all_runs_to_completion() {
         .get("executed_steps")
         .and_then(Value::as_u64)
         .is_some_and(|count| count >= 3));
+    });
 }
 
 #[tokio::test]

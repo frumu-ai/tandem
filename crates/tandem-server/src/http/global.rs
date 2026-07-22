@@ -15,9 +15,10 @@ use crate::action_authorization::{
 
 #[path = "global_worktrees.rs"]
 mod worktrees;
+use worktrees::{cleanup_managed_worktrees_for_lease, LeaseWorktreeCleanupResult};
 pub(super) use worktrees::{
-    cleanup_managed_worktrees_for_lease, cleanup_worktrees, create_worktree, delete_worktree,
-    list_worktrees, prune_expired_leases, reset_worktree, LeaseWorktreeCleanupResult,
+    cleanup_worktrees, create_worktree, delete_worktree, list_worktrees, prune_expired_leases,
+    reset_worktree,
 };
 
 #[derive(Debug, Deserialize)]
