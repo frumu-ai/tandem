@@ -592,8 +592,20 @@ pub(in crate::http) async fn reset_worktree(
         false,
     )
     .map_err(|_| StatusCode::FORBIDDEN)?;
+    let final_dirty = crate::runtime::worktrees::run_managed_git(
+        &record.path,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !final_dirty.success || !final_dirty.stdout.trim().is_empty() {
+        return Err(StatusCode::CONFLICT);
+    }
+    grant
+        .revalidate(&state, &effect)
+        .map_err(host_authorization_status)?;
     let output =
-        crate::runtime::worktrees::run_managed_git(&record.path, &["reset", "--hard", &target])
+        crate::runtime::worktrees::run_managed_git(&record.path, &["reset", "--keep", &target])
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let expose_host_paths = verified.is_none();
@@ -869,11 +881,15 @@ pub(in crate::http) async fn cleanup_worktrees(
                 }));
                 continue;
             }
-            match std::fs::remove_dir_all(path) {
+            match crate::runtime::worktrees::remove_managed_worktree_dir(
+                &repo_root,
+                StdPath::new(path),
+                verified.is_none(),
+            ) {
                 Ok(_) => {
                     orphan_removed.push(json!({
                         "path": path,
-                        "via": "filesystem_remove_dir_all",
+                        "via": "descriptor_relative_remove_dir_all",
                     }));
                 }
                 Err(err) => {

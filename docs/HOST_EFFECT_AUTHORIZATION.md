@@ -84,9 +84,13 @@ Managed worktree mutations additionally require:
 Managed worktree parents and targets are checked component-by-component with
 symlink metadata and canonical equality immediately before each effect. All Git
 commands in managed-worktree paths run with a cleared allowlisted environment,
-external helpers disabled, a 15-second deadline, and capped stdout/stderr.
+external helpers disabled, repository content-filter drivers overridden to no-op for
+checkout-producing commands, a 15-second deadline, and capped stdout/stderr.
 Removal never uses `--force`; Git performs its own final dirty-state refusal so
-a concurrent modification is preserved instead of erased.
+a concurrent modification is preserved instead of erased. Reset repeats the
+dirty check at the final boundary and uses Git's local-change-preserving mode.
+Orphan directories are recursively removed relative to retained no-follow
+directory handles on Unix; verified cleanup fails closed without that primitive.
 
 Hosted responses return opaque resource IDs and omit canonical host paths and
 raw process errors.

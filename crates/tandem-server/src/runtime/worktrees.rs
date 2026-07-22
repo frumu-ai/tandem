@@ -194,6 +194,99 @@ pub(crate) fn validate_managed_worktree_path(
     Ok(())
 }
 
+#[cfg(unix)]
+fn open_directory_no_symlinks(path: &Path) -> anyhow::Result<rustix::fd::OwnedFd> {
+    use rustix::fs::{open, openat, Mode, OFlags};
+
+    if !path.is_absolute() {
+        anyhow::bail!("directory path must be absolute");
+    }
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut current = open("/", flags, Mode::empty())?;
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir => {}
+            std::path::Component::Normal(name) => {
+                current = openat(&current, name, flags, Mode::empty())?;
+            }
+            _ => anyhow::bail!("directory path contains a non-normal component"),
+        }
+    }
+    Ok(current)
+}
+
+#[cfg(unix)]
+fn remove_directory_contents_at(directory: &rustix::fd::OwnedFd) -> anyhow::Result<()> {
+    use rustix::fs::{openat, unlinkat, AtFlags, Dir, Mode, OFlags};
+
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut entries = Dir::read_from(directory)?;
+    for entry in &mut entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        match openat(directory, name, flags, Mode::empty()) {
+            Ok(child) => {
+                remove_directory_contents_at(&child)?;
+                unlinkat(directory, name, AtFlags::REMOVEDIR)?;
+            }
+            Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
+                unlinkat(directory, name, AtFlags::empty())?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn remove_managed_worktree_dir(
+    repo_root: &str,
+    path: &Path,
+    _allow_path_fallback: bool,
+) -> anyhow::Result<()> {
+    use rustix::fs::{openat, unlinkat, AtFlags, Mode, OFlags};
+
+    let canonical_repo = std::fs::canonicalize(repo_root)?;
+    let managed_root = canonical_repo.join(".tandem").join("worktrees");
+    let relative = path
+        .strip_prefix(&managed_root)
+        .map_err(|_| anyhow::anyhow!("managed worktree path escapes managed root"))?;
+    let mut components = relative.components();
+    let Some(std::path::Component::Normal(target_name)) = components.next() else {
+        anyhow::bail!("managed worktree target is invalid");
+    };
+    if components.next().is_some() {
+        anyhow::bail!("orphan cleanup only accepts direct managed-root children");
+    }
+
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let repo = open_directory_no_symlinks(&canonical_repo)?;
+    let tandem = openat(&repo, ".tandem", flags, Mode::empty())?;
+    let worktrees = openat(&tandem, "worktrees", flags, Mode::empty())?;
+    let target = openat(&worktrees, target_name, flags, Mode::empty())?;
+    remove_directory_contents_at(&target)?;
+    drop(target);
+    unlinkat(&worktrees, target_name, AtFlags::REMOVEDIR)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn remove_managed_worktree_dir(
+    repo_root: &str,
+    path: &Path,
+    allow_path_fallback: bool,
+) -> anyhow::Result<()> {
+    if !allow_path_fallback {
+        anyhow::bail!("verified orphan cleanup requires descriptor-relative deletion");
+    }
+    validate_managed_worktree_path(repo_root, path, false)?;
+    std::fs::remove_dir_all(path)?;
+    Ok(())
+}
+
 pub fn resolve_git_repo_root(candidate: &str) -> Option<String> {
     let output = std::process::Command::new("git")
         .args(["-C", candidate, "rev-parse", "--show-toplevel"])
@@ -440,9 +533,10 @@ where
     Ok((String::from_utf8_lossy(&bytes).to_string(), truncated))
 }
 
-pub(crate) async fn run_managed_git(
+async fn run_managed_git_with_filter_overrides(
     repo_root: &str,
     args: &[&str],
+    filter_drivers: &[String],
 ) -> anyhow::Result<ManagedGitOutput> {
     let mut command = Command::new("git");
     command
@@ -460,12 +554,32 @@ pub(crate) async fn run_managed_git(
         .env_clear()
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", null_device())
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_ATTR_GLOBAL", null_device())
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
         .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let mut config_index = 0usize;
+    for driver in filter_drivers {
+        for (operation, value) in [
+            ("clean", ""),
+            ("smudge", ""),
+            ("process", ""),
+            ("required", "false"),
+        ] {
+            command
+                .env(
+                    format!("GIT_CONFIG_KEY_{config_index}"),
+                    format!("filter.{driver}.{operation}"),
+                )
+                .env(format!("GIT_CONFIG_VALUE_{config_index}"), value);
+            config_index += 1;
+        }
+    }
+    command.env("GIT_CONFIG_COUNT", config_index.to_string());
     if let Some(path) = std::env::var_os("PATH") {
         command.env("PATH", path);
     }
@@ -498,6 +612,57 @@ pub(crate) async fn run_managed_git(
         stdout_truncated,
         stderr_truncated,
     })
+}
+
+async fn managed_git_filter_drivers(repo_root: &str) -> anyhow::Result<Vec<String>> {
+    let output = run_managed_git_with_filter_overrides(
+        repo_root,
+        &[
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            "^filter\\.",
+        ],
+        &[],
+    )
+    .await?;
+    if !output.success && (!output.stdout.is_empty() || !output.stderr.is_empty()) {
+        anyhow::bail!("managed Git filter discovery failed");
+    }
+    let mut drivers = std::collections::BTreeSet::new();
+    for key in output.stdout.split("\0").filter(|key| !key.is_empty()) {
+        let Some((driver, operation)) = key
+            .strip_prefix("filter.")
+            .and_then(|key| key.rsplit_once('.'))
+        else {
+            continue;
+        };
+        if !["clean", "smudge", "process", "required"].contains(&operation) {
+            continue;
+        }
+        if driver.is_empty()
+            || driver.len() > 128
+            || !driver
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character))
+        {
+            anyhow::bail!("managed Git filter driver is invalid");
+        }
+        drivers.insert(driver.to_string());
+        if drivers.len() > 64 {
+            anyhow::bail!("managed Git filter driver limit exceeded");
+        }
+    }
+    Ok(drivers.into_iter().collect())
+}
+
+pub(crate) async fn run_managed_git(
+    repo_root: &str,
+    args: &[&str],
+) -> anyhow::Result<ManagedGitOutput> {
+    let filter_drivers = managed_git_filter_drivers(repo_root).await?;
+    run_managed_git_with_filter_overrides(repo_root, args, &filter_drivers).await
 }
 
 async fn worktree_is_registered_async(repo_root: String, path: String) -> anyhow::Result<bool> {
@@ -552,7 +717,10 @@ async fn delete_git_branch_async(repo_root: String, branch: String) -> anyhow::R
 
 #[cfg(test)]
 mod tests {
-    use super::{managed_worktree_key, run_managed_git, validate_managed_worktree_path};
+    use super::{
+        managed_worktree_key, remove_managed_worktree_dir, run_managed_git,
+        validate_managed_worktree_path,
+    };
 
     #[cfg(unix)]
     #[test]
@@ -576,8 +744,59 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn descriptor_relative_orphan_removal_does_not_follow_symlinks() {
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let managed_root = repo.path().join(".tandem").join("worktrees");
+        let orphan = managed_root.join("orphan");
+        std::fs::create_dir_all(orphan.join("nested")).expect("create orphan tree");
+        std::fs::write(orphan.join("nested").join("file.txt"), b"orphan")
+            .expect("write orphan file");
+        let outside_sentinel = outside.path().join("keep.txt");
+        std::fs::write(&outside_sentinel, b"keep").expect("write outside sentinel");
+        std::os::unix::fs::symlink(outside.path(), orphan.join("outside-link"))
+            .expect("create outside symlink");
+
+        remove_managed_worktree_dir(repo.path().to_str().expect("repo utf8"), &orphan, false)
+            .expect("remove orphan through retained handles");
+
+        assert!(!orphan.exists());
+        assert!(
+            outside_sentinel.exists(),
+            "outside symlink target must remain"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_relative_orphan_removal_rejects_symlinked_parent() {
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        std::fs::create_dir(repo.path().join(".tandem")).expect("create tandem directory");
+        let outside_orphan = outside.path().join("orphan");
+        std::fs::create_dir(&outside_orphan).expect("create outside orphan");
+        let sentinel = outside_orphan.join("keep.txt");
+        std::fs::write(&sentinel, b"keep").expect("write outside sentinel");
+        std::os::unix::fs::symlink(
+            outside.path(),
+            repo.path().join(".tandem").join("worktrees"),
+        )
+        .expect("create managed-root symlink");
+        let target = repo.path().join(".tandem").join("worktrees").join("orphan");
+
+        assert!(remove_managed_worktree_dir(
+            repo.path().to_str().expect("repo utf8"),
+            &target,
+            false,
+        )
+        .is_err());
+        assert!(sentinel.exists(), "symlinked parent target must remain");
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
-    async fn managed_git_disables_fsmonitor_and_refuses_dirty_removal() {
+    async fn managed_git_disables_helpers_and_refuses_dirty_mutations() {
         use std::os::unix::fs::PermissionsExt;
 
         let repo = tempfile::tempdir().expect("repo tempdir");
@@ -590,6 +809,18 @@ mod tests {
             .permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&monitor, permissions).expect("set fsmonitor executable");
+        let filter_marker = repo.path().join("filter-ran");
+        let filter = repo.path().join("filter.sh");
+        std::fs::write(
+            &filter,
+            format!("#!/bin/sh\ntouch {}\ncat\n", filter_marker.display()),
+        )
+        .expect("write content filter");
+        let mut filter_permissions = std::fs::metadata(&filter)
+            .expect("filter metadata")
+            .permissions();
+        filter_permissions.set_mode(0o755);
+        std::fs::set_permissions(&filter, filter_permissions).expect("set filter executable");
         let repo_root = repo.path().to_str().expect("repo utf8");
         let git = |args: &[&str]| {
             let output = std::process::Command::new("git")
@@ -603,33 +834,72 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         };
-        git(&["init"]);
+        git(&["init", "-b", "main"]);
         git(&["config", "user.email", "security-test.test"]);
         git(&["config", "user.name", "Security Test"]);
         std::fs::write(repo.path().join("tracked.txt"), b"initial").expect("write tracked file");
-        git(&["add", "tracked.txt"]);
+        std::fs::write(repo.path().join("filtered.txt"), b"filtered").expect("write filtered file");
+        std::fs::write(
+            repo.path().join(".gitattributes"),
+            b"filtered.txt filter=owned\n",
+        )
+        .expect("write attributes");
+        git(&["add", "."]);
         git(&["commit", "-m", "initial"]);
+        std::fs::write(repo.path().join("tracked.txt"), b"target").expect("write target revision");
+        git(&["add", "tracked.txt"]);
+        git(&["commit", "-m", "target"]);
         git(&[
             "config",
             "core.fsmonitor",
             monitor.to_str().expect("monitor utf8"),
         ]);
+        git(&[
+            "config",
+            "filter.owned.smudge",
+            filter.to_str().expect("filter utf8"),
+        ]);
+        git(&["config", "filter.owned.required", "true"]);
 
         let status = run_managed_git(repo_root, &["status", "--porcelain"])
             .await
             .expect("sanitized status");
-        assert!(status.success);
+        assert!(status.success, "{}", status.stderr);
         assert!(!marker.exists(), "configured fsmonitor must not execute");
 
         let worktree = repo.path().join("worktree-a");
-        git(&[
-            "worktree",
-            "add",
-            "-b",
-            "test/worktree-a",
-            worktree.to_str().expect("worktree utf8"),
-        ]);
+        let addition = run_managed_git(
+            repo_root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "test/worktree-a",
+                worktree.to_str().expect("worktree utf8"),
+                "--",
+                "HEAD~1",
+            ],
+        )
+        .await
+        .expect("bounded worktree addition");
+        assert!(addition.success, "{}", addition.stderr);
+        assert!(
+            !filter_marker.exists(),
+            "configured content filter must not execute"
+        );
         std::fs::write(worktree.join("tracked.txt"), b"dirty").expect("dirty worktree");
+        let reset = run_managed_git(
+            worktree.to_str().expect("worktree utf8"),
+            &["reset", "--keep", "main"],
+        )
+        .await
+        .expect("bounded reset attempt");
+        assert!(!reset.success, "dirty reset must be refused");
+        assert_eq!(
+            std::fs::read(worktree.join("tracked.txt")).expect("read dirty worktree"),
+            b"dirty",
+            "dirty content must remain intact"
+        );
         let removal = run_managed_git(
             repo_root,
             &[

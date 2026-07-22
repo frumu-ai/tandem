@@ -54,10 +54,11 @@ record, matching tenant and actor, an active exact lease, and deployment-admin
 authority outside the explicit standalone loopback-owner posture.
 
 Managed-worktree paths with symlinked parents or targets are rejected. Git runs
-with cleared environment and disabled helpers under strict time/output bounds,
-and cleanup/deletion refuses dirty worktrees without force removal. File-content
-reads use descriptor-relative no-follow traversal on Unix to close symlink-swap
-races at open time.
+with a cleared environment, disabled hooks/fsmonitor/content filters, and strict
+time/output bounds. Removal is force-free, reset repeats its dirty check and
+uses local-change-preserving mode, and orphan deletion is descriptor-relative on
+Unix. File-content reads use descriptor-relative no-follow traversal on Unix to
+close symlink-swap races at open time.
 
 ## Credential response
 
