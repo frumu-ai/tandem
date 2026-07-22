@@ -7,12 +7,30 @@ impl AppState {
         automation_id: &str,
         actor: GovernanceActorRef,
         reason: Option<String>,
+        approval_id: Option<String>,
+        tenant_context: &tandem_types::TenantContext,
     ) -> anyhow::Result<Option<crate::AutomationV2Spec>> {
-        let Some(mut automation) = self.get_automation_v2(automation_id).await else {
-            return Ok(None);
-        };
+        let mut automation = self
+            .require_active_automation_governance_tenant(automation_id, tenant_context)
+            .await?;
         let now = now_ms();
         let reason = reason.unwrap_or_else(|| "retired by operator".to_string());
+        append_protected_audit_event(
+            self,
+            format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.retired"),
+            tenant_context,
+            actor.actor_id.clone().or_else(|| actor.source.clone()),
+            json!({
+                "automationID": automation_id,
+                "reason": reason,
+                "actor": actor,
+                "approvalID": approval_id,
+            }),
+        )
+        .await?;
+        automation = self
+            .require_active_automation_governance_tenant(automation_id, tenant_context)
+            .await?;
         automation.status = crate::AutomationV2Status::Paused;
         let stored = self.put_automation_v2(automation).await?;
         let _ = self
@@ -23,7 +41,7 @@ impl AppState {
             )
             .await;
         let current_record = self.get_automation_governance(automation_id).await;
-        let record = self
+        let mut record = self
             .governance_engine
             .evaluate_retirement(
                 GovernanceRetirementInput {
@@ -34,29 +52,18 @@ impl AppState {
                         "retire_default",
                     ),
                     declared_capabilities: declared_capabilities_for_automation(&stored),
-                    reason: reason.clone(),
+                    reason,
                 },
                 now,
             )
             .map_err(|error| anyhow::anyhow!(error.message))?;
+        bind_governance_record_to_tenant(&mut record, tenant_context)?;
         {
             let mut guard = self.automation_governance.write().await;
             guard.records.insert(automation_id.to_string(), record);
             guard.updated_at_ms = now;
         }
         self.persist_automation_governance().await?;
-        append_protected_audit_event(
-            self,
-            format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.retired"),
-            &tandem_types::TenantContext::local_implicit(),
-            actor.actor_id.clone().or_else(|| actor.source.clone()),
-            json!({
-                "automationID": automation_id,
-                "reason": reason,
-                "actor": actor,
-            }),
-        )
-        .await?;
         Ok(Some(stored))
     }
 
@@ -66,10 +73,12 @@ impl AppState {
         actor: GovernanceActorRef,
         expires_at_ms: Option<u64>,
         reason: Option<String>,
+        approval_id: Option<String>,
+        tenant_context: &tandem_types::TenantContext,
     ) -> anyhow::Result<Option<crate::AutomationV2Spec>> {
-        let Some(mut automation) = self.get_automation_v2(automation_id).await else {
-            return Ok(None);
-        };
+        let mut automation = self
+            .require_active_automation_governance_tenant(automation_id, tenant_context)
+            .await?;
         let now = now_ms();
         let default_expires_after_ms = self
             .automation_governance
@@ -79,10 +88,27 @@ impl AppState {
             .default_expires_after_ms;
         let next_expires_at_ms =
             expires_at_ms.unwrap_or_else(|| now.saturating_add(default_expires_after_ms.max(1)));
+        append_protected_audit_event(
+            self,
+            format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.retirement.extended"),
+            tenant_context,
+            actor.actor_id.clone().or_else(|| actor.source.clone()),
+            json!({
+                "automationID": automation_id,
+                "expiresAtMs": next_expires_at_ms,
+                "reason": reason,
+                "actor": actor,
+                "approvalID": approval_id,
+            }),
+        )
+        .await?;
+        automation = self
+            .require_active_automation_governance_tenant(automation_id, tenant_context)
+            .await?;
         automation.status = crate::AutomationV2Status::Active;
         let stored = self.put_automation_v2(automation).await?;
         let current_record = self.get_automation_governance(automation_id).await;
-        let record = self
+        let mut record = self
             .governance_engine
             .evaluate_retirement_extension(
                 GovernanceRetirementExtensionInput {
@@ -98,25 +124,13 @@ impl AppState {
                 now,
             )
             .map_err(|error| anyhow::anyhow!(error.message))?;
+        bind_governance_record_to_tenant(&mut record, tenant_context)?;
         {
             let mut guard = self.automation_governance.write().await;
             guard.records.insert(automation_id.to_string(), record);
             guard.updated_at_ms = now;
         }
         self.persist_automation_governance().await?;
-        append_protected_audit_event(
-            self,
-            format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.retirement.extended"),
-            &tandem_types::TenantContext::local_implicit(),
-            actor.actor_id.clone().or_else(|| actor.source.clone()),
-            json!({
-                "automationID": automation_id,
-                "expiresAtMs": next_expires_at_ms,
-                "reason": reason,
-                "actor": actor,
-            }),
-        )
-        .await?;
         Ok(Some(stored))
     }
 

@@ -25,6 +25,14 @@ pub struct QuestionToolRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuestionRequest {
     pub id: String,
+    #[serde(default = "TenantContext::local_implicit", rename = "tenantContext")]
+    pub tenant_context: TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "requestedBy")]
+    pub requested_by: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty", rename = "actionDigest")]
+    pub action_digest: String,
+    #[serde(default, rename = "expiresAtMs")]
+    pub expires_at_ms: u64,
     #[serde(rename = "sessionID")]
     pub session_id: String,
     #[serde(default)]
@@ -36,6 +44,7 @@ pub struct QuestionRequest {
 pub struct Storage {
     base: PathBuf,
     repository: session_repository::SessionRepository,
+    question_write_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +65,7 @@ const LEGACY_IMPORT_MARKER_FILE: &str = "legacy_import_marker.json";
 const LEGACY_IMPORT_MARKER_VERSION: u32 = 1;
 const MAX_SESSION_SNAPSHOTS: usize = 5;
 const SESSIONS_SCHEMA_VERSION: u32 = 1;
+const QUESTION_REQUEST_TTL_MS: u64 = 15 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionsFile {
@@ -294,7 +304,11 @@ impl Storage {
                 .context("legacy session import task failed")??;
             repository.import_legacy(legacy_state)?;
         }
-        Ok(Self { base, repository })
+        Ok(Self {
+            base,
+            repository,
+            question_write_lock: tokio::sync::Mutex::new(()),
+        })
     }
 
     pub async fn list_sessions(&self) -> Vec<Session> {
@@ -532,16 +546,37 @@ impl Storage {
         if questions.is_empty() {
             anyhow::bail!("cannot add empty question request for session {}", session_id);
         }
+        let tenant_context = self
+            .get_session(session_id)
+            .await
+            .map(|session| session.tenant_context)
+            .unwrap_or_else(TenantContext::local_implicit);
+        let requested_at_ms = now_ms_u64();
+        let tool = QuestionToolRef {
+            call_id: format!("call-{}", Uuid::new_v4()),
+            message_id: message_id.to_string(),
+        };
+        let digest_payload = json!({
+            "tenant": &tenant_context,
+            "sessionID": session_id,
+            "questions": &questions,
+            "tool": &tool,
+        });
         let request = QuestionRequest {
             id: format!("q-{}", Uuid::new_v4()),
+            requested_by: tenant_context.actor_id.clone(),
+            tenant_context,
+            action_digest: format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&digest_payload).unwrap_or_default())
+            ),
+            expires_at_ms: requested_at_ms.saturating_add(QUESTION_REQUEST_TTL_MS),
             session_id: session_id.to_string(),
             questions,
-            tool: Some(QuestionToolRef {
-                call_id: format!("call-{}", Uuid::new_v4()),
-                message_id: message_id.to_string(),
-            }),
+            tool: Some(tool),
         };
         let request_for_store = request.clone();
+        let _write_guard = self.question_write_lock.lock().await;
         self.run_blocking(move |repository| repository.add_question(&request_for_store)).await?;
         Ok(request)
     }
@@ -550,9 +585,88 @@ impl Storage {
         self.run_blocking(|repository| repository.list_questions()).await.unwrap_or_default()
     }
 
-    pub async fn reply_question(&self, request_id: &str) -> anyhow::Result<bool> {
+    pub async fn list_question_requests_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+    ) -> Vec<QuestionRequest> {
+        self.list_question_requests()
+            .await
+            .into_iter()
+            .filter(|request| {
+                request.tenant_context.org_id == tenant_context.org_id
+                    && request.tenant_context.workspace_id == tenant_context.workspace_id
+                    && request.tenant_context.deployment_id == tenant_context.deployment_id
+            })
+            .collect()
+    }
+
+    pub async fn get_question_request_for_tenant(
+        &self,
+        request_id: &str,
+        tenant_context: &TenantContext,
+        expected_session_id: Option<&str>,
+    ) -> anyhow::Result<Option<QuestionRequest>> {
+        let Some(request) = self
+            .list_question_requests_for_tenant(tenant_context)
+            .await
+            .into_iter()
+            .find(|request| request.id == request_id)
+        else {
+            return Ok(None);
+        };
+        if expected_session_id.is_some()
+            && Some(request.session_id.as_str()) != expected_session_id
+        {
+            return Ok(None);
+        }
+        if request.expires_at_ms > 0 && now_ms_u64() >= request.expires_at_ms {
+            anyhow::bail!("QUESTION_REQUEST_EXPIRED");
+        }
+        let digest_payload = json!({
+            "tenant": &request.tenant_context,
+            "sessionID": &request.session_id,
+            "questions": &request.questions,
+            "tool": &request.tool,
+        });
+        let expected_digest = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&digest_payload).unwrap_or_default())
+        );
+        if request.action_digest.is_empty() {
+            if !tenant_context.is_local_implicit() {
+                anyhow::bail!("QUESTION_REQUEST_UNBOUND");
+            }
+        } else if request.action_digest != expected_digest {
+            anyhow::bail!("QUESTION_REQUEST_ACTION_MISMATCH");
+        }
+        Ok(Some(request))
+    }
+
+    pub async fn decide_question_for_tenant(
+        &self,
+        request_id: &str,
+        tenant_context: &TenantContext,
+        expected_session_id: Option<&str>,
+    ) -> anyhow::Result<Option<QuestionRequest>> {
+        let _write_guard = self.question_write_lock.lock().await;
+        let Some(request) = self
+            .get_question_request_for_tenant(request_id, tenant_context, expected_session_id)
+            .await?
+        else {
+            return Ok(None);
+        };
         let request_id = request_id.to_string();
-        self.run_blocking(move |repository| repository.remove_question(&request_id)).await
+        let removed = self
+            .run_blocking(move |repository| repository.remove_question(&request_id))
+            .await?;
+        Ok(removed.then_some(request))
+    }
+
+    pub async fn reply_question(&self, request_id: &str) -> anyhow::Result<bool> {
+        let _write_guard = self.question_write_lock.lock().await;
+        let request_id = request_id.to_string();
+        self.run_blocking(move |repository| repository.remove_question(&request_id))
+            .await
     }
 
     pub async fn reject_question(&self, request_id: &str) -> anyhow::Result<bool> {

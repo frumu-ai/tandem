@@ -516,6 +516,8 @@ pub enum AutomationGrantKind {
 pub struct AutomationGrantRecord {
     pub grant_id: String,
     pub automation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_context: Option<crate::TenantContext>,
     pub grant_kind: AutomationGrantKind,
     pub granted_to: GovernanceActorRef,
     pub granted_by: GovernanceActorRef,
@@ -531,6 +533,8 @@ pub struct AutomationGrantRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationGovernanceRecord {
     pub automation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_context: Option<crate::TenantContext>,
     pub provenance: AutomationProvenanceRecord,
     #[serde(default)]
     pub declared_capabilities: AutomationDeclaredCapabilities,

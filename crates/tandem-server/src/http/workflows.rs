@@ -15,7 +15,10 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use crate::{execute_workflow, simulate_workflow_event};
-use tandem_types::{ApprovalSourceKind, ApprovalWaitRef, EngineEvent, TenantContext};
+use tandem_types::{
+    AccessPermission, ApprovalSourceKind, ApprovalWaitRef, EngineEvent, TenantContext,
+    VerifiedTenantContext,
+};
 
 use super::AppState;
 
@@ -165,29 +168,68 @@ pub(super) async fn workflows_run(
     Ok(Json(json!({ "run": run })))
 }
 
+fn workflow_run_visible_to_caller(
+    run: &tandem_workflows::WorkflowRunRecord,
+    tenant_context: &TenantContext,
+    request_principal: &tandem_types::RequestPrincipal,
+    verified: Option<&VerifiedTenantContext>,
+) -> bool {
+    if !super::tenant_matches(tenant_context, &run.tenant_context) {
+        return false;
+    }
+    if workflow_reviewer_is_eligible(tenant_context, verified) {
+        return true;
+    }
+    match (
+        request_principal.actor_id.as_deref().map(str::trim),
+        run.tenant_context.actor_id.as_deref().map(str::trim),
+    ) {
+        (Some(caller), Some(owner)) if !caller.is_empty() => caller.eq_ignore_ascii_case(owner),
+        _ => false,
+    }
+}
+
 pub(super) async fn workflow_runs_list(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<tandem_types::RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<WorkflowRunsQuery>,
 ) -> Json<Value> {
     let limit = query.limit.unwrap_or(50);
     let mut runs = state
         .list_workflow_runs(query.workflow_id.as_deref(), limit)
         .await;
-    runs.retain(|run| super::tenant_matches(&tenant_context, &run.tenant_context));
+    runs.retain(|run| {
+        workflow_run_visible_to_caller(
+            run,
+            &tenant_context,
+            &request_principal,
+            verified.as_deref(),
+        )
+    });
     Json(json!({ "runs": runs, "count": runs.len() }))
 }
 
 pub(super) async fn workflow_runs_get(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<tandem_types::RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(WorkflowRunPath { id }): Path<WorkflowRunPath>,
 ) -> Result<Json<Value>, StatusCode> {
     let run = state
         .get_workflow_run(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    super::ensure_same_tenant(&tenant_context, &run.tenant_context)?;
+    if !workflow_run_visible_to_caller(
+        &run,
+        &tenant_context,
+        &request_principal,
+        verified.as_deref(),
+    ) {
+        return Err(StatusCode::NOT_FOUND);
+    }
     Ok(Json(json!({ "run": run })))
 }
 
@@ -198,6 +240,70 @@ pub(super) struct WorkflowGateDecisionInput {
     pub reason: Option<String>,
 }
 
+pub(super) fn workflow_reviewer_is_eligible(
+    tenant_context: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+) -> bool {
+    if tenant_context.is_local_implicit() {
+        return true;
+    }
+    let Some(verified) = verified else {
+        return false;
+    };
+    if crate::now_ms() >= verified.expires_at_ms
+        || !super::tenant_matches(tenant_context, &verified.tenant_context)
+    {
+        return false;
+    }
+    verified
+        .roles
+        .iter()
+        .any(|role| matches!(role.as_str(), "owner" | "admin"))
+        || verified.capabilities.iter().any(|capability| {
+            matches!(
+                capability.as_str(),
+                "approval.review" | "governance.review" | "governance.admin"
+            )
+        })
+        || verified.strict_projection.as_ref().is_some_and(|strict| {
+            strict.has_permission(AccessPermission::Admin)
+                || strict.has_permission(AccessPermission::Delegate)
+        })
+}
+
+async fn ensure_workflow_gate_digest_current(
+    state: &AppState,
+    run: &tandem_workflows::WorkflowRunRecord,
+    gate: &tandem_workflows::WorkflowPendingGate,
+    tenant_context: &TenantContext,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let current =
+        crate::workflows::current_workflow_gate_action_digest(state, run, &gate.action_id)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": format!("workflow gate definition is stale: {error}"),
+                        "code": "WORKFLOW_GATE_STALE",
+                    })),
+                )
+            })?;
+    if gate.action_digest.is_empty() && tenant_context.is_local_implicit() {
+        return Ok(());
+    }
+    if gate.action_digest != current {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "workflow definition changed after the gate was created",
+                "code": "WORKFLOW_GATE_STALE",
+            })),
+        ));
+    }
+    Ok(())
+}
+
 /// Decide a pending workflow approval gate (TAN-73). Mirrors the automation
 /// v2 gate semantics: human-only decider, durable decision record, protected
 /// audit event, and the dispatcher resumes from the checkpoint on approval.
@@ -205,6 +311,7 @@ pub(super) async fn workflow_run_gate_decide(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<tandem_types::RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     headers: axum::http::HeaderMap,
     Path(WorkflowRunPath { id }): Path<WorkflowRunPath>,
     Json(input): Json<WorkflowGateDecisionInput>,
@@ -258,6 +365,58 @@ pub(super) async fn workflow_run_gate_decide(
         ));
     };
 
+    if !workflow_reviewer_is_eligible(
+        &tenant_context,
+        verified_tenant_context
+            .as_ref()
+            .map(|Extension(verified)| verified),
+    ) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "workflow approval requires an eligible tenant reviewer",
+                "code": "WORKFLOW_GATE_REVIEWER_FORBIDDEN",
+            })),
+        ));
+    }
+    if let (Some(reviewer_id), Some(requester_id)) = (
+        decider.actor_id.as_deref().map(str::trim),
+        gate.requested_by.as_deref().map(str::trim),
+    ) {
+        if !reviewer_id.is_empty() && reviewer_id.eq_ignore_ascii_case(requester_id) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "workflow gates require an independent reviewer",
+                    "code": "WORKFLOW_GATE_SELF_APPROVAL",
+                })),
+            ));
+        }
+    }
+    if gate.expires_at_ms > 0 && crate::now_ms() >= gate.expires_at_ms {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "workflow approval gate has expired",
+                "code": "WORKFLOW_GATE_EXPIRED",
+            })),
+        ));
+    }
+    if !tenant_context.is_local_implicit()
+        && (gate.expires_at_ms == 0
+            || gate.action_digest.is_empty()
+            || gate.nonce.is_empty()
+            || gate.requested_by.as_deref().is_none_or(str::is_empty))
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "legacy unbound workflow gate is quarantined",
+                "code": "WORKFLOW_GATE_UNBOUND",
+            })),
+        ));
+    }
+
     let decision = input.decision.trim().to_ascii_lowercase();
     if !gate.decisions.iter().any(|allowed| allowed == &decision) {
         return Err((
@@ -278,6 +437,8 @@ pub(super) async fn workflow_run_gate_decide(
         ));
     }
 
+    ensure_workflow_gate_digest_current(&state, &run, &gate, &tenant_context).await?;
+
     let record = tandem_workflows::WorkflowGateDecisionRecord {
         action_id: gate.action_id.clone(),
         decision: decision.clone(),
@@ -288,14 +449,45 @@ pub(super) async fn workflow_run_gate_decide(
         )),
         reason: input.reason.clone(),
         decided_at_ms: crate::now_ms(),
+        action_digest: gate.action_digest.clone(),
+        nonce: gate.nonce.clone(),
         decided_by: serde_json::to_value(&decider).ok(),
     };
+    // Protected audit is the commit barrier: a ledger failure must leave the run
+    // paused and the one-time nonce unused.
+    crate::audit::append_protected_audit_event(
+        &state,
+        "workflow.governance.gate_decided",
+        &tenant_context,
+        decider.actor_id.clone().or_else(|| decider.source.clone()),
+        json!({
+            "runID": id,
+            "workflowID": run.workflow_id,
+            "actionID": gate.action_id,
+            "actionDigest": gate.action_digest,
+            "nonce": gate.nonce,
+            "decision": decision,
+            "reason": input.reason,
+            "decidedBy": decider,
+        }),
+    )
+    .await
+    .map_err(super::protected_audit_error_response)?;
+    ensure_workflow_gate_digest_current(&state, &run, &gate, &tenant_context).await?;
     let gate_action_id = gate.action_id.clone();
     let rework_targets = gate.rework_targets.clone();
     let decision_for_update = decision.clone();
     let record_for_update = record.clone();
-    let updated = state
-        .update_workflow_run(&id, |row| {
+    let result = state
+        .update_workflow_run_persisted(&id, |row| {
+            if row.status != tandem_workflows::WorkflowRunStatus::AwaitingApproval
+                || row
+                    .awaiting_gate
+                    .as_ref()
+                    .is_none_or(|current| current.nonce != gate.nonce)
+            {
+                return false;
+            }
             row.awaiting_gate = None;
             row.gate_history.push(record_for_update.clone());
             match decision_for_update.as_str() {
@@ -343,12 +535,33 @@ pub(super) async fn workflow_run_gate_decide(
                     }
                 }
             }
+            true
         })
         .await
-        .ok_or((
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("workflow gate decision could not be persisted: {error}"),
+                    "code": "WORKFLOW_GATE_PERSISTENCE_FAILED",
+                })),
+            )
+        })?;
+    let Some((updated, applied)) = result else {
+        return Err((
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "workflow run not found", "code": "WORKFLOW_RUN_NOT_FOUND" })),
-        ))?;
+        ));
+    };
+    if !applied {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "workflow gate was already decided or replaced",
+                "code": "WORKFLOW_GATE_REPLAYED",
+            })),
+        ));
+    }
 
     if decision == "approve" || decision == "cancel" {
         crate::workflows::sync_workflow_gate_decision_to_mirror(
@@ -361,23 +574,6 @@ pub(super) async fn workflow_run_gate_decide(
         .await;
     }
 
-    // GOV-B8 parity: every gate decision leaves tamper-evident audit.
-    crate::audit::append_protected_audit_event(
-        &state,
-        "workflow.governance.gate_decided",
-        &tenant_context,
-        decider.actor_id.clone().or_else(|| decider.source.clone()),
-        json!({
-            "runID": id,
-            "workflowID": updated.workflow_id,
-            "actionID": gate.action_id,
-            "decision": decision,
-            "reason": input.reason,
-            "decidedBy": decider,
-        }),
-    )
-    .await
-    .map_err(super::protected_audit_error_response)?;
     state.event_bus.publish(EngineEvent::new(
         "approval.decision.recorded",
         json!({

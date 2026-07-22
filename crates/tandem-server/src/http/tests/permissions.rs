@@ -103,6 +103,6 @@ async fn permission_reply_route_applies_and_persists_allow_rule() {
         .expect("protected audit file");
     assert!(audit.contains("\"event_type\":\"permission.decision\""));
     assert!(audit.contains("\"permission\":\"glob\""));
-    assert!(audit.contains("\"standingRulePersisted\":true"));
-    assert!(audit.contains("\"sourceRequestID\""));
+    assert!(audit.contains("\"actionDigest\""));
+    assert!(audit.contains("\"reason\":\"http_permission_reply\""));
 }

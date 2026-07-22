@@ -503,6 +503,9 @@ impl EngineLoop {
             .get_session(session_id)
             .await
             .map(|session| session.tenant_context);
+        let permission_tenant_context = tool_effect_tenant_context
+            .clone()
+            .unwrap_or_else(TenantContext::local_implicit);
         let publish_tool_effect = |tool_call_id: Option<&str>,
                                    phase: ToolEffectLedgerPhase,
                                    status: ToolEffectLedgerStatus,
@@ -854,11 +857,11 @@ impl EngineLoop {
                 .await?;
             return Ok(Some(violation));
         }
-        let rule = self
-            .plugins
-            .permission_override(&tool)
-            .await
-            .unwrap_or(self.permissions.evaluate(&tool, &tool).await);
+        let rule = self.plugins.permission_override(&tool).await.unwrap_or(
+            self.permissions
+                .evaluate_for_tenant(&permission_tenant_context, &tool, &tool)
+                .await,
+        );
         if matches!(rule, PermissionAction::Deny) {
             let reason = format!("Permission denied for tool `{tool}` by policy.");
             publish_tool_effect(
@@ -958,7 +961,8 @@ impl EngineLoop {
             } else {
                 let pending = self
                     .permissions
-                    .ask_for_session_with_context(
+                    .ask_for_session_with_context_for_tenant(
+                        &permission_tenant_context,
                         Some(session_id),
                         &tool,
                         args.clone(),
@@ -1427,11 +1431,11 @@ impl EngineLoop {
 
                 // 4. Permission rules. Batch sub-calls cannot create interactive prompts;
                 // sub-tools that would require Ask are skipped like explicit Deny.
-                let sub_rule = self
-                    .plugins
-                    .permission_override(&sub_tool)
-                    .await
-                    .unwrap_or(self.permissions.evaluate(&sub_tool, &sub_tool).await);
+                let sub_rule = self.plugins.permission_override(&sub_tool).await.unwrap_or(
+                    self.permissions
+                        .evaluate_for_tenant(&permission_tenant_context, &sub_tool, &sub_tool)
+                        .await,
+                );
                 if matches!(sub_rule, PermissionAction::Deny | PermissionAction::Ask) {
                     if let Some(obj) = call.as_object_mut() {
                         let action = match sub_rule {

@@ -1426,6 +1426,7 @@ pub(super) async fn automations_v2_patch(
                 &id,
                 "mcp capabilities were narrowed".to_string(),
                 evidence,
+                &tenant_context,
             )
             .await
         {

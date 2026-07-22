@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tandem_types::{RequestPrincipal, TenantContext};
+use tandem_types::{AccessPermission, RequestPrincipal, TenantContext, VerifiedTenantContext};
 use uuid::Uuid;
 
 use crate::automation_v2::governance::{
@@ -17,8 +17,8 @@ use crate::automation_v2::governance::{
 use super::governance::{
     agent_creation_review_wire, agent_spend_wire, approval_request_wire,
     automation_governance_wire, automation_grant_wire, automation_lifecycle_summary_wire,
-    governance_error_response, premium_governance_required, resolve_governance_actor,
-    resolve_governance_provenance,
+    enforce_mutation_or_audit, governance_error_response, premium_governance_required,
+    resolve_governance_actor, resolve_governance_provenance,
 };
 use crate::AppState;
 
@@ -41,6 +41,8 @@ pub(super) struct GovernanceApprovalDecisionInput {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AutomationGrantCreateInput {
+    #[serde(default)]
+    pub approval_id: Option<String>,
     pub granted_to_agent_id: String,
     #[serde(default)]
     pub reason: Option<String>,
@@ -49,17 +51,23 @@ pub(super) struct AutomationGrantCreateInput {
 #[derive(Debug, Deserialize)]
 pub(super) struct AutomationGrantRevokeInput {
     #[serde(default)]
+    pub approval_id: Option<String>,
+    #[serde(default)]
     pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AutomationRetireInput {
     #[serde(default)]
+    pub approval_id: Option<String>,
+    #[serde(default)]
     pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AutomationExtendInput {
+    #[serde(default)]
+    pub approval_id: Option<String>,
     #[serde(default)]
     pub expires_at_ms: Option<u64>,
     #[serde(default)]
@@ -72,6 +80,158 @@ pub(super) struct PolicyDecisionListQuery {
     pub run_id: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
+}
+
+fn governance_route_error(
+    status: StatusCode,
+    message: impl Into<String>,
+    code: &str,
+) -> (StatusCode, Json<Value>) {
+    (
+        status,
+        Json(json!({
+            "error": message.into(),
+            "code": code,
+        })),
+    )
+}
+
+fn governance_mutation_admin_allowed(
+    tenant_context: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+) -> bool {
+    if tenant_context.is_local_implicit() {
+        return true;
+    }
+    let Some(verified) = verified else {
+        return false;
+    };
+    if crate::now_ms() >= verified.expires_at_ms
+        || !super::tenant_matches(tenant_context, &verified.tenant_context)
+    {
+        return false;
+    }
+    verified
+        .roles
+        .iter()
+        .any(|role| matches!(role.as_str(), "owner" | "admin"))
+        || verified
+            .capabilities
+            .iter()
+            .any(|capability| capability == "governance.admin")
+        || verified
+            .strict_projection
+            .as_ref()
+            .is_some_and(|strict| strict.has_permission(AccessPermission::Admin))
+}
+
+async fn require_active_automation_owner(
+    state: &AppState,
+    automation_id: &str,
+    tenant_context: &TenantContext,
+) -> Result<crate::AutomationV2Spec, (StatusCode, Json<Value>)> {
+    let automation = state
+        .get_automation_v2(automation_id)
+        .await
+        .ok_or_else(|| {
+            governance_route_error(
+                StatusCode::NOT_FOUND,
+                "Automation not found",
+                "AUTOMATION_GOVERNANCE_NOT_FOUND",
+            )
+        })?;
+    if !super::tenant_matches(tenant_context, &automation.tenant_context()) {
+        return Err(governance_route_error(
+            StatusCode::NOT_FOUND,
+            "Automation not found",
+            "AUTOMATION_GOVERNANCE_NOT_FOUND",
+        ));
+    }
+    Ok(automation)
+}
+
+fn governance_actor_id(actor: &GovernanceActorRef) -> Option<&str> {
+    actor
+        .actor_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|actor_id| !actor_id.is_empty())
+}
+
+async fn require_independent_mutation_approval(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    actor: &GovernanceActorRef,
+    automation_id: &str,
+    approval_id: Option<&str>,
+    action: &str,
+    allowed_types: &[GovernanceApprovalRequestType],
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if tenant_context.is_local_implicit() {
+        return Ok(());
+    }
+    let approval_id = approval_id
+        .map(str::trim)
+        .filter(|approval_id| !approval_id.is_empty())
+        .ok_or_else(|| {
+            governance_route_error(
+                StatusCode::FORBIDDEN,
+                "Hosted governance mutation requires an approved independent review",
+                "AUTOMATION_GOVERNANCE_APPROVAL_REQUIRED",
+            )
+        })?;
+    let approval = state
+        .get_governance_approval_request_for_tenant(approval_id, tenant_context)
+        .await
+        .ok_or_else(|| {
+            governance_route_error(
+                StatusCode::NOT_FOUND,
+                "Governance approval not found",
+                "AUTOMATION_GOVERNANCE_APPROVAL_NOT_FOUND",
+            )
+        })?;
+    let actor_id = governance_actor_id(actor).ok_or_else(|| {
+        governance_route_error(
+            StatusCode::FORBIDDEN,
+            "Governance mutation requires an identified human actor",
+            "AUTOMATION_GOVERNANCE_ACTOR_REQUIRED",
+        )
+    })?;
+    let requested_by = governance_actor_id(&approval.requested_by);
+    let reviewed_by = approval.reviewed_by.as_ref().and_then(governance_actor_id);
+    let target_matches = matches!(
+        approval.target_resource.resource_type.as_str(),
+        "automation" | "automation_v2"
+    ) && approval.target_resource.id == automation_id;
+    let action_matches = approval
+        .context
+        .get("action")
+        .and_then(Value::as_str)
+        .is_some_and(|approved_action| approved_action == action);
+    if approval.status != GovernanceApprovalStatus::Approved
+        || crate::now_ms() >= approval.expires_at_ms
+        || !allowed_types.contains(&approval.request_type)
+        || !target_matches
+        || !action_matches
+        || requested_by.is_none_or(|requester| !requester.eq_ignore_ascii_case(actor_id))
+        || reviewed_by.is_none()
+        || reviewed_by.is_some_and(|reviewer| reviewer.eq_ignore_ascii_case(actor_id))
+    {
+        return Err(governance_route_error(
+            StatusCode::FORBIDDEN,
+            "Governance approval is not bound to this tenant, actor, resource, and action",
+            "AUTOMATION_GOVERNANCE_APPROVAL_INVALID",
+        ));
+    }
+    Ok(())
+}
+
+fn approval_id_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-tandem-approval-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 pub(super) fn apply(router: axum::Router<AppState>) -> axum::Router<AppState> {
@@ -227,22 +387,21 @@ async fn ensure_governance_review_authorized(
         .get_governance_approval_request_for_tenant(approval_id, tenant_context)
         .await
     {
-        // Human operators legitimately file requests on an agent's behalf and
-        // approve them, so the self-review guard is scoped to agent-filed requests.
-        if existing.requested_by.kind == GovernanceActorKind::Agent {
-            if let (Some(reviewer_id), Some(requester_id)) = (
-                reviewer.actor_id.as_deref().map(str::trim),
-                existing.requested_by.actor_id.as_deref().map(str::trim),
-            ) {
-                if !reviewer_id.is_empty() && reviewer_id.eq_ignore_ascii_case(requester_id) {
-                    return Err((
-                        StatusCode::FORBIDDEN,
-                        Json(json!({
-                            "error": "An agent-filed approval request may not be reviewed by the same agent",
-                            "code": "GOVERNANCE_APPROVAL_SELF_REVIEW",
-                        })),
-                    ));
-                }
+        // Separation of duties applies regardless of whether the requester was a
+        // human or an agent. A human requester must not approve their own high-impact
+        // governance change merely because the request was filed through a human surface.
+        if let (Some(reviewer_id), Some(requester_id)) = (
+            reviewer.actor_id.as_deref().map(str::trim),
+            existing.requested_by.actor_id.as_deref().map(str::trim),
+        ) {
+            if !reviewer_id.is_empty() && reviewer_id.eq_ignore_ascii_case(requester_id) {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(json!({
+                        "error": "Governance requests require an independent reviewer",
+                        "code": "GOVERNANCE_APPROVAL_SELF_REVIEW",
+                    })),
+                ));
             }
         }
     }
@@ -253,6 +412,7 @@ pub(super) async fn governance_approval_approve(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(approval_id): Path<String>,
     Json(input): Json<GovernanceApprovalDecisionInput>,
@@ -260,6 +420,13 @@ pub(super) async fn governance_approval_approve(
     premium_governance_required(&state)?;
     let reviewer = resolve_governance_actor(&headers, &tenant_context, &request_principal);
     ensure_governance_review_authorized(&state, &approval_id, &reviewer, &tenant_context).await?;
+    if !super::workflows::workflow_reviewer_is_eligible(&tenant_context, verified.as_deref()) {
+        return Err(governance_route_error(
+            StatusCode::FORBIDDEN,
+            "Governance review requires an eligible tenant reviewer",
+            "GOVERNANCE_APPROVAL_REVIEWER_FORBIDDEN",
+        ));
+    }
     let notes = input.notes.clone();
     let Some(reviewed) = state
         .decide_approval_request(&approval_id, reviewer, true, notes.clone(), &tenant_context)
@@ -333,6 +500,7 @@ pub(super) async fn governance_approval_deny(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(approval_id): Path<String>,
     Json(input): Json<GovernanceApprovalDecisionInput>,
@@ -340,6 +508,13 @@ pub(super) async fn governance_approval_deny(
     premium_governance_required(&state)?;
     let reviewer = resolve_governance_actor(&headers, &tenant_context, &request_principal);
     ensure_governance_review_authorized(&state, &approval_id, &reviewer, &tenant_context).await?;
+    if !super::workflows::workflow_reviewer_is_eligible(&tenant_context, verified.as_deref()) {
+        return Err(governance_route_error(
+            StatusCode::FORBIDDEN,
+            "Governance review requires an eligible tenant reviewer",
+            "GOVERNANCE_APPROVAL_REVIEWER_FORBIDDEN",
+        ));
+    }
     let Some(reviewed) = state
         .decide_approval_request(&approval_id, reviewer, false, input.notes, &tenant_context)
         .await
@@ -369,10 +544,15 @@ pub(super) async fn governance_approval_deny(
 
 pub(super) async fn automation_governance_get(
     State(state): State<AppState>,
+    Extension(caller_tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
-    let Some(record) = state.get_automation_governance(&id).await else {
+    let automation = require_active_automation_owner(&state, &id, &caller_tenant).await?;
+    let Some(record) = state
+        .get_automation_governance_for_tenant(&id, &caller_tenant)
+        .await
+    else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -383,11 +563,7 @@ pub(super) async fn automation_governance_get(
         ));
     };
     let spend_agent_ids = record.agent_lineage_ids();
-    let automation = state.get_automation_v2(&id).await;
-    let tenant_context = automation
-        .as_ref()
-        .map(|automation| automation.tenant_context())
-        .unwrap_or_else(tandem_types::TenantContext::local_implicit);
+    let tenant_context = automation.tenant_context();
     let mut spend = Vec::new();
     for agent_id in spend_agent_ids {
         if let Some(summary) = state
@@ -397,7 +573,9 @@ pub(super) async fn automation_governance_get(
             spend.push(agent_spend_wire(&summary));
         }
     }
-    let agent_review = if record.provenance.creator.kind == GovernanceActorKind::Agent {
+    let agent_review = if caller_tenant.is_local_implicit()
+        && record.provenance.creator.kind == GovernanceActorKind::Agent
+    {
         if let Some(agent_id) = record.provenance.creator.actor_id.as_deref() {
             state
                 .agent_creation_review_summary(agent_id)
@@ -427,19 +605,26 @@ pub(super) async fn governance_reviews_list(
     Extension(tenant_context): Extension<TenantContext>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
-    let agent_reviews = state
-        .list_agent_creation_review_summaries()
-        .await
-        .into_iter()
-        .filter(|summary| summary.review_required)
-        .map(|summary| agent_creation_review_wire(&summary))
-        .collect::<Vec<_>>();
+    let agent_reviews = if tenant_context.is_local_implicit() {
+        state
+            .list_agent_creation_review_summaries()
+            .await
+            .into_iter()
+            .filter(|summary| summary.review_required)
+            .map(|summary| agent_creation_review_wire(&summary))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
 
     let automations = state.list_automations_v2().await;
     let mut lifecycle_reviews = Vec::new();
     for automation in automations {
+        if !super::tenant_matches(&tenant_context, &automation.tenant_context()) {
+            continue;
+        }
         if let Some(record) = state
-            .get_automation_governance(&automation.automation_id)
+            .get_automation_governance_for_tenant(&automation.automation_id, &tenant_context)
             .await
         {
             let review_required = record.review_required
@@ -494,9 +679,32 @@ pub(super) async fn governance_reviews_list(
 
 pub(super) async fn governance_spend_list(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
-    let rows = state.list_agent_spend_summaries().await;
+    let mut rows = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for automation in state.list_automations_v2().await {
+        if !super::tenant_matches(&tenant_context, &automation.tenant_context()) {
+            continue;
+        }
+        let Some(record) = state
+            .get_automation_governance_for_tenant(&automation.automation_id, &tenant_context)
+            .await
+        else {
+            continue;
+        };
+        for agent_id in record.agent_lineage_ids() {
+            if seen.insert(agent_id.clone()) {
+                if let Some(summary) = state
+                    .tenant_agent_spend_summary(&tenant_context, &agent_id)
+                    .await
+                {
+                    rows.push(summary);
+                }
+            }
+        }
+    }
     Ok(Json(json!({
         "spend": rows.iter().map(agent_spend_wire).collect::<Vec<_>>(),
         "count": rows.len(),
@@ -505,10 +713,14 @@ pub(super) async fn governance_spend_list(
 
 pub(super) async fn governance_spend_get(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
-    let Some(summary) = state.agent_spend_summary(&agent_id).await else {
+    let Some(summary) = state
+        .tenant_agent_spend_summary(&tenant_context, &agent_id)
+        .await
+    else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -525,10 +737,15 @@ pub(super) async fn governance_spend_get(
 
 pub(super) async fn automation_grants_list(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
-    let Some(record) = state.get_automation_governance(&id).await else {
+    require_active_automation_owner(&state, &id, &tenant_context).await?;
+    let Some(record) = state
+        .get_automation_governance_for_tenant(&id, &tenant_context)
+        .await
+    else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -550,6 +767,7 @@ pub(super) async fn automation_grant_create(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<AutomationGrantCreateInput>,
@@ -565,6 +783,30 @@ pub(super) async fn automation_grant_create(
             })),
         ));
     }
+    if !governance_mutation_admin_allowed(&tenant_context, verified.as_deref()) {
+        return Err(governance_route_error(
+            StatusCode::FORBIDDEN,
+            "Modify grants require tenant governance administration authority",
+            "AUTOMATION_GOVERNANCE_GRANT_FORBIDDEN",
+        ));
+    }
+    require_active_automation_owner(&state, &id, &tenant_context).await?;
+    let mutation = state.can_mutate_automation(&id, &granted_by, false).await;
+    enforce_mutation_or_audit(&state, &tenant_context, &id, &granted_by, mutation).await?;
+    require_independent_mutation_approval(
+        &state,
+        &tenant_context,
+        &granted_by,
+        &id,
+        input.approval_id.as_deref(),
+        "grant_modify_access",
+        &[
+            GovernanceApprovalRequestType::CapabilityRequest,
+            GovernanceApprovalRequestType::ElevatedCapability,
+            GovernanceApprovalRequestType::LifecycleReview,
+        ],
+    )
+    .await?;
     let grant = state
         .grant_automation_modify_access(
             &id,
@@ -574,6 +816,7 @@ pub(super) async fn automation_grant_create(
             ),
             granted_by,
             input.reason,
+            &tenant_context,
         )
         .await
         .map_err(|error| {
@@ -594,6 +837,7 @@ pub(super) async fn automation_grant_revoke(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path((id, grant_id)): Path<(String, String)>,
     Json(input): Json<AutomationGrantRevokeInput>,
@@ -601,16 +845,44 @@ pub(super) async fn automation_grant_revoke(
     premium_governance_required(&state)?;
     let revoked_by = resolve_governance_actor(&headers, &tenant_context, &request_principal);
     if revoked_by.kind != GovernanceActorKind::Human {
-        return Err((
+        return Err(governance_route_error(
             StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "Only humans can revoke modify grants",
-                "code": "AUTOMATION_GOVERNANCE_GRANT_FORBIDDEN",
-            })),
+            "Only humans can revoke modify grants",
+            "AUTOMATION_GOVERNANCE_GRANT_FORBIDDEN",
         ));
     }
+    if !governance_mutation_admin_allowed(&tenant_context, verified.as_deref()) {
+        return Err(governance_route_error(
+            StatusCode::FORBIDDEN,
+            "Modify grant revocation requires tenant governance administration authority",
+            "AUTOMATION_GOVERNANCE_GRANT_FORBIDDEN",
+        ));
+    }
+    require_active_automation_owner(&state, &id, &tenant_context).await?;
+    let mutation = state.can_mutate_automation(&id, &revoked_by, true).await;
+    enforce_mutation_or_audit(&state, &tenant_context, &id, &revoked_by, mutation).await?;
+    require_independent_mutation_approval(
+        &state,
+        &tenant_context,
+        &revoked_by,
+        &id,
+        input.approval_id.as_deref(),
+        "revoke_modify_access",
+        &[
+            GovernanceApprovalRequestType::CapabilityRequest,
+            GovernanceApprovalRequestType::ElevatedCapability,
+            GovernanceApprovalRequestType::LifecycleReview,
+        ],
+    )
+    .await?;
     let Some(grant) = state
-        .revoke_automation_modify_access(&id, &grant_id, revoked_by.clone(), input.reason)
+        .revoke_automation_modify_access(
+            &id,
+            &grant_id,
+            revoked_by.clone(),
+            input.reason,
+            &tenant_context,
+        )
         .await
         .map_err(|error| {
             (
@@ -646,6 +918,7 @@ pub(super) async fn automation_grant_revoke(
                 "grant": automation_grant_wire(&grant),
                 "revokedBy": revoked_by,
             }),
+            &tenant_context,
         )
         .await
         .map_err(|error| {
@@ -666,22 +939,55 @@ pub(super) async fn automation_restore(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     premium_governance_required(&state)?;
     let actor = resolve_governance_actor(&headers, &tenant_context, &request_principal);
     if actor.kind != GovernanceActorKind::Human {
-        return Err((
+        return Err(governance_route_error(
             StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "Only humans can restore deleted automations",
-                "code": "AUTOMATION_GOVERNANCE_RESTORE_FORBIDDEN",
-            })),
+            "Only humans can restore deleted automations",
+            "AUTOMATION_GOVERNANCE_RESTORE_FORBIDDEN",
         ));
     }
+    if !governance_mutation_admin_allowed(&tenant_context, verified.as_deref()) {
+        return Err(governance_route_error(
+            StatusCode::FORBIDDEN,
+            "Automation restore requires tenant governance administration authority",
+            "AUTOMATION_GOVERNANCE_RESTORE_FORBIDDEN",
+        ));
+    }
+    let deleted = state
+        .get_deleted_automation_v2(&id)
+        .await
+        .filter(|automation| super::tenant_matches(&tenant_context, &automation.tenant_context()))
+        .ok_or_else(|| {
+            governance_route_error(
+                StatusCode::NOT_FOUND,
+                "Deleted automation not found",
+                "AUTOMATION_GOVERNANCE_RESTORE_NOT_FOUND",
+            )
+        })?;
+    let mutation = state.can_mutate_automation(&id, &actor, true).await;
+    enforce_mutation_or_audit(&state, &tenant_context, &id, &actor, mutation).await?;
+    let approval_id = approval_id_from_headers(&headers);
+    require_independent_mutation_approval(
+        &state,
+        &tenant_context,
+        &actor,
+        &id,
+        approval_id,
+        "restore_automation",
+        &[
+            GovernanceApprovalRequestType::RetirementAction,
+            GovernanceApprovalRequestType::LifecycleReview,
+        ],
+    )
+    .await?;
     let Some(restored) = state
-        .restore_deleted_automation_v2(&id)
+        .restore_deleted_automation_v2(&id, actor, approval_id.map(str::to_string), &tenant_context)
         .await
         .map_err(|error| {
             (
@@ -702,6 +1008,7 @@ pub(super) async fn automation_restore(
             })),
         ));
     };
+    debug_assert_eq!(deleted.automation_id, restored.automation_id);
     Ok(Json(json!({
         "automation": restored,
     })))
@@ -711,6 +1018,7 @@ pub(super) async fn automation_retire(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<AutomationRetireInput>,
@@ -718,16 +1026,37 @@ pub(super) async fn automation_retire(
     premium_governance_required(&state)?;
     let actor = resolve_governance_actor(&headers, &tenant_context, &request_principal);
     if actor.kind != GovernanceActorKind::Human {
-        return Err((
+        return Err(governance_route_error(
             StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "Only humans can retire automations",
-                "code": "AUTOMATION_GOVERNANCE_RETIRE_FORBIDDEN",
-            })),
+            "Only humans can retire automations",
+            "AUTOMATION_GOVERNANCE_RETIRE_FORBIDDEN",
         ));
     }
+    if !governance_mutation_admin_allowed(&tenant_context, verified.as_deref()) {
+        return Err(governance_route_error(
+            StatusCode::FORBIDDEN,
+            "Automation retirement requires tenant governance administration authority",
+            "AUTOMATION_GOVERNANCE_RETIRE_FORBIDDEN",
+        ));
+    }
+    require_active_automation_owner(&state, &id, &tenant_context).await?;
+    let mutation = state.can_mutate_automation(&id, &actor, true).await;
+    enforce_mutation_or_audit(&state, &tenant_context, &id, &actor, mutation).await?;
+    require_independent_mutation_approval(
+        &state,
+        &tenant_context,
+        &actor,
+        &id,
+        input.approval_id.as_deref(),
+        "retire_automation",
+        &[
+            GovernanceApprovalRequestType::RetirementAction,
+            GovernanceApprovalRequestType::LifecycleReview,
+        ],
+    )
+    .await?;
     let Some(automation) = state
-        .retire_automation_v2(&id, actor, input.reason)
+        .retire_automation_v2(&id, actor, input.reason, input.approval_id, &tenant_context)
         .await
         .map_err(|error| {
             (
@@ -757,6 +1086,7 @@ pub(super) async fn automation_extend(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<AutomationExtendInput>,
@@ -764,16 +1094,44 @@ pub(super) async fn automation_extend(
     premium_governance_required(&state)?;
     let actor = resolve_governance_actor(&headers, &tenant_context, &request_principal);
     if actor.kind != GovernanceActorKind::Human {
-        return Err((
+        return Err(governance_route_error(
             StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "Only humans can extend automation retirement",
-                "code": "AUTOMATION_GOVERNANCE_EXTEND_FORBIDDEN",
-            })),
+            "Only humans can extend automation retirement",
+            "AUTOMATION_GOVERNANCE_EXTEND_FORBIDDEN",
         ));
     }
+    if !governance_mutation_admin_allowed(&tenant_context, verified.as_deref()) {
+        return Err(governance_route_error(
+            StatusCode::FORBIDDEN,
+            "Automation retirement extension requires tenant governance administration authority",
+            "AUTOMATION_GOVERNANCE_EXTEND_FORBIDDEN",
+        ));
+    }
+    require_active_automation_owner(&state, &id, &tenant_context).await?;
+    let mutation = state.can_mutate_automation(&id, &actor, false).await;
+    enforce_mutation_or_audit(&state, &tenant_context, &id, &actor, mutation).await?;
+    require_independent_mutation_approval(
+        &state,
+        &tenant_context,
+        &actor,
+        &id,
+        input.approval_id.as_deref(),
+        "extend_automation_retirement",
+        &[
+            GovernanceApprovalRequestType::RetirementAction,
+            GovernanceApprovalRequestType::LifecycleReview,
+        ],
+    )
+    .await?;
     let Some(automation) = state
-        .extend_automation_v2_retirement(&id, actor, input.expires_at_ms, input.reason)
+        .extend_automation_v2_retirement(
+            &id,
+            actor,
+            input.expires_at_ms,
+            input.reason,
+            input.approval_id,
+            &tenant_context,
+        )
         .await
         .map_err(|error| {
             (

@@ -3,6 +3,7 @@
 
 use anyhow::Context;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tandem_types::{EngineEvent, MessagePartInput, SendMessageRequest, Session, TenantContext};
 use tandem_workflows::{
@@ -12,6 +13,8 @@ use tandem_workflows::{
 use uuid::Uuid;
 
 use crate::{now_ms, AppState, WorkflowSourceRef};
+
+const WORKFLOW_GATE_TTL_MS: u64 = 15 * 60 * 1000;
 
 #[derive(Debug, Clone)]
 struct PreparedWorkflowAction {
@@ -953,6 +956,28 @@ pub async fn resume_workflow_run(
             })
             .collect()
     };
+    if let Some(decision) = run.gate_history.last() {
+        let current_action = actions
+            .iter()
+            .find(|action| action.action_id == decision.action_id)
+            .with_context(|| {
+                format!(
+                    "workflow gate action `{}` no longer exists in the current definition",
+                    decision.action_id
+                )
+            })?;
+        let current_digest = workflow_gate_action_digest(
+            &run.run_id,
+            &run.workflow_id,
+            &current_action.action_id,
+            &actions,
+        );
+        anyhow::ensure!(
+            (!decision.action_digest.is_empty() && decision.action_digest == current_digest)
+                || (decision.action_digest.is_empty() && run.tenant_context.is_local_implicit()),
+            "workflow definition changed after approval; refusing to resume run `{run_id}`"
+        );
+    }
     let automation_id = run
         .automation_id
         .clone()
@@ -981,12 +1006,94 @@ pub async fn resume_workflow_run(
     .await
 }
 
+pub(crate) fn workflow_gate_action_digest(
+    run_id: &str,
+    workflow_id: &str,
+    action_id: &str,
+    actions: &[PreparedWorkflowAction],
+) -> String {
+    let execution_plan = actions
+        .iter()
+        .map(|action| {
+            json!({
+                "actionID": action.action_id,
+                "action": action.spec.action,
+                "with": action.spec.with,
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = json!({
+        "runID": run_id,
+        "workflowID": workflow_id,
+        "actionID": action_id,
+        "executionPlan": execution_plan,
+    });
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&payload).unwrap_or_default())
+    )
+}
+
+pub(crate) async fn current_workflow_gate_action_digest(
+    state: &AppState,
+    run: &WorkflowRunRecord,
+    action_id: &str,
+) -> anyhow::Result<String> {
+    let actions = if let Some(binding_id) = &run.binding_id {
+        let hook = state
+            .list_workflow_hooks(Some(&run.workflow_id))
+            .await
+            .into_iter()
+            .find(|hook| &hook.binding_id == binding_id)
+            .with_context(|| format!("workflow hook binding `{binding_id}` not found"))?;
+        hook.actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| PreparedWorkflowAction {
+                action_id: format!("action_{}", index + 1),
+                spec: action.clone(),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let workflow = state
+            .get_workflow(&run.workflow_id)
+            .await
+            .with_context(|| format!("unknown workflow `{}`", run.workflow_id))?;
+        workflow
+            .steps
+            .iter()
+            .map(|step| PreparedWorkflowAction {
+                action_id: step.step_id.clone(),
+                spec: WorkflowActionSpec {
+                    action: step.action.clone(),
+                    with: step.with.clone(),
+                },
+            })
+            .collect::<Vec<_>>()
+    };
+    anyhow::ensure!(
+        actions.iter().any(|action| action.action_id == action_id),
+        "workflow gate action `{action_id}` not found"
+    );
+    Ok(workflow_gate_action_digest(
+        &run.run_id,
+        &run.workflow_id,
+        action_id,
+        &actions,
+    ))
+}
+
 /// Build the pending-gate record for an `approval:gate` action from its
 /// `with:` config (title/instructions/decisions/rework_targets).
 fn workflow_pending_gate_from_spec(
+    run_id: &str,
+    workflow_id: &str,
+    requested_by: Option<&str>,
     action_id: &str,
-    with: Option<&Value>,
+    spec: &WorkflowActionSpec,
+    actions: &[PreparedWorkflowAction],
 ) -> tandem_workflows::WorkflowPendingGate {
+    let with = spec.with.as_ref();
     let str_list = |key: &str| -> Vec<String> {
         with.and_then(|value| value.get(key))
             .and_then(Value::as_array)
@@ -1025,6 +1132,10 @@ fn workflow_pending_gate_from_spec(
         decisions,
         rework_targets,
         requested_at_ms: now_ms(),
+        requested_by: requested_by.map(str::to_string),
+        expires_at_ms: now_ms().saturating_add(WORKFLOW_GATE_TTL_MS),
+        action_digest: workflow_gate_action_digest(run_id, workflow_id, action_id, actions),
+        nonce: Uuid::new_v4().to_string(),
     }
 }
 
@@ -1065,8 +1176,12 @@ pub(crate) async fn drive_workflow_actions(
             ParsedWorkflowAction::ApprovalGate
         ) {
             let gate = workflow_pending_gate_from_spec(
+                &run.run_id,
+                &run.workflow_id,
+                run.tenant_context.actor_id.as_deref(),
                 &action_spec.action_id,
-                action_spec.spec.with.as_ref(),
+                &action_spec.spec,
+                actions,
             );
             action_row.status = WorkflowActionRunStatus::Pending;
             action_row.detail = Some("awaiting human approval".to_string());

@@ -332,6 +332,7 @@ impl AppState {
             oauth: crate::app::state::OAuthState::new(),
             workflows: Arc::new(RwLock::new(WorkflowRegistry::default())),
             workflow_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            workflow_runs_persistence: Arc::new(tokio::sync::Mutex::new(())),
             workflow_hook_overrides: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_dispatch_seen: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_session_policies: Arc::new(RwLock::new(std::collections::HashMap::new())),

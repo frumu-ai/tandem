@@ -98,7 +98,7 @@ async fn approve_capability_request(app: &axum::Router, agent_id: &str, capabili
         .method("POST")
         .uri(format!("/governance/approvals/{approval_id}/approve"))
         .header("content-type", "application/json")
-        .header("x-tandem-actor-id", "governance-operator")
+        .header("x-tandem-actor-id", "governance-reviewer")
         .body(Body::from(
             json!({ "notes": "approved for test" }).to_string(),
         ))
@@ -124,7 +124,7 @@ async fn approve_quota_override_request(app: &axum::Router, approval_id: &str) {
         .method("POST")
         .uri(format!("/governance/approvals/{approval_id}/approve"))
         .header("content-type", "application/json")
-        .header("x-tandem-actor-id", "governance-operator")
+        .header("x-tandem-actor-id", "governance-reviewer")
         .body(Body::from(
             json!({ "notes": "approved for spend-cap test" }).to_string(),
         ))
@@ -150,7 +150,7 @@ async fn approve_approval_request(app: &axum::Router, approval_id: &str, notes: 
         .method("POST")
         .uri(format!("/governance/approvals/{approval_id}/approve"))
         .header("content-type", "application/json")
-        .header("x-tandem-actor-id", "governance-operator")
+        .header("x-tandem-actor-id", "governance-reviewer")
         .body(Body::from(json!({ "notes": notes }).to_string()))
         .expect("approval decision request");
     let approve_resp = (*app)

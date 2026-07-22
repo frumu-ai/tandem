@@ -101,15 +101,20 @@ pub(crate) fn memory_egress_context(
         .get()
         .map(|runtime| runtime.permissions.clone());
     let approval_session_id = session_id.map(str::to_string);
+    let approval_tenant_context = tenant_context
+        .cloned()
+        .unwrap_or_else(TenantContext::local_implicit);
     let approval_handler: MemoryProviderEgressApprovalHandler = Arc::new(move |event| {
         let permissions = permissions.clone();
         let session_id = approval_session_id.clone();
+        let tenant_context = approval_tenant_context.clone();
         Box::pin(async move {
             let permissions = permissions.ok_or_else(|| {
                 "DATA_BOUNDARY_APPROVAL_UNAVAILABLE: memory runtime is not initialized".to_string()
             })?;
             let pending = permissions
-                .ask_for_session(
+                .ask_for_session_for_tenant(
+                    &tenant_context,
                     session_id.as_deref(),
                     "data_boundary_egress",
                     serde_json::json!({
@@ -183,6 +188,9 @@ pub(crate) async fn prepare_chat_messages(
     model_id: Option<&str>,
     messages: &[ChatMessage],
 ) -> Result<PreparedChatDispatch, String> {
+    let approval_tenant_context = tenant_context
+        .cloned()
+        .unwrap_or_else(TenantContext::local_implicit);
     let authority = authority_for_dispatch(
         tenant_context,
         verified_tenant_context,
@@ -243,7 +251,12 @@ pub(crate) async fn prepare_chat_messages(
                     )
                 })?;
             let pending = permissions
-                .ask_for_session(Some(session_id), "data_boundary_egress", evidence)
+                .ask_for_session_for_tenant(
+                    &approval_tenant_context,
+                    Some(session_id),
+                    "data_boundary_egress",
+                    evidence,
+                )
                 .await;
             let (reply, timed_out) =
                 wait_for_provider_egress_reply(&permissions, &pending.id).await;

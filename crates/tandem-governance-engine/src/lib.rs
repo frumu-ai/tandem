@@ -30,6 +30,7 @@ impl DefaultGovernanceEngine {
     ) -> AutomationGovernanceRecord {
         AutomationGovernanceRecord {
             automation_id,
+            tenant_context: None,
             provenance,
             declared_capabilities,
             modify_grants: Vec::new(),
@@ -322,22 +323,17 @@ impl GovernancePolicyEngine for DefaultGovernanceEngine {
         if existing.status != GovernanceApprovalStatus::Pending {
             return Ok(existing.clone());
         }
-        // GOV-B4: an agent-filed request may never be reviewed by that same agent
-        // identity. Authoritative guard at the governance layer, independent of the
-        // HTTP surface, so no caller path can self-approve an escalation it raised.
-        // (Human operators legitimately file requests on an agent's behalf and
-        // approve them, so the guard is scoped to agent-filed requests.)
-        if existing.requested_by.kind == GovernanceActorKind::Agent {
-            if let (Some(reviewer_id), Some(requester_id)) = (
-                reviewer.actor_id.as_deref().map(str::trim),
-                existing.requested_by.actor_id.as_deref().map(str::trim),
-            ) {
-                if !reviewer_id.is_empty() && reviewer_id.eq_ignore_ascii_case(requester_id) {
-                    return Err(GovernanceError::forbidden(
-                        "GOVERNANCE_APPROVAL_SELF_REVIEW",
-                        "An agent-filed approval request may not be reviewed by the same agent",
-                    ));
-                }
+        // GOV-B4: the same identified human or agent may never review a request
+        // it filed. This authoritative guard is independent of the HTTP surface.
+        if let (Some(reviewer_id), Some(requester_id)) = (
+            reviewer.actor_id.as_deref().map(str::trim),
+            existing.requested_by.actor_id.as_deref().map(str::trim),
+        ) {
+            if !reviewer_id.is_empty() && reviewer_id.eq_ignore_ascii_case(requester_id) {
+                return Err(GovernanceError::forbidden(
+                    "GOVERNANCE_APPROVAL_SELF_REVIEW",
+                    "A governance request may not be reviewed by its requester",
+                ));
             }
         }
         let mut next = existing.clone();

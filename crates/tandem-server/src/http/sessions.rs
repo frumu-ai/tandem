@@ -190,6 +190,37 @@ fn request_is_text_only(req: &SendMessageRequest) -> bool {
         .all(|part| matches!(part, MessagePartInput::Text { .. }))
 }
 
+fn session_permission_rules_allowed(
+    tenant_context: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+) -> bool {
+    if tenant_context.is_local_implicit() {
+        return true;
+    }
+    let Some(verified) = verified else {
+        return false;
+    };
+    if crate::now_ms() >= verified.expires_at_ms
+        || !super::tenant_matches(tenant_context, &verified.tenant_context)
+    {
+        return false;
+    }
+    verified
+        .roles
+        .iter()
+        .any(|role| matches!(role.as_str(), "owner" | "admin"))
+        || verified.capabilities.iter().any(|capability| {
+            matches!(capability.as_str(), "permission.admin" | "governance.admin")
+        })
+        || verified
+            .strict_projection
+            .as_ref()
+            .is_some_and(|strict| strict.has_permission(tandem_types::AccessPermission::Admin))
+}
+
+fn permission_rules_requested(rules: &Option<Vec<serde_json::Value>>) -> bool {
+    rules.as_ref().is_some_and(|rules| !rules.is_empty())
+}
 pub(super) async fn create_session(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
@@ -197,6 +228,15 @@ pub(super) async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<WireSession>, HttpError> {
     let requested_permission_rules = req.permission.clone();
+    if permission_rules_requested(&requested_permission_rules)
+        && !session_permission_rules_allowed(&tenant_context, verified_tenant_context.as_deref())
+    {
+        return Err(http_error(
+            StatusCode::FORBIDDEN,
+            "hosted session permission rules require tenant policy administration authority",
+            ErrorCode::TenantContextDenied,
+        ));
+    }
     let mut session = Session::new(req.title, req.directory);
     session.tenant_context = tenant_context.clone();
     session.verified_tenant_context = verified_tenant_context.map(|Extension(verified)| verified);
@@ -242,7 +282,7 @@ pub(super) async fn create_session(
             tracing::error!(error = %error, session_id = %session.id, "failed to save created session");
             persistence_error(format!("Failed to save session: {error}"))
         })?;
-    apply_session_permission_rules(&state, requested_permission_rules).await;
+    apply_session_permission_rules(&state, &tenant_context, requested_permission_rules).await;
     publish_tenant_event(
         &state,
         &session.tenant_context,
@@ -254,6 +294,7 @@ pub(super) async fn create_session(
 
 pub(super) async fn apply_session_permission_rules(
     state: &AppState,
+    tenant_context: &TenantContext,
     rules: Option<Vec<serde_json::Value>>,
 ) {
     let Some(rules) = rules else {
@@ -265,7 +306,7 @@ pub(super) async fn apply_session_permission_rules(
         };
         let _ = state
             .permissions
-            .add_rule(permission, pattern, action)
+            .add_rule_for_tenant(tenant_context, permission, pattern, action)
             .await;
     }
 }
@@ -1643,9 +1684,15 @@ pub(super) async fn session_status_handler(
 pub(super) async fn update_session(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
     Json(input): Json<UpdateSessionInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    if permission_rules_requested(&input.permission)
+        && !session_permission_rules_allowed(&tenant_context, verified_tenant_context.as_deref())
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let mut session = state
         .storage
         .get_session(&id)
@@ -1655,7 +1702,7 @@ pub(super) async fn update_session(
     if let Some(title) = input.title {
         session.title = title;
     }
-    apply_session_permission_rules(&state, input.permission).await;
+    apply_session_permission_rules(&state, &tenant_context, input.permission).await;
     session.time.updated = chrono::Utc::now();
     state
         .storage
