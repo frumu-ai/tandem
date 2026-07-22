@@ -1468,6 +1468,12 @@ impl AppState {
                 )
                 .map_err(|error| anyhow::anyhow!(error.message))?;
             bind_governance_record_to_tenant(&mut evaluation.record, tenant_context)?;
+            // Dependency revocation is an admission-closing event. Keep these
+            // gates explicit even if an engine implementation changes how it
+            // represents the accompanying review.
+            evaluation.record.creation_paused = true;
+            evaluation.record.paused_for_lifecycle = true;
+            evaluation.record.review_required = true;
             if let Some(approval) = evaluation.approval_request.as_mut() {
                 match approval.tenant_context.as_ref() {
                     Some(owner) if !governance_tenant_matches(owner, tenant_context) => {
@@ -1484,7 +1490,6 @@ impl AppState {
                 .as_ref()
                 .map(|approval| approval.approval_id.clone())
                 .or_else(|| evaluation.record.review_request_id.clone());
-            let previous = guard.clone();
             guard
                 .records
                 .insert(automation_id.to_string(), evaluation.record.clone());
@@ -1495,8 +1500,13 @@ impl AppState {
             }
             guard.updated_at_ms = now;
             if let Err(error) = self.persist_automation_governance_snapshot(&guard).await {
-                *guard = previous;
-                return Err(error);
+                // Do not restore an admissible in-memory record after the
+                // existing runs have already been paused. Storage may be
+                // temporarily unavailable, but admission must remain closed
+                // until this fail-closed state can be retried and persisted.
+                return Err(error.context(
+                    "dependency revocation persistence failed; admission remains paused in memory",
+                ));
             }
             (
                 evaluation,
@@ -1547,17 +1557,27 @@ impl AppState {
         reason: String,
         stop_kind: crate::AutomationStopKind,
     ) -> Vec<String> {
-        let runs = self.list_automation_v2_runs(Some(automation_id), 100).await;
+        // Nonterminal runs live in the hot map and are claimable from there.
+        // Scan the complete map rather than the public history API, whose
+        // bounded result would leave older queued work runnable.
+        let runs = self
+            .automation_v2_runs
+            .read()
+            .await
+            .values()
+            .filter(|run| run.automation_id == automation_id)
+            .filter(|run| {
+                matches!(
+                    run.status,
+                    crate::AutomationRunStatus::Queued
+                        | crate::AutomationRunStatus::Running
+                        | crate::AutomationRunStatus::Pausing
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let mut paused_runs = Vec::new();
         for run in runs {
-            if !matches!(
-                run.status,
-                crate::AutomationRunStatus::Queued
-                    | crate::AutomationRunStatus::Running
-                    | crate::AutomationRunStatus::Pausing
-            ) {
-                continue;
-            }
             let session_ids = run.active_session_ids.clone();
             let instance_ids = run.active_instance_ids.clone();
             let _ = self
