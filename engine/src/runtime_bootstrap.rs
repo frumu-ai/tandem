@@ -278,7 +278,7 @@ pub(super) async fn browser_install_result(
     let config_path = override_config_path.unwrap_or_else(|| state_dir.join("config.json"));
     let config = ConfigStore::new(config_path, None).await?;
     let app_config = config.get().await;
-    install_browser_sidecar(&app_config.browser).await
+    install_browser_sidecar(&app_config.browser, || Ok(())).await
 }
 
 async fn apply_default_permission_rules(permissions: &PermissionManager) {
