@@ -145,16 +145,17 @@ fn display_agent_id(agent_id: &str, scoped_to_raw: &HashMap<String, String>) -> 
 }
 
 /// CT-09: decide whether an approval receipt is actionable by / visible to a caller.
-/// The complete hosted tenant identity includes deployment; an unbound receipt belongs
-/// only to the local-implicit tenant used by standalone deployments.
+/// The complete hosted tenant identity includes deployment. An unbound receipt is
+/// compared to the local tuple so an identified standalone owner remains compatible.
 pub(super) fn approval_receipt_matches_tenant(
     approval: &GovernanceApprovalRequest,
     caller: &tandem_types::TenantContext,
 ) -> bool {
-    let Some(owner) = approval.tenant_context.as_ref() else {
-        return caller.is_local_implicit();
-    };
-    governance_tenant_matches(owner, caller)
+    let local = tandem_types::TenantContext::local_implicit();
+    let owner = approval.tenant_context.as_ref().unwrap_or(&local);
+    owner.org_id == caller.org_id
+        && owner.workspace_id == caller.workspace_id
+        && owner.deployment_id == caller.deployment_id
 }
 
 #[derive(Default)]
