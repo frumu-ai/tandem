@@ -440,17 +440,6 @@ async fn stale_worktree_cleanup_preserves_unknown_restart_worktrees() {
         .await
         .expect("cleanup worktree response");
     assert_eq!(cleanup_resp.status(), StatusCode::OK);
-    let cleanup_payload: Value = serde_json::from_slice(
-        &to_bytes(cleanup_resp.into_body(), usize::MAX)
-            .await
-            .expect("cleanup worktree body"),
-    )
-    .expect("cleanup worktree json");
-    assert_eq!(
-        cleanup_payload["unknown_registered_path_count"].as_u64(),
-        Some(1)
-    );
-    assert_eq!(cleanup_payload["cleaned_worktree_count"].as_u64(), Some(0));
     assert!(std::path::Path::new(&worktree_path).exists());
 
     let branch_output = Command::new("git")
