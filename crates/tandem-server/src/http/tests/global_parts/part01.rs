@@ -447,17 +447,10 @@ async fn stale_worktree_cleanup_preserves_unknown_restart_worktrees() {
     )
     .expect("cleanup worktree json");
     assert_eq!(
-        cleanup_payload
-            .get("unknown_registered_path_count")
-            .and_then(Value::as_u64),
+        cleanup_payload["unknown_registered_path_count"].as_u64(),
         Some(1)
     );
-    assert_eq!(
-        cleanup_payload
-            .get("cleaned_worktree_count")
-            .and_then(Value::as_u64),
-        Some(0)
-    );
+    assert_eq!(cleanup_payload["cleaned_worktree_count"].as_u64(), Some(0));
     assert!(std::path::Path::new(&worktree_path).exists());
 
     let branch_output = Command::new("git")
