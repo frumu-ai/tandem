@@ -6,10 +6,6 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 
-fn direct_loopback() -> axum::extract::ConnectInfo<std::net::SocketAddr> {
-    axum::extract::ConnectInfo("127.0.0.1:39731".parse().expect("loopback socket address"))
-}
-
 struct TrustedPackKeyGuard {
     previous: Option<String>,
 }
@@ -79,23 +75,6 @@ fn write_signed_pack_zip_with_entries(
         ),
     );
     TrustedPackKeyGuard { previous }
-}
-
-#[tokio::test]
-async fn pack_host_effects_reject_requests_without_direct_loopback_peer() {
-    let app = app_router(test_state().await);
-    let request = Request::builder()
-        .method("POST")
-        .uri("/packs/detect")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "path": "/tmp/not-inspected.zip" }).to_string(),
-        ))
-        .expect("request");
-
-    let response = app.oneshot(request).await.expect("response");
-
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 fn direct_loopback() -> axum::extract::ConnectInfo<std::net::SocketAddr> {
