@@ -36,6 +36,138 @@ async fn lifecycle_pause_blocks_run_creation_outside_tenant_quarantine() {
 
 #[cfg(feature = "premium-governance")]
 #[tokio::test]
+async fn dependency_revocation_supersedes_unrelated_lifecycle_review() {
+    let state = test_state().await;
+    let tenant = TenantContext::explicit(
+        "org-dependency-review",
+        "workspace-dependency-review",
+        Some("owner".to_string()),
+    );
+    let automation = super::global::create_test_automation_v2_for_tenant(
+        &state,
+        "auto-governance-dependency-review",
+        &tenant,
+    )
+    .await;
+    {
+        let mut governance = state.automation_governance.write().await;
+        let record = governance
+            .records
+            .get_mut(&automation.automation_id)
+            .expect("governance record");
+        record.review_required = true;
+        record.review_kind = Some(
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::HealthDrift,
+        );
+        record.paused_for_lifecycle = true;
+        record.review_requested_at_ms = Some(crate::now_ms());
+    }
+    let unrelated = state
+        .request_approval(
+            crate::automation_v2::governance::GovernanceApprovalRequestType::LifecycleReview,
+            crate::automation_v2::governance::GovernanceActorRef::system("health_review"),
+            crate::automation_v2::governance::GovernanceResourceRef {
+                resource_type: "automation".to_string(),
+                id: automation.automation_id.clone(),
+            },
+            "review health drift".to_string(),
+            json!({
+                "trigger": "health_drift",
+                "automationID": automation.automation_id,
+                "evidence": {"emptyOutputCount": 3}
+            }),
+            None,
+            &tenant,
+        )
+        .await
+        .expect("request unrelated lifecycle review");
+
+    state
+        .pause_automation_for_dependency_revocation(
+            &automation.automation_id,
+            "connected capability revoked".to_string(),
+            json!({"capability": "mcp:revoked", "server": "notion"}),
+            &tenant,
+        )
+        .await
+        .expect("pause for dependency revocation");
+
+    let superseded = state
+        .get_governance_approval_request(&unrelated.approval_id)
+        .await
+        .expect("superseded lifecycle review");
+    assert_eq!(
+        superseded.status,
+        crate::automation_v2::governance::GovernanceApprovalStatus::Expired
+    );
+    let record = state
+        .get_automation_governance(&automation.automation_id)
+        .await
+        .expect("dependency-paused governance record");
+    let dependency_review_id = record
+        .review_request_id
+        .clone()
+        .expect("dependency-specific review id");
+    assert_ne!(dependency_review_id, unrelated.approval_id);
+    assert_eq!(
+        record.review_kind,
+        Some(
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::DependencyRevoked
+        )
+    );
+    let dependency_review = state
+        .get_governance_approval_request(&dependency_review_id)
+        .await
+        .expect("dependency-specific approval");
+    assert_eq!(
+        dependency_review.status,
+        crate::automation_v2::governance::GovernanceApprovalStatus::Pending
+    );
+    assert_eq!(
+        dependency_review
+            .context
+            .get("trigger")
+            .and_then(Value::as_str),
+        Some("dependency_revoked")
+    );
+    assert_eq!(
+        dependency_review
+            .context
+            .pointer("/evidence/evidence/capability"),
+        Some(&json!("mcp:revoked"))
+    );
+
+    let old_retry = state
+        .decide_approval_request(
+            &unrelated.approval_id,
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("reviewer".to_string()),
+                "dependency_review_test",
+            ),
+            true,
+            Some("attempt to approve superseded review".to_string()),
+            &tenant,
+        )
+        .await
+        .expect("superseded receipt remains idempotent")
+        .expect("superseded approval remains addressable");
+    assert_eq!(
+        old_retry.status,
+        crate::automation_v2::governance::GovernanceApprovalStatus::Expired
+    );
+    let after_old_retry = state
+        .get_automation_governance(&automation.automation_id)
+        .await
+        .expect("dependency review remains active");
+    assert!(after_old_retry.review_required);
+    assert_eq!(
+        after_old_retry.review_request_id.as_deref(),
+        Some(dependency_review_id.as_str())
+    );
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
 async fn dependency_revocation_writer_serializes_with_queued_run_claim() {
     let state = test_state().await;
     let tenant = TenantContext::explicit(
@@ -415,6 +547,19 @@ async fn dependency_revocation_failure_allows_only_exact_route_retry() {
     assert_eq!(
         response_json(retried).await["grant"]["grant_id"].as_str(),
         Some(grant.grant_id.as_str())
+    );
+    state
+        .load_automation_v2_runs()
+        .await
+        .expect("reload run snapshot persisted by exact retry");
+    assert_eq!(
+        state
+            .get_automation_v2_run(&queued.run_id)
+            .await
+            .expect("reloaded governance-paused run")
+            .status,
+        crate::AutomationRunStatus::Paused,
+        "exact retry must replace the stale pre-revocation queued snapshot"
     );
     let consumed = state
         .get_governance_approval_request(&approval_id)

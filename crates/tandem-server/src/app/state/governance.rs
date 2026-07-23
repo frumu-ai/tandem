@@ -1442,6 +1442,48 @@ impl AppState {
             if !governance_record_owned_by(current_record, tenant_context) {
                 anyhow::bail!("automation governance record not found");
             }
+            let mut matching_dependency_review_id = None;
+            let mut superseded_review_ids = Vec::new();
+            for approval in guard.approvals.values() {
+                if approval.status != GovernanceApprovalStatus::Pending
+                    || approval.expires_at_ms <= now
+                    || approval.request_type != GovernanceApprovalRequestType::LifecycleReview
+                    || approval.target_resource.resource_type != "automation"
+                    || approval.target_resource.id != automation_id
+                    || !approval_receipt_matches_tenant(approval, tenant_context)
+                {
+                    continue;
+                }
+                let exact_dependency_review = approval.context.get("trigger")
+                    == Some(&Value::String("dependency_revoked".to_string()))
+                    && approval.context.get("reason") == Some(&Value::String(reason.clone()))
+                    && approval.context.pointer("/evidence/evidence") == Some(&evidence);
+                if exact_dependency_review && matching_dependency_review_id.is_none() {
+                    matching_dependency_review_id = Some(approval.approval_id.clone());
+                } else {
+                    superseded_review_ids.push(approval.approval_id.clone());
+                }
+            }
+            if !superseded_review_ids.is_empty() {
+                append_protected_audit_event(
+                    self,
+                    format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.superseded"),
+                    tenant_context,
+                    Some("automation_dependency_revocation".to_string()),
+                    json!({
+                        "automationID": automation_id,
+                        "supersededApprovalIDs": superseded_review_ids,
+                        "reason": "dependency_revocation_requires_exact_review",
+                    }),
+                )
+                .await?;
+                for approval_id in &superseded_review_ids {
+                    if let Some(approval) = guard.approvals.get_mut(approval_id) {
+                        approval.status = GovernanceApprovalStatus::Expired;
+                        approval.updated_at_ms = now;
+                    }
+                }
+            }
             // Close and persist admission before touching the run snapshot.
             // If the process exits or run persistence fails during the pause,
             // restart still reloads a governance record that cannot launch or
@@ -1455,6 +1497,7 @@ impl AppState {
             record.review_required = true;
             record.review_kind = Some(AutomationLifecycleReviewKind::DependencyRevoked);
             record.review_requested_at_ms = Some(now);
+            record.review_request_id = matching_dependency_review_id;
             record.updated_at_ms = now;
             guard.updated_at_ms = now;
             if let Err(error) = self.persist_automation_governance_snapshot(&guard).await {
@@ -1474,7 +1517,7 @@ impl AppState {
             let dependency_context = json!({
                 "trigger": "dependency_revoked",
                 "reason": reason.clone(),
-                "evidence": evidence,
+                "evidence": evidence.clone(),
                 "pausedRunIDs": paused_runs.clone(),
             });
             let snapshot = self.governance_snapshot(&guard);
@@ -1591,38 +1634,51 @@ impl AppState {
         // Mutate the complete map in one critical section rather than using the
         // bounded public history API. Persisting once per phase keeps the work
         // O(run count) instead of rewriting the full run history twice per row.
-        let (pausing_transitions, cancellations) = {
+        let (pausing_transitions, cancellations, previously_paused) = {
             let mut guard = self.automation_v2_runs.write().await;
             let mut transitions = Vec::new();
             let mut cancellations = Vec::new();
-            for run in guard.values_mut().filter(|run| {
-                run.automation_id == automation_id
-                    && matches!(
-                        run.status,
-                        crate::AutomationRunStatus::Queued
-                            | crate::AutomationRunStatus::Running
-                            | crate::AutomationRunStatus::Pausing
-                    )
-            }) {
-                let previous_status = run.status.clone();
-                let previous_gate = run.checkpoint.awaiting_gate.clone();
-                cancellations.push((
-                    run.run_id.clone(),
-                    run.active_session_ids.clone(),
-                    run.active_instance_ids.clone(),
-                ));
-                run.status = crate::AutomationRunStatus::Pausing;
-                run.pause_reason = Some(reason.clone());
-                run.scheduler = None;
-                run.execution_claim = None;
-                run.updated_at_ms = now_ms();
-                transitions.push((previous_status, previous_gate, run.clone()));
+            let mut previously_paused = Vec::new();
+            for run in guard
+                .values_mut()
+                .filter(|run| run.automation_id == automation_id)
+            {
+                if matches!(
+                    run.status,
+                    crate::AutomationRunStatus::Queued
+                        | crate::AutomationRunStatus::Running
+                        | crate::AutomationRunStatus::Pausing
+                ) {
+                    let previous_status = run.status.clone();
+                    let previous_gate = run.checkpoint.awaiting_gate.clone();
+                    cancellations.push((
+                        run.run_id.clone(),
+                        run.active_session_ids.clone(),
+                        run.active_instance_ids.clone(),
+                    ));
+                    run.status = crate::AutomationRunStatus::Pausing;
+                    run.pause_reason = Some(reason.clone());
+                    run.scheduler = None;
+                    run.execution_claim = None;
+                    run.updated_at_ms = now_ms();
+                    transitions.push((previous_status, previous_gate, run.clone()));
+                } else if run.status == crate::AutomationRunStatus::Paused
+                    && run.pause_reason.as_deref() == Some(reason.as_str())
+                    && run.stop_kind.as_ref() == Some(&stop_kind)
+                {
+                    previously_paused.push(run.run_id.clone());
+                }
             }
-            (transitions, cancellations)
+            (transitions, cancellations, previously_paused)
         };
 
         if cancellations.is_empty() {
-            return Ok(Vec::new());
+            if !previously_paused.is_empty() {
+                self.persist_automation_v2_runs()
+                    .await
+                    .context("failed to retry persistence for governance-paused automation runs")?;
+            }
+            return Ok(previously_paused);
         }
 
         // This first checkpoint is best-effort: even if storage is temporarily
@@ -1704,10 +1760,14 @@ impl AppState {
                 .await;
         }
 
-        Ok(cancellations
+        let mut paused_run_ids = cancellations
             .into_iter()
             .map(|(run_id, _, _)| run_id)
-            .collect())
+            .collect::<Vec<_>>();
+        paused_run_ids.extend(previously_paused);
+        paused_run_ids.sort();
+        paused_run_ids.dedup();
+        Ok(paused_run_ids)
     }
 
     pub async fn record_automation_review_progress(
