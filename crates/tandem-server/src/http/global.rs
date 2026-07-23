@@ -384,24 +384,28 @@ pub(super) async fn global_lease_release(
     Json(input): Json<EngineLeaseReleaseInput>,
 ) -> Result<Json<Value>, StatusCode> {
     prune_expired_leases(&state).await;
-    let lease_owned = state
-        .engine_leases
-        .read()
-        .await
+    // Worktree creation holds a lease read guard until its durable record has
+    // been inserted. Taking the write guard first therefore waits for every
+    // in-flight create and prevents a new one from starting while release
+    // decides whether cleanup is required.
+    let mut leases = state.engine_leases.write().await;
+    let lease_owned = leases
         .get(&input.lease_id)
         .is_some_and(|lease| lease.tenant_context == tenant);
-    if !lease_owned {
-        return Ok(Json(json!({
-            "ok": false,
-            "lease_count": state.engine_leases.read().await.len(),
-            "released_worktree_count": 0,
-            "released_worktree_failure_count": 0,
-        })));
-    }
     let has_managed_worktrees = state.managed_worktrees.read().await.values().any(|record| {
         record.lease_id.as_deref() == Some(input.lease_id.as_str())
             && record.tenant_context == tenant
     });
+    if !lease_owned && !has_managed_worktrees {
+        let lease_count = leases.len();
+        drop(leases);
+        return Ok(Json(json!({
+            "ok": false,
+            "lease_count": lease_count,
+            "released_worktree_count": 0,
+            "released_worktree_failure_count": 0,
+        })));
+    }
     let caller_authority = if has_managed_worktrees {
         Some(
             authorize_global_host_effect(
@@ -421,19 +425,14 @@ pub(super) async fn global_lease_release(
     } else {
         None
     };
-    let removed = {
-        let mut leases = state.engine_leases.write().await;
-        if leases
-            .get(&input.lease_id)
-            .is_some_and(|lease| lease.tenant_context == tenant)
-        {
-            leases.remove(&input.lease_id);
-            true
-        } else {
-            false
-        }
+    let removed = if lease_owned {
+        leases.remove(&input.lease_id);
+        true
+    } else {
+        false
     };
-    let cleanup = if removed {
+    drop(leases);
+    let cleanup = if has_managed_worktrees {
         cleanup_managed_worktrees_for_lease(
             &state,
             &input.lease_id,
@@ -447,9 +446,10 @@ pub(super) async fn global_lease_release(
     };
     let released_worktree_count = cleanup.cleaned_paths.len();
     let released_worktree_failure_count = cleanup.failures.len();
+    let ok = (removed || has_managed_worktrees) && released_worktree_failure_count == 0;
     let expose_host_details = verified.is_none() && tenant.is_local_implicit();
     Ok(Json(json!({
-        "ok": removed,
+        "ok": ok,
         "lease_count": state.engine_leases.read().await.len(),
         "released_worktree_count": released_worktree_count,
         "released_worktree_failure_count": released_worktree_failure_count,
