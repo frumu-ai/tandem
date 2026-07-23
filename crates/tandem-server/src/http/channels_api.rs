@@ -43,6 +43,24 @@ fn find_channel_spec(name: &str) -> Option<&'static ChannelSpec> {
     find_channel(&normalized)
 }
 
+fn channel_admin_audit_arguments(channel: &str, operation: &str, input: &Value) -> Value {
+    let mut fields = input
+        .as_object()
+        .map(|object| object.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    fields.sort();
+    json!({
+        "channel": channel,
+        "operation": operation,
+        "fields": fields,
+        "connectionCount": input
+            .get("connections")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0),
+    })
+}
+
 fn state_data_dir() -> PathBuf {
     std::env::var("TANDEM_STATE_DIR")
         .map(PathBuf::from)
@@ -648,7 +666,29 @@ async fn load_channel_scope_summaries(channel: &str) -> Vec<ChannelScopeSummary>
     group_channel_scope_summaries(channel, &session_map)
 }
 
-pub(super) async fn channels_config(State(state): State<AppState>) -> Json<Value> {
+pub(super) async fn channels_config(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Result<Json<Value>, StatusCode> {
+    let (grant, effect) = crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ChannelRead,
+        "deployment_channels",
+        tenant
+            .deployment_id
+            .as_deref()
+            .unwrap_or("local-deployment"),
+        json!({"operation": "read_config"}),
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(crate::http::host_authority::host_authorization_status)?;
     let effective = state.config.get_effective_value().await;
     let channels = effective.get("channels").and_then(Value::as_object);
     let mut entries = serde_json::Map::new();
@@ -658,26 +698,69 @@ pub(super) async fn channels_config(State(state): State<AppState>) -> Json<Value
             Value::Object(normalize_channel_config_obj(channels, spec)),
         );
     }
-    Json(Value::Object(entries))
+    Ok(Json(Value::Object(entries)))
 }
 
-pub(super) async fn channels_status(State(state): State<AppState>) -> Json<Value> {
-    Json(json!(state.channel_statuses().await))
+pub(super) async fn channels_status(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Result<Json<Value>, StatusCode> {
+    let (grant, effect) = crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ChannelRead,
+        "deployment_channels",
+        tenant
+            .deployment_id
+            .as_deref()
+            .unwrap_or("local-deployment"),
+        json!({"operation": "read_status"}),
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(crate::http::host_authority::host_authorization_status)?;
+    Ok(Json(json!(state.channel_statuses().await)))
 }
 
 pub(super) async fn channel_scopes_get(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(name): Path<String>,
 ) -> Result<Json<ChannelScopesResponse>, StatusCode> {
     let channel = name.trim().to_ascii_lowercase();
     if find_channel_spec(&channel).is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
+    let (grant, effect) = crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ChannelRead,
+        "channel",
+        channel.clone(),
+        json!({"operation": "read_scopes", "channel": channel}),
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(crate::http::host_authority::host_authorization_status)?;
     let scopes = load_channel_scope_summaries(&channel).await;
     Ok(Json(ChannelScopesResponse { channel, scopes }))
 }
 
 pub(super) async fn channels_verify(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(name): Path<String>,
     input: Option<Json<Value>>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -686,6 +769,20 @@ pub(super) async fn channels_verify(
         return Err(StatusCode::NOT_FOUND);
     };
     let payload = input.map(|Json(v)| v).unwrap_or_else(|| json!({}));
+    let (grant, effect) = crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ChannelVerify,
+        "channel",
+        normalized.clone(),
+        channel_admin_audit_arguments(&normalized, "verify", &payload),
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(crate::http::host_authority::host_authorization_status)?;
 
     match spec.name {
         "discord" => Ok(Json(discord_channel_verify(&state, &payload).await)),
@@ -712,6 +809,7 @@ async fn slack_channel_verify(state: &AppState) -> Value {
     }
 
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(10))
         .build();
     let client = match client {
@@ -896,6 +994,7 @@ async fn discord_channel_verify(state: &AppState, payload: &Value) -> Value {
     }
 
     let client = match reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(15))
         .build()
     {
@@ -1031,6 +1130,9 @@ async fn discord_channel_verify(state: &AppState, payload: &Value) -> Value {
 
 pub(super) async fn channels_put(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(name): Path<String>,
     Json(mut input): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -1038,6 +1140,33 @@ pub(super) async fn channels_put(
     let Some(spec) = find_channel_spec(&normalized) else {
         return Err(StatusCode::NOT_FOUND);
     };
+    if spec.name == "slack" {
+        let validate = |value: Option<&Value>| -> Result<(), StatusCode> {
+            let Some(raw) = value.and_then(Value::as_str) else {
+                return Ok(());
+            };
+            crate::config::channels::normalize_slack_api_base_url(Some(raw))
+                .map(|_| ())
+                .map_err(|_| StatusCode::BAD_REQUEST)
+        };
+        validate(input.get("api_base_url"))?;
+        if let Some(connections) = input.get("connections").and_then(Value::as_array) {
+            for connection in connections {
+                validate(connection.get("api_base_url"))?;
+            }
+        }
+    }
+    let (grant, effect) = crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ChannelConfigUpdate,
+        "channel",
+        normalized.clone(),
+        channel_admin_audit_arguments(&normalized, "update_config", &input),
+    )
+    .await?;
     let effective = state.config.get_effective_value().await;
     let statuses = state.channel_statuses().await;
     let existing_channel_cfg = |spec: &ChannelSpec| -> Option<&serde_json::Map<String, Value>> {
@@ -1093,6 +1222,7 @@ pub(super) async fn channels_put(
     let Some(channels_obj) = channels.as_object_mut() else {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };
+    let mut credential_ids_to_purge = HashSet::new();
     match spec.name {
         "telegram" => {
             if let Some(cfg) = input.as_object_mut() {
@@ -1222,6 +1352,10 @@ pub(super) async fn channels_put(
                     };
                     let identity_unchanged = installation(cfg) == installation(existing);
                     slack_identity_unchanged = identity_unchanged;
+                    if !identity_unchanged {
+                        credential_ids_to_purge
+                            .insert(tandem_core::slack_signing_secret_store_id(existing));
+                    }
                     if identity_unchanged && !cfg.contains_key("signing_secret") {
                         if let Some(value) = existing.get("signing_secret") {
                             cfg.insert("signing_secret".to_string(), value.clone());
@@ -1234,7 +1368,7 @@ pub(super) async fn channels_put(
                     // credentials — delivery would fail closed on binding
                     // checks while the save looked usable.
                     if !identity_unchanged && !bot_token_provided {
-                        cfg.remove("bot_token");
+                        cfg.insert("bot_token".to_string(), Value::String(String::new()));
                     }
                     if !cfg.contains_key("connections") {
                         if let Some(Value::Array(entries)) = existing.get("connections") {
@@ -1338,7 +1472,7 @@ pub(super) async fn channels_put(
                     for entry in previous_entries.iter().filter_map(Value::as_object) {
                         for id in tandem_core::slack_connection_secret_ids(previous_obj, entry) {
                             if !kept_ids.contains(&id) {
-                                let _ = tandem_core::delete_provider_auth(&id);
+                                credential_ids_to_purge.insert(id);
                             }
                         }
                     }
@@ -1348,11 +1482,17 @@ pub(super) async fn channels_put(
         }
         _ => return Err(StatusCode::NOT_FOUND),
     }
+    grant
+        .revalidate(&state, &effect)
+        .map_err(crate::http::host_authority::host_authorization_status)?;
     state
         .config
         .replace_project_value(project)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for secret_id in credential_ids_to_purge {
+        let _ = tandem_core::delete_provider_auth(&secret_id);
+    }
     state
         .restart_channel_listeners()
         .await
@@ -1362,20 +1502,26 @@ pub(super) async fn channels_put(
 
 pub(super) async fn channels_delete(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let Some(spec) = find_channel_spec(&name.to_ascii_lowercase()) else {
+    let normalized = name.to_ascii_lowercase();
+    let Some(spec) = find_channel_spec(&normalized) else {
         return Err(StatusCode::NOT_FOUND);
     };
-    if let Some(secret_id) = tandem_core::channel_secret_store_id(spec.name) {
-        let _ = tandem_core::delete_provider_auth(&secret_id);
-    }
-    if spec.name == "slack" {
-        // Deleting the channel revokes ALL its stored credentials — the
-        // top-level signing secret and every per-connection entry — so a
-        // later re-add cannot silently resurrect them from the keystore.
-        tandem_core::purge_slack_channel_secrets();
-    }
+    let (grant, effect) = crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ChannelConfigDelete,
+        "channel",
+        normalized,
+        json!({"channel": spec.name}),
+    )
+    .await?;
     let mut project = state.config.get_project_value().await;
     let Some(root) = project.as_object_mut() else {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -1387,11 +1533,22 @@ pub(super) async fn channels_delete(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };
     channels_obj.remove(spec.config_key);
+    grant
+        .revalidate(&state, &effect)
+        .map_err(crate::http::host_authority::host_authorization_status)?;
     state
         .config
         .replace_project_value(project)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(secret_id) = tandem_core::channel_secret_store_id(spec.name) {
+        let _ = tandem_core::delete_provider_auth(&secret_id);
+    }
+    if spec.name == "slack" {
+        // Delete credentials only after the config removal commits, so a
+        // failed config write cannot leave the old live config credentialless.
+        tandem_core::purge_slack_channel_secrets();
+    }
     state
         .restart_channel_listeners()
         .await
@@ -1401,7 +1558,27 @@ pub(super) async fn channels_delete(
 
 pub(super) async fn admin_reload_config(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
 ) -> Result<Json<Value>, StatusCode> {
+    let (grant, effect) = crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ChannelReload,
+        "deployment",
+        tenant
+            .deployment_id
+            .as_deref()
+            .unwrap_or("local-deployment"),
+        json!({"operation": "reload_config"}),
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(crate::http::host_authority::host_authorization_status)?;
     state
         .providers
         .reload(state.config.get().await.into())
@@ -1720,205 +1897,5 @@ pub(super) async fn channel_tool_preferences_put(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn public_demo_sanitizes_enabled_tools_and_mcp_servers() {
-        let prefs = ChannelToolPreferences {
-            enabled_tools: vec![
-                "websearch".to_string(),
-                WORKFLOW_PLANNER_PSEUDO_TOOL.to_string(),
-                "bash".to_string(),
-                "webfetch_html".to_string(),
-                "bash".to_string(),
-            ],
-            disabled_tools: vec![
-                "read".to_string(),
-                WORKFLOW_PLANNER_PSEUDO_TOOL.to_string(),
-                "read".to_string(),
-            ],
-            enabled_mcp_servers: vec!["github".to_string(), "slack".to_string()],
-            enabled_mcp_tools: vec![
-                "mcp.github.create_issue".to_string(),
-                "mcp.slack.post_message".to_string(),
-            ],
-        };
-
-        let sanitized = sanitize_tool_preferences_for_security_profile(
-            prefs,
-            tandem_channels::config::ChannelSecurityProfile::PublicDemo,
-        );
-
-        assert_eq!(
-            sanitized.enabled_tools,
-            vec!["websearch".to_string(), "webfetch_html".to_string()]
-        );
-        assert_eq!(sanitized.disabled_tools, vec!["read".to_string()]);
-        assert!(sanitized.enabled_mcp_servers.is_empty());
-        assert!(sanitized.enabled_mcp_tools.is_empty());
-    }
-
-    #[test]
-    fn operator_keeps_existing_tool_preferences() {
-        let prefs = ChannelToolPreferences {
-            enabled_tools: vec!["bash".to_string(), "bash".to_string()],
-            disabled_tools: vec!["read".to_string(), "".to_string()],
-            enabled_mcp_servers: vec!["github".to_string(), "github".to_string()],
-            enabled_mcp_tools: vec![
-                "mcp.github.create_issue".to_string(),
-                "mcp.github.create_issue".to_string(),
-            ],
-        };
-
-        let sanitized = sanitize_tool_preferences_for_security_profile(
-            prefs,
-            tandem_channels::config::ChannelSecurityProfile::Operator,
-        );
-
-        assert_eq!(sanitized.enabled_tools, vec!["bash".to_string()]);
-        assert_eq!(sanitized.disabled_tools, vec!["read".to_string()]);
-        assert_eq!(sanitized.enabled_mcp_servers, vec!["github".to_string()]);
-        assert_eq!(
-            sanitized.enabled_mcp_tools,
-            vec!["mcp.github.create_issue".to_string()]
-        );
-    }
-
-    #[test]
-    fn operator_drops_exact_mcp_tools_when_server_is_disabled() {
-        let prefs = ChannelToolPreferences {
-            enabled_tools: vec!["read".to_string()],
-            disabled_tools: Vec::new(),
-            enabled_mcp_servers: vec!["notion".to_string()],
-            enabled_mcp_tools: vec![
-                "mcp.github.create_issue".to_string(),
-                "mcp.notion.search".to_string(),
-            ],
-        };
-
-        let sanitized = sanitize_tool_preferences_for_security_profile(
-            prefs,
-            tandem_channels::config::ChannelSecurityProfile::Operator,
-        );
-
-        assert_eq!(sanitized.enabled_mcp_servers, vec!["notion".to_string()]);
-        assert_eq!(
-            sanitized.enabled_mcp_tools,
-            vec!["mcp.notion.search".to_string()]
-        );
-    }
-
-    #[test]
-    fn group_channel_scope_summaries_groups_by_scope_and_orders_by_recency() {
-        let mut map = HashMap::new();
-        map.insert(
-            "telegram:chat:123:alice".to_string(),
-            ChannelSessionRecord {
-                session_id: "s1".to_string(),
-                created_at_ms: 1,
-                last_seen_at_ms: 10,
-                channel: "telegram".to_string(),
-                sender: "alice".to_string(),
-                scope_id: Some("chat:123".to_string()),
-                scope_kind: Some("room".to_string()),
-                tool_preferences: None,
-                workflow_planner_session_id: None,
-            },
-        );
-        map.insert(
-            "telegram:chat:123:bob".to_string(),
-            ChannelSessionRecord {
-                session_id: "s2".to_string(),
-                created_at_ms: 2,
-                last_seen_at_ms: 30,
-                channel: "telegram".to_string(),
-                sender: "bob".to_string(),
-                scope_id: Some("chat:123".to_string()),
-                scope_kind: Some("room".to_string()),
-                tool_preferences: None,
-                workflow_planner_session_id: None,
-            },
-        );
-        map.insert(
-            "telegram:topic:1:2:carol".to_string(),
-            ChannelSessionRecord {
-                session_id: "s3".to_string(),
-                created_at_ms: 3,
-                last_seen_at_ms: 20,
-                channel: "telegram".to_string(),
-                sender: "carol".to_string(),
-                scope_id: Some("topic:1:2".to_string()),
-                scope_kind: Some("topic".to_string()),
-                tool_preferences: None,
-                workflow_planner_session_id: None,
-            },
-        );
-        map.insert(
-            "discord:channel:9:dave".to_string(),
-            ChannelSessionRecord {
-                session_id: "s4".to_string(),
-                created_at_ms: 4,
-                last_seen_at_ms: 40,
-                channel: "discord".to_string(),
-                sender: "dave".to_string(),
-                scope_id: Some("channel:9".to_string()),
-                scope_kind: Some("room".to_string()),
-                tool_preferences: None,
-                workflow_planner_session_id: None,
-            },
-        );
-
-        let scopes = group_channel_scope_summaries("telegram", &map);
-        assert_eq!(scopes.len(), 2);
-        assert_eq!(scopes[0].scope_id, "chat:123");
-        assert_eq!(scopes[0].session_count, 2);
-        assert_eq!(scopes[0].sender_count, 2);
-        assert_eq!(scopes[0].last_seen_at_ms, 30);
-        assert_eq!(scopes[1].scope_id, "topic:1:2");
-        assert_eq!(scopes[1].session_count, 1);
-        assert_eq!(scopes[1].sender_count, 1);
-    }
-
-    #[test]
-    fn merge_channel_tool_preferences_layers_scope_over_base() {
-        let base = ChannelToolPreferences {
-            enabled_tools: vec!["read".to_string(), "grep".to_string()],
-            disabled_tools: vec!["write".to_string()],
-            enabled_mcp_servers: vec!["github".to_string()],
-            enabled_mcp_tools: vec!["mcp.github.get_issue".to_string()],
-        };
-        let scoped = ChannelToolPreferences {
-            enabled_tools: vec!["search".to_string(), "read".to_string()],
-            disabled_tools: vec!["write".to_string(), "edit".to_string()],
-            enabled_mcp_servers: vec!["notion".to_string(), "github".to_string()],
-            enabled_mcp_tools: vec![
-                "mcp.github.create_issue".to_string(),
-                "mcp.notion.search_pages".to_string(),
-            ],
-        };
-
-        let merged = merge_channel_tool_preferences(base, scoped);
-
-        assert_eq!(
-            merged.enabled_tools,
-            vec!["read".to_string(), "grep".to_string(), "search".to_string()]
-        );
-        assert_eq!(
-            merged.disabled_tools,
-            vec!["write".to_string(), "edit".to_string()]
-        );
-        assert_eq!(
-            merged.enabled_mcp_servers,
-            vec!["github".to_string(), "notion".to_string()]
-        );
-        assert_eq!(
-            merged.enabled_mcp_tools,
-            vec![
-                "mcp.github.get_issue".to_string(),
-                "mcp.github.create_issue".to_string(),
-                "mcp.notion.search_pages".to_string()
-            ]
-        );
-    }
-}
+#[path = "channels_api_tests.rs"]
+mod tests;

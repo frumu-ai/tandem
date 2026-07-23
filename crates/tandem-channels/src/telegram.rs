@@ -739,6 +739,7 @@ impl TelegramChannel {
             mention_only: config.mention_only,
             style_profile: config.style_profile,
             client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(35))
                 .build()
                 .expect("failed to create reqwest client"),

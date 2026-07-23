@@ -91,6 +91,7 @@ pub mod mcp_catalog;
 pub mod mcp_catalog_generated;
 pub mod memory;
 pub mod optimization;
+pub mod outbound_http;
 pub mod pack_builder;
 pub mod pack_manager;
 pub mod preset_composer;

@@ -300,6 +300,7 @@ mod tests {
             .scope_tenant_provider_auth_with_recovery(
                 tenant,
                 recovery,
+                false,
                 registry.complete_for_provider(Some("openai-codex"), "request", None),
             )
             .await
@@ -347,6 +348,7 @@ mod tests {
             .scope_tenant_provider_auth_with_recovery(
                 tenant,
                 recovery,
+                false,
                 registry.complete_for_provider(Some("openai-codex"), "request", None),
             )
             .await
@@ -394,6 +396,29 @@ mod tests {
             normalize_base("http://localhost:8080/v1/v1"),
             "http://localhost:8080/v1"
         );
+    }
+
+    #[tokio::test]
+    async fn private_provider_target_requires_explicit_standalone_network_policy() {
+        let denied = PROVIDER_PRIVATE_ENDPOINTS_ALLOWED
+            .scope(
+                false,
+                resolve_provider_request_target("http://127.0.0.1:11434/v1", "ollama"),
+            )
+            .await;
+        let denied_error = match denied {
+            Ok(_) => panic!("private provider target must be denied by default"),
+            Err(error) => error,
+        };
+        assert!(denied_error.to_string().contains("https"));
+
+        let allowed = PROVIDER_PRIVATE_ENDPOINTS_ALLOWED
+            .scope(
+                true,
+                resolve_provider_request_target("http://127.0.0.1:11434/v1", "ollama"),
+            )
+            .await;
+        assert!(allowed.is_ok(), "standalone network policy should allow ollama");
     }
 
     #[test]
@@ -1294,12 +1319,11 @@ mod tests {
         });
 
         let provider = OpenAICompatibleProvider {
-            id: "openai".to_string(),
-            name: "OpenAI".to_string(),
+            id: "ollama".to_string(),
+            name: "Ollama".to_string(),
             base_url: format!("http://{}/v1", addr),
             api_key: Some("sk-test".to_string()),
             default_model: "gpt-4o-mini".to_string(),
-            client: Client::new(),
         };
 
         let messages = vec![ChatMessage {
@@ -1308,14 +1332,17 @@ mod tests {
             attachments: Vec::new(),
         }];
         let cancel = CancellationToken::new();
-        let stream = provider
-            .stream(
-                messages,
-                None,
-                ToolMode::Auto,
-                None,
-                SamplingParams::default(),
-                cancel,
+        let stream = PROVIDER_PRIVATE_ENDPOINTS_ALLOWED
+            .scope(
+                true,
+                provider.stream(
+                    messages,
+                    None,
+                    ToolMode::Auto,
+                    None,
+                    SamplingParams::default(),
+                    cancel,
+                ),
             )
             .await
             .expect("stream");
@@ -1358,6 +1385,75 @@ mod tests {
             Some(15),
             "trailing usage chunk must reach the Done event"
         );
+    }
+
+    #[tokio::test]
+    async fn provider_completion_rejects_oversized_response_before_decoding() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept connection");
+            let _ = read_single_http_request(&mut socket).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                PROVIDER_RESPONSE_MAX_BYTES + 1
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            socket.shutdown().await.expect("shutdown socket");
+        });
+        let provider = OpenAICompatibleProvider {
+            id: "ollama".to_string(),
+            name: "Ollama".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: None,
+            default_model: "local-model".to_string(),
+        };
+
+        let error = PROVIDER_PRIVATE_ENDPOINTS_ALLOWED
+            .scope(true, provider.complete("hello", None))
+            .await
+            .expect_err("oversized response must fail before JSON decoding");
+        server.await.expect("server");
+        assert!(error.to_string().contains("provider response exceeds"));
+    }
+
+    #[tokio::test]
+    async fn provider_response_reader_rejects_chunked_body_over_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept connection");
+            let _ = read_single_http_request(&mut socket).await;
+            let body = "A".repeat(65);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n{}\r\n0\r\n\r\n",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            socket.shutdown().await.expect("shutdown socket");
+        });
+        let response = Client::new()
+            .get(format!("http://{addr}/body"))
+            .send()
+            .await
+            .expect("request");
+
+        let error = read_provider_response_bytes_with_limit(response, 64)
+            .await
+            .expect_err("chunked response over the streaming limit must fail");
+        server.await.expect("server");
+        assert!(error.to_string().contains("provider response exceeds 64 bytes"));
     }
 
     // ── Per-role sampling parameter mapping & clamping ───────────────────────

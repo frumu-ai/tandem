@@ -6,6 +6,11 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
 edition = "2021"
 
+[features]
+# Makes the explicit private-endpoint test hook available to downstream test
+# harnesses. Production builds never enable this feature.
+test-utils = []
+
 [dependencies]
 anyhow = "1"
 chrono = "0.4"

@@ -6,16 +6,20 @@
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
 
-use std::collections::HashMap;
-use std::fs::{self, File};
+use std::collections::{HashMap, HashSet};
+use std::fs::{self, File, OpenOptions};
 use std::io::{copy, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context};
+use base64::Engine;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
@@ -23,6 +27,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 const MARKER_FILE: &str = "tandempack.yaml";
 const INDEX_FILE: &str = "index.json";
 const CURRENT_FILE: &str = "current";
+const CURRENT_BACKUP_FILE: &str = ".current.backup";
 const STAGING_DIR: &str = ".staging";
 const EXPORTS_DIR: &str = "exports";
 const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
@@ -34,6 +39,7 @@ const MAX_ENTRY_COMPRESSION_RATIO: u64 = 200;
 const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 200;
 const SECRET_SCAN_MAX_FILE_BYTES: u64 = 512 * 1024;
 const SECRET_SCAN_PATTERNS: &[&str] = &["sk-", "sk_live_", "ghp_", "xoxb-", "xoxp-", "AKIA"];
+const PACK_SIGNATURE_FILE: &str = "tandempack.sig";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackManifest {
@@ -93,6 +99,8 @@ pub struct PackInstallRequest {
     pub path: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    #[serde(default, alias = "sha256")]
+    pub expected_sha256: Option<String>,
     #[serde(default)]
     pub source: Value,
 }
@@ -133,6 +141,28 @@ pub struct PackManager {
     pack_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PackSignaturePolicy {
+    RequireTrusted,
+    AllowUnsignedGenerated,
+}
+
+struct StagingDirCleanup(PathBuf);
+
+impl Drop for StagingDirCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+struct StagingFileCleanup(PathBuf);
+
+impl Drop for StagingFileCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 impl PackManager {
     pub fn new(root: PathBuf) -> Self {
         Self {
@@ -163,7 +193,8 @@ impl PackManager {
         let Some(installed) = select_record(&index, Some(selector), None) else {
             return Err(anyhow!("pack not found"));
         };
-        let manifest_path = PathBuf::from(&installed.install_path).join(MARKER_FILE);
+        let install_path = self.validated_record_install_path(&installed)?;
+        let manifest_path = install_path.join(MARKER_FILE);
         let manifest_raw = tokio::fs::read_to_string(&manifest_path)
             .await
             .with_context(|| format!("read {}", manifest_path.display()))?;
@@ -183,11 +214,57 @@ impl PackManager {
     }
 
     pub async fn install(&self, input: PackInstallRequest) -> anyhow::Result<PackInstallRecord> {
+        self.install_with_signature_policy(input, PackSignaturePolicy::RequireTrusted)
+            .await
+    }
+
+    pub(crate) fn generated_staging_root(&self) -> PathBuf {
+        self.root.join(STAGING_DIR).join("generated")
+    }
+
+    pub(crate) async fn install_generated(
+        &self,
+        path: PathBuf,
+        source: Value,
+    ) -> anyhow::Result<PackInstallRecord> {
+        let generated_root = self.generated_staging_root();
+        let canonical_root = tokio::fs::canonicalize(&generated_root)
+            .await
+            .context("resolve generated pack staging root")?;
+        let canonical_path = tokio::fs::canonicalize(&path)
+            .await
+            .with_context(|| format!("resolve generated pack {}", path.display()))?;
+        if canonical_path == canonical_root || !canonical_path.starts_with(&canonical_root) {
+            return Err(anyhow!(
+                "generated pack must be a file beneath the PackManager staging root"
+            ));
+        }
+        if !tokio::fs::metadata(&canonical_path).await?.is_file() {
+            return Err(anyhow!("generated pack must be a regular file"));
+        }
+        self.install_with_signature_policy(
+            PackInstallRequest {
+                path: Some(canonical_path.to_string_lossy().to_string()),
+                url: None,
+                expected_sha256: None,
+                source,
+            },
+            PackSignaturePolicy::AllowUnsignedGenerated,
+        )
+        .await
+    }
+
+    async fn install_with_signature_policy(
+        &self,
+        input: PackInstallRequest,
+        signature_policy: PackSignaturePolicy,
+    ) -> anyhow::Result<PackInstallRecord> {
         self.ensure_layout().await?;
-        let source_file = if let Some(path) = input.path.as_deref() {
-            PathBuf::from(path)
+        let (source_file, _download_cleanup) = if let Some(path) = input.path.as_deref() {
+            (PathBuf::from(path), None)
         } else if let Some(url) = input.url.as_deref() {
-            self.download_to_staging(url).await?
+            let path = self.download_to_staging(url).await?;
+            (path.clone(), Some(StagingFileCleanup(path)))
         } else {
             return Err(anyhow!("install requires either `path` or `url`"));
         };
@@ -206,6 +283,23 @@ impl PackManager {
         }
         let manifest = read_manifest_from_zip(&source_file)?;
         let sha256 = sha256_file(&source_file)?;
+        if let Some(expected) = input
+            .expected_sha256
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if expected.len() != 64
+                || !expected.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !sha256.eq_ignore_ascii_case(expected)
+            {
+                return Err(anyhow!("pack archive sha256 digest mismatch"));
+            }
+        } else if input.url.is_some() {
+            return Err(anyhow!(
+                "remote pack install requires expected_sha256 (or sha256)"
+            ));
+        }
         let pack_id = manifest
             .pack_id
             .clone()
@@ -217,6 +311,7 @@ impl PackManager {
         let stage_root = self.root.join(STAGING_DIR).join(stage_id);
         let stage_unpacked = stage_root.join("unpacked");
         tokio::fs::create_dir_all(&stage_unpacked).await?;
+        let _stage_cleanup = StagingDirCleanup(stage_root.clone());
         safe_extract_zip(&source_file, &stage_unpacked)?;
         let manifest_value = serde_json::to_value(&manifest)?;
         validate_manifest(&manifest, &manifest_value, &stage_unpacked)?;
@@ -235,9 +330,21 @@ impl PackManager {
                 secret_hits[0]
             ));
         }
+        let signature_status = verify_pack_signature(&stage_unpacked)?;
+        if signature_policy == PackSignaturePolicy::RequireTrusted
+            && pack_signature_required()
+            && matches!(signature_status, PackSignatureStatus::Unsigned)
+        {
+            let _ = tokio::fs::remove_dir_all(&stage_root).await;
+            return Err(anyhow!("pack signature is required"));
+        }
 
-        let install_parent = self.root.join(&manifest.name);
-        let install_target = install_parent.join(&manifest.version);
+        validate_pack_identifier("manifest.pack_id", &pack_id)?;
+        let install_target = self.install_path(&manifest.name, &manifest.version)?;
+        let install_parent = install_target
+            .parent()
+            .ok_or_else(|| anyhow!("invalid pack install parent"))?
+            .to_path_buf();
         if install_target.exists() {
             let _ = tokio::fs::remove_dir_all(&stage_root).await;
             return Err(anyhow!(
@@ -247,6 +354,7 @@ impl PackManager {
             ));
         }
         tokio::fs::create_dir_all(&install_parent).await?;
+        reject_symlink_path(&install_parent, "pack install directory")?;
         tokio::fs::rename(&stage_unpacked, &install_target)
             .await
             .with_context(|| {
@@ -257,13 +365,6 @@ impl PackManager {
                 )
             })?;
         let _ = tokio::fs::remove_dir_all(&stage_root).await;
-
-        tokio::fs::write(
-            install_parent.join(CURRENT_FILE),
-            format!("{}\n", manifest.version),
-        )
-        .await
-        .ok();
 
         let record = PackInstallRecord {
             pack_id,
@@ -277,7 +378,8 @@ impl PackManager {
                 serde_json::json!({
                     "kind": if input.url.is_some() { "url" } else { "path" },
                     "path": input.path,
-                    "url": input.url
+                    "url": input.url,
+                    "expected_sha256": input.expected_sha256,
                 })
             } else {
                 input.source
@@ -285,7 +387,57 @@ impl PackManager {
             marker_detected: true,
             routines_enabled: false,
         };
-        self.write_record(record.clone()).await?;
+        let index_guard = self.index_lock.lock().await;
+        let previous_index = match self.read_index_unlocked().await {
+            Ok(index) => index,
+            Err(error) => {
+                drop(index_guard);
+                if let Err(rollback_error) = tokio::fs::remove_dir_all(&install_target).await {
+                    return Err(error.context(format!(
+                        "read pack index; failed to roll back {}: {rollback_error}",
+                        install_target.display()
+                    )));
+                }
+                return Err(error).context("read pack index; installation rolled back");
+            }
+        };
+        let mut next_index = previous_index.clone();
+        next_index.packs.retain(|row| {
+            !(row.pack_id == record.pack_id
+                && row.name == record.name
+                && row.version == record.version)
+        });
+        next_index.packs.push(record.clone());
+        if let Err(error) = self.write_index_unlocked(&next_index).await {
+            drop(index_guard);
+            if let Err(rollback_error) = tokio::fs::remove_dir_all(&install_target).await {
+                return Err(error.context(format!(
+                    "persist pack index; failed to roll back {}: {rollback_error}",
+                    install_target.display()
+                )));
+            }
+            return Err(error).context("persist pack index; installation rolled back");
+        }
+        if let Err(error) = self
+            .write_current_version(&manifest.name, &manifest.version)
+            .await
+        {
+            if let Err(rollback_error) = self.write_index_unlocked(&previous_index).await {
+                drop(index_guard);
+                return Err(error.context(format!(
+                    "commit pack current pointer; failed to roll back index: {rollback_error}; installed files retained"
+                )));
+            }
+            drop(index_guard);
+            if let Err(rollback_error) = tokio::fs::remove_dir_all(&install_target).await {
+                return Err(error.context(format!(
+                    "commit pack current pointer; index rolled back but failed to remove {}: {rollback_error}",
+                    install_target.display()
+                )));
+            }
+            return Err(error).context("commit pack current pointer; installation rolled back");
+        }
+        drop(index_guard);
         Ok(record)
     }
 
@@ -300,22 +452,80 @@ impl PackManager {
         let pack_lock = self.pack_lock(&snapshot_record.name).await;
         let _pack_guard = pack_lock.lock().await;
 
-        let mut index = self.read_index().await?;
+        // Keep the index writer across the final record lookup, staged
+        // filesystem move, and atomic index replacement so installs for other
+        // pack names cannot be lost through a read/modify/write race.
+        let index_guard = self.index_lock.lock().await;
+        let mut index = self.read_index_unlocked().await?;
+        let previous_index = index.clone();
         let Some(record) = select_record(&index, selector, req.version.as_deref()) else {
             return Err(anyhow!("pack not found"));
         };
-        let install_path = PathBuf::from(&record.install_path);
-        if install_path.exists() {
-            tokio::fs::remove_dir_all(&install_path).await.ok();
-        }
+        let install_path = self.validated_record_install_path(&record)?;
+        let staged_removal = if install_path.exists() {
+            self.ensure_layout().await?;
+            let staged = self
+                .root
+                .join(STAGING_DIR)
+                .join(format!("uninstall-{}", Uuid::new_v4()));
+            tokio::fs::rename(&install_path, &staged)
+                .await
+                .with_context(|| {
+                    format!(
+                        "stage pack uninstall {} -> {}",
+                        install_path.display(),
+                        staged.display()
+                    )
+                })?;
+            Some(staged)
+        } else {
+            None
+        };
         index.packs.retain(|row| {
             !(row.pack_id == record.pack_id
                 && row.name == record.name
                 && row.version == record.version
                 && row.install_path == record.install_path)
         });
-        self.write_index(&index).await?;
-        self.repoint_current_if_needed(&record.name).await?;
+        if let Err(error) = self.write_index_unlocked(&index).await {
+            if let Some(staged) = staged_removal.as_ref() {
+                if let Err(rollback_error) = tokio::fs::rename(staged, &install_path).await {
+                    return Err(error.context(format!(
+                        "persist pack index; failed to roll back staged uninstall {} -> {}: {rollback_error}",
+                        staged.display(),
+                        install_path.display()
+                    )));
+                }
+            }
+            return Err(error).context("persist pack index; uninstall rolled back");
+        }
+        if let Err(error) = self
+            .write_current_for_index_unlocked(&index, &record.name)
+            .await
+        {
+            if let Err(rollback_error) = self.write_index_unlocked(&previous_index).await {
+                drop(index_guard);
+                return Err(error.context(format!(
+                    "commit pack current pointer; failed to roll back index: {rollback_error}; staged files retained"
+                )));
+            }
+            if let Some(staged) = staged_removal.as_ref() {
+                if let Err(rollback_error) = tokio::fs::rename(staged, &install_path).await {
+                    drop(index_guard);
+                    return Err(error.context(format!(
+                        "commit pack current pointer; index rolled back but failed to restore {} -> {}: {rollback_error}",
+                        staged.display(),
+                        install_path.display()
+                    )));
+                }
+            }
+            drop(index_guard);
+            return Err(error).context("commit pack current pointer; uninstall rolled back");
+        }
+        drop(index_guard);
+        if let Some(staged) = staged_removal {
+            let _ = tokio::fs::remove_dir_all(staged).await;
+        }
         Ok(record)
     }
 
@@ -325,21 +535,45 @@ impl PackManager {
         let Some(record) = select_record(&index, selector, req.version.as_deref()) else {
             return Err(anyhow!("pack not found"));
         };
-        let pack_dir = PathBuf::from(&record.install_path);
+        let pack_dir = self.validated_record_install_path(&record)?;
         if !pack_dir.exists() {
             return Err(anyhow!("installed pack path missing"));
         }
+        reject_symlink_path(&pack_dir, "installed pack")?;
         let output = if let Some(path) = req.output_path {
-            PathBuf::from(path)
+            let path = Path::new(path.trim());
+            let mut components = path.components();
+            let file_name = match (components.next(), components.next()) {
+                (Some(Component::Normal(file_name)), None) => file_name,
+                _ => return Err(anyhow!("pack export output_path must be a safe file name")),
+            };
+            let file_name = file_name
+                .to_str()
+                .ok_or_else(|| anyhow!("pack export file name must be UTF-8"))?;
+            validate_export_file_name(file_name)?;
+            self.root.join(EXPORTS_DIR).join(file_name)
         } else {
             self.root
                 .join(EXPORTS_DIR)
                 .join(format!("{}-{}.zip", record.name, record.version))
         };
-        if let Some(parent) = output.parent() {
-            tokio::fs::create_dir_all(parent).await?;
+        let parent = output
+            .parent()
+            .ok_or_else(|| anyhow!("pack export output has no parent"))?;
+        tokio::fs::create_dir_all(parent).await?;
+        reject_symlink_path(parent, "pack export directory")?;
+        let temporary = parent.join(format!(".export-{}.tmp", Uuid::new_v4()));
+        if let Err(error) = zip_directory(&pack_dir, &temporary) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
         }
-        zip_directory(&pack_dir, &output)?;
+        if let Err(error) = std::fs::hard_link(&temporary, &output) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(anyhow!(
+                "create pack export without overwriting an existing file: {error}"
+            ));
+        }
+        let _ = std::fs::remove_file(&temporary);
         let bytes = tokio::fs::metadata(&output).await?.len();
         Ok(PackExportResult {
             path: output.to_string_lossy().to_string(),
@@ -358,30 +592,113 @@ impl PackManager {
             .root
             .join(STAGING_DIR)
             .join(format!("download-{}.zip", Uuid::new_v4()));
-        let response = reqwest::get(url)
+        let target = crate::outbound_http::resolve_public_https_url(url).await?;
+        let client = target.client(Duration::from_secs(30))?;
+        let mut response = client
+            .get(target.url().clone())
+            .send()
             .await
             .with_context(|| format!("download {}", url))?;
-        let bytes = response.bytes().await.context("read body")?;
-        if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
+        if !response.status().is_success() {
             return Err(anyhow!(
-                "downloaded archive exceeds max size ({} > {})",
-                bytes.len(),
-                MAX_ARCHIVE_BYTES
+                "pack download returned HTTP {}",
+                response.status().as_u16()
             ));
         }
-        tokio::fs::write(&stage, &bytes).await?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_ARCHIVE_BYTES)
+        {
+            return Err(anyhow!("pack download exceeds max archive size"));
+        }
+        let mut output = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&stage)
+            .await
+            .with_context(|| format!("create staging download {}", stage.display()))?;
+        let mut written = 0u64;
+        loop {
+            let chunk = match response.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(error) => {
+                    drop(output);
+                    let _ = tokio::fs::remove_file(&stage).await;
+                    return Err(error).context("read pack download");
+                }
+            };
+            written = written.saturating_add(chunk.len() as u64);
+            if written > MAX_ARCHIVE_BYTES {
+                drop(output);
+                let _ = tokio::fs::remove_file(&stage).await;
+                return Err(anyhow!("pack download exceeds max archive size"));
+            }
+            if let Err(error) = output.write_all(&chunk).await {
+                drop(output);
+                let _ = tokio::fs::remove_file(&stage).await;
+                return Err(error).context("write pack staging download");
+            }
+        }
+        if let Err(error) = output.flush().await {
+            drop(output);
+            let _ = tokio::fs::remove_file(&stage).await;
+            return Err(error).context("flush pack staging download");
+        }
+        if let Err(error) = output.sync_all().await {
+            drop(output);
+            let _ = tokio::fs::remove_file(&stage).await;
+            return Err(error).context("sync pack staging download");
+        }
         Ok(stage)
+    }
+
+    fn install_path(&self, name: &str, version: &str) -> anyhow::Result<PathBuf> {
+        validate_pack_identifier("manifest.name", name)?;
+        validate_pack_identifier("manifest.version", version)?;
+        Ok(self.root.join(name).join(version))
+    }
+
+    fn validated_record_install_path(&self, record: &PackInstallRecord) -> anyhow::Result<PathBuf> {
+        validate_pack_identifier("pack_id", &record.pack_id)?;
+        let expected = self.install_path(&record.name, &record.version)?;
+        if Path::new(&record.install_path) != expected {
+            return Err(anyhow!(
+                "pack index install path is outside its rooted identity"
+            ));
+        }
+        if expected.exists() {
+            reject_symlink_path(&expected, "installed pack")?;
+        }
+        Ok(expected)
     }
 
     async fn ensure_layout(&self) -> anyhow::Result<()> {
         tokio::fs::create_dir_all(&self.root).await?;
         tokio::fs::create_dir_all(self.root.join(STAGING_DIR)).await?;
         tokio::fs::create_dir_all(self.root.join(EXPORTS_DIR)).await?;
+        reject_symlink_path(&self.root, "pack root")?;
+        reject_symlink_path(&self.root.join(STAGING_DIR), "pack staging directory")?;
+        reject_symlink_path(&self.root.join(EXPORTS_DIR), "pack export directory")?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    async fn recover_current_pointer_transactions(&self) -> anyhow::Result<()> {
+        let mut entries = tokio::fs::read_dir(&self.root).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                recover_current_pointer_backup(&entry.path()).await?;
+            }
+        }
         Ok(())
     }
 
     async fn read_index(&self) -> anyhow::Result<PackIndex> {
+        self.ensure_layout().await?;
         let _index_guard = self.index_lock.lock().await;
+        #[cfg(windows)]
+        self.recover_current_pointer_transactions().await?;
         self.read_index_unlocked().await
     }
 
@@ -414,20 +731,11 @@ impl PackManager {
         Ok(())
     }
 
-    async fn write_record(&self, record: PackInstallRecord) -> anyhow::Result<()> {
-        let _index_guard = self.index_lock.lock().await;
-        let mut index = self.read_index_unlocked().await?;
-        index.packs.retain(|row| {
-            !(row.pack_id == record.pack_id
-                && row.name == record.name
-                && row.version == record.version)
-        });
-        index.packs.push(record);
-        self.write_index_unlocked(&index).await
-    }
-
-    async fn repoint_current_if_needed(&self, pack_name: &str) -> anyhow::Result<()> {
-        let index = self.read_index().await?;
+    async fn write_current_for_index_unlocked(
+        &self,
+        index: &PackIndex,
+        pack_name: &str,
+    ) -> anyhow::Result<()> {
         let mut versions = index
             .packs
             .iter()
@@ -436,13 +744,107 @@ impl PackManager {
         versions.sort_by(|a, b| b.installed_at_ms.cmp(&a.installed_at_ms));
         let current_path = self.root.join(pack_name).join(CURRENT_FILE);
         if let Some(latest) = versions.first() {
-            tokio::fs::write(current_path, format!("{}\n", latest.version))
-                .await
-                .ok();
-        } else if current_path.exists() {
-            tokio::fs::remove_file(current_path).await.ok();
+            self.write_current_version(pack_name, &latest.version)
+                .await?;
+        } else {
+            match tokio::fs::symlink_metadata(&current_path).await {
+                Ok(metadata) if metadata.file_type().is_file() => {
+                    tokio::fs::remove_file(&current_path)
+                        .await
+                        .context("remove pack current pointer")?;
+                }
+                Ok(_) => return Err(anyhow!("pack current pointer is not a regular file")),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("inspect pack current pointer"),
+            }
         }
         Ok(())
+    }
+
+    async fn write_current_version(&self, pack_name: &str, version: &str) -> anyhow::Result<()> {
+        validate_pack_identifier("manifest.name", pack_name)?;
+        validate_pack_identifier("manifest.version", version)?;
+        let parent = self.root.join(pack_name);
+        tokio::fs::create_dir_all(&parent).await?;
+        reject_symlink_path(&parent, "pack current directory")?;
+        #[cfg(windows)]
+        recover_current_pointer_backup(&parent).await?;
+        let current_path = parent.join(CURRENT_FILE);
+        let temporary = parent.join(format!(".{CURRENT_FILE}.{}.tmp", Uuid::new_v4()));
+        let mut output = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .await?;
+        if let Err(error) = output.write_all(format!("{version}\n").as_bytes()).await {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(error).context("write pack current pointer");
+        }
+        if let Err(error) = output.sync_all().await {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(error).context("sync pack current pointer");
+        }
+        drop(output);
+
+        match tokio::fs::symlink_metadata(&current_path).await {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(anyhow!("pack current pointer is not a regular file"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(error).context("inspect previous pack current pointer");
+            }
+        }
+
+        #[cfg(not(windows))]
+        {
+            if let Err(error) = tokio::fs::rename(&temporary, &current_path).await {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(error).context("commit pack current pointer");
+            }
+            Ok(())
+        }
+
+        #[cfg(windows)]
+        {
+            let backup = parent.join(CURRENT_BACKUP_FILE);
+            let previous_moved = match tokio::fs::symlink_metadata(&current_path).await {
+                Ok(metadata) if metadata.file_type().is_file() => {
+                    if let Err(error) = tokio::fs::rename(&current_path, &backup).await {
+                        let _ = tokio::fs::remove_file(&temporary).await;
+                        return Err(error).context("stage previous pack current pointer");
+                    }
+                    true
+                }
+                Ok(_) => {
+                    let _ = tokio::fs::remove_file(&temporary).await;
+                    return Err(anyhow!("pack current pointer is not a regular file"));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&temporary).await;
+                    return Err(error).context("inspect previous pack current pointer");
+                }
+            };
+            if let Err(error) = tokio::fs::rename(&temporary, &current_path).await {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                if previous_moved {
+                    if let Err(rollback_error) = tokio::fs::rename(&backup, &current_path).await {
+                        return Err(error).context(format!(
+                        "commit pack current pointer; failed to restore previous pointer: {rollback_error}"
+                    ));
+                    }
+                }
+                return Err(error).context("commit pack current pointer");
+            }
+            if previous_moved {
+                let _ = tokio::fs::remove_file(&backup).await;
+            }
+            Ok(())
+        }
     }
 
     async fn pack_lock(&self, pack_name: &str) -> Arc<Mutex<()>> {
@@ -452,6 +854,38 @@ impl PackManager {
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
+}
+
+async fn recover_current_pointer_backup(parent: &Path) -> anyhow::Result<()> {
+    let current_path = parent.join(CURRENT_FILE);
+    let backup_path = parent.join(CURRENT_BACKUP_FILE);
+    let current_exists = match tokio::fs::symlink_metadata(&current_path).await {
+        Ok(metadata) if metadata.file_type().is_file() => true,
+        Ok(_) => return Err(anyhow!("pack current pointer is not a regular file")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error).context("inspect pack current pointer during recovery"),
+    };
+    let backup_exists = match tokio::fs::symlink_metadata(&backup_path).await {
+        Ok(metadata) if metadata.file_type().is_file() => true,
+        Ok(_) => return Err(anyhow!("pack current pointer backup is not a regular file")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(error).context("inspect pack current pointer backup during recovery")
+        }
+    };
+    if !backup_exists {
+        return Ok(());
+    }
+    if current_exists {
+        tokio::fs::remove_file(&backup_path)
+            .await
+            .context("remove committed pack current pointer backup")?;
+    } else {
+        tokio::fs::rename(&backup_path, &current_path)
+            .await
+            .context("restore interrupted pack current pointer")?;
+    }
+    Ok(())
 }
 
 fn select_record<'a>(
@@ -506,14 +940,11 @@ fn validate_manifest(
     manifest_value: &Value,
     install_root: &Path,
 ) -> anyhow::Result<()> {
-    if manifest.name.trim().is_empty() {
-        return Err(anyhow!("manifest.name is required"));
-    }
-    if manifest.version.trim().is_empty() {
-        return Err(anyhow!("manifest.version is required"));
-    }
-    if manifest.pack_type.trim().is_empty() {
-        return Err(anyhow!("manifest.type is required"));
+    validate_pack_identifier("manifest.name", &manifest.name)?;
+    validate_pack_identifier("manifest.version", &manifest.version)?;
+    validate_pack_identifier("manifest.type", &manifest.pack_type)?;
+    if let Some(pack_id) = manifest.pack_id.as_deref() {
+        validate_pack_identifier("manifest.pack_id", pack_id)?;
     }
     if let Some(marketplace) = manifest_value
         .pointer("/marketplace")
@@ -607,10 +1038,65 @@ fn validate_manifest_references(manifest_value: &Value, install_root: &Path) -> 
     references.sort();
     references.dedup();
     for rel in references {
+        let rel = safe_relative_pack_path(&rel)?;
         let path = install_root.join(&rel);
         if !path.exists() {
             return Err(anyhow!("declared pack file missing: {}", path.display()));
         }
+    }
+    Ok(())
+}
+
+fn validate_pack_identifier(field: &str, value: &str) -> anyhow::Result<()> {
+    let value = value.trim();
+    let valid = (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+'))
+        && !value.contains("..");
+    if !valid {
+        return Err(anyhow!("{field} contains an unsafe identifier"));
+    }
+    Ok(())
+}
+
+fn safe_relative_pack_path(value: &str) -> anyhow::Result<PathBuf> {
+    let path = Path::new(value);
+    if value.is_empty() || value.contains('\0') {
+        return Err(anyhow!("invalid pack-relative path"));
+    }
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => out.push(value),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(anyhow!("unsafe pack-relative path: {value}"));
+            }
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return Err(anyhow!("invalid pack-relative path"));
+    }
+    Ok(out)
+}
+
+fn validate_export_file_name(value: &str) -> anyhow::Result<()> {
+    if value.is_empty()
+        || value.len() > 180
+        || !value.ends_with(".zip")
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        || value.contains("..")
+    {
+        return Err(anyhow!(
+            "pack export output_path must be a safe .zip file name"
+        ));
     }
     Ok(())
 }
@@ -640,17 +1126,28 @@ fn collect_manifest_paths(value: &Value, out: &mut Vec<String>) {
 fn safe_extract_zip(zip_path: &Path, out_dir: &Path) -> anyhow::Result<()> {
     let file = File::open(zip_path).with_context(|| format!("open {}", zip_path.display()))?;
     let mut archive = ZipArchive::new(file).context("open zip archive")?;
+    if archive.len() > MAX_FILES {
+        return Err(anyhow!(
+            "zip has too many entries ({} > {})",
+            archive.len(),
+            MAX_FILES
+        ));
+    }
     let mut extracted_files = 0usize;
     let mut extracted_total = 0u64;
     let mut compressed_total = 0u64;
+    let mut extracted_paths = HashSet::new();
     for i in 0..archive.len() {
         let entry = archive.by_index(i).context("zip entry read")?;
         let entry_name = entry.name().to_string();
+        validate_zip_entry_name(&entry_name)?;
+        let out_path = out_dir.join(safe_relative_pack_path(&entry_name)?);
+        if !extracted_paths.insert(out_path.clone()) {
+            return Err(anyhow!("zip contains duplicate entry path: {entry_name}"));
+        }
         if entry_name.ends_with('/') {
             continue;
         }
-        validate_zip_entry_name(&entry_name)?;
-        let out_path = out_dir.join(&entry_name);
         let size = entry.size();
         let compressed_size = entry.compressed_size().max(1);
         let entry_ratio = size.saturating_div(compressed_size);
@@ -736,9 +1233,31 @@ fn validate_zip_entry_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn reject_symlink_path(path: &Path, label: &str) -> anyhow::Result<()> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(anyhow!("{label} contains a symbolic link"));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect {label} path {}", current.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn zip_directory(src_dir: &Path, output_zip: &Path) -> anyhow::Result<()> {
-    let file =
-        File::create(output_zip).with_context(|| format!("create {}", output_zip.display()))?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output_zip)
+        .with_context(|| format!("create {}", output_zip.display()))?;
     let mut writer = ZipWriter::new(file);
     let opts = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
@@ -751,12 +1270,19 @@ fn zip_directory(src_dir: &Path, output_zip: &Path) -> anyhow::Result<()> {
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
             let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                return Err(anyhow!(
+                    "pack export refuses symbolic link: {}",
+                    path.display()
+                ));
+            }
             let rel = path
                 .strip_prefix(src_dir)
                 .context("strip source prefix")?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if path.is_dir() {
+            if file_type.is_dir() {
                 if !rel.is_empty() {
                     writer.add_directory(format!("{}/", rel), opts)?;
                 }
@@ -843,11 +1369,10 @@ fn walk_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 }
 
 fn inspect_trust(manifest: &Value, install_path: &str) -> Value {
-    let signature_path = PathBuf::from(install_path).join("tandempack.sig");
-    let signature = if signature_path.exists() {
-        "present_unverified"
-    } else {
-        "unsigned"
+    let (signature, signature_key_id) = match verify_pack_signature(Path::new(install_path)) {
+        Ok(PackSignatureStatus::Unsigned) => ("unsigned", None),
+        Ok(PackSignatureStatus::Verified { key_id }) => ("verified", Some(key_id)),
+        Err(_) => ("invalid", None),
     };
     let publisher_verification = manifest
         .pointer("/publisher/verification")
@@ -870,7 +1395,118 @@ fn inspect_trust(manifest: &Value, install_path: &str) -> Value {
         "publisher_verification": publisher_verification_normalized,
         "verification_badge": verification_badge,
         "signature": signature,
+        "signature_key_id": signature_key_id,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PackSignatureStatus {
+    Unsigned,
+    Verified { key_id: String },
+}
+
+#[derive(Debug, Deserialize)]
+struct PackSignatureEnvelope {
+    key_id: String,
+    signature: String,
+}
+
+fn pack_signature_required() -> bool {
+    true
+}
+
+fn verify_pack_signature(root: &Path) -> anyhow::Result<PackSignatureStatus> {
+    let signature_path = root.join(PACK_SIGNATURE_FILE);
+    if !signature_path.exists() {
+        return Ok(PackSignatureStatus::Unsigned);
+    }
+    let envelope: PackSignatureEnvelope = serde_json::from_slice(
+        &std::fs::read(&signature_path)
+            .with_context(|| format!("read {}", signature_path.display()))?,
+    )
+    .context("parse tandempack.sig JSON")?;
+    validate_pack_identifier("signature.key_id", &envelope.key_id)?;
+    let trusted_keys = trusted_pack_public_keys()?;
+    let public_key = trusted_keys
+        .get(&envelope.key_id)
+        .ok_or_else(|| anyhow!("pack signature key is not trusted"))?;
+    let signature_bytes = decode_base64(&envelope.signature)
+        .and_then(|bytes| <[u8; 64]>::try_from(bytes).ok())
+        .ok_or_else(|| anyhow!("pack signature must be a base64 Ed25519 signature"))?;
+    let verifying_key =
+        VerifyingKey::from_bytes(public_key).context("invalid trusted pack public key")?;
+    let digest = pack_content_digest(root)?;
+    verifying_key
+        .verify_strict(&digest, &Signature::from_bytes(&signature_bytes))
+        .context("pack signature verification failed")?;
+    Ok(PackSignatureStatus::Verified {
+        key_id: envelope.key_id,
+    })
+}
+
+fn trusted_pack_public_keys() -> anyhow::Result<std::collections::BTreeMap<String, [u8; 32]>> {
+    let raw = std::env::var("TANDEM_PACK_TRUSTED_PUBLIC_KEYS").unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(std::collections::BTreeMap::new());
+    }
+    let entries = if raw.trim_start().starts_with('{') {
+        serde_json::from_str::<std::collections::BTreeMap<String, String>>(&raw)
+            .context("parse TANDEM_PACK_TRUSTED_PUBLIC_KEYS JSON")?
+    } else {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| {
+                let (key_id, public_key) = entry
+                    .split_once('=')
+                    .ok_or_else(|| anyhow!("trusted pack key must be key_id=base64_public_key"))?;
+                Ok((key_id.trim().to_string(), public_key.trim().to_string()))
+            })
+            .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?
+    };
+    entries
+        .into_iter()
+        .map(|(key_id, encoded)| {
+            validate_pack_identifier("trusted pack key id", &key_id)?;
+            let bytes = decode_base64(&encoded)
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                .ok_or_else(|| anyhow!("trusted pack public key must decode to 32 bytes"))?;
+            Ok((key_id, bytes))
+        })
+        .collect()
+}
+
+fn decode_base64(value: &str) -> Option<Vec<u8>> {
+    [
+        &base64::engine::general_purpose::STANDARD,
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+    ]
+    .into_iter()
+    .find_map(|engine| engine.decode(value.trim()).ok())
+}
+
+fn pack_content_digest(root: &Path) -> anyhow::Result<[u8; 32]> {
+    let mut files = walk_files(root)?
+        .into_iter()
+        .filter_map(|path| {
+            let rel = path.strip_prefix(root).ok()?.to_path_buf();
+            (rel != Path::new(PACK_SIGNATURE_FILE)).then_some((rel, path))
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut hasher = Sha256::new();
+    for (rel, path) in files {
+        let rel = rel
+            .to_str()
+            .ok_or_else(|| anyhow!("pack signature path must be UTF-8"))?
+            .replace('\\', "/");
+        let bytes = std::fs::read(&path)?;
+        hasher.update((rel.len() as u64).to_be_bytes());
+        hasher.update(rel.as_bytes());
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    }
+    Ok(hasher.finalize().into())
 }
 
 fn inspect_risk(manifest: &Value, installed: &PackInstallRecord) -> Value {
@@ -1017,250 +1653,5 @@ pub fn map_missing_capability_error(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    fn write_zip(path: &Path, entries: &[(&str, &str)]) {
-        let file = File::create(path).expect("create zip");
-        let mut zip = ZipWriter::new(file);
-        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        for (name, body) in entries {
-            zip.start_file(*name, opts).expect("start");
-            zip.write_all(body.as_bytes()).expect("write");
-        }
-        zip.finish().expect("finish");
-    }
-
-    #[test]
-    fn detects_root_marker_only() {
-        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("mkdir");
-        let ok = root.join("ok.zip");
-        write_zip(
-            &ok,
-            &[
-                ("tandempack.yaml", "name: x\nversion: 1.0.0\ntype: skill\n"),
-                ("README.md", "# x"),
-            ],
-        );
-        let nested = root.join("nested.zip");
-        write_zip(
-            &nested,
-            &[(
-                "sub/tandempack.yaml",
-                "name: x\nversion: 1.0.0\ntype: skill\n",
-            )],
-        );
-        assert!(contains_root_marker(&ok).expect("detect"));
-        assert!(!contains_root_marker(&nested).expect("detect nested"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn safe_extract_blocks_traversal() {
-        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("mkdir");
-        let bad = root.join("bad.zip");
-        write_zip(&bad, &[("../escape.txt", "x")]);
-        let out = root.join("out");
-        std::fs::create_dir_all(&out).expect("mkdir out");
-        let err = safe_extract_zip(&bad, &out).expect_err("should fail");
-        assert!(err.to_string().contains("unsafe zip entry path"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn safe_extract_blocks_extreme_compression_ratio() {
-        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("mkdir");
-        let bad = root.join("bomb.zip");
-        let repeated = "A".repeat(300_000);
-        write_zip(&bad, &[("payload.txt", repeated.as_str())]);
-        let out = root.join("out");
-        std::fs::create_dir_all(&out).expect("mkdir out");
-        let err = safe_extract_zip(&bad, &out).expect_err("should fail");
-        assert!(err.to_string().contains("compression ratio"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn inspect_reports_signature_and_risk_summary() {
-        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("mkdir");
-        let pack_zip = root.join("inspect.zip");
-        write_zip(
-            &pack_zip,
-            &[
-                (
-                    "tandempack.yaml",
-                    "name: inspect-pack\nversion: 1.0.0\ntype: workflow\npack_id: inspect-pack\npublisher:\n  verification: verified\nentrypoints:\n  workflows:\n    - build_feature\ncapabilities:\n  required:\n    - github.create_pull_request\n  optional:\n    - slack.post_message\ncontents:\n  routines:\n    - routines/nightly.yaml\n  workflows:\n    - id: build_feature\n      path: workflows/build_feature.yaml\n  workflow_hooks:\n    - id: build_feature.task_completed.notify\n      path: hooks/notify.yaml\n",
-                ),
-                ("tandempack.sig", "fake-signature"),
-                ("routines/nightly.yaml", "id: nightly\n"),
-            ],
-        );
-        let manager = PackManager::new(root.join("packs"));
-        let installed = manager
-            .install(PackInstallRequest {
-                path: Some(pack_zip.to_string_lossy().to_string()),
-                url: None,
-                source: Value::Null,
-            })
-            .await
-            .expect("install");
-        let inspection = manager.inspect(&installed.pack_id).await.expect("inspect");
-        assert_eq!(
-            inspection.trust.get("signature").and_then(|v| v.as_str()),
-            Some("present_unverified")
-        );
-        assert_eq!(
-            inspection
-                .trust
-                .get("publisher_verification")
-                .and_then(|v| v.as_str()),
-            Some("verified")
-        );
-        assert_eq!(
-            inspection
-                .trust
-                .get("verification_badge")
-                .and_then(|v| v.as_str()),
-            Some("verified")
-        );
-        assert_eq!(
-            inspection
-                .risk
-                .get("required_capabilities_count")
-                .and_then(|v| v.as_u64()),
-            Some(1)
-        );
-        assert_eq!(
-            inspection
-                .risk
-                .get("routines_declared")
-                .and_then(|v| v.as_bool()),
-            Some(true)
-        );
-        assert_eq!(
-            inspection
-                .permission_sheet
-                .get("required_capabilities")
-                .and_then(|v| v.as_array())
-                .map(|v| v.len()),
-            Some(1)
-        );
-        assert_eq!(
-            inspection
-                .permission_sheet
-                .get("routines_declared")
-                .and_then(|v| v.as_array())
-                .map(|v| v.len()),
-            Some(1)
-        );
-        assert_eq!(
-            inspection
-                .risk
-                .get("workflows_declared")
-                .and_then(|v| v.as_bool()),
-            Some(true)
-        );
-        assert_eq!(
-            inspection
-                .risk
-                .get("workflow_hooks_declared")
-                .and_then(|v| v.as_bool()),
-            Some(true)
-        );
-        assert_eq!(
-            inspection
-                .permission_sheet
-                .get("workflows_declared")
-                .and_then(|v| v.as_array())
-                .map(|v| v.len()),
-            Some(1)
-        );
-        assert_eq!(
-            inspection
-                .permission_sheet
-                .get("workflow_hooks_declared")
-                .and_then(|v| v.as_array())
-                .map(|v| v.len()),
-            Some(1)
-        );
-        assert_eq!(
-            inspection
-                .workflow_extensions
-                .get("workflow_entrypoints")
-                .and_then(|v| v.as_array())
-                .map(|v| v.len()),
-            Some(1)
-        );
-        assert_eq!(
-            inspection
-                .workflow_extensions
-                .get("workflow_count")
-                .and_then(|v| v.as_u64()),
-            Some(1)
-        );
-        assert_eq!(
-            inspection
-                .workflow_extensions
-                .get("workflow_hook_count")
-                .and_then(|v| v.as_u64()),
-            Some(1)
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn inspect_defaults_verification_badge_to_unverified() {
-        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("mkdir");
-        let pack_zip = root.join("inspect-unverified.zip");
-        write_zip(
-            &pack_zip,
-            &[(
-                "tandempack.yaml",
-                "name: inspect-pack-2\nversion: 1.0.0\ntype: workflow\npack_id: inspect-pack-2\n",
-            )],
-        );
-        let manager = PackManager::new(root.join("packs"));
-        let installed = manager
-            .install(PackInstallRequest {
-                path: Some(pack_zip.to_string_lossy().to_string()),
-                url: None,
-                source: Value::Null,
-            })
-            .await
-            .expect("install");
-        let inspection = manager.inspect(&installed.pack_id).await.expect("inspect");
-        assert_eq!(
-            inspection
-                .trust
-                .get("verification_badge")
-                .and_then(|v| v.as_str()),
-            Some("unverified")
-        );
-        assert_eq!(
-            inspection.trust.get("signature").and_then(|v| v.as_str()),
-            Some("unsigned")
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn scan_embedded_secrets_finds_real_and_ignores_examples() {
-        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("mkdir");
-        let real = root.join("resources").join("token.txt");
-        std::fs::create_dir_all(real.parent().expect("parent")).expect("mkdir resources");
-        std::fs::write(&real, "token=ghp_example_not_real_but_pattern").expect("write real");
-        let example = root.join("secrets.example.env");
-        std::fs::write(&example, "API_KEY=sk-live-example").expect("write example");
-        let findings = scan_embedded_secrets(&root).expect("scan");
-        assert_eq!(findings.len(), 1);
-        assert!(findings[0].contains("resources/token.txt"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-}
+#[path = "pack_manager_tests.rs"]
+mod tests;

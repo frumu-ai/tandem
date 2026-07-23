@@ -649,19 +649,202 @@ struct McpRefreshTokenResponse {
     expires_in: Option<u64>,
 }
 
+#[derive(Clone)]
+struct McpEndpointAuthorization {
+    local_implicit: bool,
+    standalone_private_endpoint_access: Arc<std::sync::atomic::AtomicBool>,
+    strict_tenant_enforcement: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(any(test, feature = "test-utils"))]
+    allow_private_test_endpoints: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl McpEndpointAuthorization {
+    fn for_registry(registry: &McpRegistry, tenant: &TenantContext) -> Self {
+        Self {
+            local_implicit: tenant.is_local_implicit(),
+            standalone_private_endpoint_access: registry
+                .standalone_private_endpoint_access
+                .clone(),
+            strict_tenant_enforcement: registry.strict_tenant_enforcement.clone(),
+            #[cfg(any(test, feature = "test-utils"))]
+            allow_private_test_endpoints: registry.allow_private_test_endpoints.clone(),
+        }
+    }
+
+    fn allows_private_endpoint(&self) -> bool {
+        if self.local_implicit
+            && self
+                .standalone_private_endpoint_access
+                .load(std::sync::atomic::Ordering::SeqCst)
+            && !self
+                .strict_tenant_enforcement
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return true;
+        }
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            return self
+                .allow_private_test_endpoints
+                .load(std::sync::atomic::Ordering::SeqCst);
+        }
+        #[cfg(not(any(test, feature = "test-utils")))]
+        false
+    }
+}
+
+#[derive(Debug)]
+struct McpResolvedHttpTarget {
+    url: reqwest::Url,
+    dns_override_host: Option<String>,
+    dns_override_addrs: Vec<SocketAddr>,
+    requires_private_authorization: bool,
+}
+
+impl McpResolvedHttpTarget {
+    fn client(&self, timeout: std::time::Duration) -> Result<reqwest::Client, String> {
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout);
+        if let Some(host) = self.dns_override_host.as_deref() {
+            builder = builder.resolve_to_addrs(host, &self.dns_override_addrs);
+        }
+        builder
+            .build()
+            .map_err(|error| format!("failed to build hardened MCP HTTP client: {error}"))
+    }
+
+    fn ensure_authorized(
+        &self,
+        authorization: &McpEndpointAuthorization,
+    ) -> Result<(), String> {
+        if self.requires_private_authorization && !authorization.allows_private_endpoint() {
+            return Err("MCP private endpoint authorization was revoked".to_string());
+        }
+        Ok(())
+    }
+}
+
+async fn resolve_mcp_http_target(
+    raw: &str,
+    authorization: &McpEndpointAuthorization,
+) -> Result<McpResolvedHttpTarget, String> {
+    let allow_private_endpoint = authorization.allows_private_endpoint();
+    let url = reqwest::Url::parse(raw).map_err(|_| "invalid MCP endpoint URL".to_string())?;
+    let insecure_http = url.scheme() == "http";
+    if url.scheme() != "https" && !(insecure_http && allow_private_endpoint) {
+        return Err("MCP endpoint must use https".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("MCP endpoint must not include URL credentials".to_string());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "MCP endpoint host is missing".to_string())?
+        .trim_matches(['[', ']'])
+        .to_string();
+    let port = url.port_or_known_default().unwrap_or(443);
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        let public = mcp_ip_is_publicly_routable(ip);
+        if !public && !allow_private_endpoint {
+            return Err("MCP endpoint resolves to a private or internal address".to_string());
+        }
+        if insecure_http && public {
+            return Err("insecure MCP HTTP is limited to standalone private endpoints".to_string());
+        }
+        Ok(McpResolvedHttpTarget {
+            url,
+            dns_override_host: None,
+            dns_override_addrs: Vec::new(),
+            requires_private_authorization: !public || insecure_http,
+        })
+    } else {
+        let normalized = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if !allow_private_endpoint
+            && (normalized == "localhost" || normalized.ends_with(".localhost"))
+        {
+            return Err("MCP endpoint points to localhost/private network".to_string());
+        }
+        let addrs = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|error| format!("failed to resolve MCP endpoint: {error}"))?
+            .collect::<Vec<_>>();
+        if addrs.is_empty() {
+            return Err("MCP endpoint host did not resolve".to_string());
+        }
+        let any_private = addrs
+            .iter()
+            .any(|addr| !mcp_ip_is_publicly_routable(addr.ip()));
+        let any_public = addrs
+            .iter()
+            .any(|addr| mcp_ip_is_publicly_routable(addr.ip()));
+        if any_private && !allow_private_endpoint {
+            return Err("MCP endpoint resolves to a private or internal address".to_string());
+        }
+        if insecure_http && any_public {
+            return Err("insecure MCP HTTP is limited to standalone private endpoints".to_string());
+        }
+        Ok(McpResolvedHttpTarget {
+            url,
+            dns_override_host: Some(host),
+            dns_override_addrs: addrs,
+            requires_private_authorization: any_private || insecure_http,
+        })
+    }
+}
+
+fn mcp_ip_is_publicly_routable(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => mcp_ipv4_is_publicly_routable(ip),
+        IpAddr::V6(ip) => mcp_ipv6_is_publicly_routable(ip),
+    }
+}
+
+fn mcp_ipv4_is_publicly_routable(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    !(ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || octets[0] == 0
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        || (octets[0] == 169 && octets[1] == 254)
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+        || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+        || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+        || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+        || octets[0] >= 240)
+}
+
+fn mcp_ipv6_is_publicly_routable(ip: Ipv6Addr) -> bool {
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return mcp_ipv4_is_publicly_routable(mapped);
+    }
+    let segments = ip.segments();
+    !(ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ((segments[0] & 0xfe00) == 0xfc00)
+        || ((segments[0] & 0xffc0) == 0xfe80)
+        || ((segments[0] & 0xffc0) == 0xfec0)
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+        || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
+}
+
 async fn refresh_mcp_oauth_credential(
     oauth: &McpOAuthConfig,
     credential: &tandem_core::OAuthProviderCredential,
+    authorization: &McpEndpointAuthorization,
 ) -> Result<tandem_core::OAuthProviderCredential, String> {
     let refresh_token = credential.refresh_token.trim();
     if refresh_token.is_empty() {
         return Err("missing MCP OAuth refresh token".to_string());
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .user_agent(format!("tandem/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|error| format!("failed to build MCP OAuth refresh client: {error}"))?;
+    let target = resolve_mcp_http_target(&oauth.token_endpoint, authorization).await?;
+    let client = target.client(std::time::Duration::from_secs(15))?;
     let mut params = vec![
         ("grant_type", "refresh_token".to_string()),
         ("refresh_token", refresh_token.to_string()),
@@ -675,18 +858,45 @@ async fn refresh_mcp_oauth_credential(
     {
         params.push(("client_secret", client_secret.to_string()));
     }
-    let response = client
-        .post(&oauth.token_endpoint)
+    let request = client
+        .post(target.url.clone())
+        .header(
+            "user-agent",
+            format!("tandem/{}", env!("CARGO_PKG_VERSION")),
+        )
         .header(ACCEPT, "application/json")
-        .form(&params)
+        .form(&params);
+    target.ensure_authorized(authorization)?;
+    let mut response = request
         .send()
         .await
         .map_err(|error| format!("mcp oauth token refresh failed: {error}"))?;
     let status = response.status();
-    let body = response
-        .text()
+    if response
+        .content_length()
+        .is_some_and(|len| len as usize > MCP_HTTP_RESPONSE_MAX_BYTES)
+    {
+        return Err(format!(
+            "MCP OAuth refresh response too large: exceeds {} bytes",
+            MCP_HTTP_RESPONSE_MAX_BYTES
+        ));
+    }
+    let mut body_bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| format!("failed to read MCP OAuth refresh response: {error}"))?;
+        .map_err(|error| format!("failed to read MCP OAuth refresh response: {error}"))?
+    {
+        if body_bytes.len().saturating_add(chunk.len()) > MCP_HTTP_RESPONSE_MAX_BYTES {
+            return Err(format!(
+                "MCP OAuth refresh response too large: exceeds {} bytes",
+                MCP_HTTP_RESPONSE_MAX_BYTES
+            ));
+        }
+        body_bytes.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8(body_bytes)
+        .map_err(|error| format!("MCP OAuth refresh response was not valid UTF-8: {error}"))?;
     if !status.is_success() {
         return Err(format!(
             "mcp oauth token refresh failed with HTTP {}: {}",
@@ -747,20 +957,22 @@ async fn post_json_rpc_with_session(
     headers: &HashMap<String, String>,
     request: Value,
     session_id: Option<&str>,
+    authorization: &McpEndpointAuthorization,
 ) -> Result<(Value, Option<String>), String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
-    let mut req = client.post(endpoint).headers(build_headers(headers)?);
+    let target = resolve_mcp_http_target(endpoint, authorization).await?;
+    let client = target.client(std::time::Duration::from_secs(12))?;
+    let mut req = client
+        .post(target.url.clone())
+        .headers(build_headers(headers)?);
     if let Some(id) = session_id {
         let trimmed = id.trim();
         if !trimmed.is_empty() {
             req = req.header("Mcp-Session-Id", trimmed);
         }
     }
-    let mut response = req
-        .json(&request)
+    let request = req.json(&request);
+    target.ensure_authorized(authorization)?;
+    let mut response = request
         .send()
         .await
         .map_err(|e| format!("MCP request failed: {e}"))?;

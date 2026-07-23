@@ -57,6 +57,39 @@ async fn runtime_provider_api_key(state: &AppState, provider_id: &str) -> Option
         .map(str::to_string)
 }
 
+fn direct_loopback_request() -> axum::http::request::Builder {
+    Request::builder().extension(axum::extract::ConnectInfo(
+        "127.0.0.1:39731"
+            .parse::<std::net::SocketAddr>()
+            .expect("loopback socket address"),
+    ))
+}
+
+fn verified_deployment_admin(
+    tenant_context: tandem_types::TenantContext,
+    actor_id: &str,
+) -> tandem_types::VerifiedTenantContext {
+    let now = crate::now_ms();
+    tandem_types::VerifiedTenantContext {
+        tenant_context,
+        human_actor: tandem_types::HumanActor::tandem_user(actor_id),
+        authority_chain: tandem_types::AuthorityChain::from_request(
+            tandem_types::RequestPrincipal::authenticated_user(actor_id, "provider-test"),
+        ),
+        roles: Vec::new(),
+        org_units: Vec::new(),
+        capabilities: vec!["deployment.admin".to_string()],
+        policy_version: None,
+        strict_projection: None,
+        issuer: "provider-test".to_string(),
+        audience: "tandem".to_string(),
+        issued_at_ms: now,
+        expires_at_ms: now.saturating_add(60_000),
+        assertion_id: format!("provider-test-{actor_id}-{now}"),
+        assertion_key_id: None,
+    }
+}
+
 fn tenant_request(
     method: &str,
     uri: &str,
@@ -65,7 +98,10 @@ fn tenant_request(
     actor_id: &str,
     body: Option<Value>,
 ) -> Request<Body> {
+    let tenant_context =
+        tandem_types::TenantContext::explicit_user_workspace(org_id, workspace_id, None, actor_id);
     let mut builder = Request::builder()
+        .extension(verified_deployment_admin(tenant_context, actor_id))
         .method(method)
         .uri(uri)
         .header("x-tandem-org-id", org_id)
@@ -181,7 +217,7 @@ async fn config_patch_preserves_saved_codex_default_over_runtime_provider() {
         .expect("runtime codex provider");
 
     let app = app_router(state);
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PATCH")
         .uri("/config")
         .header("content-type", "application/json")
@@ -208,7 +244,7 @@ async fn config_patch_preserves_saved_codex_default_over_runtime_provider() {
         Some("gpt-5.5")
     );
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("GET")
         .uri("/config/providers")
         .body(Body::empty())
@@ -224,6 +260,105 @@ async fn config_patch_preserves_saved_codex_default_over_runtime_provider() {
             .and_then(Value::as_str),
         Some("gpt-5.5")
     );
+}
+
+#[tokio::test]
+async fn config_patch_rejects_secret_aliases_before_authority_audit() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let secret = format!("secret-{}", Uuid::new_v4());
+    let patches = [
+        json!({"providers": {"custom": {"token": secret.clone()}}}),
+        json!({"providers": {"custom": {"clientSecret": secret.clone()}}}),
+        json!({"providers": {"custom": {"password": secret.clone()}}}),
+        json!({"providers": {"custom": {"headers": {"x-custom": secret.clone()}}}}),
+    ];
+
+    for patch in patches {
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/config")
+            .header("content-type", "application/json")
+            .body(Body::from(patch.to_string()))
+            .expect("request");
+        let resp = app.clone().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(resp).await.get("code").and_then(Value::as_str),
+            Some("CONFIG_SECRET_REJECTED")
+        );
+    }
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .unwrap_or_default();
+    assert!(!audit.contains(&secret));
+
+    state
+        .config
+        .patch_runtime(json!({
+            "providers": {"legacy": {"token": secret.clone()}}
+        }))
+        .await
+        .expect("seed legacy secret-bearing config");
+    let req = direct_loopback_request()
+        .method("GET")
+        .uri("/config")
+        .body(Body::empty())
+        .expect("request");
+    let payload = json_body(app.oneshot(req).await.expect("response")).await;
+    let rendered = payload.to_string();
+    assert!(!rendered.contains(&secret));
+    assert!(rendered.contains("[REDACTED]"));
+}
+
+#[tokio::test]
+async fn hosted_admin_cannot_configure_private_local_provider_origin() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = tenant_request(
+        "PATCH",
+        "/config",
+        "org-a",
+        "workspace-a",
+        "admin-a",
+        Some(json!({
+            "providers": {
+                "ollama": {"url": "http://127.0.0.1:11434/v1"}
+            }
+        })),
+    );
+
+    let resp = app.oneshot(req).await.expect("response");
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(resp).await.get("code").and_then(Value::as_str),
+        Some("PROVIDER_ORIGIN_CHANGE_REJECTED")
+    );
+}
+
+#[tokio::test]
+async fn standalone_loopback_owner_can_configure_private_local_provider_origin() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = direct_loopback_request()
+        .method("PATCH")
+        .uri("/config")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "providers": {
+                    "ollama": {"url": "http://127.0.0.1:11434/v1"}
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+
+    let resp = app.oneshot(req).await.expect("response");
+
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -245,7 +380,7 @@ async fn config_providers_heals_retired_codex_default_model() {
         .expect("runtime codex provider");
 
     let app = app_router(state);
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("GET")
         .uri("/config/providers")
         .body(Body::empty())
@@ -270,7 +405,7 @@ async fn config_providers_heals_retired_codex_default_model() {
 async fn provider_auth_set_writes_protected_audit_record() {
     let state = test_state().await;
     let app = app_router(state.clone());
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/auth/openai")
         .header("content-type", "application/json")
@@ -289,7 +424,36 @@ async fn provider_auth_set_writes_protected_audit_record() {
 }
 
 #[tokio::test]
-async fn provider_auth_set_reports_required_audit_persistence_failure() {
+async fn provider_auth_mutation_rejects_missing_host_authority_without_leaking_secret() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let provider_id = format!("denied-provider-{}", Uuid::new_v4());
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/auth/{provider_id}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"token": "sk-must-never-appear-in-audit"}).to_string(),
+        ))
+        .expect("request");
+
+    let resp = app.oneshot(req).await.expect("response");
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .unwrap_or_default();
+    assert!(!audit.contains("sk-must-never-appear-in-audit"));
+    assert!(tandem_core::load_provider_auth_for_tenant_in_dir(
+        &provider_auth_security_dir(&state),
+        &tandem_types::TenantContext::local_implicit(),
+    )
+    .get(&provider_id)
+    .is_none());
+}
+
+#[tokio::test]
+async fn provider_auth_set_authority_audit_failure_preserves_existing_credential() {
     let state = test_state().await;
     let tenant = tandem_types::TenantContext::local_implicit();
     tandem_core::set_provider_auth_for_tenant_in_dir(
@@ -316,7 +480,7 @@ async fn provider_auth_set_reports_required_audit_persistence_failure() {
     make_protected_audit_unwritable(&state).await;
 
     let app = app_router(state.clone());
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/auth/openai")
         .header("content-type", "application/json")
@@ -327,12 +491,6 @@ async fn provider_auth_set_reports_required_audit_persistence_failure() {
     let resp = app.oneshot(req).await.expect("response");
 
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let payload = json_body(resp).await;
-    assert_eq!(
-        payload.get("code").and_then(Value::as_str),
-        Some("PROTECTED_AUDIT_PERSISTENCE_FAILED")
-    );
-    assert_ne!(payload.get("ok").and_then(Value::as_bool), Some(true));
     assert_eq!(
         tandem_core::load_provider_auth_for_tenant_in_dir(
             &provider_auth_security_dir(&state),
@@ -388,7 +546,7 @@ async fn provider_auth_delete_persistence_failure_keeps_durable_and_runtime_key(
 
     let response = app_router(state.clone())
         .oneshot(
-            Request::builder()
+            direct_loopback_request()
                 .method("DELETE")
                 .uri("/auth/openai")
                 .body(Body::empty())
@@ -584,7 +742,7 @@ async fn provider_oauth_session_import_persists_codex_auth_and_reports_connected
         },
         "last_refresh": "2026-04-23T08:15:30.000Z"
     });
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("POST")
         .uri("/provider/openai-codex/oauth/session/import")
         .header("content-type", "application/json")
@@ -620,7 +778,7 @@ async fn provider_oauth_session_import_persists_codex_auth_and_reports_connected
     assert!(persisted.contains("refresh-token-456"));
     assert!(persisted.contains("\"auth_mode\": \"chatgpt\""));
 
-    let status_req = Request::builder()
+    let status_req = direct_loopback_request()
         .method("GET")
         .uri("/provider/openai-codex/oauth/status")
         .body(Body::empty())
@@ -652,7 +810,7 @@ async fn provider_oauth_session_import_persists_codex_auth_and_reports_connected
         Some(true)
     );
 
-    let auth_req = Request::builder()
+    let auth_req = direct_loopback_request()
         .method("GET")
         .uri("/provider/auth")
         .body(Body::empty())
@@ -728,7 +886,7 @@ async fn hosted_tenant_cannot_import_local_codex_session() {
 }
 
 #[tokio::test]
-async fn oauth_upload_audit_failure_restores_persisted_and_runtime_credential() {
+async fn oauth_upload_authority_audit_failure_preserves_persisted_and_runtime_credential() {
     let state = test_state().await;
     let tenant = tandem_types::TenantContext::explicit(
         "org-audit-upload",
@@ -774,13 +932,6 @@ async fn oauth_upload_audit_failure_restores_persisted_and_runtime_credential() 
         .await
         .expect("upload response");
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(
-        json_body(response)
-            .await
-            .get("code")
-            .and_then(Value::as_str),
-        Some("PROTECTED_AUDIT_PERSISTENCE_FAILED")
-    );
     assert_eq!(
         tandem_core::load_provider_oauth_credential_for_tenant_in_dir(
             &provider_auth_security_dir(&state),
@@ -849,7 +1000,7 @@ async fn oauth_local_import_audit_failure_restores_persisted_and_runtime_credent
 
     let response = app_router(state.clone())
         .oneshot(
-            Request::builder()
+            direct_loopback_request()
                 .method("POST")
                 .uri("/provider/openai-codex/oauth/session/local")
                 .body(Body::empty())
@@ -1045,11 +1196,14 @@ async fn provider_oauth_authorize_uses_hosted_public_callback_for_codex() {
         .expect("patch hosted config");
 
     let app = app_router(state.clone());
-    let req = Request::builder()
-        .method("POST")
-        .uri("/provider/openai-codex/oauth/authorize")
-        .body(Body::empty())
-        .expect("request");
+    let req = tenant_request(
+        "POST",
+        "/provider/openai-codex/oauth/authorize",
+        "org-a",
+        "workspace-a",
+        "admin-a",
+        None,
+    );
     let resp = app.oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
@@ -1092,13 +1246,22 @@ async fn provider_oauth_authorize_uses_forwarded_panel_origin_for_codex() {
     state.set_server_base_url("http://127.0.0.1:39731".to_string());
 
     let app = app_router(state.clone());
-    let req = Request::builder()
-        .method("POST")
-        .uri("/provider/openai-codex/oauth/authorize")
-        .header("x-forwarded-proto", "https")
-        .header("x-forwarded-host", "panel.example.com")
-        .body(Body::empty())
-        .expect("request");
+    let mut req = tenant_request(
+        "POST",
+        "/provider/openai-codex/oauth/authorize",
+        "org-a",
+        "workspace-a",
+        "admin-a",
+        None,
+    );
+    req.headers_mut().insert(
+        "x-forwarded-proto",
+        axum::http::HeaderValue::from_static("https"),
+    );
+    req.headers_mut().insert(
+        "x-forwarded-host",
+        axum::http::HeaderValue::from_static("panel.example.com"),
+    );
     let resp = app.oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
@@ -1159,7 +1322,7 @@ async fn provider_route_marks_config_models_as_config_catalogs() {
         .await;
 
     let app = app_router(state);
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("GET")
         .uri("/provider")
         .body(Body::empty())
@@ -1224,7 +1387,7 @@ async fn provider_route_uses_runtime_auth_for_remote_catalog_fetch() {
         .config
         .patch_project(json!({
             "providers": {
-                "openai": {
+                "llama_cpp": {
                     "url": format!("http://{addr}/v1")
                 }
             }
@@ -1235,14 +1398,14 @@ async fn provider_route_uses_runtime_auth_for_remote_catalog_fetch() {
         .auth
         .write()
         .await
-        .insert("openai".to_string(), "test-key".to_string());
+        .insert("llama_cpp".to_string(), "test-key".to_string());
     state
         .providers
         .reload(state.config.get().await.into())
         .await;
 
     let app = app_router(state);
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("GET")
         .uri("/provider")
         .body(Body::empty())
@@ -1258,23 +1421,177 @@ async fn provider_route_uses_runtime_auth_for_remote_catalog_fetch() {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let openai = all
+    let llama_cpp = all
         .iter()
-        .find(|entry| entry.get("id").and_then(Value::as_str) == Some("openai"))
+        .find(|entry| entry.get("id").and_then(Value::as_str) == Some("llama_cpp"))
         .cloned()
-        .expect("openai entry");
+        .expect("llama.cpp entry");
 
     assert_eq!(
-        openai.get("catalog_source").and_then(Value::as_str),
+        llama_cpp.get("catalog_source").and_then(Value::as_str),
         Some("remote")
     );
     assert!(
-        openai
+        llama_cpp
             .get("models")
             .and_then(Value::as_object)
             .and_then(|models| models.get("gpt-4.1-mini"))
             .is_some(),
         "expected runtime-auth-backed remote catalog"
+    );
+}
+
+#[tokio::test]
+async fn local_implicit_catalog_blocks_private_nonlocal_origin_for_every_runtime_posture() {
+    let seen_auth = Arc::new(Mutex::new(Vec::<String>::new()));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+    let seen_auth_for_handler = seen_auth.clone();
+    let mock = Router::new().fallback(get(move |headers: axum::http::HeaderMap| {
+        let seen_auth = seen_auth_for_handler.clone();
+        async move {
+            let auth = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            seen_auth.lock().expect("seen auth lock").push(auth);
+            Json(json!({"data": [{"id": "must-not-be-reached"}]}))
+        }
+    }));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock)
+            .await
+            .expect("serve test provider");
+    });
+
+    let state = test_state().await;
+    state.set_host_operations_loopback_only(false);
+    state.set_server_base_url("https://tandem.example".to_string());
+    state
+        .config
+        .patch_project(json!({
+            "providers": {
+                "openai": {
+                    "url": format!("http://{addr}/v1")
+                },
+                "cohere": {
+                    "url": format!("http://{addr}/v2")
+                }
+            }
+        }))
+        .await
+        .expect("patch project");
+    state
+        .auth
+        .write()
+        .await
+        .insert("openai".to_string(), "test-key".to_string());
+    state
+        .auth
+        .write()
+        .await
+        .insert("cohere".to_string(), "cohere-test-key".to_string());
+    state
+        .providers
+        .reload(state.config.get().await.into())
+        .await;
+
+    let app = app_router(state.clone());
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/provider")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = json_body(response).await;
+    let openai = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("openai"))
+        })
+        .expect("openai entry");
+    assert_eq!(
+        openai.get("catalog_status").and_then(Value::as_str),
+        Some("error"),
+        "local implicit credentials do not establish standalone network posture"
+    );
+    let cohere = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("cohere"))
+        })
+        .expect("cohere entry");
+    assert_eq!(
+        cohere.get("catalog_status").and_then(Value::as_str),
+        Some("error"),
+        "shared auth visibility must not authorize private Cohere discovery"
+    );
+    assert!(
+        seen_auth.lock().expect("seen auth lock").is_empty(),
+        "public-listener catalog discovery must not contact a private origin"
+    );
+    state.set_host_operations_loopback_only(true);
+    state.set_server_base_url("http://127.0.0.1:39731".to_string());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/provider")
+                .body(Body::empty())
+                .expect("standalone request"),
+        )
+        .await
+        .expect("standalone response");
+    server.abort();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = json_body(response).await;
+    let openai = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("openai"))
+        })
+        .expect("standalone openai entry");
+    assert_eq!(
+        openai.get("catalog_status").and_then(Value::as_str),
+        Some("error"),
+        "standalone private discovery remains restricted to local provider IDs"
+    );
+    let cohere = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("cohere"))
+        })
+        .expect("standalone cohere entry");
+    assert_eq!(
+        cohere.get("catalog_status").and_then(Value::as_str),
+        Some("error"),
+        "standalone posture must not authorize private Cohere discovery"
+    );
+    assert!(
+        seen_auth.lock().expect("seen auth lock").is_empty(),
+        "standalone posture must not send a non-local provider key to a private origin"
     );
 }
 
@@ -1357,7 +1674,7 @@ async fn explicit_tenant_provider_route_ignores_shared_config_api_key_for_remote
 }
 
 #[tokio::test]
-async fn provider_route_uses_only_request_tenant_persisted_auth_for_remote_catalog_fetch() {
+async fn explicit_tenant_catalog_blocks_private_origin_without_cross_tenant_auth_leakage() {
     let seen_auth = Arc::new(Mutex::new(Vec::<String>::new()));
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -1452,10 +1769,14 @@ async fn provider_route_uses_only_request_tenant_persisted_auth_for_remote_catal
         })
         .expect("openai entry for tenant b");
     assert_eq!(
-        openai.get("catalog_source").and_then(Value::as_str),
-        Some("remote")
+        openai.get("catalog_status").and_then(Value::as_str),
+        Some("error"),
+        "hosted tenant discovery must reject a private provider origin"
     );
 
     let seen = seen_auth.lock().expect("seen auth lock").clone();
-    assert_eq!(seen, vec!["Bearer sk-tenant-b".to_string()]);
+    assert!(
+        seen.is_empty(),
+        "neither tenant credential may be sent to a private provider origin"
+    );
 }

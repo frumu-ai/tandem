@@ -4,6 +4,7 @@
 use super::*;
 
 #[tokio::test]
+#[serial_test::serial(mcp_provider_auth)]
 async fn mcp_inventory_redacts_and_filters_connections_by_actor() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;
@@ -65,6 +66,7 @@ async fn mcp_inventory_redacts_and_filters_connections_by_actor() {
         .expect("bob mcp oauth session");
 
     let alice_inventory_resp = app
+        .clone()
         .oneshot(tenant_request(
             "GET",
             "/mcp",
@@ -113,6 +115,55 @@ async fn mcp_inventory_redacts_and_filters_connections_by_actor() {
     assert!(
         !String::from_utf8_lossy(&alice_inventory_body).contains("client_secret"),
         "public MCP inventory must not expose OAuth client secrets"
+    );
+
+    let delete_response = app
+        .oneshot(tenant_admin_request(
+            "DELETE",
+            "/mcp/notion/auth",
+            "org-a",
+            "workspace-a",
+            "alice",
+        ))
+        .await
+        .expect("Alice auth deletion response");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+    let delete_payload: Value = serde_json::from_slice(
+        &to_bytes(delete_response.into_body(), usize::MAX)
+            .await
+            .expect("delete auth body"),
+    )
+    .expect("delete auth json");
+    assert_eq!(
+        delete_payload
+            .get("removedOauthSessionCount")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    let sessions = state.oauth.mcp_sessions().read().await;
+    assert!(sessions
+        .values()
+        .all(|session| session.tenant_context != alice_tenant));
+    assert!(
+        sessions
+            .values()
+            .any(|session| session.tenant_context == bob_tenant),
+        "Alice auth deletion must preserve Bob's pending OAuth session"
+    );
+    drop(sessions);
+    let connections = state.mcp.list_connections().await;
+    assert!(connections
+        .get(&alice_session.connection_id)
+        .expect("Alice connection remains inventoried")
+        .last_auth_challenge
+        .is_none());
+    assert!(
+        connections
+            .get(&bob_session.connection_id)
+            .expect("Bob connection remains inventoried")
+            .last_auth_challenge
+            .is_some(),
+        "Alice auth deletion must preserve Bob's scoped connection"
     );
 
     drop(server);

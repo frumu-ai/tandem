@@ -288,6 +288,7 @@ mod tests {
         let (endpoint, server) = spawn_fake_http_mcp_server().await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         registry
             .add("githubcopilot".to_string(), endpoint.to_string())
             .await;
@@ -351,6 +352,7 @@ mod tests {
         let (endpoint, server) = spawn_fake_http_mcp_server().await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         registry
             .add("githubcopilot".to_string(), endpoint.to_string())
             .await;
@@ -369,6 +371,7 @@ mod tests {
         let (endpoint, server) = spawn_fake_http_mcp_server().await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         registry
             .add("githubcopilot".to_string(), endpoint.to_string())
             .await;
@@ -534,6 +537,84 @@ mod tests {
             .map(|tool| tool.namespaced_name)
             .collect::<Vec<_>>();
         assert_eq!(alice_names, vec!["mcp.notion.alice_search".to_string()]);
+
+        assert!(registry.disconnect_for_tenant("notion", &tenant_a).await);
+        assert!(
+            registry
+                .server_tools_for_tenant("notion", &tenant_a)
+                .await
+                .is_empty(),
+            "tenant disconnect clears only the caller's runtime cache"
+        );
+        assert_eq!(
+            registry
+                .server_tools_for_tenant("notion", &tenant_b)
+                .await
+                .into_iter()
+                .map(|tool| tool.namespaced_name)
+                .collect::<Vec<_>>(),
+            vec!["mcp.notion.bob_search".to_string()]
+        );
+        assert_eq!(
+            registry
+                .bridge_tools_for_server("notion")
+                .await
+                .into_iter()
+                .map(|tool| tool.namespaced_name)
+                .collect::<Vec<_>>(),
+            vec!["mcp.notion.bob_search".to_string()],
+            "shared bridge union must retain the other tenant's connected tools"
+        );
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn clear_auth_material_for_tenant_preserves_other_connection_credentials() {
+        let _provider_auth_guard = provider_auth_test_guard().await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        registry
+            .add_or_update(
+                "notion".to_string(),
+                "https://example.com/mcp".to_string(),
+                HashMap::new(),
+                true,
+            )
+            .await;
+        let tenant_a =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+        let tenant_b =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
+        registry
+            .set_bearer_token_for_tenant("notion", "alice-token", &tenant_a)
+            .await
+            .expect("set Alice token");
+        registry
+            .set_bearer_token_for_tenant("notion", "bob-token", &tenant_b)
+            .await
+            .expect("set Bob token");
+
+        assert!(
+            registry
+                .clear_auth_material_for_tenant("notion", &tenant_a)
+                .await
+        );
+        let connections = registry.list_connections().await;
+        let alice = connections
+            .get(&registry.connection_id_for_tenant("notion", &tenant_a))
+            .expect("Alice connection");
+        let bob = connections
+            .get(&registry.connection_id_for_tenant("notion", &tenant_b))
+            .expect("Bob connection");
+        assert!(alice.credential_ref.is_none());
+        assert!(alice.secret_headers.is_empty());
+        assert!(!alice.connected);
+        assert!(bob.credential_ref.is_some());
+        assert!(!bob.secret_headers.is_empty());
+
+        let _ = registry
+            .clear_auth_material_for_tenant("notion", &tenant_b)
+            .await;
         let _ = std::fs::remove_file(file);
     }
 
@@ -1224,6 +1305,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn identity_change_deletes_tenant_bound_header_credential() {
+        let _provider_auth_guard = provider_auth_test_guard().await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let tenant = TenantContext::explicit_user_workspace(
+            format!("mcp-identity-org-{}", Uuid::new_v4()),
+            "workspace-a",
+            None,
+            "deployment-admin",
+        );
+        let server_name = "identity-credential-clear";
+        let secret_id =
+            mcp_header_secret_id_for_tenant(server_name, "Authorization", &tenant);
+
+        registry
+            .add_or_update_with_secret_refs(
+                server_name.to_string(),
+                "https://example.com/first".to_string(),
+                HashMap::from([(
+                    "Authorization".to_string(),
+                    "Bearer old-credential".to_string(),
+                )]),
+                HashMap::new(),
+                &tenant,
+                true,
+            )
+            .await;
+        assert_eq!(
+            tandem_core::load_provider_auth_for_tenant(&tenant)
+                .get(&secret_id)
+                .map(String::as_str),
+            Some("Bearer old-credential")
+        );
+        let first_generation = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == server_name)
+            .expect("initial tenant connection")
+            .connection_generation;
+
+        registry
+            .add_or_update_with_secret_refs(
+                server_name.to_string(),
+                "https://example.com/second".to_string(),
+                HashMap::new(),
+                HashMap::new(),
+                &tenant,
+                true,
+            )
+            .await;
+
+        assert!(
+            !tandem_core::load_provider_auth_for_tenant(&tenant).contains_key(&secret_id),
+            "origin changes must delete the previously stored credential"
+        );
+        let server = registry
+            .list()
+            .await
+            .get(server_name)
+            .cloned()
+            .expect("updated MCP server");
+        assert!(server.secret_headers.is_empty());
+        assert!(server.oauth.is_none());
+        let changed_generation = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == server_name)
+            .expect("rotated tenant connection")
+            .connection_generation;
+        assert_ne!(first_generation, changed_generation);
+
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
     async fn credential_replacement_rotates_connection_generation() {
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file.clone());
@@ -1597,6 +1755,7 @@ mod tests {
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         let server_name = "tenant-server-matching";
         let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
         registry
@@ -1633,6 +1792,7 @@ mod tests {
             spawn_discovery_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         let server_name = "tenant-server-reconnects-with-tenant";
         let tenant_a = TenantContext::explicit_user_workspace(
             format!("tenant-a-{}", Uuid::new_v4()),
@@ -1705,6 +1865,7 @@ mod tests {
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         let server_name = "tenant-server-mismatch-connected";
         let tenant_a =
             TenantContext::explicit(format!("tenant-a-{}", Uuid::new_v4()), "workspace-a", None);

@@ -44,4 +44,6 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route("/auth/{id}", put(set_auth).delete(delete_auth))
         .route("/auth/token", put(set_api_token).delete(clear_api_token))
         .route("/auth/token/generate", post(generate_api_token))
+        .route("/auth/tokens", get(list_api_tokens))
+        .route("/auth/token/{token_id}", delete(revoke_api_token))
 }

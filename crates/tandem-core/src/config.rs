@@ -452,7 +452,7 @@ pub const SLACK_SIGNING_SECRET_STORE_PREFIX: &str = "channel::slack::signing_sec
 
 /// Installation-keyed secret-store id for the top-level Slack signing
 /// secret of this raw `channels.slack` object.
-fn slack_signing_secret_store_id(cfg: &serde_json::Map<String, Value>) -> String {
+pub fn slack_signing_secret_store_id(cfg: &serde_json::Map<String, Value>) -> String {
     let (team, app) = slack_raw_installation(cfg);
     let team = team.as_deref().unwrap_or("-");
     let app = app.as_deref().unwrap_or("-");

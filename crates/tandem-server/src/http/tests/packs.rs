@@ -97,13 +97,14 @@ async fn packs_detect_returns_false_without_marker() {
 }
 
 #[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn packs_install_list_and_uninstall_roundtrip() {
     let state = test_state().await;
     let mut rx = state.event_bus.subscribe();
     let root = std::env::temp_dir().join(format!("tandem-pack-install-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&root).expect("mkdir");
     let pack_zip = root.join("pack.zip");
-    write_pack_zip(
+    let _trusted_key = write_signed_pack_zip(
         &pack_zip,
         "name: roundtrip-pack\nversion: 1.2.3\ntype: workflow\npack_id: roundtrip-pack\n",
     );
@@ -195,12 +196,13 @@ async fn packs_install_list_and_uninstall_roundtrip() {
 }
 
 #[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn packs_updates_endpoints_return_stub_payload() {
     let state = test_state().await;
     let root = std::env::temp_dir().join(format!("tandem-pack-updates-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&root).expect("mkdir");
     let pack_zip = root.join("pack.zip");
-    write_pack_zip(
+    let _trusted_key = write_signed_pack_zip(
         &pack_zip,
         "name: update-pack\nversion: 1.0.0\ntype: workflow\npack_id: update-pack\n",
     );
@@ -275,19 +277,15 @@ async fn packs_updates_endpoints_return_stub_payload() {
 }
 
 #[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn packs_get_reports_workflow_extensions() {
     let state = test_state().await;
     let root = std::env::temp_dir().join(format!("tandem-pack-inspect-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&root).expect("mkdir");
     let pack_zip = root.join("inspect-pack.zip");
-    let file = std::fs::File::create(&pack_zip).expect("create zip");
-    let mut zip = zip::ZipWriter::new(file);
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    zip.start_file("tandempack.yaml", opts).expect("manifest");
-    std::io::Write::write_all(
-        &mut zip,
-        br#"name: workflow-inspect-pack
+    let _trusted_key = write_signed_pack_zip_with_entries(
+        &pack_zip,
+        r#"name: workflow-inspect-pack
 version: 1.0.0
 type: workflow
 pack_id: workflow-inspect-pack
@@ -302,23 +300,17 @@ contents:
     - id: build_feature.task_completed.notify
       path: hooks/notify.yaml
 "#,
-    )
-    .expect("write manifest");
-    zip.start_file("workflows/build_feature.yaml", opts)
-        .expect("workflow file");
-    std::io::Write::write_all(
-        &mut zip,
-        b"workflow:\n  id: build_feature\n  name: Build Feature\n  steps:\n    - planner\n",
-    )
-    .expect("write workflow file");
-    zip.start_file("hooks/notify.yaml", opts)
-        .expect("hook file");
-    std::io::Write::write_all(
-        &mut zip,
-        b"hooks:\n  - id: build_feature.task_completed.notify\n    workflow_id: build_feature\n    event: task_completed\n    actions:\n      - slack.notify\n",
-    )
-    .expect("write hook file");
-    zip.finish().expect("finish zip");
+        &[
+            (
+                "workflows/build_feature.yaml",
+                "workflow:\n  id: build_feature\n  name: Build Feature\n  steps:\n    - planner\n",
+            ),
+            (
+                "hooks/notify.yaml",
+                "hooks:\n  - id: build_feature.task_completed.notify\n    workflow_id: build_feature\n    event: task_completed\n    actions:\n      - slack.notify\n",
+            ),
+        ],
+    );
 
     let app = app_router(state.clone());
     let install_resp = app
@@ -375,12 +367,13 @@ contents:
 }
 
 #[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn packs_install_with_marketplace_assets_exposes_files() {
     let state = test_state().await;
     let root = std::env::temp_dir().join(format!("tandem-pack-marketplace-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&root).expect("mkdir");
     let pack_zip = root.join("marketplace-pack.zip");
-    write_pack_zip_with_entries(
+    let _trusted_key = write_signed_pack_zip_with_entries(
         &pack_zip,
         r#"
 manifest_schema_version: 1

@@ -227,6 +227,8 @@ impl tandem_tools::Tool for DemoTool {
 }
 
 pub async fn reset_and_run(state: &AppState) -> anyhow::Result<AcmeLiveDemoReport> {
+    let _slack_loopback_runtime = crate::config::channels::enter_acme_slack_loopback_runtime()
+        .ok_or_else(|| anyhow::anyhow!("ACME Slack demo is already running"))?;
     let _auth_mode = RuntimeAuthModeGuard::strict();
     let dataset = acme_demo_dataset();
     let reset = reset_seeded_state(state, &dataset).await?;

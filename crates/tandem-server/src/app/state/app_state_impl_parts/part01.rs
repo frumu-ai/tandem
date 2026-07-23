@@ -9,6 +9,14 @@ struct IncidentMonitorLogWatcherStateFile {
     sources: std::collections::HashMap<String, IncidentMonitorLogSourceState>,
 }
 
+fn constant_time_hash_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    let mut difference = 0u8;
+    for (left, right) in left.iter().zip(right.iter()) {
+        difference |= left ^ right;
+    }
+    difference == 0
+}
+
 fn incident_monitor_log_source_state_key(project_id: &str, source_id: &str) -> String {
     format!("{}/{}", project_id.trim(), source_id.trim())
 }
@@ -247,6 +255,7 @@ impl AppState {
             })),
             in_process_mode: Arc::new(AtomicBool::new(in_process)),
             api_token: Arc::new(RwLock::new(None)),
+            transport_tokens: Arc::new(RwLock::new(Vec::new())),
             engine_leases: Arc::new(RwLock::new(std::collections::HashMap::new())),
             managed_worktrees: Arc::new(RwLock::new(std::collections::HashMap::new())),
             run_registry: RunRegistry::new(),
@@ -380,6 +389,7 @@ impl AppState {
             web_ui_prefix: Arc::new(std::sync::RwLock::new("/admin".to_string())),
             server_base_url: Arc::new(std::sync::RwLock::new("http://127.0.0.1:39731".to_string())),
             host_operations_loopback_only: Arc::new(AtomicBool::new(true)),
+            http_listener_bound_loopback_only: Arc::new(AtomicBool::new(false)),
             trust_test_tenant_headers: Arc::new(AtomicBool::new(false)),
             allow_unsigned_dev_webhooks: Arc::new(AtomicBool::new(
                 config::env::resolve_allow_unsigned_dev_webhooks(),
@@ -455,6 +465,7 @@ impl AppState {
         if let Ok(mut guard) = self.server_base_url.write() {
             *guard = base_url;
         }
+        self.sync_mcp_private_endpoint_posture();
     }
 
     pub fn server_base_url(&self) -> String {
@@ -467,10 +478,33 @@ impl AppState {
     pub fn set_host_operations_loopback_only(&self, loopback_only: bool) {
         self.host_operations_loopback_only
             .store(loopback_only, Ordering::Relaxed);
+        self.sync_mcp_private_endpoint_posture();
     }
 
     pub fn host_operations_loopback_only(&self) -> bool {
         self.host_operations_loopback_only.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_http_listener_bound_loopback_only(&self, loopback_only: bool) {
+        self.http_listener_bound_loopback_only
+            .store(loopback_only, Ordering::SeqCst);
+        self.sync_mcp_private_endpoint_posture();
+    }
+
+    pub(crate) fn http_listener_bound_loopback_only(&self) -> bool {
+        self.http_listener_bound_loopback_only
+            .load(Ordering::SeqCst)
+    }
+
+    fn sync_mcp_private_endpoint_posture(&self) {
+        let allow_private = self.http_listener_bound_loopback_only()
+            && self.host_operations_loopback_only()
+            && crate::http::host_authority::server_base_url_is_loopback(&self.server_base_url());
+        if let Some(runtime) = self.runtime.get() {
+            runtime
+                .mcp
+                .set_standalone_private_endpoint_access(allow_private);
+        }
     }
 
     pub async fn api_token(&self) -> Option<String> {
@@ -478,7 +512,128 @@ impl AppState {
     }
 
     pub async fn set_api_token(&self, token: Option<String>) {
-        *self.api_token.write().await = token;
+        *self.api_token.write().await = token.clone();
+        let mut records = self.transport_tokens.write().await;
+        records.clear();
+        if let Some(token) = token
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            records.push(TransportTokenRecord {
+                metadata: TransportTokenMetadata {
+                    token_id: format!(
+                        "tt_legacy_{}",
+                        &format!("{:x}", Sha256::digest(token.as_bytes()))[..12]
+                    ),
+                    scopes: vec!["engine.api".to_string()],
+                    created_at_ms: now_ms(),
+                    revoked_at_ms: None,
+                },
+                token_hash: Sha256::digest(token.as_bytes()).into(),
+            });
+        }
+    }
+
+    pub async fn api_token_required(&self) -> bool {
+        self.transport_tokens
+            .read()
+            .await
+            .iter()
+            .any(|record| record.metadata.revoked_at_ms.is_none())
+            || self.api_token.read().await.is_some()
+    }
+
+    pub async fn api_token_matches(&self, provided: &str) -> bool {
+        let provided_hash: [u8; 32] = Sha256::digest(provided.trim().as_bytes()).into();
+        self.transport_tokens.read().await.iter().any(|record| {
+            record.metadata.revoked_at_ms.is_none()
+                && record
+                    .metadata
+                    .scopes
+                    .iter()
+                    .any(|scope| scope == "engine.api")
+                && constant_time_hash_eq(&provided_hash, &record.token_hash)
+        })
+    }
+
+    pub async fn rotate_api_token(
+        &self,
+        token: String,
+        scopes: Vec<String>,
+    ) -> TransportTokenMetadata {
+        let token = token.trim().to_string();
+        let metadata = TransportTokenMetadata {
+            token_id: format!("tt_{}", uuid::Uuid::new_v4().simple()),
+            scopes,
+            created_at_ms: now_ms(),
+            revoked_at_ms: None,
+        };
+        let record = TransportTokenRecord {
+            metadata: metadata.clone(),
+            token_hash: Sha256::digest(token.as_bytes()).into(),
+        };
+        let mut records = self.transport_tokens.write().await;
+        records.push(record);
+        if records
+            .iter()
+            .filter(|record| record.metadata.revoked_at_ms.is_none())
+            .count()
+            > 16
+        {
+            if let Some(oldest) = records
+                .iter_mut()
+                .filter(|record| record.metadata.revoked_at_ms.is_none())
+                .min_by_key(|record| record.metadata.created_at_ms)
+            {
+                oldest.metadata.revoked_at_ms = Some(now_ms());
+            }
+        }
+        drop(records);
+        *self.api_token.write().await = Some(token);
+        metadata
+    }
+
+    pub async fn transport_token_metadata(&self) -> Vec<TransportTokenMetadata> {
+        self.transport_tokens
+            .read()
+            .await
+            .iter()
+            .map(|record| record.metadata.clone())
+            .collect()
+    }
+
+    pub async fn revoke_api_token(&self, token_id: &str) -> Result<bool, &'static str> {
+        let current_hash = self
+            .api_token
+            .read()
+            .await
+            .as_deref()
+            .map(|token| <[u8; 32]>::from(Sha256::digest(token.as_bytes())));
+        let mut records = self.transport_tokens.write().await;
+        let active_count = records
+            .iter()
+            .filter(|record| record.metadata.revoked_at_ms.is_none())
+            .count();
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.metadata.token_id == token_id)
+        else {
+            return Ok(false);
+        };
+        if record.metadata.revoked_at_ms.is_some() {
+            return Ok(false);
+        }
+        if current_hash
+            .as_ref()
+            .is_some_and(|hash| constant_time_hash_eq(hash, &record.token_hash))
+        {
+            return Err("rotate to a replacement token before revoking the current transport token");
+        }
+        if active_count <= 1 {
+            return Err("cannot revoke the final active transport token");
+        }
+        record.metadata.revoked_at_ms = Some(now_ms());
+        Ok(true)
     }
 
     pub async fn startup_snapshot(&self) -> StartupSnapshot {
@@ -589,6 +744,7 @@ impl AppState {
         self.runtime
             .set(runtime)
             .map_err(|_| anyhow::anyhow!("runtime already initialized"))?;
+        self.sync_mcp_private_endpoint_posture();
         self.tools
             .register_tool(
                 "pack_builder".to_string(),

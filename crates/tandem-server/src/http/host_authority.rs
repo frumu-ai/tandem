@@ -9,6 +9,10 @@ use std::net::{IpAddr, SocketAddr};
 use tandem_types::{TenantContext, VerifiedTenantContext};
 use url::Url;
 
+use crate::action_authorization::{
+    authorize_host_effect, AuthorizedHostEffect, CanonicalHostResource, HostAction,
+    HostAuthorizationError, HostEffectRequest,
+};
 use crate::AppState;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -58,6 +62,22 @@ pub(super) fn require_loopback_local_operator(
     }
 }
 
+pub(crate) fn standalone_local_runtime_posture(state: &AppState, tenant: &TenantContext) -> bool {
+    let runtime_allows_local_implicit = state
+        .runtime
+        .get()
+        .is_some_and(|runtime| !runtime.mcp.strict_tenant_enforcement_enabled());
+    if !state.http_listener_bound_loopback_only() || !runtime_allows_local_implicit {
+        return false;
+    }
+    is_loopback_local_operator(
+        state.host_operations_loopback_only(),
+        &state.server_base_url(),
+        tenant,
+        false,
+    )
+}
+
 fn is_loopback_local_operator(
     listener_is_loopback: bool,
     server_base_url: &str,
@@ -84,6 +104,44 @@ pub(super) fn require_diagnostics_admin(
     } else {
         Err(StatusCode::FORBIDDEN)
     }
+}
+
+pub(super) fn host_authorization_status(error: HostAuthorizationError) -> StatusCode {
+    match error {
+        HostAuthorizationError::AuditPersistenceFailed => StatusCode::INTERNAL_SERVER_ERROR,
+        HostAuthorizationError::InvalidEffectArguments => StatusCode::BAD_REQUEST,
+        _ => StatusCode::FORBIDDEN,
+    }
+}
+
+/// Issue an exact-request, tenant-bound grant for an administrative state
+/// change. Shared deployment actions declare that policy on `HostAction`;
+/// tenant-scoped actions can instead require their exact capability.
+pub(super) async fn authorize_administrative_effect(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    locality: RequestLocality,
+    action: HostAction,
+    resource_kind: &'static str,
+    resource_id: impl Into<String>,
+    arguments: serde_json::Value,
+) -> Result<(AuthorizedHostEffect, HostEffectRequest), StatusCode> {
+    let effect = HostEffectRequest::new(
+        action,
+        CanonicalHostResource::new(resource_kind, resource_id, tenant.clone()),
+        arguments,
+    );
+    let grant = authorize_host_effect(
+        state,
+        tenant,
+        verified,
+        locality.is_direct_loopback(),
+        &effect,
+    )
+    .await
+    .map_err(host_authorization_status)?;
+    Ok((grant, effect))
 }
 
 fn verified_has_deployment_admin_authority(context: &VerifiedTenantContext) -> bool {
@@ -120,7 +178,7 @@ fn has_proxy_forwarding_headers(headers: &HeaderMap) -> bool {
     .any(|name| headers.contains_key(*name))
 }
 
-fn server_base_url_is_loopback(value: &str) -> bool {
+pub(crate) fn server_base_url_is_loopback(value: &str) -> bool {
     let Ok(url) = Url::parse(value) else {
         return false;
     };

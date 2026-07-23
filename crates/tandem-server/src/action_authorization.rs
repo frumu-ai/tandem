@@ -39,6 +39,16 @@ pub enum HostAction {
     PackUninstall,
     PackExport,
     PackDetect,
+    ProjectConfigUpdate,
+    ProviderCredentialUpdate,
+    GlobalConfigUpdate,
+    ApiTokenManage,
+    ChannelRead,
+    ChannelVerify,
+    ChannelConfigUpdate,
+    ChannelConfigDelete,
+    ChannelReload,
+    McpServerManage,
 }
 
 impl HostAction {
@@ -61,6 +71,16 @@ impl HostAction {
             Self::PackUninstall => "packs.uninstall",
             Self::PackExport => "packs.export",
             Self::PackDetect => "packs.detect",
+            Self::ProjectConfigUpdate => "providers.config.manage",
+            Self::ProviderCredentialUpdate => "providers.credentials.manage",
+            Self::GlobalConfigUpdate => "deployment.config.manage",
+            Self::ApiTokenManage => "deployment.api_token.manage",
+            Self::ChannelRead => "deployment.channels.read",
+            Self::ChannelVerify => "deployment.channels.verify",
+            Self::ChannelConfigUpdate => "deployment.channels.manage",
+            Self::ChannelConfigDelete => "deployment.channels.manage",
+            Self::ChannelReload => "deployment.channels.reload",
+            Self::McpServerManage => "deployment.mcp.manage",
         }
     }
 
@@ -77,6 +97,15 @@ impl HostAction {
                 | Self::PackInstall
                 | Self::PackUninstall
                 | Self::PackExport
+                | Self::ProjectConfigUpdate
+                | Self::GlobalConfigUpdate
+                | Self::ApiTokenManage
+                | Self::ChannelRead
+                | Self::ChannelVerify
+                | Self::ChannelConfigUpdate
+                | Self::ChannelConfigDelete
+                | Self::ChannelReload
+                | Self::McpServerManage
         )
     }
 

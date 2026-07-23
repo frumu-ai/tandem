@@ -577,7 +577,7 @@ impl PackBuilderTool {
         // Use the persistent state dir for staging – NOT temp_dir() which OSes
         // clean up arbitrarily. The zip must outlive the preview phase so that
         // apply() can still find it even if several minutes pass between the two.
-        let zips_dir = resolve_pack_builder_zips_dir();
+        let zips_dir = self.state.pack_manager.generated_staging_root();
         fs::create_dir_all(&zips_dir)?;
         let stage_id = Uuid::new_v4();
         let pack_root = zips_dir.join(format!("stage-{}", stage_id)).join("pack");
@@ -1109,11 +1109,10 @@ impl PackBuilderTool {
         let installed = self
             .state
             .pack_manager
-            .install(PackInstallRequest {
-                path: Some(plan.generated_zip_path.to_string_lossy().to_string()),
-                url: None,
-                source: json!({"kind":"pack_builder", "plan_id": plan.plan_id, "goal": plan.goal}),
-            })
+            .install_generated(
+                plan.generated_zip_path.clone(),
+                json!({"kind":"pack_builder", "plan_id": plan.plan_id, "goal": plan.goal}),
+            )
             .await?;
 
         let routine_tenant_context = match session_id {
@@ -1646,35 +1645,6 @@ fn resolve_pack_builder_plans_path() -> PathBuf {
         .join("data")
         .join("pack-builder")
         .join("plans.json")
-}
-
-/// Returns the directory for persistent pack zip staging.
-/// Zips are stored here (not in temp_dir) so they survive until apply() runs.
-fn resolve_pack_builder_zips_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("TANDEM_STATE_DIR") {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            let base = PathBuf::from(trimmed);
-            return if base.file_name().and_then(|value| value.to_str()) == Some("data") {
-                base.join("pack-builder").join("zips")
-            } else {
-                base.join("data").join("pack-builder").join("zips")
-            };
-        }
-    }
-    if let Some(data_dir) = dirs::data_dir() {
-        return data_dir
-            .join("tandem")
-            .join("data")
-            .join("pack-builder")
-            .join("zips");
-    }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".tandem")
-        .join("data")
-        .join("pack-builder")
-        .join("zips")
 }
 
 fn load_workflows(path: &PathBuf) -> HashMap<String, WorkflowRecord> {

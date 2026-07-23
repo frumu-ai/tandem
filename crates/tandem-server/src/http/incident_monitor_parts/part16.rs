@@ -52,7 +52,7 @@ pub(super) async fn run_incident_monitor_reassessment_endpoint(
     headers: HeaderMap,
 ) -> Response {
     if let Some(denied) =
-        incident_monitor_scenario_admin_guard(state.api_token().await.as_deref(), &headers)
+        incident_monitor_scenario_admin_guard(&state, &headers).await
     {
         return denied;
     }
@@ -107,7 +107,7 @@ pub(super) async fn list_incident_monitor_reassessments_endpoint(
     headers: HeaderMap,
 ) -> Response {
     if let Some(denied) =
-        incident_monitor_scenario_admin_guard(state.api_token().await.as_deref(), &headers)
+        incident_monitor_scenario_admin_guard(&state, &headers).await
     {
         return denied;
     }

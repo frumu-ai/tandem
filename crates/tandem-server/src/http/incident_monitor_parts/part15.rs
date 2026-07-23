@@ -27,7 +27,7 @@ pub(super) async fn compute_incident_monitor_governance_metrics_endpoint(
     Json(input): Json<IncidentMonitorGovernanceMetricsInput>,
 ) -> Response {
     if let Some(denied) =
-        incident_monitor_scenario_admin_guard(state.api_token().await.as_deref(), &headers)
+        incident_monitor_scenario_admin_guard(&state, &headers).await
     {
         return denied;
     }

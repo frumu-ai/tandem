@@ -240,9 +240,16 @@ where
     }
 
     let recovery = recovery_for_execution(state, tenant_context, surface, session_id, run_id);
+    let allow_private_provider_endpoints =
+        crate::http::host_authority::standalone_local_runtime_posture(state, tenant_context);
     state
         .providers
-        .scope_tenant_provider_auth_with_recovery(tenant_context.clone(), recovery, future)
+        .scope_tenant_provider_auth_with_recovery(
+            tenant_context.clone(),
+            recovery,
+            allow_private_provider_endpoints,
+            future,
+        )
         .await
 }
 
@@ -754,7 +761,7 @@ mod tests {
         );
         state
             .providers
-            .scope_tenant_provider_auth_with_recovery(hosted.clone(), recovery, engine_run)
+            .scope_tenant_provider_auth_with_recovery(hosted.clone(), recovery, false, engine_run)
             .await
             .expect("engine run");
 

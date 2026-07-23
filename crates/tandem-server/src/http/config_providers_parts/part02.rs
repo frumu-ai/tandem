@@ -1255,11 +1255,7 @@ fn redact_secret_fields(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (key, field) in map.iter_mut() {
-                if key.eq_ignore_ascii_case("api_key")
-                    || key.eq_ignore_ascii_case("apikey")
-                    || key.eq_ignore_ascii_case("bot_token")
-                    || key.eq_ignore_ascii_case("botToken")
-                {
+                if secret_config_field_name(key) {
                     *field = Value::String("[REDACTED]".to_string());
                 } else {
                     redact_secret_fields(field);
@@ -1282,16 +1278,36 @@ fn redacted(mut value: Value) -> Value {
 
 fn contains_secret_config_fields(value: &Value) -> bool {
     match value {
-        Value::Object(map) => map.iter().any(|(key, field)| {
-            key.eq_ignore_ascii_case("api_key")
-                || key.eq_ignore_ascii_case("apikey")
-                || key.eq_ignore_ascii_case("bot_token")
-                || key.eq_ignore_ascii_case("botToken")
-                || contains_secret_config_fields(field)
-        }),
+        Value::Object(map) => map
+            .iter()
+            .any(|(key, field)| secret_config_field_name(key) || contains_secret_config_fields(field)),
         Value::Array(items) => items.iter().any(contains_secret_config_fields),
         _ => false,
     }
+}
+
+fn secret_config_field_name(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    [
+        "token",
+        "secret",
+        "password",
+        "credential",
+        "apikey",
+        "privatekey",
+        "signingkey",
+        "encryptionkey",
+        "authorization",
+        "cookie",
+        "header",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+        || matches!(normalized.as_str(), "auth" | "oauth")
 }
 
 const MAX_JSON_DEPTH: usize = 64; // Prevent stack overflow from deeply nested JSON

@@ -1724,6 +1724,8 @@ export interface PackInspectionResponse {
 export interface PackInstallOptions {
   path?: string;
   url?: string;
+  /** Required for remote URL installs; lowercase or uppercase SHA-256 hex. */
+  expected_sha256?: string;
   source?: JsonObject;
 }
 

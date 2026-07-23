@@ -240,6 +240,7 @@ pub(super) async fn packs_install_from_attachment(
     let request = PackInstallRequest {
         path: Some(input.path),
         url: None,
+        expected_sha256: None,
         source,
     };
     let arguments = serde_json::to_value(&request).map_err(|_| StatusCode::BAD_REQUEST)?;

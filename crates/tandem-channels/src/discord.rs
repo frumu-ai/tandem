@@ -337,6 +337,7 @@ impl DiscordChannel {
 
     fn http_client(&self) -> Client {
         Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(15))
             .build()
             .expect("failed to build reqwest client")

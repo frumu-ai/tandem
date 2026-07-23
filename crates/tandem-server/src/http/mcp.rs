@@ -28,11 +28,34 @@ pub(crate) use super::mcp_run_as::{
 mod mcp_base_url;
 pub(super) use mcp_base_url::{mcp_public_base_url_from_config, mcp_public_base_url_from_env};
 
+mod mcp_oauth_target;
+pub(crate) use mcp_oauth_target::{resolve_mcp_oauth_target, McpOAuthEndpointAuthorization};
+
 const BUILTIN_GITHUB_MCP_SERVER_NAME: &str = "github";
 const BUILTIN_GITHUB_MCP_TRANSPORT_URL: &str = "https://api.githubcopilot.com/mcp/";
 const BUILTIN_TANDEM_DOCS_MCP_SERVER_NAME: &str = "tandem-mcp";
 const BUILTIN_TANDEM_DOCS_MCP_TRANSPORT_URL: &str = "https://tandem.ac/mcp";
 const MCP_OAUTH_SESSION_TTL_MS: u64 = 10 * 60 * 1000;
+
+pub(crate) fn allow_private_mcp_oauth_endpoint(
+    state: &AppState,
+    tenant_context: &TenantContext,
+) -> bool {
+    if crate::http::host_authority::standalone_local_runtime_posture(state, tenant_context) {
+        return true;
+    }
+    #[cfg(test)]
+    {
+        return state
+            .trust_test_tenant_headers
+            .load(std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(not(test))]
+    {
+        let _ = state;
+        false
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct McpOAuthSessionRecord {
@@ -433,6 +456,10 @@ fn strict_context_from_tool_args(args: &Value) -> Option<StrictTenantContext> {
 pub(super) async fn add_mcp(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
+    axum::extract::Extension(locality): axum::extract::Extension<
+        crate::http::host_authority::RequestLocality,
+    >,
+    verified: Option<axum::extract::Extension<VerifiedTenantContext>>,
     Json(input): Json<McpAddInput>,
 ) -> Response {
     let name = input.name.unwrap_or_else(|| "default".to_string());
@@ -448,6 +475,68 @@ pub(super) async fn add_mcp(
     }
     let auth_kind = normalize_mcp_auth_kind(input.auth_kind.as_deref().unwrap_or_default());
     let audit_transport = transport.clone();
+    let mut header_names = input
+        .headers
+        .as_ref()
+        .map(|headers| headers.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    header_names.sort();
+    let mut secret_header_names = input
+        .secret_headers
+        .as_ref()
+        .map(|headers| headers.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    secret_header_names.sort();
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::McpServerManage,
+        "mcp_server",
+        name.clone(),
+        json!({
+            "operation": "add_or_update",
+            "name": name,
+            "transport": transport,
+            "header_names": header_names,
+            "secret_header_names": secret_header_names,
+            "enabled": input.enabled,
+            "allowed_tools": input.allowed_tools,
+            "purpose": input.purpose,
+            "grounding_required": input.grounding_required,
+            "auth_kind": auth_kind,
+        }),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
+    if let Err(error) = crate::audit::append_protected_audit_event(
+        &state,
+        "mcp.server.update_authorized",
+        &tenant_context,
+        tenant_context.actor_id.clone(),
+        json!({
+            "name": name,
+            "transport": audit_transport,
+            "enabled": input.enabled.unwrap_or(true),
+            "auth_kind": auth_kind,
+            "allowed_tools": input.allowed_tools,
+            "purpose": input.purpose,
+            "grounding_required": input.grounding_required,
+            "header_names": header_names,
+            "secret_header_names": secret_header_names,
+        }),
+    )
+    .await
+    {
+        return super::protected_audit_error_response(error).into_response();
+    }
     state
         .mcp
         .add_or_update_with_secret_refs(
@@ -473,25 +562,6 @@ pub(super) async fn add_mcp(
     }
     if !auth_kind.is_empty() {
         let _ = state.mcp.set_auth_kind(&name, auth_kind.clone()).await;
-    }
-    if let Err(error) = crate::audit::append_protected_audit_event(
-        &state,
-        "mcp.server.updated",
-        &tenant_context,
-        tenant_context.actor_id.clone(),
-        json!({
-                "name": name,
-                "transport": audit_transport,
-            "enabled": input.enabled.unwrap_or(true),
-            "auth_kind": auth_kind,
-            "allowed_tools": input.allowed_tools,
-            "purpose": input.purpose,
-            "grounding_required": input.grounding_required,
-        }),
-    )
-    .await
-    {
-        return super::protected_audit_error_response(error).into_response();
     }
     state.event_bus.publish(EngineEvent::new(
         "mcp.server.updated",
@@ -704,17 +774,34 @@ fn mcp_oauth_callback_html(ok: bool, title: &str, detail: &str) -> axum::respons
     axum::response::Html(body)
 }
 
+const MCP_OAUTH_RESPONSE_MAX_BYTES: usize = 1024 * 1024;
+
+async fn read_mcp_oauth_response(
+    response: reqwest::Response,
+    label: &str,
+) -> Result<String, String> {
+    let bytes =
+        crate::outbound_http::read_response_body_limited(response, MCP_OAUTH_RESPONSE_MAX_BYTES)
+            .await
+            .map_err(|error| format!("failed to read {label} response: {error}"))?;
+    String::from_utf8(bytes).map_err(|error| format!("{label} response was not UTF-8: {error}"))
+}
+
 async fn discover_mcp_oauth_bootstrap(
     endpoint: &str,
     headers: &HashMap<String, String>,
+    authorization: &McpOAuthEndpointAuthorization<'_>,
 ) -> Result<McpOAuthBootstrap, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .user_agent(format!("tandem/{}", env!("CARGO_PKG_VERSION")))
-        .build()
+    let target = resolve_mcp_oauth_target(endpoint, authorization).await?;
+    let client = target
+        .client(std::time::Duration::from_secs(15))
         .map_err(|error| format!("failed to build MCP OAuth client: {error}"))?;
     let mut request = client
-        .post(endpoint)
+        .post(target.url().clone())
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("tandem/{}", env!("CARGO_PKG_VERSION")),
+        )
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(
             reqwest::header::ACCEPT,
@@ -736,6 +823,7 @@ async fn discover_mcp_oauth_bootstrap(
     for (key, value) in headers {
         request = request.header(key, value);
     }
+    target.ensure_authorized(authorization)?;
     let response = request
         .send()
         .await
@@ -746,10 +834,7 @@ async fn discover_mcp_oauth_bootstrap(
         .get(reqwest::header::WWW_AUTHENTICATE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let body = response
-        .text()
-        .await
-        .map_err(|error| format!("failed to read MCP OAuth discovery response: {error}"))?;
+    let body = read_mcp_oauth_response(response, "MCP OAuth discovery").await?;
     if status.is_success() {
         return Err("mcp server did not request oauth authorization".to_string());
     }
@@ -769,17 +854,25 @@ async fn discover_mcp_oauth_bootstrap(
             "mcp oauth discovery did not include resource metadata in WWW-Authenticate".to_string()
         })?;
 
-    let protected_resource = client
-        .get(&resource_metadata_url)
-        .header(reqwest::header::ACCEPT, "application/json")
+    let protected_target = resolve_mcp_oauth_target(&resource_metadata_url, authorization).await?;
+    let protected_client = protected_target
+        .client(std::time::Duration::from_secs(15))
+        .map_err(|error| format!("failed to build MCP OAuth metadata client: {error}"))?;
+    let protected_request = protected_client
+        .get(protected_target.url().clone())
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("tandem/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .header(reqwest::header::ACCEPT, "application/json");
+    protected_target.ensure_authorized(authorization)?;
+    let protected_resource = protected_request
         .send()
         .await
         .map_err(|error| format!("failed to fetch MCP protected resource metadata: {error}"))?;
     let protected_status = protected_resource.status();
-    let protected_body = protected_resource
-        .text()
-        .await
-        .map_err(|error| format!("failed to read MCP protected resource metadata: {error}"))?;
+    let protected_body =
+        read_mcp_oauth_response(protected_resource, "MCP protected resource metadata").await?;
     if !protected_status.is_success() {
         return Err(format!(
             "protected resource metadata request failed with HTTP {}: {}",
@@ -799,17 +892,25 @@ async fn discover_mcp_oauth_bootstrap(
         })?;
 
     let metadata_url = authorization_server_metadata_url(&authorization_server);
-    let auth_server_response = client
-        .get(&metadata_url)
-        .header(reqwest::header::ACCEPT, "application/json")
+    let metadata_target = resolve_mcp_oauth_target(&metadata_url, authorization).await?;
+    let metadata_client = metadata_target
+        .client(std::time::Duration::from_secs(15))
+        .map_err(|error| format!("failed to build MCP authorization metadata client: {error}"))?;
+    let metadata_request = metadata_client
+        .get(metadata_target.url().clone())
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("tandem/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .header(reqwest::header::ACCEPT, "application/json");
+    metadata_target.ensure_authorized(authorization)?;
+    let auth_server_response = metadata_request
         .send()
         .await
         .map_err(|error| format!("failed to fetch authorization server metadata: {error}"))?;
     let auth_server_status = auth_server_response.status();
-    let auth_server_body = auth_server_response
-        .text()
-        .await
-        .map_err(|error| format!("failed to read authorization server metadata: {error}"))?;
+    let auth_server_body =
+        read_mcp_oauth_response(auth_server_response, "MCP authorization server metadata").await?;
     if !auth_server_status.is_success() {
         return Err(format!(
             "authorization server metadata request failed with HTTP {}: {}",
@@ -828,6 +929,13 @@ async fn discover_mcp_oauth_bootstrap(
             "authorization server does not support dynamic client registration".to_string()
         })?
         .to_string();
+    for endpoint in [
+        auth_metadata.authorization_endpoint.as_str(),
+        auth_metadata.token_endpoint.as_str(),
+        registration_endpoint.as_str(),
+    ] {
+        resolve_mcp_oauth_target(endpoint, authorization).await?;
+    }
 
     Ok(McpOAuthBootstrap {
         authorization_endpoint: auth_metadata.authorization_endpoint,
@@ -891,15 +999,21 @@ async fn start_mcp_oauth_session(
             .await;
     }
 
+    let authorization = McpOAuthEndpointAuthorization::new(state, tenant_context);
     let bootstrap =
-        discover_mcp_oauth_bootstrap(&endpoint, &effective_mcp_headers(&server)).await?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .user_agent(format!("tandem/{}", env!("CARGO_PKG_VERSION")))
-        .build()
+        discover_mcp_oauth_bootstrap(&endpoint, &effective_mcp_headers(&server), &authorization)
+            .await?;
+    let registration_target =
+        resolve_mcp_oauth_target(&bootstrap.registration_endpoint, &authorization).await?;
+    let client = registration_target
+        .client(std::time::Duration::from_secs(15))
         .map_err(|error| format!("failed to build MCP OAuth registration client: {error}"))?;
-    let registration_response = client
-        .post(&bootstrap.registration_endpoint)
+    let registration_request = client
+        .post(registration_target.url().clone())
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("tandem/{}", env!("CARGO_PKG_VERSION")),
+        )
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::ACCEPT, "application/json")
         .json(&json!({
@@ -909,15 +1023,15 @@ async fn start_mcp_oauth_session(
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
-        }))
+        }));
+    registration_target.ensure_authorized(&authorization)?;
+    let registration_response = registration_request
         .send()
         .await
         .map_err(|error| format!("failed to register MCP OAuth client: {error}"))?;
     let registration_status = registration_response.status();
-    let registration_body = registration_response
-        .text()
-        .await
-        .map_err(|error| format!("failed to read MCP OAuth registration response: {error}"))?;
+    let registration_body =
+        read_mcp_oauth_response(registration_response, "MCP OAuth registration").await?;
     if !registration_status.is_success() {
         return Err(format!(
             "dynamic client registration failed with HTTP {}: {}",
@@ -999,10 +1113,16 @@ async fn find_pending_mcp_oauth_session(
         .await
 }
 
-async fn remove_mcp_oauth_sessions_for_server(state: &AppState, server_name: &str) -> usize {
+async fn remove_mcp_oauth_sessions_for_server_and_tenant(
+    state: &AppState,
+    server_name: &str,
+    tenant_context: &TenantContext,
+) -> usize {
     state
         .oauth
-        .retain_mcp_sessions(|session| session.server_name != server_name)
+        .retain_mcp_sessions(|session| {
+            session.server_name != server_name || session.tenant_context != *tenant_context
+        })
         .await
 }
 
@@ -1060,13 +1180,14 @@ fn mcp_tenant_event_payload(
 }
 
 async fn exchange_mcp_oauth_code(
+    state: &AppState,
     session: &McpOAuthSessionRecord,
     code: &str,
 ) -> Result<McpTokenExchangeResponse, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .user_agent(format!("tandem/{}", env!("CARGO_PKG_VERSION")))
-        .build()
+    let authorization = McpOAuthEndpointAuthorization::new(state, &session.tenant_context);
+    let target = resolve_mcp_oauth_target(&session.token_endpoint, &authorization).await?;
+    let client = target
+        .client(std::time::Duration::from_secs(15))
         .map_err(|error| format!("failed to build MCP OAuth token client: {error}"))?;
     let mut params = vec![
         ("grant_type", "authorization_code".to_string()),
@@ -1083,18 +1204,21 @@ async fn exchange_mcp_oauth_code(
     {
         params.push(("client_secret", client_secret.to_string()));
     }
-    let response = client
-        .post(&session.token_endpoint)
+    let request = client
+        .post(target.url().clone())
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("tandem/{}", env!("CARGO_PKG_VERSION")),
+        )
         .header(reqwest::header::ACCEPT, "application/json")
-        .form(&params)
+        .form(&params);
+    target.ensure_authorized(&authorization)?;
+    let response = request
         .send()
         .await
         .map_err(|error| format!("mcp oauth token exchange failed: {error}"))?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| format!("failed to read MCP OAuth token response: {error}"))?;
+    let body = read_mcp_oauth_response(response, "MCP OAuth token").await?;
     if !status.is_success() {
         return Err(format!(
             "mcp oauth token exchange failed with HTTP {}: {}",
@@ -1199,7 +1323,7 @@ async fn finish_mcp_oauth_callback(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "missing authorization code".to_string())?;
 
-    let exchanged = exchange_mcp_oauth_code(&session, code).await?;
+    let exchanged = exchange_mcp_oauth_code(&state, &session, code).await?;
     let access_token = exchanged
         .access_token
         .as_deref()
@@ -1520,42 +1644,98 @@ pub(super) async fn connect_mcp(
 pub(super) async fn disconnect_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Json<Value> {
-    let ok = state.mcp.disconnect(&name).await;
+    axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
+    axum::extract::Extension(locality): axum::extract::Extension<
+        crate::http::host_authority::RequestLocality,
+    >,
+    verified: Option<axum::extract::Extension<VerifiedTenantContext>>,
+) -> Response {
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::McpServerManage,
+        "mcp_server",
+        name.clone(),
+        json!({"operation": "disconnect", "name": name}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
+    let removed = state
+        .mcp
+        .server_tools_for_tenant(&name, &tenant_context)
+        .await
+        .len();
+    let ok = state
+        .mcp
+        .disconnect_for_tenant(&name, &tenant_context)
+        .await;
     if ok {
-        let removed = unregister_mcp_bridge_tools_for_server(&state, &name).await;
+        let (_, remaining) = resync_mcp_bridge_tools_for_server(&state, &name).await;
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.disconnected",
-            json!({
-                "name": name,
-                "removedToolCount": removed,
-            }),
+            mcp_tenant_event_payload(
+                &state,
+                &name,
+                &tenant_context,
+                json!({
+                    "removedToolCount": removed,
+                    "remainingToolCount": remaining,
+                }),
+            ),
         ));
     }
-    Json(json!({"ok": ok}))
+    Json(json!({"ok": ok})).into_response()
 }
 
 pub(super) async fn delete_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
+    axum::extract::Extension(locality): axum::extract::Extension<
+        crate::http::host_authority::RequestLocality,
+    >,
+    verified: Option<axum::extract::Extension<VerifiedTenantContext>>,
 ) -> Response {
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::McpServerManage,
+        "mcp_server",
+        name.clone(),
+        json!({"operation": "delete", "name": name}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
+    if let Err(error) = crate::audit::append_protected_audit_event(
+        &state,
+        "mcp.server.delete_authorized",
+        &tenant_context,
+        tenant_context.actor_id.clone(),
+        json!({"name": name}),
+    )
+    .await
+    {
+        return super::protected_audit_error_response(error).into_response();
+    }
     let removed_tool_count = unregister_mcp_bridge_tools_for_server(&state, &name).await;
-    let ok = state.mcp.remove(&name).await;
+    let ok = state.mcp.remove_for_tenant(&name, &tenant_context).await;
     if ok {
-        if let Err(error) = crate::audit::append_protected_audit_event(
-            &state,
-            "mcp.server.deleted",
-            &tandem_types::TenantContext::local_implicit(),
-            None,
-            json!({
-                "name": name,
-                "removedToolCount": removed_tool_count,
-            }),
-        )
-        .await
-        {
-            return super::protected_audit_error_response(error).into_response();
-        }
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.deleted",
             json!({
@@ -1570,8 +1750,39 @@ pub(super) async fn delete_mcp(
 pub(super) async fn patch_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
+    axum::extract::Extension(locality): axum::extract::Extension<
+        crate::http::host_authority::RequestLocality,
+    >,
+    verified: Option<axum::extract::Extension<VerifiedTenantContext>>,
     Json(input): Json<McpPatchInput>,
 ) -> Response {
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::McpServerManage,
+        "mcp_server",
+        name.clone(),
+        json!({
+            "operation": "patch",
+            "name": name,
+            "allowed_tools": input.allowed_tools,
+            "clear_allowed_tools": input.clear_allowed_tools,
+            "enabled": input.enabled,
+            "purpose": input.purpose,
+            "grounding_required": input.grounding_required,
+        }),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
     let mut changed = false;
     let mut should_resync = false;
     if input.clear_allowed_tools.unwrap_or(false) || input.allowed_tools.is_some() {
@@ -1714,256 +1925,4 @@ pub(super) async fn refresh_mcp(
     }
 }
 
-pub(super) async fn auth_mcp(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
-    headers: HeaderMap,
-) -> Json<Value> {
-    let public_base_url = mcp_public_base_url_from_headers(&headers);
-    if let Some(auth_challenge) =
-        current_mcp_auth_challenge_for_tenant(&state, &name, &tenant_context).await
-    {
-        let existing_redirect =
-            mcp_oauth_redirect_uri_from_authorization_url(&auth_challenge.authorization_url);
-        let desired_redirect = public_base_url
-            .as_deref()
-            .map(|base_url| mcp_oauth_redirect_uri_for_base(base_url, &name));
-        let redirect_matches = match desired_redirect.as_deref() {
-            Some(redirect_uri) => existing_redirect.as_deref() == Some(redirect_uri),
-            None => true,
-        };
-        if redirect_matches {
-            return Json(json!({
-                "ok": true,
-                "pending": true,
-                "lastAuthChallenge": auth_challenge,
-                "authorizationUrl": auth_challenge.authorization_url,
-            }));
-        }
-        let _ = state
-            .mcp
-            .clear_auth_challenge_for_tenant(&name, &tenant_context)
-            .await;
-        state
-            .oauth
-            .retain_mcp_sessions(|pending| {
-                pending.server_name != name || pending.tenant_context != tenant_context
-            })
-            .await;
-    }
-    let server = state.mcp.list().await.get(&name).cloned();
-    if server.as_ref().is_some_and(mcp_uses_oauth) {
-        if let Ok(auth_challenge) =
-            start_mcp_oauth_session(&state, &name, &tenant_context, public_base_url.as_deref())
-                .await
-        {
-            return Json(json!({
-                "ok": true,
-                "pending": true,
-                "lastAuthChallenge": auth_challenge,
-                "authorizationUrl": auth_challenge.authorization_url,
-            }));
-        }
-    }
-    Json(json!({
-        "ok": false,
-        "pending": false,
-        "name": name,
-        "message": "No MCP auth challenge recorded yet.",
-    }))
-}
-
-pub(super) async fn callback_mcp(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    tenant_context: Option<axum::extract::Extension<TenantContext>>,
-    headers: HeaderMap,
-) -> Json<Value> {
-    let tenant_context = tenant_context
-        .map(|extension| extension.0)
-        .unwrap_or_else(TenantContext::local_implicit);
-    authenticate_mcp(
-        State(state),
-        Path(name),
-        axum::extract::Extension(tenant_context),
-        headers,
-    )
-    .await
-}
-
-pub(super) async fn callback_mcp_get(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    tenant_context: Option<axum::extract::Extension<TenantContext>>,
-    Query(input): Query<McpOAuthCallbackInput>,
-) -> impl IntoResponse {
-    let request_tenant = tenant_context.map(|extension| extension.0);
-    match finish_mcp_oauth_callback(state, name, request_tenant, input).await {
-        Ok(()) => mcp_oauth_callback_html(
-            true,
-            "Tandem MCP Connected",
-            "The MCP OAuth sign-in completed successfully. You can close this window.",
-        )
-        .into_response(),
-        Err(error) => {
-            mcp_oauth_callback_html(false, "Tandem MCP OAuth Failed", &error).into_response()
-        }
-    }
-}
-
-pub(super) async fn authenticate_mcp(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
-    headers: HeaderMap,
-) -> Json<Value> {
-    let public_base_url = mcp_public_base_url_from_headers(&headers);
-    if let Some(session) = find_pending_mcp_oauth_session(&state, &name, &tenant_context).await {
-        let desired_redirect_uri = public_base_url
-            .as_deref()
-            .map(|base_url| mcp_oauth_redirect_uri_for_base(base_url, &name));
-        if desired_redirect_uri
-            .as_deref()
-            .is_some_and(|redirect_uri| redirect_uri != session.redirect_uri)
-        {
-            let _ = state
-                .mcp
-                .clear_auth_challenge_for_tenant(&name, &tenant_context)
-                .await;
-            state
-                .oauth
-                .retain_mcp_sessions(|pending| {
-                    pending.server_name != name || pending.tenant_context != tenant_context
-                })
-                .await;
-        } else {
-            let last_auth_challenge = mcp_auth_challenge_from_session(&session);
-            let authorization_url = last_auth_challenge.authorization_url.clone();
-            return Json(json!({
-                "ok": true,
-                "authenticated": false,
-                "connected": false,
-                "pendingAuth": true,
-                "lastAuthChallenge": last_auth_challenge,
-                "authorizationUrl": authorization_url,
-            }));
-        }
-    }
-
-    let refresh = state.mcp.refresh_for_tenant(&name, &tenant_context).await;
-    let current = state.mcp.list().await.get(&name).cloned();
-    let last_auth_challenge = state
-        .mcp
-        .auth_challenge_for_tenant(&name, &tenant_context)
-        .await;
-    match refresh {
-        Ok(tools) => {
-            let count = sync_mcp_tools_for_server_for_tenant(&state, &name, &tenant_context).await;
-            let _ = state
-                .mcp
-                .clear_auth_challenge_for_tenant(&name, &tenant_context)
-                .await;
-            Json(json!({
-                "ok": true,
-                "authenticated": true,
-                "connected": true,
-                "pendingAuth": false,
-                "lastAuthChallenge": Value::Null,
-                "authorizationUrl": Value::Null,
-                "count": count.max(tools.len()),
-            }))
-        }
-        Err(error) => {
-            let mut auth_challenge = last_auth_challenge;
-            let connected = if let Some(server) = current.as_ref() {
-                state
-                    .mcp
-                    .runtime_connected_for_tenant(&name, server, &tenant_context)
-                    .await
-            } else {
-                false
-            };
-            if auth_challenge.is_none() {
-                let server = state.mcp.list().await.get(&name).cloned();
-                if server.as_ref().is_some_and(mcp_uses_oauth) {
-                    auth_challenge = start_mcp_oauth_session(
-                        &state,
-                        &name,
-                        &tenant_context,
-                        public_base_url.as_deref(),
-                    )
-                    .await
-                    .ok();
-                }
-            }
-            Json(json!({
-                "ok": false,
-                "authenticated": false,
-                "connected": connected,
-                "pendingAuth": auth_challenge.is_some(),
-                "lastAuthChallenge": auth_challenge,
-                "authorizationUrl": auth_challenge.as_ref().map(|challenge| challenge.authorization_url.clone()),
-                "error": error,
-                "code": ErrorCode::McpOauthFailed,
-                "retryable": false,
-            }))
-        }
-    }
-}
-
-pub(super) async fn delete_auth_mcp(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Json<Value> {
-    let removed_tool_count = unregister_mcp_bridge_tools_for_server(&state, &name).await;
-    let removed_oauth_session_count = remove_mcp_oauth_sessions_for_server(&state, &name).await;
-    let ok = state.mcp.clear_auth_material(&name).await;
-    if ok {
-        state.event_bus.publish(EngineEvent::new(
-            "mcp.server.auth.deleted",
-            json!({
-                "name": name,
-                "removedToolCount": removed_tool_count,
-                "removedOauthSessionCount": removed_oauth_session_count,
-            }),
-        ));
-    }
-    Json(json!({
-        "ok": ok,
-        "removedToolCount": removed_tool_count,
-        "removedOauthSessionCount": removed_oauth_session_count,
-    }))
-}
-
-pub(super) async fn mcp_tools(
-    State(state): State<AppState>,
-    tenant_context: Option<axum::extract::Extension<TenantContext>>,
-) -> Json<Value> {
-    let tenant_context = tenant_context
-        .map(|extension| extension.0)
-        .unwrap_or_else(TenantContext::local_implicit);
-    Json(json!(
-        state.mcp.list_tools_for_tenant(&tenant_context).await
-    ))
-}
-
-pub(super) async fn mcp_resources(State(state): State<AppState>) -> Json<Value> {
-    let resources = state
-        .mcp
-        .list()
-        .await
-        .into_values()
-        .filter(|server| server.connected)
-        .map(|server| {
-            json!({
-                "server": server.name,
-                "resources": [
-                    {"uri": format!("mcp://{}/tools", server.name), "name":"tools"},
-                    {"uri": format!("mcp://{}/prompts", server.name), "name":"prompts"}
-                ]
-            })
-        })
-        .collect::<Vec<_>>();
-    Json(json!(resources))
-}
+include!("mcp_parts/part01.rs");

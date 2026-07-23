@@ -128,6 +128,8 @@ pub async fn test_state() -> AppState {
             .await
             .expect("permissions");
     let mcp = McpRegistry::new_with_state_file(mcp_state);
+    #[cfg(test)]
+    mcp.allow_private_endpoints_for_tests();
     let pty = PtyManager::new();
     let lsp = LspManager::new(".");
     let auth = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
@@ -217,6 +219,8 @@ pub async fn test_state() -> AppState {
         })
         .await
         .expect("runtime ready");
+    state.set_host_operations_loopback_only(true);
+    state.set_http_listener_bound_loopback_only(true);
     assert!(state.mcp.connect("github").await);
     state
 }

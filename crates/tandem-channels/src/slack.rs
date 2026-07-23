@@ -134,6 +134,7 @@ impl SlackChannel {
 
     fn http_client(&self) -> Client {
         Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(10))
             .build()
             .expect("failed to build reqwest client")

@@ -1992,6 +1992,7 @@ async fn workflow_plan_import_pack_inner(
         .install(crate::pack_manager::PackInstallRequest {
             path: Some(pack_path.to_string_lossy().to_string()),
             url: None,
+            expected_sha256: None,
             source: json!({"kind": "workflow_pack_import", "path": pack_path.to_string_lossy()}),
         })
         .await

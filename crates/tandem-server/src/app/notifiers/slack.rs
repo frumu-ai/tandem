@@ -103,6 +103,7 @@ fn slack_binding_check(
         let app_id = app_id.clone();
         Box::pin(async move {
             let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .map_err(|error| {

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::{pin::Pin, str};
@@ -15,12 +16,175 @@ use tokio_util::sync::CancellationToken;
 
 use tandem_types::{ModelInfo, ProviderInfo, SamplingParams, TenantContext, ToolMode, ToolSchema};
 
+struct HardenedProviderTarget {
+    url: reqwest::Url,
+    client: Client,
+}
+
+const PROVIDER_RESPONSE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+async fn read_provider_response_bytes_limited(
+    response: reqwest::Response,
+) -> anyhow::Result<Vec<u8>> {
+    read_provider_response_bytes_with_limit(response, PROVIDER_RESPONSE_MAX_BYTES).await
+}
+
+async fn read_provider_response_bytes_with_limit(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> anyhow::Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        anyhow::bail!("provider response exceeds {limit} bytes");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > limit {
+            anyhow::bail!("provider response exceeds {limit} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn read_provider_response_text_limited(
+    response: reqwest::Response,
+) -> anyhow::Result<String> {
+    let body = read_provider_response_bytes_limited(response).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+async fn read_provider_response_json_limited(
+    response: reqwest::Response,
+) -> anyhow::Result<serde_json::Value> {
+    let body = read_provider_response_bytes_limited(response).await?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
+async fn resolve_provider_request_target(
+    raw: &str,
+    provider_id: &str,
+) -> anyhow::Result<HardenedProviderTarget> {
+    let url = reqwest::Url::parse(raw)?;
+    let local_provider = PROVIDER_PRIVATE_ENDPOINTS_ALLOWED
+        .try_with(|allowed| *allowed)
+        .unwrap_or(false)
+        && matches!(
+        provider_id.trim().to_ascii_lowercase().as_str(),
+        "ollama" | "llama_cpp" | "llama.cpp"
+    );
+    let insecure_http = url.scheme() == "http";
+    if url.scheme() != "https" && !(insecure_http && local_provider) {
+        anyhow::bail!("provider endpoint must use https");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!("provider endpoint must not include URL credentials");
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("provider endpoint host is missing"))?
+        .trim_matches(['[', ']'])
+        .to_string();
+    let port = url.port_or_known_default().unwrap_or(443);
+    let (dns_override_host, dns_override_addrs) = if let Ok(ip) = host.parse::<IpAddr>() {
+        let public = provider_ip_is_publicly_routable(ip);
+        if !public && !local_provider {
+            anyhow::bail!("provider endpoint resolves to a private or internal address");
+        }
+        if insecure_http && public {
+            anyhow::bail!("insecure provider HTTP is limited to standalone local providers");
+        }
+        (None, Vec::new())
+    } else {
+        let normalized = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if !local_provider && (normalized == "localhost" || normalized.ends_with(".localhost")) {
+            anyhow::bail!("provider endpoint points to localhost/private network");
+        }
+        let addrs = tokio::net::lookup_host((host.as_str(), port))
+            .await?
+            .collect::<Vec<SocketAddr>>();
+        if addrs.is_empty() {
+            anyhow::bail!("provider endpoint host did not resolve");
+        }
+        let any_private = addrs
+            .iter()
+            .any(|address| !provider_ip_is_publicly_routable(address.ip()));
+        let any_public = addrs
+            .iter()
+            .any(|address| provider_ip_is_publicly_routable(address.ip()));
+        if any_private && !local_provider {
+            anyhow::bail!("provider endpoint resolves to a private or internal address");
+        }
+        if insecure_http && any_public {
+            anyhow::bail!("insecure provider HTTP is limited to standalone local providers");
+        }
+        (Some(host), addrs)
+    };
+    let mut builder = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10));
+    if let Some(host) = dns_override_host.as_deref() {
+        builder = builder.resolve_to_addrs(host, &dns_override_addrs);
+    }
+    Ok(HardenedProviderTarget {
+        url,
+        client: builder.build()?,
+    })
+}
+
+fn provider_ip_is_publicly_routable(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => provider_ipv4_is_publicly_routable(ip),
+        IpAddr::V6(ip) => provider_ipv6_is_publicly_routable(ip),
+    }
+}
+
+fn provider_ipv4_is_publicly_routable(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    !(ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || octets[0] == 0
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        || (octets[0] == 169 && octets[1] == 254)
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+        || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+        || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+        || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+        || octets[0] >= 240)
+}
+
+fn provider_ipv6_is_publicly_routable(ip: Ipv6Addr) -> bool {
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return provider_ipv4_is_publicly_routable(mapped);
+    }
+    let segments = ip.segments();
+    !(ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ((segments[0] & 0xfe00) == 0xfc00)
+        || ((segments[0] & 0xffc0) == 0xfe80)
+        || ((segments[0] & 0xffc0) == 0xfec0)
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+        || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
+}
+
 tokio::task_local! {
     static PROVIDER_TENANT_CONTEXT: TenantContext;
 }
 
 tokio::task_local! {
     static PROVIDER_AUTH_RECOVERY: ProviderAuthRecovery;
+}
+
+tokio::task_local! {
+    static PROVIDER_PRIVATE_ENDPOINTS_ALLOWED: bool;
 }
 
 fn provider_max_tokens_for(provider_id: &str) -> u32 {
@@ -860,15 +1024,19 @@ impl ProviderRegistry {
         &self,
         tenant_context: TenantContext,
         recovery: ProviderAuthRecovery,
+        allow_private_provider_endpoints: bool,
         future: F,
     ) -> F::Output
     where
         F: std::future::Future,
     {
-        PROVIDER_TENANT_CONTEXT
+        PROVIDER_PRIVATE_ENDPOINTS_ALLOWED
             .scope(
-                tenant_context,
-                PROVIDER_AUTH_RECOVERY.scope(recovery, future),
+                allow_private_provider_endpoints,
+                PROVIDER_TENANT_CONTEXT.scope(
+                    tenant_context,
+                    PROVIDER_AUTH_RECOVERY.scope(recovery, future),
+                ),
             )
             .await
     }
@@ -1370,7 +1538,6 @@ fn build_providers(config: &AppConfig) -> Vec<Arc<dyn Provider>> {
                 .default_model
                 .clone()
                 .unwrap_or_else(|| "command-r-plus".to_string()),
-            client: Client::new(),
         }));
     }
 
@@ -1398,7 +1565,6 @@ fn build_providers(config: &AppConfig) -> Vec<Arc<dyn Provider>> {
                 .default_model
                 .clone()
                 .unwrap_or_else(|| "gpt-4o-mini".to_string()),
-            client: Client::new(),
         }));
     }
 
@@ -1439,7 +1605,6 @@ fn add_openai_provider(
             .default_model
             .clone()
             .unwrap_or_else(|| default_model.to_string()),
-        client: Client::new(),
     }));
 }
 
@@ -1648,5 +1813,4 @@ struct OpenAICompatibleProvider {
     base_url: String,
     api_key: Option<String>,
     default_model: String,
-    client: Client,
 }

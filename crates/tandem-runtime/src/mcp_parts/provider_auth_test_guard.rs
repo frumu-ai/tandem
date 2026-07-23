@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 static PROVIDER_AUTH_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-struct ProviderAuthTestGuard {
+pub(super) struct ProviderAuthTestGuard {
     _guard: tokio::sync::MutexGuard<'static, ()>,
     previous_disable_keyring: Option<OsString>,
     previous_tandem_home: Option<OsString>,
@@ -29,7 +29,7 @@ fn restore_env_var(name: &str, previous: Option<OsString>) {
     }
 }
 
-async fn provider_auth_test_guard() -> ProviderAuthTestGuard {
+pub(super) async fn provider_auth_test_guard() -> ProviderAuthTestGuard {
     let guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
     let tandem_home = std::env::temp_dir().join(format!(
         "tandem-runtime-provider-auth-{}",

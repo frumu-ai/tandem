@@ -751,52 +751,12 @@ async fn workflow_learning_graph_patch_spawn_revision_tracks_change_type_metadat
 
 #[tokio::test]
 async fn context_distill_persists_and_dedupes_session_memory_facts() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind listener");
-    let addr = listener.local_addr().expect("local addr");
-    let provider_app = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(|| async {
-            axum::Json(json!({
-                "choices": [
-                    {
-                        "message": {
-                            "content": r#"[{"category":"fact","content":"The user prefers concise release summaries with explicit validation notes.","importance":0.91,"follow_up_needed":false}]"#
-                        }
-                    }
-                ]
-            }))
-        }),
-    );
-    let server = tokio::spawn(async move {
-        axum::serve(listener, provider_app)
-            .await
-            .expect("serve test provider");
-    });
-
     let state = test_state().await;
-    state
-        .config
-        .patch_project(json!({
-            "default_provider": "openai",
-            "providers": {
-                "openai": {
-                    "url": format!("http://{addr}/v1")
-                }
-            }
-        }))
-        .await
-        .expect("patch project");
-    state
-        .auth
-        .write()
-        .await
-        .insert("openai".to_string(), "test-key".to_string());
-    state
-        .providers
-        .reload(state.config.get().await.into())
-        .await;
+    install_fixed_completion_provider(
+        &state,
+        r#"[{"category":"fact","content":"The user prefers concise release summaries with explicit validation notes.","importance":0.91,"follow_up_needed":false}]"#,
+    )
+    .await;
 
     let app = app_router(state.clone());
     let request_body = json!({
@@ -910,7 +870,6 @@ async fn context_distill_persists_and_dedupes_session_memory_facts() {
         .oneshot(second_req)
         .await
         .expect("second response");
-    server.abort();
 
     assert_eq!(second_resp.status(), StatusCode::OK);
     let second_payload: Value = serde_json::from_slice(

@@ -19,12 +19,13 @@ impl Provider for OpenAICompatibleProvider {
             .filter(|m| !m.is_empty())
             .unwrap_or(self.default_model.as_str());
         let url = format!("{}/chat/completions", self.base_url);
+        let target = resolve_provider_request_target(&url, &self.id).await?;
         let mut response_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
         let mut last_error: Option<anyhow::Error> = None;
         let mut max_tokens = provider_max_tokens_for(&self.id);
         for attempt in 0..3 {
-            let mut req = self.client.post(url.clone()).json(&json!({
+            let mut req = target.client.post(target.url.clone()).json(&json!({
                 "model": model,
                 "messages": [{"role":"user","content": prompt}],
                 "stream": false,
@@ -43,7 +44,9 @@ impl Provider for OpenAICompatibleProvider {
                 Ok(resp) => {
                     let status = resp.status();
                     if !status.is_success() {
-                        let text = resp.text().await.unwrap_or_default();
+                        let text = read_provider_response_text_limited(resp)
+                            .await
+                            .unwrap_or_default();
                         if let Some(affordable_max) = openrouter_affordability_retry_max_tokens(
                             &self.id, status, &text, max_tokens,
                         ) {
@@ -92,7 +95,7 @@ impl Provider for OpenAICompatibleProvider {
                 err
             );
         };
-        let value: serde_json::Value = response.json().await?;
+        let value = read_provider_response_json_limited(response).await?;
 
         if let Some(detail) = extract_openai_error(&value) {
             anyhow::bail!(detail);
@@ -124,6 +127,7 @@ impl Provider for OpenAICompatibleProvider {
             .filter(|m| !m.is_empty())
             .unwrap_or(self.default_model.as_str());
         let url = format!("{}/chat/completions", self.base_url);
+        let target = resolve_provider_request_target(&url, &self.id).await?;
         let has_image_inputs = messages.iter().any(|m| !m.attachments.is_empty());
         if has_image_inputs && !model_supports_vision_input(model) {
             anyhow::bail!(
@@ -183,7 +187,7 @@ impl Provider for OpenAICompatibleProvider {
         let mut last_error: Option<anyhow::Error> = None;
         let mut downgraded_openrouter_tool_choice = false;
         for attempt in 0..3 {
-            let mut req = self.client.post(url.clone()).json(&body);
+            let mut req = target.client.post(target.url.clone()).json(&body);
             if self.id == "openrouter" {
                 req = req
                     .header("HTTP-Referer", "https://tandem.ac")
@@ -197,7 +201,9 @@ impl Provider for OpenAICompatibleProvider {
                 Ok(resp) => {
                     let status = resp.status();
                     if !status.is_success() {
-                        let text = resp.text().await.unwrap_or_default();
+                        let text = read_provider_response_text_limited(resp)
+                            .await
+                            .unwrap_or_default();
                         if has_tools
                             && !downgraded_openrouter_tool_choice
                             && openrouter_tool_choice_retry_supported(&self.id, &tool_mode, &text)
@@ -259,7 +265,9 @@ impl Provider for OpenAICompatibleProvider {
         };
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_provider_response_text_limited(resp)
+                .await
+                .unwrap_or_default();
             if text.contains("Failed to authenticate request with Clerk") {
                 let key_hint = provider_api_key_env_hint(&self.id);
                 anyhow::bail!(
@@ -544,7 +552,9 @@ impl Provider for OpenAIResponsesProvider {
                 Ok(resp) => {
                     let status = resp.status();
                     if !status.is_success() {
-                        let text = resp.text().await.unwrap_or_default();
+                        let text = read_provider_response_text_limited(resp)
+                            .await
+                            .unwrap_or_default();
                         if text.contains("Stream must be set to true") {
                             return self.complete_via_streamed_responses(prompt, model).await;
                         }
@@ -589,7 +599,7 @@ impl Provider for OpenAIResponsesProvider {
             );
         };
 
-        let value: serde_json::Value = response.json().await?;
+        let value = read_provider_response_json_limited(response).await?;
         if let Some(detail) = extract_openai_error(&value) {
             anyhow::bail!(detail);
         }
@@ -711,7 +721,9 @@ impl Provider for OpenAIResponsesProvider {
                 Ok(resp) => {
                     let status = resp.status();
                     if !status.is_success() {
-                        let text = resp.text().await.unwrap_or_default();
+                        let text = read_provider_response_text_limited(resp)
+                            .await
+                            .unwrap_or_default();
                         last_error = Some(openai_response_error(status, &text));
                         break;
                     }
@@ -1259,10 +1271,12 @@ impl OpenAIResponsesProvider {
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_provider_response_text_limited(resp)
+                .await
+                .unwrap_or_default();
             return Err(openai_response_error(status, &text));
         }
-        let sse_text = resp.text().await?;
+        let sse_text = read_provider_response_text_limited(resp).await?;
         parse_openai_responses_sse_text(&sse_text)
     }
 }
@@ -1326,7 +1340,6 @@ struct CohereProvider {
     api_key: Option<String>,
     base_url: String,
     default_model: String,
-    client: Client,
 }
 
 #[async_trait]
@@ -1361,7 +1374,7 @@ impl Provider for AnthropicProvider {
         if let Some(key) = &self.api_key {
             req = req.header("x-api-key", key);
         }
-        let value: serde_json::Value = req.send().await?.json().await?;
+        let value = read_provider_response_json_limited(req.send().await?).await?;
         let text = value["content"][0]["text"]
             .as_str()
             .unwrap_or("No completion content.")
@@ -1479,9 +1492,11 @@ impl Provider for CohereProvider {
             .map(str::trim)
             .filter(|m| !m.is_empty())
             .unwrap_or(self.default_model.as_str());
-        let mut req = self
+        let target =
+            resolve_provider_request_target(&format!("{}/chat", self.base_url), "cohere").await?;
+        let mut req = target
             .client
-            .post(format!("{}/chat", self.base_url))
+            .post(target.url)
             .json(&json!({
                 "model": model,
                 "messages": [{"role":"user","content": prompt}],
@@ -1489,7 +1504,7 @@ impl Provider for CohereProvider {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let value: serde_json::Value = req.send().await?.json().await?;
+        let value = read_provider_response_json_limited(req.send().await?).await?;
         let text = value["message"]["content"][0]["text"]
             .as_str()
             .or_else(|| value["text"].as_str())

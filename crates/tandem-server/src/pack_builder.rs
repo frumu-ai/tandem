@@ -18,7 +18,6 @@ use uuid::Uuid;
 use tandem_tools::Tool;
 use tandem_types::{ToolResult, ToolSchema};
 
-use crate::pack_manager::PackInstallRequest;
 use crate::{
     mcp_catalog, AppState, RoutineMisfirePolicy, RoutineSchedule, RoutineSpec, RoutineStatus,
 };
