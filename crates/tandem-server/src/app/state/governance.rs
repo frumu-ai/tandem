@@ -1446,7 +1446,6 @@ impl AppState {
             let mut superseded_review_ids = Vec::new();
             for approval in guard.approvals.values() {
                 if approval.status != GovernanceApprovalStatus::Pending
-                    || approval.expires_at_ms <= now
                     || approval.request_type != GovernanceApprovalRequestType::LifecycleReview
                     || approval.target_resource.resource_type != "automation"
                     || approval.target_resource.id != automation_id
@@ -1454,8 +1453,9 @@ impl AppState {
                 {
                     continue;
                 }
-                let exact_dependency_review = approval.context.get("trigger")
-                    == Some(&Value::String("dependency_revoked".to_string()))
+                let exact_dependency_review = approval.expires_at_ms > now
+                    && approval.context.get("trigger")
+                        == Some(&Value::String("dependency_revoked".to_string()))
                     && approval.context.get("reason") == Some(&Value::String(reason.clone()))
                     && approval.context.pointer("/evidence/evidence") == Some(&evidence);
                 if exact_dependency_review && matching_dependency_review_id.is_none() {

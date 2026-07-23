@@ -81,6 +81,17 @@ async fn dependency_revocation_supersedes_unrelated_lifecycle_review() {
         )
         .await
         .expect("request unrelated lifecycle review");
+    let timed_out_approval_id = format!("{}-timed-out", unrelated.approval_id);
+    {
+        let mut governance = state.automation_governance.write().await;
+        let mut timed_out = unrelated.clone();
+        timed_out.approval_id = timed_out_approval_id.clone();
+        timed_out.expires_at_ms = crate::now_ms().saturating_sub(1);
+        timed_out.updated_at_ms = crate::now_ms();
+        governance
+            .approvals
+            .insert(timed_out.approval_id.clone(), timed_out);
+    }
 
     state
         .pause_automation_for_dependency_revocation(
@@ -99,6 +110,15 @@ async fn dependency_revocation_supersedes_unrelated_lifecycle_review() {
     assert_eq!(
         superseded.status,
         crate::automation_v2::governance::GovernanceApprovalStatus::Expired
+    );
+    let timed_out = state
+        .get_governance_approval_request(&timed_out_approval_id)
+        .await
+        .expect("timed-out lifecycle review");
+    assert_eq!(
+        timed_out.status,
+        crate::automation_v2::governance::GovernanceApprovalStatus::Expired,
+        "a timed-out Pending receipt must be materialized as Expired"
     );
     let record = state
         .get_automation_governance(&automation.automation_id)
