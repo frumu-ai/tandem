@@ -1120,6 +1120,7 @@ async fn verify_slack_bot_binding(
         .clone()
         .unwrap_or_else(|| "https://slack.com/api".to_string());
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
     let response = client

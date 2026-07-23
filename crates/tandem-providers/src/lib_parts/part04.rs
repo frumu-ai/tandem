@@ -1299,7 +1299,6 @@ mod tests {
             base_url: format!("http://{}/v1", addr),
             api_key: Some("sk-test".to_string()),
             default_model: "gpt-4o-mini".to_string(),
-            client: Client::new(),
         };
 
         let messages = vec![ChatMessage {

@@ -19,12 +19,13 @@ impl Provider for OpenAICompatibleProvider {
             .filter(|m| !m.is_empty())
             .unwrap_or(self.default_model.as_str());
         let url = format!("{}/chat/completions", self.base_url);
+        let target = resolve_provider_request_target(&url, &self.id).await?;
         let mut response_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
         let mut last_error: Option<anyhow::Error> = None;
         let mut max_tokens = provider_max_tokens_for(&self.id);
         for attempt in 0..3 {
-            let mut req = self.client.post(url.clone()).json(&json!({
+            let mut req = target.client.post(target.url.clone()).json(&json!({
                 "model": model,
                 "messages": [{"role":"user","content": prompt}],
                 "stream": false,
@@ -124,6 +125,7 @@ impl Provider for OpenAICompatibleProvider {
             .filter(|m| !m.is_empty())
             .unwrap_or(self.default_model.as_str());
         let url = format!("{}/chat/completions", self.base_url);
+        let target = resolve_provider_request_target(&url, &self.id).await?;
         let has_image_inputs = messages.iter().any(|m| !m.attachments.is_empty());
         if has_image_inputs && !model_supports_vision_input(model) {
             anyhow::bail!(
@@ -183,7 +185,7 @@ impl Provider for OpenAICompatibleProvider {
         let mut last_error: Option<anyhow::Error> = None;
         let mut downgraded_openrouter_tool_choice = false;
         for attempt in 0..3 {
-            let mut req = self.client.post(url.clone()).json(&body);
+            let mut req = target.client.post(target.url.clone()).json(&body);
             if self.id == "openrouter" {
                 req = req
                     .header("HTTP-Referer", "https://tandem.ac")
@@ -1326,7 +1328,6 @@ struct CohereProvider {
     api_key: Option<String>,
     base_url: String,
     default_model: String,
-    client: Client,
 }
 
 #[async_trait]
@@ -1479,9 +1480,11 @@ impl Provider for CohereProvider {
             .map(str::trim)
             .filter(|m| !m.is_empty())
             .unwrap_or(self.default_model.as_str());
-        let mut req = self
+        let target =
+            resolve_provider_request_target(&format!("{}/chat", self.base_url), "cohere").await?;
+        let mut req = target
             .client
-            .post(format!("{}/chat", self.base_url))
+            .post(target.url)
             .json(&json!({
                 "model": model,
                 "messages": [{"role":"user","content": prompt}],

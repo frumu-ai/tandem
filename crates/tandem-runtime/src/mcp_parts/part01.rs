@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -152,6 +153,8 @@ pub struct McpRegistry {
     state_file: Arc<PathBuf>,
     oauth_security_dir: Arc<PathBuf>,
     strict_tenant_enforcement: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(any(test, feature = "test-utils"))]
+    allow_private_test_endpoints: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Process-wide default for strict tenant enforcement, set once at startup by
@@ -227,6 +230,8 @@ impl McpRegistry {
             strict_tenant_enforcement: Arc::new(std::sync::atomic::AtomicBool::new(
                 MCP_STRICT_TENANT_ENFORCEMENT_DEFAULT.load(std::sync::atomic::Ordering::SeqCst),
             )),
+            #[cfg(any(test, feature = "test-utils"))]
+            allow_private_test_endpoints: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -235,6 +240,27 @@ impl McpRegistry {
     pub fn set_strict_tenant_enforcement(&self, enabled: bool) {
         self.strict_tenant_enforcement
             .store(enabled, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn allow_private_endpoint_for(&self, current_tenant: &TenantContext) -> bool {
+        if current_tenant.is_local_implicit() {
+            return true;
+        }
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            return self
+                .allow_private_test_endpoints
+                .load(std::sync::atomic::Ordering::SeqCst);
+        }
+        #[cfg(not(any(test, feature = "test-utils")))]
+        false
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[doc(hidden)]
+    pub fn allow_private_endpoints_for_tests(&self) {
+        self.allow_private_test_endpoints
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub async fn list(&self) -> HashMap<String, McpServer> {
@@ -310,16 +336,45 @@ impl McpRegistry {
         enabled: bool,
     ) {
         let normalized_name = name.trim().to_string();
-        let (persisted_headers, persisted_secret_headers, secret_header_values) =
-            split_headers_for_storage(&normalized_name, headers, secret_headers, current_tenant);
         let mut servers = self.servers.write().await;
         let existing = servers.get(&normalized_name).cloned();
+        let input_public_headers = public_headers_for_identity(&headers);
+        let input_secret_refs = input_secret_header_refs(&headers, &secret_headers);
+        let raw_secret_supplied = headers.iter().any(|(header_name, raw_value)| {
+            !raw_value.trim().is_empty()
+                && parse_secret_header_reference(raw_value).is_none()
+                && header_name_is_sensitive(header_name)
+        });
+        let origin_or_identity_changed = existing.as_ref().is_some_and(|row| {
+            row.transport != transport || row.headers != input_public_headers
+        });
+        let credentials_changed = existing.as_ref().is_some_and(|row| {
+            origin_or_identity_changed
+                || raw_secret_supplied
+                || row.secret_headers != input_secret_refs
+        });
+        if credentials_changed {
+            let existing = existing
+                .as_ref()
+                .expect("credential change requires an existing MCP server");
+            delete_secret_header_refs(&existing.secret_headers, current_tenant);
+            delete_oauth_secret_ref(existing.oauth.as_ref(), current_tenant);
+            delete_oauth_credential(
+                &normalized_name,
+                existing.oauth.as_ref(),
+                current_tenant,
+                &self.oauth_security_dir,
+            );
+        }
+        let (persisted_headers, persisted_secret_headers, secret_header_values) =
+            split_headers_for_storage(&normalized_name, headers, secret_headers, current_tenant);
         let preserve_cache = existing.as_ref().is_some_and(|row| {
             row.transport == transport
                 && effective_headers(row)
                     == combine_headers(&persisted_headers, &secret_header_values)
         });
-        let identity_changed = existing.is_some() && !preserve_cache;
+        let identity_changed =
+            existing.is_some() && (!preserve_cache || credentials_changed);
         let existing_tool_cache = if preserve_cache {
             existing
                 .as_ref()
@@ -361,7 +416,9 @@ impl McpRegistry {
                 .map(|row| row.grounding_required)
                 .unwrap_or(false),
             secret_header_values,
-            oauth: existing.as_ref().and_then(|row| row.oauth.clone()),
+            oauth: (preserve_cache && !credentials_changed)
+                .then(|| existing.as_ref().and_then(|row| row.oauth.clone()))
+                .flatten(),
         };
         servers.insert(normalized_name.clone(), server);
         drop(servers);
@@ -446,6 +503,14 @@ impl McpRegistry {
     }
 
     pub async fn remove(&self, name: &str) -> bool {
+        self.remove_for_tenant(name, &local_tenant_context()).await
+    }
+
+    pub async fn remove_for_tenant(
+        &self,
+        name: &str,
+        current_tenant: &TenantContext,
+    ) -> bool {
         let removed_server = {
             let mut servers = self.servers.write().await;
             servers.remove(name)
@@ -454,9 +519,14 @@ impl McpRegistry {
             return false;
         };
         self.remove_connections_for_server(name).await;
-        let current_tenant = local_tenant_context();
-        delete_secret_header_refs(&server.secret_headers, &current_tenant);
-        delete_oauth_secret_ref(server.oauth.as_ref(), &current_tenant);
+        delete_secret_header_refs(&server.secret_headers, current_tenant);
+        delete_oauth_secret_ref(server.oauth.as_ref(), current_tenant);
+        delete_oauth_credential(
+            name,
+            server.oauth.as_ref(),
+            current_tenant,
+            &self.oauth_security_dir,
+        );
 
         if let Some(mut child) = self.processes.lock().await.remove(name) {
             let _ = child.kill().await;
@@ -558,7 +628,12 @@ impl McpRegistry {
             .effective_headers_for_current_tenant(name, &server, current_tenant)
             .await;
         let discovery = self
-            .discover_remote_tools(name, &endpoint, &request_headers)
+            .discover_remote_tools(
+                name,
+                &endpoint,
+                &request_headers,
+                self.allow_private_endpoint_for(current_tenant),
+            )
             .await;
         let (tools, session_id) = match discovery {
             Ok(result) => result,
@@ -602,6 +677,7 @@ impl McpRegistry {
                                     current_tenant,
                                 )
                                 .await,
+                            self.allow_private_endpoint_for(current_tenant),
                         )
                         .await
                     {
@@ -688,22 +764,30 @@ impl McpRegistry {
     }
 
     pub async fn clear_auth_material(&self, name: &str) -> bool {
+        self.clear_auth_material_for_tenant(name, &local_tenant_context())
+            .await
+    }
+
+    pub async fn clear_auth_material_for_tenant(
+        &self,
+        name: &str,
+        current_tenant: &TenantContext,
+    ) -> bool {
         if let Some(mut child) = self.processes.lock().await.remove(name) {
             let _ = child.kill().await;
             let _ = child.wait().await;
         }
 
-        let current_tenant = local_tenant_context();
         let mut servers = self.servers.write().await;
         let Some(server) = servers.get_mut(name) else {
             return false;
         };
-        delete_secret_header_refs(&server.secret_headers, &current_tenant);
-        delete_oauth_secret_ref(server.oauth.as_ref(), &current_tenant);
+        delete_secret_header_refs(&server.secret_headers, current_tenant);
+        delete_oauth_secret_ref(server.oauth.as_ref(), current_tenant);
         delete_oauth_credential(
             name,
             server.oauth.as_ref(),
-            &current_tenant,
+            current_tenant,
             &self.oauth_security_dir,
         );
         server.connected = false;
@@ -1120,6 +1204,7 @@ impl McpRegistry {
             &request_headers,
             request.clone(),
             request_session_id.as_deref(),
+            self.allow_private_endpoint_for(current_tenant),
         )
         .await
         {
@@ -1160,6 +1245,7 @@ impl McpRegistry {
                         &refreshed_headers,
                         request,
                         refreshed_runtime.mcp_session_id.as_deref(),
+                        self.allow_private_endpoint_for(current_tenant),
                     )
                     .await?
                 } else {
@@ -1339,6 +1425,7 @@ impl McpRegistry {
         server_name: &str,
         endpoint: &str,
         headers: &HashMap<String, String>,
+        allow_private_endpoint: bool,
     ) -> Result<(Vec<McpRemoteTool>, Option<String>), DiscoverRemoteToolsError> {
         let initialize = json!({
             "jsonrpc": "2.0",
@@ -1354,7 +1441,14 @@ impl McpRegistry {
             }
         });
         let (init_response, mut session_id) =
-            post_json_rpc_with_session(endpoint, headers, initialize, None).await?;
+            post_json_rpc_with_session(
+                endpoint,
+                headers,
+                initialize,
+                None,
+                allow_private_endpoint,
+            )
+            .await?;
         if let Some(err) = init_response.get("error") {
             if let Some(challenge) = extract_auth_challenge(err, server_name) {
                 return Err(DiscoverRemoteToolsError::AuthChallenge(challenge));
@@ -1373,8 +1467,14 @@ impl McpRegistry {
             "params": {}
         });
         let (tools_response, next_session_id) =
-            post_json_rpc_with_session(endpoint, headers, tools_list, session_id.as_deref())
-                .await?;
+            post_json_rpc_with_session(
+                endpoint,
+                headers,
+                tools_list,
+                session_id.as_deref(),
+                allow_private_endpoint,
+            )
+            .await?;
         if next_session_id.is_some() {
             session_id = next_session_id;
         }
@@ -1488,7 +1588,12 @@ impl McpRegistry {
             return Ok(false);
         }
 
-        let refreshed = refresh_mcp_oauth_credential(&oauth, &credential).await?;
+        let refreshed = refresh_mcp_oauth_credential(
+            &oauth,
+            &credential,
+            self.allow_private_endpoint_for(current_tenant),
+        )
+        .await?;
         self.set_bearer_token_for_tenant(name, &refreshed.access_token, current_tenant)
             .await?;
         if current_tenant.is_local_implicit() {
@@ -1902,6 +2007,32 @@ fn split_headers_for_storage(
         persisted_secret_headers,
         secret_header_values,
     )
+}
+
+fn public_headers_for_identity(headers: &HashMap<String, String>) -> HashMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(header_name, raw_value)| {
+            let value = raw_value.trim();
+            (!value.is_empty()
+                && parse_secret_header_reference(value).is_none()
+                && !header_name_is_sensitive(header_name))
+            .then(|| (header_name.clone(), value.to_string()))
+        })
+        .collect()
+}
+
+fn input_secret_header_refs(
+    headers: &HashMap<String, String>,
+    explicit_secret_headers: &HashMap<String, McpSecretRef>,
+) -> HashMap<String, McpSecretRef> {
+    let mut refs = explicit_secret_headers.clone();
+    for (header_name, raw_value) in headers {
+        if let Some(secret_ref) = parse_secret_header_reference(raw_value) {
+            refs.insert(header_name.clone(), secret_ref);
+        }
+    }
+    refs
 }
 
 fn combine_headers(

@@ -40,8 +40,8 @@ pub(super) async fn run_incident_monitor_security_assessment_probes(
         )
             .into_response();
     }
-    if let Some(required_token) = state.api_token().await {
-        if !incident_monitor_assessment_request_has_api_token(&headers, &required_token) {
+    if state.api_token_required().await {
+        if !incident_monitor_assessment_request_has_active_api_token(&state, &headers).await {
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({
@@ -928,4 +928,37 @@ fn incident_monitor_assessment_request_has_api_token(headers: &HeaderMap, requir
         })
         .map(str::trim)
         .is_some_and(|value| crate::constant_time_str_eq(value, required))
+}
+
+async fn incident_monitor_assessment_request_has_active_api_token(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> bool {
+    for header in ["x-agent-token", "x-tandem-token"] {
+        if let Some(token) = headers
+            .get(header)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if state.api_token_matches(token).await {
+                return true;
+            }
+        }
+    }
+    let bearer = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .and_then(|value| {
+            value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("bearer "))
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match bearer {
+        Some(token) => state.api_token_matches(token).await,
+        None => false,
+    }
 }

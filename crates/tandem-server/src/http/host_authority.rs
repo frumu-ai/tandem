@@ -9,6 +9,10 @@ use std::net::{IpAddr, SocketAddr};
 use tandem_types::{TenantContext, VerifiedTenantContext};
 use url::Url;
 
+use crate::action_authorization::{
+    authorize_host_effect, AuthorizedHostEffect, CanonicalHostResource, HostAction,
+    HostAuthorizationError, HostEffectRequest,
+};
 use crate::AppState;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -84,6 +88,44 @@ pub(super) fn require_diagnostics_admin(
     } else {
         Err(StatusCode::FORBIDDEN)
     }
+}
+
+pub(super) fn host_authorization_status(error: HostAuthorizationError) -> StatusCode {
+    match error {
+        HostAuthorizationError::AuditPersistenceFailed => StatusCode::INTERNAL_SERVER_ERROR,
+        HostAuthorizationError::InvalidEffectArguments => StatusCode::BAD_REQUEST,
+        _ => StatusCode::FORBIDDEN,
+    }
+}
+
+/// Issue an exact-request, tenant-bound grant for an administrative state
+/// change. Shared deployment actions declare that policy on `HostAction`;
+/// tenant-scoped actions can instead require their exact capability.
+pub(super) async fn authorize_administrative_effect(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    locality: RequestLocality,
+    action: HostAction,
+    resource_kind: &'static str,
+    resource_id: impl Into<String>,
+    arguments: serde_json::Value,
+) -> Result<(AuthorizedHostEffect, HostEffectRequest), StatusCode> {
+    let effect = HostEffectRequest::new(
+        action,
+        CanonicalHostResource::new(resource_kind, resource_id, tenant.clone()),
+        arguments,
+    );
+    let grant = authorize_host_effect(
+        state,
+        tenant,
+        verified,
+        locality.is_direct_loopback(),
+        &effect,
+    )
+    .await
+    .map_err(host_authorization_status)?;
+    Ok((grant, effect))
 }
 
 fn verified_has_deployment_admin_authority(context: &VerifiedTenantContext) -> bool {

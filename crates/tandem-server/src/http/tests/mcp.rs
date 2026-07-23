@@ -1073,6 +1073,7 @@ async fn mcp_authenticate_clears_pending_oauth_challenge() {
 }
 
 #[tokio::test]
+#[serial_test::serial(mcp_provider_auth)]
 async fn mcp_connect_discovers_www_authenticate_oauth_and_callback_connects_server() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;
@@ -1180,6 +1181,7 @@ async fn mcp_connect_discovers_www_authenticate_oauth_and_callback_connects_serv
 }
 
 #[tokio::test]
+#[serial_test::serial(mcp_provider_auth)]
 async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;
@@ -1411,6 +1413,7 @@ async fn tenant_tool_sync_preserves_other_actor_bridge_tools() {
 }
 
 #[tokio::test]
+#[serial_test::serial(mcp_provider_auth)]
 async fn mcp_oauth_callback_rejects_cross_actor_context() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;
@@ -1505,6 +1508,7 @@ async fn mcp_oauth_callback_rejects_cross_actor_context() {
 }
 
 #[tokio::test]
+#[serial_test::serial(mcp_provider_auth)]
 async fn mcp_refresh_silently_renews_expired_oauth_token() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;

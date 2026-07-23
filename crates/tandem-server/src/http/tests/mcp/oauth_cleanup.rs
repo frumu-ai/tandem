@@ -3,7 +3,16 @@
 
 use super::*;
 
+fn direct_loopback_request() -> axum::http::request::Builder {
+    Request::builder().extension(axum::extract::ConnectInfo(
+        "127.0.0.1:39731"
+            .parse::<std::net::SocketAddr>()
+            .expect("loopback socket address"),
+    ))
+}
+
 #[tokio::test]
+#[serial_test::serial(mcp_provider_auth)]
 async fn mcp_delete_auth_clears_stale_oauth_material() {
     let state = test_state().await;
 
@@ -111,7 +120,7 @@ async fn mcp_delete_auth_clears_stale_oauth_material() {
     assert!(!before.pending_auth_by_tool.is_empty());
 
     let app = app_router(state.clone());
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("DELETE")
         .uri("/mcp/notion/auth")
         .body(Body::empty())
@@ -161,6 +170,7 @@ async fn mcp_delete_auth_clears_stale_oauth_material() {
 }
 
 #[tokio::test]
+#[serial_test::serial(mcp_provider_auth)]
 async fn mcp_delete_auth_clears_canonical_oauth_material_without_oauth_config() {
     let state = test_state().await;
 
@@ -217,7 +227,7 @@ async fn mcp_delete_auth_clears_canonical_oauth_material_without_oauth_config() 
     assert!(tandem_core::load_provider_oauth_credential(&provider_id).is_some());
 
     let app = app_router(state.clone());
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("DELETE")
         .uri("/mcp/notion/auth")
         .body(Body::empty())
@@ -234,6 +244,7 @@ async fn mcp_delete_auth_clears_canonical_oauth_material_without_oauth_config() 
 }
 
 #[tokio::test]
+#[serial_test::serial(mcp_provider_auth)]
 async fn mcp_refresh_falls_back_to_global_oauth_credential() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;

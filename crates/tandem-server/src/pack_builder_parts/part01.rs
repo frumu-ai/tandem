@@ -1112,6 +1112,7 @@ impl PackBuilderTool {
             .install(PackInstallRequest {
                 path: Some(plan.generated_zip_path.to_string_lossy().to_string()),
                 url: None,
+                expected_sha256: None,
                 source: json!({"kind":"pack_builder", "plan_id": plan.plan_id, "goal": plan.goal}),
             })
             .await?;

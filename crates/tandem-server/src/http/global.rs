@@ -136,7 +136,7 @@ pub(super) async fn global_diagnostics(
     Ok(Json(json!({
         "healthy": healthy,
         "ready": state.is_ready() && healthy,
-        "apiTokenRequired": state.api_token().await.is_some(),
+        "apiTokenRequired": state.api_token_required().await,
         "phase": startup.phase,
         "startup_attempt_id": startup.attempt_id,
         "startup_elapsed_ms": startup.elapsed_ms,

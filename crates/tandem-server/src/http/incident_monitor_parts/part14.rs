@@ -14,8 +14,8 @@ pub(super) struct IncidentMonitorScenarioRunInput {
     pub scenario_ids: Vec<String>,
 }
 
-fn incident_monitor_scenario_admin_guard(
-    state_token: Option<&str>,
+async fn incident_monitor_scenario_admin_guard(
+    state: &AppState,
     headers: &HeaderMap,
 ) -> Option<Response> {
     if incident_monitor_assessment_has_scoped_intake_key_header(headers) {
@@ -30,8 +30,8 @@ fn incident_monitor_scenario_admin_guard(
                 .into_response(),
         );
     }
-    if let Some(required_token) = state_token {
-        if !incident_monitor_assessment_request_has_api_token(headers, required_token) {
+    if state.api_token_required().await {
+        if !incident_monitor_assessment_request_has_active_api_token(state, headers).await {
             return Some(
                 (
                     StatusCode::UNAUTHORIZED,
@@ -53,7 +53,7 @@ pub(super) async fn list_incident_monitor_scenario_packs(
     headers: HeaderMap,
 ) -> Response {
     if let Some(denied) =
-        incident_monitor_scenario_admin_guard(state.api_token().await.as_deref(), &headers)
+        incident_monitor_scenario_admin_guard(&state, &headers).await
     {
         return denied;
     }
@@ -82,7 +82,7 @@ pub(super) async fn run_incident_monitor_scenario_packs(
     Json(input): Json<IncidentMonitorScenarioRunInput>,
 ) -> Response {
     if let Some(denied) =
-        incident_monitor_scenario_admin_guard(state.api_token().await.as_deref(), &headers)
+        incident_monitor_scenario_admin_guard(&state, &headers).await
     {
         return denied;
     }

@@ -1224,6 +1224,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn identity_change_deletes_tenant_bound_header_credential() {
+        let _provider_auth_guard = provider_auth_test_guard().await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let tenant = TenantContext::explicit_user_workspace(
+            format!("mcp-identity-org-{}", Uuid::new_v4()),
+            "workspace-a",
+            None,
+            "deployment-admin",
+        );
+        let server_name = "identity-credential-clear";
+        let secret_id =
+            mcp_header_secret_id_for_tenant(server_name, "Authorization", &tenant);
+
+        registry
+            .add_or_update_with_secret_refs(
+                server_name.to_string(),
+                "https://example.com/first".to_string(),
+                HashMap::from([(
+                    "Authorization".to_string(),
+                    "Bearer old-credential".to_string(),
+                )]),
+                HashMap::new(),
+                &tenant,
+                true,
+            )
+            .await;
+        assert_eq!(
+            tandem_core::load_provider_auth_for_tenant(&tenant)
+                .get(&secret_id)
+                .map(String::as_str),
+            Some("Bearer old-credential")
+        );
+        let first_generation = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == server_name)
+            .expect("initial tenant connection")
+            .connection_generation;
+
+        registry
+            .add_or_update_with_secret_refs(
+                server_name.to_string(),
+                "https://example.com/second".to_string(),
+                HashMap::new(),
+                HashMap::new(),
+                &tenant,
+                true,
+            )
+            .await;
+
+        assert!(
+            !tandem_core::load_provider_auth_for_tenant(&tenant).contains_key(&secret_id),
+            "origin changes must delete the previously stored credential"
+        );
+        let server = registry
+            .list()
+            .await
+            .get(server_name)
+            .cloned()
+            .expect("updated MCP server");
+        assert!(server.secret_headers.is_empty());
+        assert!(server.oauth.is_none());
+        let changed_generation = registry
+            .list_connections()
+            .await
+            .into_values()
+            .find(|connection| connection.server_id == server_name)
+            .expect("rotated tenant connection")
+            .connection_generation;
+        assert_ne!(first_generation, changed_generation);
+
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
     async fn credential_replacement_rotates_connection_generation() {
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file.clone());
@@ -1597,6 +1674,7 @@ mod tests {
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         let server_name = "tenant-server-matching";
         let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
         registry
@@ -1633,6 +1711,7 @@ mod tests {
             spawn_discovery_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         let server_name = "tenant-server-reconnects-with-tenant";
         let tenant_a = TenantContext::explicit_user_workspace(
             format!("tenant-a-{}", Uuid::new_v4()),

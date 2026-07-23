@@ -8,7 +8,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::net::IpAddr;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tandem_providers::openai_codex_supported_model_rows;
@@ -29,6 +28,8 @@ pub(super) struct AuthInput {
 pub(super) struct ApiTokenInput {
     #[serde(alias = "apiToken", alias = "api_token")]
     pub token: Option<String>,
+    #[serde(default)]
+    pub scopes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -126,6 +127,9 @@ pub(super) async fn get_config(State(state): State<AppState>) -> Json<Value> {
 
 pub(super) async fn patch_config(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<Value>,
 ) -> Response {
     if contains_secret_config_fields(&input) {
@@ -140,7 +144,36 @@ pub(super) async fn patch_config(
             .into_response();
     }
     let normalized_input = normalize_config_patch_input(input);
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ProjectConfigUpdate,
+        "project_config",
+        tenant.workspace_id.as_str(),
+        normalized_input.clone(),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
     let updates_openai_codex_default = config_patch_updates_openai_codex_default(&normalized_input);
+    if let Err(error) = validate_provider_origin_patch(&state, &normalized_input).await {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "code": "PROVIDER_ORIGIN_CHANGE_REJECTED",
+                "error": error,
+            })),
+        )
+            .into_response();
+    }
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
     let effective = match state.config.patch_project(normalized_input).await {
         Ok(effective) => effective,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -173,6 +206,9 @@ pub(super) async fn global_config(State(state): State<AppState>) -> Json<Value> 
 
 pub(super) async fn global_config_patch(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<Value>,
 ) -> Response {
     if contains_secret_config_fields(&input) {
@@ -186,9 +222,42 @@ pub(super) async fn global_config_patch(
         )
             .into_response();
     }
+    let normalized_input = normalize_config_patch_input(input);
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::GlobalConfigUpdate,
+        "deployment_config",
+        tenant
+            .deployment_id
+            .as_deref()
+            .unwrap_or("local-deployment"),
+        normalized_input.clone(),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = validate_provider_origin_patch(&state, &normalized_input).await {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "code": "PROVIDER_ORIGIN_CHANGE_REJECTED",
+                "error": error,
+            })),
+        )
+            .into_response();
+    }
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
     let effective = match state
         .config
-        .patch_global(normalize_config_patch_input(input))
+        .patch_global(normalized_input)
         .await
     {
         Ok(effective) => effective,
@@ -200,6 +269,88 @@ pub(super) async fn global_config_patch(
         .await;
     Json(json!({ "effective": normalize_effective_config_with_identity(redacted(effective)) }))
         .into_response()
+}
+
+async fn validate_provider_origin_patch(state: &AppState, patch: &Value) -> Result<(), String> {
+    let Some(provider_root) = patch
+        .get("providers")
+        .and_then(Value::as_object)
+        .or_else(|| patch.get("provider").and_then(Value::as_object))
+    else {
+        return Ok(());
+    };
+    let current = state.config.get_effective_value().await;
+    for (provider_id, provider_patch) in provider_root {
+        let Some(origin_value) = provider_patch.as_object().and_then(|entry| entry.get("url")) else {
+            continue;
+        };
+        let configured_origin = origin_value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let default_origin = canonical_provider_origin(provider_id);
+        let requested_origin = configured_origin
+            .as_deref()
+            .or(default_origin)
+            .ok_or_else(|| {
+                format!(
+                    "provider `{provider_id}` must declare a non-empty HTTPS origin"
+                )
+            })?;
+        if let Some(existing) = provider_config_value(&current, provider_id) {
+            let existing_origin = existing
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .or(default_origin);
+            if existing_origin.map(normalize_provider_origin)
+                != Some(normalize_provider_origin(requested_origin))
+            {
+                return Err(format!(
+                    "provider `{provider_id}` origin is immutable once configured; create a new provider ID and credential binding"
+                ));
+            }
+        }
+        let local_provider = matches!(
+            provider_id.trim().to_ascii_lowercase().as_str(),
+            "ollama" | "llama_cpp" | "llama.cpp"
+        );
+        let validation = if local_provider {
+            crate::outbound_http::resolve_standalone_provider_url(requested_origin).await
+        } else {
+            crate::outbound_http::resolve_public_https_url(requested_origin).await
+        };
+        validation.map_err(|error| {
+            format!("provider `{provider_id}` origin is not permitted: {error}")
+        })?;
+    }
+    Ok(())
+}
+
+fn normalize_provider_origin(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn canonical_provider_origin(provider_id: &str) -> Option<&'static str> {
+    match provider_id.trim().to_ascii_lowercase().as_str() {
+        "ollama" => Some("http://127.0.0.1:11434/v1"),
+        "openai" => Some("https://api.openai.com/v1"),
+        "openai-codex" => Some("https://chatgpt.com/backend-api/codex"),
+        "openrouter" => Some("https://openrouter.ai/api/v1"),
+        "llama_cpp" | "llama.cpp" => Some("http://127.0.0.1:8080/v1"),
+        "groq" => Some("https://api.groq.com/openai/v1"),
+        "mistral" => Some("https://api.mistral.ai/v1"),
+        "together" => Some("https://api.together.xyz/v1"),
+        "azure" => Some("https://example.openai.azure.com/openai/deployments/default"),
+        "bedrock" => Some("https://bedrock-runtime.us-east-1.amazonaws.com"),
+        "vertex" => Some("https://aiplatform.googleapis.com/v1"),
+        "copilot" => Some("https://api.githubcopilot.com"),
+        "anthropic" => Some("https://api.anthropic.com"),
+        "cohere" => Some("https://api.cohere.com/v2"),
+        _ => None,
+    }
 }
 
 pub(super) async fn get_config_identity(State(state): State<AppState>) -> Json<Value> {
@@ -218,6 +369,9 @@ pub(super) async fn get_config_identity(State(state): State<AppState>) -> Json<V
 
 pub(super) async fn patch_config_identity(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<Value>,
 ) -> Response {
     if contains_secret_config_fields(&input) {
@@ -237,6 +391,24 @@ pub(super) async fn patch_config_identity(
     } else {
         normalize_config_patch_input(json!({ "identity": input }))
     };
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ProjectConfigUpdate,
+        "project_config",
+        tenant.workspace_id.as_str(),
+        patch.clone(),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
     let effective = match state.config.patch_project(patch).await {
         Ok(effective) => effective,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -603,14 +775,35 @@ pub(super) async fn provider_oauth_authorize(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
-) -> Json<Value> {
+) -> Response {
     let provider_id = canonical_provider_id(&id);
     if provider_id != OPENAI_CODEX_PROVIDER_ID {
         return Json(json!({
             "ok": false,
             "error": format!("oauth is not supported for provider `{provider_id}`"),
-        }));
+        }))
+        .into_response();
+    }
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ProviderCredentialUpdate,
+        "provider_credential",
+        provider_id.clone(),
+        json!({"provider_id": provider_id, "operation": "oauth_authorize"}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
     }
 
     let session_id = Uuid::new_v4().to_string();
@@ -635,7 +828,8 @@ pub(super) async fn provider_oauth_authorize(
             return Json(json!({
                 "ok": false,
                 "error": format!("failed to start local Codex callback server: {error}"),
-            }));
+            }))
+            .into_response();
         }
     }
     let redirect_uri = if provider_id == OPENAI_CODEX_PROVIDER_ID && !use_hosted_codex_callback {
@@ -673,6 +867,7 @@ pub(super) async fn provider_oauth_authorize(
         "authorizationUrl": authorization_url,
         "expires_at_ms": expires_at_ms,
     }))
+    .into_response()
 }
 
 pub(super) async fn provider_oauth_status(
@@ -1149,6 +1344,8 @@ pub(super) async fn provider_oauth_disconnect(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Response {
     let provider_id = canonical_provider_id(&id);
@@ -1158,6 +1355,24 @@ pub(super) async fn provider_oauth_disconnect(
             "error": format!("oauth is not supported for provider `{provider_id}`"),
         }))
         .into_response();
+    }
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ProviderCredentialUpdate,
+        "provider_credential",
+        provider_id.clone(),
+        json!({"provider_id": provider_id, "operation": "oauth_disconnect"}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
     }
 
     let mut credential_guard = state
@@ -1229,6 +1444,8 @@ pub(super) async fn provider_oauth_local_session(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Response {
     if !tenant_context.is_local_implicit() {
@@ -1250,6 +1467,24 @@ pub(super) async fn provider_oauth_local_session(
             "error": format!("oauth is not supported for provider `{provider_id}`"),
         }))
         .into_response();
+    }
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ProviderCredentialUpdate,
+        "provider_credential",
+        provider_id.clone(),
+        json!({"provider_id": provider_id, "operation": "oauth_import_local_session"}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
     }
 
     let mut credential_guard = state
@@ -1325,6 +1560,8 @@ pub(super) async fn provider_oauth_session_import(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
     Json(input): Json<ProviderOAuthSessionImportInput>,
 ) -> Response {
@@ -1335,6 +1572,38 @@ pub(super) async fn provider_oauth_session_import(
             "error": format!("oauth is not supported for provider `{provider_id}`"),
         }))
         .into_response();
+    }
+    let import_digest = format!(
+        "{:x}",
+        Sha256::digest(
+            input
+                .auth_json
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes()
+        )
+    );
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ProviderCredentialUpdate,
+        "provider_credential",
+        provider_id.clone(),
+        json!({
+            "provider_id": provider_id,
+            "operation": "oauth_import",
+            "credential_digest": import_digest,
+        }),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
     }
 
     let raw_auth_json = input.auth_json.unwrap_or_default();
@@ -1460,6 +1729,8 @@ pub(super) async fn set_auth(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
     Json(input): Json<AuthInput>,
 ) -> Response {
@@ -1471,6 +1742,22 @@ pub(super) async fn set_auth(
     if token.is_empty() {
         return Json(json!({"ok": false, "error": "token cannot be empty"})).into_response();
     }
+    let token_digest = format!("{:x}", Sha256::digest(token.as_bytes()));
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ProviderCredentialUpdate,
+        "provider_credential",
+        normalized_id.clone(),
+        json!({"provider_id": normalized_id, "operation": "set", "token_digest": token_digest}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
 
     let mut credential_guard = state
         .oauth
@@ -1485,6 +1772,9 @@ pub(super) async fn set_auth(
         &normalized_id,
     )
     .await;
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
     credential_guard.advance_generation();
     let backend = match tandem_core::set_provider_auth_for_tenant_in_dir(
         &provider_auth_security_dir,
@@ -1577,12 +1867,29 @@ pub(super) async fn delete_auth(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Response {
     let normalized_id = id.trim().to_ascii_lowercase();
     if normalized_id.is_empty() {
         return Json(json!({"ok": false, "error": "provider id cannot be empty"})).into_response();
     }
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ProviderCredentialUpdate,
+        "provider_credential",
+        normalized_id.clone(),
+        json!({"provider_id": normalized_id, "operation": "delete"}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
 
     let mut credential_guard = state
         .oauth
@@ -1597,6 +1904,9 @@ pub(super) async fn delete_auth(
         &normalized_id,
     )
     .await;
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
     credential_guard.advance_generation();
     let persisted_removed = match tandem_core::delete_provider_auth_for_tenant_in_dir(
         &provider_auth_security_dir,
@@ -1831,56 +2141,241 @@ fn provider_auth_mutation_error_response(
 
 pub(super) async fn set_api_token(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     headers: axum::http::HeaderMap,
     Json(input): Json<ApiTokenInput>,
-) -> Json<Value> {
+) -> Response {
     if let Err(error) = authorize_api_token_management(&state, &headers).await {
-        return Json(error);
+        return Json(error).into_response();
     }
     let token = input.token.unwrap_or_default().trim().to_string();
     if token.is_empty() {
         return Json(json!({
             "ok": false,
             "error": "token cannot be empty"
-        }));
+        }))
+        .into_response();
     }
-    state.set_api_token(Some(token)).await;
-    Json(json!({"ok": true}))
+    let scopes = match normalize_api_token_scopes(input.scopes) {
+        Ok(scopes) => scopes,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "code": "TOKEN_SCOPE_INVALID", "error": error})),
+            )
+                .into_response()
+        }
+    };
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ApiTokenManage,
+        "deployment_api_token",
+        tenant
+            .deployment_id
+            .as_deref()
+            .unwrap_or("local-deployment"),
+        json!({
+            "operation": "set",
+            "token_digest": format!("{:x}", Sha256::digest(token.as_bytes())),
+        }),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
+    let metadata = state.rotate_api_token(token, scopes).await;
+    Json(json!({
+        "ok": true,
+        "token_id": metadata.token_id,
+        "scopes": metadata.scopes,
+        "created_at_ms": metadata.created_at_ms,
+    }))
+    .into_response()
 }
 
 pub(super) async fn clear_api_token(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     headers: axum::http::HeaderMap,
-) -> Json<Value> {
+) -> Response {
     if let Err(error) = authorize_api_token_management(&state, &headers).await {
-        return Json(error);
+        return Json(error).into_response();
+    }
+    if let Err(status) = crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ApiTokenManage,
+        "deployment_api_token",
+        tenant
+            .deployment_id
+            .as_deref()
+            .unwrap_or("local-deployment"),
+        json!({"operation": "clear_denied"}),
+    )
+    .await
+    {
+        return status.into_response();
     }
     Json(json!({
         "ok": false,
         "error": "clearing the API token is disabled because it would reopen the HTTP API; use /auth/token/generate to rotate it"
     }))
+    .into_response()
 }
 
 pub(super) async fn generate_api_token(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     headers: axum::http::HeaderMap,
-) -> Json<Value> {
+) -> Response {
     if let Err(error) = authorize_api_token_management(&state, &headers).await {
-        return Json(error);
+        return Json(error).into_response();
     }
     let token = format!("tk_{}", Uuid::new_v4().simple());
-    state.set_api_token(Some(token.clone())).await;
+    let scopes = vec!["engine.api".to_string()];
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ApiTokenManage,
+        "deployment_api_token",
+        tenant
+            .deployment_id
+            .as_deref()
+            .unwrap_or("local-deployment"),
+        json!({
+            "operation": "generate",
+            "token_digest": format!("{:x}", Sha256::digest(token.as_bytes())),
+        }),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
+    let metadata = state.rotate_api_token(token.clone(), scopes).await;
     Json(json!({
         "ok": true,
-        "token": token
+        "token": token,
+        "token_id": metadata.token_id,
+        "scopes": metadata.scopes,
+        "created_at_ms": metadata.created_at_ms,
     }))
+    .into_response()
+}
+
+pub(super) async fn list_api_tokens(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Response {
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ApiTokenManage,
+        "deployment_api_tokens",
+        tenant
+            .deployment_id
+            .as_deref()
+            .unwrap_or("local-deployment"),
+        json!({"operation": "list"}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
+    Json(json!({
+        "tokens": state.transport_token_metadata().await,
+    }))
+    .into_response()
+}
+
+pub(super) async fn revoke_api_token(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+    Path(token_id): Path<String>,
+) -> Response {
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ApiTokenManage,
+        "deployment_api_token",
+        token_id.clone(),
+        json!({"operation": "revoke", "token_id": token_id}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
+    match state.revoke_api_token(&token_id).await {
+        Ok(true) => Json(json!({"ok": true, "token_id": token_id})).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "transport token not found or already revoked"})),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::CONFLICT,
+            Json(json!({"ok": false, "error": error})),
+        )
+            .into_response(),
+    }
+}
+
+fn normalize_api_token_scopes(scopes: Option<Vec<String>>) -> Result<Vec<String>, String> {
+    let mut scopes = scopes.unwrap_or_else(|| vec!["engine.api".to_string()]);
+    scopes = scopes
+        .into_iter()
+        .map(|scope| scope.trim().to_ascii_lowercase())
+        .filter(|scope| !scope.is_empty())
+        .collect();
+    scopes.sort();
+    scopes.dedup();
+    if scopes.is_empty() || scopes.iter().any(|scope| scope != "engine.api") {
+        return Err("the supported transport-token scope is engine.api".to_string());
+    }
+    Ok(scopes)
 }
 
 async fn authorize_api_token_management(
     state: &AppState,
     headers: &axum::http::HeaderMap,
 ) -> Result<(), Value> {
-    if state.api_token().await.is_some() {
+    if state.api_token_required().await {
         return Ok(());
     }
     let expected = std::env::var("TANDEM_TOKEN_BOOTSTRAP_SECRET")

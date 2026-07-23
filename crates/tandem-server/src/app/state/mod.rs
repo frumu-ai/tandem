@@ -139,6 +139,20 @@ pub use oauth_state::OAuthState;
 use prompt_context_hook::*;
 pub(crate) use slack_event_runtime::SlackEventTaskRuntime;
 
+#[derive(Clone, Debug, Serialize)]
+pub struct TransportTokenMetadata {
+    pub token_id: String,
+    pub scopes: Vec<String>,
+    pub created_at_ms: u64,
+    pub revoked_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TransportTokenRecord {
+    metadata: TransportTokenMetadata,
+    token_hash: [u8; 32],
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<OnceLock<RuntimeState>>,
@@ -146,6 +160,7 @@ pub struct AppState {
     pub startup: Arc<RwLock<StartupState>>,
     pub in_process_mode: Arc<AtomicBool>,
     pub api_token: Arc<RwLock<Option<String>>>,
+    pub transport_tokens: Arc<RwLock<Vec<TransportTokenRecord>>>,
     pub engine_leases: Arc<RwLock<std::collections::HashMap<String, EngineLease>>>,
     pub managed_worktrees: Arc<RwLock<std::collections::HashMap<String, ManagedWorktreeRecord>>>,
     pub run_registry: RunRegistry,

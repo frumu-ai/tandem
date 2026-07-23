@@ -2,9 +2,83 @@
 // Licensed under the Business Source License 1.1
 
 use super::*;
+use base64::Engine;
+use ed25519_dalek::{Signer, SigningKey};
+use sha2::{Digest, Sha256};
 
 fn direct_loopback() -> axum::extract::ConnectInfo<std::net::SocketAddr> {
     axum::extract::ConnectInfo("127.0.0.1:39731".parse().expect("loopback socket address"))
+}
+
+struct TrustedPackKeyGuard {
+    previous: Option<String>,
+}
+
+impl Drop for TrustedPackKeyGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_deref() {
+            std::env::set_var("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", previous);
+        } else {
+            std::env::remove_var("TANDEM_PACK_TRUSTED_PUBLIC_KEYS");
+        }
+    }
+}
+
+fn write_signed_pack_zip(path: &std::path::Path, manifest: &str) -> TrustedPackKeyGuard {
+    write_signed_pack_zip_with_entries(path, manifest, &[("README.md", "# pack")])
+}
+
+fn write_signed_pack_zip_with_entries(
+    path: &std::path::Path,
+    manifest: &str,
+    extra_entries: &[(&str, &str)],
+) -> TrustedPackKeyGuard {
+    let mut entries = vec![("tandempack.yaml", manifest)];
+    entries.extend_from_slice(extra_entries);
+    let mut ordered = entries
+        .iter()
+        .map(|(name, body)| ((*name).to_string(), body.as_bytes().to_vec()))
+        .collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut hasher = Sha256::new();
+    for (name, body) in &ordered {
+        hasher.update((name.len() as u64).to_be_bytes());
+        hasher.update(name.as_bytes());
+        hasher.update((body.len() as u64).to_be_bytes());
+        hasher.update(body);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    let signing_key = SigningKey::from_bytes(&[11u8; 32]);
+    let signature = signing_key.sign(&digest);
+    let envelope = json!({
+        "key_id": "http-test-publisher",
+        "signature": base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
+    })
+    .to_string();
+
+    let file = std::fs::File::create(path).expect("create signed zip");
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, body) in entries {
+        zip.start_file(name, opts).expect("start signed entry");
+        std::io::Write::write_all(&mut zip, body.as_bytes()).expect("write signed entry");
+    }
+    zip.start_file("tandempack.sig", opts)
+        .expect("start pack signature");
+    std::io::Write::write_all(&mut zip, envelope.as_bytes()).expect("write pack signature");
+    zip.finish().expect("finish signed zip");
+
+    let previous = std::env::var("TANDEM_PACK_TRUSTED_PUBLIC_KEYS").ok();
+    std::env::set_var(
+        "TANDEM_PACK_TRUSTED_PUBLIC_KEYS",
+        format!(
+            "http-test-publisher={}",
+            base64::engine::general_purpose::STANDARD
+                .encode(signing_key.verifying_key().to_bytes())
+        ),
+    );
+    TrustedPackKeyGuard { previous }
 }
 
 #[tokio::test]
@@ -97,13 +171,14 @@ async fn packs_detect_returns_false_without_marker() {
 }
 
 #[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn packs_install_list_and_uninstall_roundtrip() {
     let state = test_state().await;
     let mut rx = state.event_bus.subscribe();
     let root = std::env::temp_dir().join(format!("tandem-pack-install-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&root).expect("mkdir");
     let pack_zip = root.join("pack.zip");
-    write_pack_zip(
+    let _trusted_key = write_signed_pack_zip(
         &pack_zip,
         "name: roundtrip-pack\nversion: 1.2.3\ntype: workflow\npack_id: roundtrip-pack\n",
     );
@@ -195,12 +270,13 @@ async fn packs_install_list_and_uninstall_roundtrip() {
 }
 
 #[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn packs_updates_endpoints_return_stub_payload() {
     let state = test_state().await;
     let root = std::env::temp_dir().join(format!("tandem-pack-updates-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&root).expect("mkdir");
     let pack_zip = root.join("pack.zip");
-    write_pack_zip(
+    let _trusted_key = write_signed_pack_zip(
         &pack_zip,
         "name: update-pack\nversion: 1.0.0\ntype: workflow\npack_id: update-pack\n",
     );
@@ -275,19 +351,15 @@ async fn packs_updates_endpoints_return_stub_payload() {
 }
 
 #[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn packs_get_reports_workflow_extensions() {
     let state = test_state().await;
     let root = std::env::temp_dir().join(format!("tandem-pack-inspect-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&root).expect("mkdir");
     let pack_zip = root.join("inspect-pack.zip");
-    let file = std::fs::File::create(&pack_zip).expect("create zip");
-    let mut zip = zip::ZipWriter::new(file);
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    zip.start_file("tandempack.yaml", opts).expect("manifest");
-    std::io::Write::write_all(
-        &mut zip,
-        br#"name: workflow-inspect-pack
+    let _trusted_key = write_signed_pack_zip_with_entries(
+        &pack_zip,
+        r#"name: workflow-inspect-pack
 version: 1.0.0
 type: workflow
 pack_id: workflow-inspect-pack
@@ -302,23 +374,17 @@ contents:
     - id: build_feature.task_completed.notify
       path: hooks/notify.yaml
 "#,
-    )
-    .expect("write manifest");
-    zip.start_file("workflows/build_feature.yaml", opts)
-        .expect("workflow file");
-    std::io::Write::write_all(
-        &mut zip,
-        b"workflow:\n  id: build_feature\n  name: Build Feature\n  steps:\n    - planner\n",
-    )
-    .expect("write workflow file");
-    zip.start_file("hooks/notify.yaml", opts)
-        .expect("hook file");
-    std::io::Write::write_all(
-        &mut zip,
-        b"hooks:\n  - id: build_feature.task_completed.notify\n    workflow_id: build_feature\n    event: task_completed\n    actions:\n      - slack.notify\n",
-    )
-    .expect("write hook file");
-    zip.finish().expect("finish zip");
+        &[
+            (
+                "workflows/build_feature.yaml",
+                "workflow:\n  id: build_feature\n  name: Build Feature\n  steps:\n    - planner\n",
+            ),
+            (
+                "hooks/notify.yaml",
+                "hooks:\n  - id: build_feature.task_completed.notify\n    workflow_id: build_feature\n    event: task_completed\n    actions:\n      - slack.notify\n",
+            ),
+        ],
+    );
 
     let app = app_router(state.clone());
     let install_resp = app
@@ -375,12 +441,13 @@ contents:
 }
 
 #[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn packs_install_with_marketplace_assets_exposes_files() {
     let state = test_state().await;
     let root = std::env::temp_dir().join(format!("tandem-pack-marketplace-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&root).expect("mkdir");
     let pack_zip = root.join("marketplace-pack.zip");
-    write_pack_zip_with_entries(
+    let _trusted_key = write_signed_pack_zip_with_entries(
         &pack_zip,
         r#"
 manifest_schema_version: 1

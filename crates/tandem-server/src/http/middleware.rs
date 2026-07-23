@@ -85,12 +85,12 @@ pub(super) async fn auth_gate(
         }
     }
 
-    let required = state.api_token().await;
-    if !request_transport_token_authorized(
-        request.headers(),
-        required.as_deref(),
-        runtime_auth_mode,
-    ) {
+    let token_required = state.api_token_required().await;
+    let token_authorized = match extract_request_token(request.headers()) {
+        Some(provided) => state.api_token_matches(&provided).await,
+        None => !token_required && !runtime_auth_mode_requires_transport_token(runtime_auth_mode),
+    };
+    if !token_authorized {
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorEnvelope::new(

@@ -92,3 +92,4 @@ rustix = { version = "1.1.4", features = ["fs"] }
 tempfile = "3"
 tower = "0.5"
 serial_test = "3"
+tandem-runtime = { path = "../tandem-runtime", version = "0.7.1", features = ["test-utils"] }

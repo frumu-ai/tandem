@@ -29,6 +29,7 @@ pub(super) mod incident_monitor;
 pub(super) mod intra_tenant_authority;
 pub(super) mod marketplace;
 pub(super) mod mcp;
+pub(super) mod mcp_admin_hardening;
 pub(super) mod memory;
 pub(super) mod mission_builder;
 pub(super) mod missions;

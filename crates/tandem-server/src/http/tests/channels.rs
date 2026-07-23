@@ -3,7 +3,16 @@
 
 use super::*;
 
+fn direct_loopback_request() -> axum::http::request::Builder {
+    Request::builder().extension(axum::extract::ConnectInfo(
+        "127.0.0.1:39731"
+            .parse::<std::net::SocketAddr>()
+            .expect("loopback socket address"),
+    ))
+}
+
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_config_returns_non_secret_shape() {
     let state = test_state().await;
     let _ = state
@@ -38,7 +47,7 @@ async fn channels_config_returns_non_secret_shape() {
         .expect("patch project");
     let app = app_router(state);
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("GET")
         .uri("/channels/config")
         .body(Body::empty())
@@ -128,11 +137,12 @@ async fn channels_config_returns_non_secret_shape() {
 }
 
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_put_roundtrips_model_override() {
     let state = test_state().await;
     let app = app_router(state.clone());
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/discord")
         .header("content-type", "application/json")
@@ -152,7 +162,7 @@ async fn channels_put_roundtrips_model_override() {
     let resp = app.clone().oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let config_req = Request::builder()
+    let config_req = direct_loopback_request()
         .method("GET")
         .uri("/channels/config")
         .body(Body::empty())
@@ -188,6 +198,7 @@ async fn channels_put_roundtrips_model_override() {
 }
 
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_put_preserves_existing_token_when_only_model_changes() {
     let state = test_state().await;
     let _ = state
@@ -206,7 +217,7 @@ async fn channels_put_preserves_existing_token_when_only_model_changes() {
         .expect("patch project");
     let app = app_router(state.clone());
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/discord")
         .header("content-type", "application/json")
@@ -225,7 +236,7 @@ async fn channels_put_preserves_existing_token_when_only_model_changes() {
     let resp = app.clone().oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let config_req = Request::builder()
+    let config_req = direct_loopback_request()
         .method("GET")
         .uri("/channels/config")
         .body(Body::empty())
@@ -272,6 +283,7 @@ async fn channels_put_preserves_existing_token_when_only_model_changes() {
 /// and a PUT that echoes such a sanitized snapshot back must not wipe the
 /// stored installation identity, secrets, or per-connection bindings.
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_put_echoing_sanitized_config_preserves_slack_connections() {
     let state = test_state().await;
     let _ = state
@@ -297,7 +309,7 @@ async fn channels_put_echoing_sanitized_config_preserves_slack_connections() {
     let app = app_router(state.clone());
 
     // The config snapshot must carry the summary under a non-config key.
-    let config_req = Request::builder()
+    let config_req = direct_loopback_request()
         .method("GET")
         .uri("/channels/config")
         .body(Body::empty())
@@ -327,7 +339,7 @@ async fn channels_put_echoing_sanitized_config_preserves_slack_connections() {
     // Echo a sanitized snapshot back (the Channels page Reconnect shape):
     // no secrets, no connections, the snapshot's (empty) allowlist, plus
     // the summary key the server ignores.
-    let put_req = Request::builder()
+    let put_req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/slack")
         .header("content-type", "application/json")
@@ -382,11 +394,12 @@ async fn channels_put_echoing_sanitized_config_preserves_slack_connections() {
 }
 
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_verify_discord_without_token_returns_setup_hint() {
     let state = test_state().await;
     let app = app_router(state);
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("POST")
         .uri("/channels/discord/verify")
         .body(Body::empty())
@@ -417,11 +430,12 @@ async fn channels_verify_discord_without_token_returns_setup_hint() {
 }
 
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_put_normalizes_empty_allowed_users_to_wildcard() {
     let state = test_state().await;
     let app = app_router(state.clone());
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/telegram")
         .header("content-type", "application/json")
@@ -454,11 +468,12 @@ async fn channels_put_normalizes_empty_allowed_users_to_wildcard() {
 /// `SlackConfigFile`'s legacy `["*"]` serde default, which would open
 /// signed Events ingress to every Slack user.
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_put_fresh_slack_save_without_allowlist_stays_deny_all() {
     let state = test_state().await;
     let app = app_router(state.clone());
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/slack")
         .header("content-type", "application/json")
@@ -487,6 +502,7 @@ async fn channels_put_fresh_slack_save_without_allowlist_stays_deny_all() {
 /// secrets), and re-hoisting them under the new identity would let app B
 /// verify with app A's credentials instead of failing closed.
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_put_migrating_installation_does_not_carry_secrets() {
     let state = test_state().await;
     let _ = state
@@ -512,6 +528,16 @@ async fn channels_put_migrating_installation_does_not_carry_secrets() {
 
     // Sanity: the effective config resolves the old installation's secrets.
     let effective = state.config.get_effective_value().await;
+    let old_signing_secret_id = tandem_core::slack_signing_secret_store_id(
+        effective
+            .pointer("/channels/slack")
+            .and_then(Value::as_object)
+            .expect("stored Slack config"),
+    );
+    assert!(
+        tandem_core::load_provider_auth().contains_key(&old_signing_secret_id),
+        "sanity: the old installation signing secret is stored"
+    );
     let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
     assert!(connections
         .iter()
@@ -522,7 +548,7 @@ async fn channels_put_migrating_installation_does_not_carry_secrets() {
     // old installation's bot token must not be carried under the new
     // identity, so the save has no usable connection left and fails closed
     // instead of appearing usable while delivery is broken.
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/slack")
         .header("content-type", "application/json")
@@ -545,7 +571,7 @@ async fn channels_put_migrating_installation_does_not_carry_secrets() {
 
     // The same migration WITH the new installation's bot token succeeds —
     // and still must not carry the old app's secrets.
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/slack")
         .header("content-type", "application/json")
@@ -591,6 +617,44 @@ async fn channels_put_migrating_installation_does_not_carry_secrets() {
         sales.signing_secret.is_none(),
         "the migrated installation must fail closed until its own secret is set"
     );
+    assert!(
+        !tandem_core::load_provider_auth().contains_key(&old_signing_secret_id),
+        "the old installation signing secret must be purged after config persistence"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
+async fn channels_put_protected_audit_records_shape_without_raw_credentials() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let token = "tg-channel-audit-secret-canary";
+
+    let req = direct_loopback_request()
+        .method("PUT")
+        .uri("/channels/telegram")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "bot_token": token,
+                "allowed_users": ["@alice"],
+                "mention_only": true
+            })
+            .to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("channel_config_update"));
+    assert!(
+        !audit.contains(token),
+        "channel administrative audit must contain field names, never raw credentials"
+    );
+    let _ = tandem_core::delete_provider_auth("channel::telegram::bot_token");
 }
 
 /// PR #1910 review: a migrating save that stays valid through a
@@ -598,6 +662,7 @@ async fn channels_put_migrating_installation_does_not_carry_secrets() {
 /// deleting it from the keystore — or injection would resurrect the old
 /// app's token under the new installation identity on the next read.
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_put_migrating_installation_revokes_stored_top_level_token() {
     let state = test_state().await;
     let _ = state
@@ -635,7 +700,7 @@ async fn channels_put_migrating_installation_revokes_stored_top_level_token() {
 
     // Migrate the installation without a new token: the save stays valid
     // because C_SALES self-declares its installation and token.
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/slack")
         .header("content-type", "application/json")
@@ -674,11 +739,12 @@ async fn channels_put_migrating_installation_revokes_stored_top_level_token() {
 /// and bot_token only inside `connections[]` is a valid save — startability
 /// is judged on the resolved connections, not the legacy top-level fields.
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_put_accepts_connection_only_slack_configs() {
     let state = test_state().await;
     let app = app_router(state.clone());
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/slack")
         .header("content-type", "application/json")
@@ -715,7 +781,7 @@ async fn channels_put_accepts_connection_only_slack_configs() {
     // configs; a client echoing that snapshot back (the Channels page
     // Reconnect) must not 400 on the explicit null before the preserved
     // `connections[]` can make the config startable.
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/slack")
         .header("content-type", "application/json")
@@ -749,7 +815,7 @@ async fn channels_put_accepts_connection_only_slack_configs() {
     // state, so nothing stored can be inherited to make it startable).
     let state = test_state().await;
     let app = app_router(state.clone());
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/slack")
         .header("content-type", "application/json")
@@ -770,11 +836,12 @@ async fn channels_put_accepts_connection_only_slack_configs() {
 }
 
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_put_unknown_channel_returns_not_found() {
     let state = test_state().await;
     let app = app_router(state);
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("PUT")
         .uri("/channels/unknown")
         .header("content-type", "application/json")
@@ -785,11 +852,12 @@ async fn channels_put_unknown_channel_returns_not_found() {
 }
 
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_delete_unknown_channel_returns_not_found() {
     let state = test_state().await;
     let app = app_router(state);
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("DELETE")
         .uri("/channels/unknown")
         .body(Body::empty())
@@ -799,11 +867,12 @@ async fn channels_delete_unknown_channel_returns_not_found() {
 }
 
 #[tokio::test]
+#[serial_test::serial(channel_provider_auth)]
 async fn channels_verify_unknown_channel_returns_not_found() {
     let state = test_state().await;
     let app = app_router(state);
 
-    let req = Request::builder()
+    let req = direct_loopback_request()
         .method("POST")
         .uri("/channels/unknown/verify")
         .body(Body::empty())

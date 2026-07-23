@@ -69,6 +69,31 @@ fn provider_config_api_key(
 mod provider_auth_resolution_tests {
     use super::*;
 
+    fn verified_deployment_admin(
+        tenant_context: tandem_types::TenantContext,
+        actor_id: &str,
+    ) -> tandem_types::VerifiedTenantContext {
+        let now = crate::now_ms();
+        tandem_types::VerifiedTenantContext {
+            tenant_context,
+            human_actor: tandem_types::HumanActor::tandem_user(actor_id),
+            authority_chain: tandem_types::AuthorityChain::from_request(
+                tandem_types::RequestPrincipal::authenticated_user(actor_id, "provider-test"),
+            ),
+            roles: Vec::new(),
+            org_units: Vec::new(),
+            capabilities: vec!["deployment.admin".to_string()],
+            policy_version: None,
+            strict_projection: None,
+            issuer: "provider-test".to_string(),
+            audience: "tandem".to_string(),
+            issued_at_ms: now,
+            expires_at_ms: now.saturating_add(60_000),
+            assertion_id: format!("provider-test-{actor_id}-{now}"),
+            assertion_key_id: None,
+        }
+    }
+
     fn codex_oauth(managed_by: &str, refresh_token: &str) -> tandem_core::OAuthProviderCredential {
         tandem_core::OAuthProviderCredential {
             provider_id: OPENAI_CODEX_PROVIDER_ID.to_string(),
@@ -140,6 +165,18 @@ mod provider_auth_resolution_tests {
             )
             .as_deref(),
             Some("persisted-key")
+        );
+        assert_eq!(
+            provider_config_api_key(
+                &json!({}),
+                &provider_id,
+                &HashMap::new(),
+                &persisted_auth,
+                false
+            )
+            .as_deref(),
+            Some("persisted-key"),
+            "explicit tenants may use only their tenant-scoped persisted key"
         );
         assert!(
             provider_config_api_key(
@@ -496,7 +533,13 @@ mod provider_auth_resolution_tests {
     #[serial_test::serial]
     async fn disconnect_waits_for_in_flight_refresh_and_cannot_be_resurrected() {
         let state = crate::test_support::test_state().await;
-        let tenant = TenantContext::explicit("org-refresh-disconnect", "workspace", None);
+        let actor_id = "admin-refresh-disconnect";
+        let tenant = TenantContext::explicit(
+            "org-refresh-disconnect",
+            "workspace",
+            Some(actor_id.to_string()),
+        );
+        let verified = verified_deployment_admin(tenant.clone(), actor_id);
         save_scoped_codex_oauth(&state, &tenant, scoped_codex_oauth("race", 1));
         let (refresh_entered_tx, refresh_entered_rx) = tokio::sync::oneshot::channel();
         let (release_refresh_tx, release_refresh_rx) = tokio::sync::oneshot::channel();
@@ -527,6 +570,11 @@ mod provider_auth_resolution_tests {
                 State(disconnect_state),
                 Extension(disconnect_tenant),
                 Extension(RequestPrincipal::anonymous()),
+                Extension(crate::http::host_authority::RequestLocality::from_peer_and_headers(
+                    Some("127.0.0.1:43210".parse().expect("loopback peer")),
+                    &axum::http::HeaderMap::new(),
+                )),
+                Some(Extension(verified)),
                 Path(OPENAI_CODEX_PROVIDER_ID.to_string()),
             )
             .await
@@ -647,58 +695,6 @@ mod provider_auth_resolution_tests {
     }
 }
 
-/// Validate provider base URL to prevent SSRF attacks.
-/// Rejects private IP addresses and non-HTTPS schemes.
-fn validate_provider_url(url_str: &str) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(url_str).map_err(|_| "invalid provider URL format")?;
-    let scheme = parsed.scheme();
-    if !matches!(scheme, "https" | "http") {
-        return Err("provider URLs must use http or https".to_string());
-    }
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| "invalid provider URL format".to_string())?
-        .trim_matches(['[', ']'])
-        .to_ascii_lowercase();
-    let is_local_dev_host = host == "localhost" || host == "::1" || host == "127.0.0.1";
-    if scheme == "http" && !(cfg!(any(test, debug_assertions)) && is_local_dev_host) {
-        return Err("provider URLs must use HTTPS for non-localhost addresses".to_string());
-    }
-    if cfg!(any(test, debug_assertions)) && is_local_dev_host {
-        return Ok(());
-    }
-    if is_local_dev_host
-        || host.ends_with(".local")
-        || host.ends_with(".localdomain")
-        || host.ends_with(".internal")
-    {
-        return Err("provider URL cannot use localhost or private hostnames".to_string());
-    }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        let blocked = match ip {
-            IpAddr::V4(ip) => {
-                ip.is_loopback()
-                    || ip.is_unspecified()
-                    || ip.is_multicast()
-                    || ip.is_private()
-                    || ip.is_link_local()
-            }
-            IpAddr::V6(ip) => {
-                ip.is_loopback()
-                    || ip.is_unspecified()
-                    || ip.is_multicast()
-                    || ip.is_unique_local()
-                    || ip.is_unicast_link_local()
-            }
-        };
-        if blocked {
-            return Err("provider URL cannot use private or reserved IP addresses".to_string());
-        }
-    }
-
-    Ok(())
-}
-
 fn provider_base_url(cfg: &Value, provider_id: &str) -> Option<String> {
     provider_config_value(cfg, provider_id)
         .and_then(|entry| entry.get("url"))
@@ -794,6 +790,36 @@ fn parse_openai_compatible_model_payload(
     (!out.is_empty()).then_some(out)
 }
 
+const PROVIDER_CATALOG_RESPONSE_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+async fn fetch_hardened_provider_response(
+    url: &str,
+    allow_standalone_private_endpoint: bool,
+    configure: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
+    let target = if allow_standalone_private_endpoint {
+        crate::outbound_http::resolve_standalone_provider_url(url).await
+    } else {
+        crate::outbound_http::resolve_public_https_url(url).await
+    }
+    .map_err(|error| format!("Provider URL rejected: {error}"))?;
+    let client = target
+        .client(Duration::from_secs(20))
+        .map_err(|error| format!("Failed to build provider HTTP client: {error}"))?;
+    let response = configure(client.get(target.url().clone()))
+        .send()
+        .await
+        .map_err(|error| format!("Provider request failed: {error}"))?;
+    let status = response.status();
+    let body = crate::outbound_http::read_response_body_limited(
+        response,
+        PROVIDER_CATALOG_RESPONSE_MAX_BYTES,
+    )
+    .await
+    .map_err(|error| format!("Failed to read provider response: {error}"))?;
+    Ok((status, body))
+}
+
 async fn fetch_openrouter_models(
     cfg: &Value,
     runtime_auth: &HashMap<String, String>,
@@ -820,25 +846,21 @@ async fn fetch_openrouter_models(
         );
     };
 
-    let client = reqwest::Client::new();
-    let mut req = client
-        .get("https://openrouter.ai/api/v1/models")
-        .timeout(Duration::from_secs(20));
-    req = req.bearer_auth(api_key);
-    let resp = req
-        .send()
+    let (status, body) = fetch_hardened_provider_response(
+        "https://openrouter.ai/api/v1/models",
+        false,
+        |request| request.bearer_auth(api_key),
+    )
         .await
         .map_err(|err| format!("Failed to fetch OpenRouter models: {err}"))?;
-    if !resp.status().is_success() {
+    if !status.is_success() {
         return Err(format!(
             "OpenRouter model catalog request failed with status {}",
-            resp.status()
+            status
         ));
     }
 
-    let body: Value = resp
-        .json()
-        .await
+    let body: Value = serde_json::from_slice(&body)
         .map_err(|err| format!("Failed to decode OpenRouter models: {err}"))?;
     parse_openrouter_model_payload(&body)
         .ok_or_else(|| "OpenRouter returned an empty or invalid model catalog.".to_string())
@@ -868,31 +890,24 @@ async fn fetch_openai_compatible_models(
         return Err("No provider base URL is configured for live model discovery.".to_string());
     };
 
-    // SECURITY: Validate provider URL to prevent SSRF attacks
-    validate_provider_url(&base_url)?;
-
     let url = format!("{}/models", normalize_openai_catalog_base(&base_url));
-    let client = reqwest::Client::new();
-    let request = client.get(&url).timeout(Duration::from_secs(20));
-    let request = if let Some(api_key) = api_key {
-        request.bearer_auth(api_key)
-    } else {
-        request
-    };
-    let resp = request
-        .send()
+    let (status, body) =
+        fetch_hardened_provider_response(&url, allow_shared_auth_sources, |request| {
+            if let Some(api_key) = api_key {
+                request.bearer_auth(api_key)
+            } else {
+                request
+            }
+        })
         .await
         .map_err(|err| format!("Failed to fetch model catalog from {provider_id}: {err}"))?;
-    if !resp.status().is_success() {
+    if !status.is_success() {
         return Err(format!(
             "{} model catalog request failed with status {}",
-            provider_id,
-            resp.status()
+            provider_id, status
         ));
     }
-    let body: Value = resp
-        .json()
-        .await
+    let body: Value = serde_json::from_slice(&body)
         .map_err(|err| format!("Failed to decode model catalog from {provider_id}: {err}"))?;
     parse_openai_compatible_model_payload(&body).ok_or_else(|| {
         format!("{provider_id} returned an empty or invalid OpenAI-compatible model catalog.")
@@ -920,22 +935,17 @@ async fn fetch_openai_codex_models(
     let base_url = provider_base_url(cfg, OPENAI_CODEX_PROVIDER_ID)
         .unwrap_or_else(|| OPENAI_CODEX_API_BASE_URL.to_string());
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
-        .get(&url)
-        .bearer_auth(api_key)
-        .timeout(Duration::from_secs(20))
-        .send()
+    let (status, body) =
+        fetch_hardened_provider_response(&url, false, |request| request.bearer_auth(api_key))
         .await
         .map_err(|err| format!("Failed to fetch OpenAI Codex models: {err}"))?;
-    if !resp.status().is_success() {
+    if !status.is_success() {
         return Err(format!(
             "OpenAI Codex model catalog request failed with status {}",
-            resp.status()
+            status
         ));
     }
-    let body: Value = resp
-        .json()
-        .await
+    let body: Value = serde_json::from_slice(&body)
         .map_err(|err| format!("Failed to decode OpenAI Codex models: {err}"))?;
     parse_openai_compatible_model_payload(&body)
         .ok_or_else(|| "OpenAI Codex returned an empty or invalid model catalog.".to_string())
@@ -990,23 +1000,24 @@ async fn fetch_anthropic_models(
             "Anthropic requires an API key before live model discovery is available.".to_string(),
         );
     };
-    let resp = reqwest::Client::new()
-        .get("https://api.anthropic.com/v1/models")
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .timeout(Duration::from_secs(20))
-        .send()
+    let (status, body) = fetch_hardened_provider_response(
+        "https://api.anthropic.com/v1/models",
+        false,
+        |request| {
+            request
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+        },
+    )
         .await
         .map_err(|err| format!("Failed to fetch Anthropic models: {err}"))?;
-    if !resp.status().is_success() {
+    if !status.is_success() {
         return Err(format!(
             "Anthropic model catalog request failed with status {}",
-            resp.status()
+            status
         ));
     }
-    let body: Value = resp
-        .json()
-        .await
+    let body: Value = serde_json::from_slice(&body)
         .map_err(|err| format!("Failed to decode Anthropic models: {err}"))?;
     parse_anthropic_model_payload(&body)
         .ok_or_else(|| "Anthropic returned an empty or invalid model catalog.".to_string())
@@ -1063,22 +1074,20 @@ async fn fetch_cohere_models(
         .and_then(Value::as_str)
         .unwrap_or("https://api.cohere.com/v2");
     let url = format!("{}/models", normalize_cohere_catalog_base(base_url));
-    let resp = reqwest::Client::new()
-        .get(&url)
-        .bearer_auth(api_key)
-        .timeout(Duration::from_secs(20))
-        .send()
+    let (status, body) = fetch_hardened_provider_response(
+        &url,
+        allow_shared_auth_sources,
+        |request| request.bearer_auth(api_key),
+    )
         .await
         .map_err(|err| format!("Failed to fetch Cohere models: {err}"))?;
-    if !resp.status().is_success() {
+    if !status.is_success() {
         return Err(format!(
             "Cohere model catalog request failed with status {}",
-            resp.status()
+            status
         ));
     }
-    let body: Value = resp
-        .json()
-        .await
+    let body: Value = serde_json::from_slice(&body)
         .map_err(|err| format!("Failed to decode Cohere models: {err}"))?;
     parse_cohere_model_payload(&body)
         .ok_or_else(|| "Cohere returned an empty or invalid model catalog.".to_string())

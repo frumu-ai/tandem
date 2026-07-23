@@ -4,6 +4,7 @@
 use super::*;
 
 #[tokio::test]
+#[serial_test::serial(mcp_provider_auth)]
 async fn mcp_inventory_redacts_and_filters_connections_by_actor() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;

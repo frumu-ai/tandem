@@ -97,8 +97,8 @@ pub(super) async fn generate_incident_monitor_deployment_cards(
         )
             .into_response();
     }
-    if let Some(required_token) = state.api_token().await {
-        if !incident_monitor_assessment_request_has_api_token(&headers, &required_token) {
+    if state.api_token_required().await {
+        if !incident_monitor_assessment_request_has_active_api_token(&state, &headers).await {
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({

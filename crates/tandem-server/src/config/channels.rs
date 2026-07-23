@@ -4,6 +4,39 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub(crate) fn normalize_slack_api_base_url(
+    raw: Option<&str>,
+) -> Result<Option<String>, &'static str> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let parsed = reqwest::Url::parse(raw).map_err(|_| "Slack API base URL is invalid")?;
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("Slack API base URL must not contain credentials, query, or fragment");
+    }
+    let normalized = raw.trim_end_matches('/');
+    if normalized.eq_ignore_ascii_case("https://slack.com/api") {
+        return Ok(None);
+    }
+    if cfg!(test)
+        && matches!(parsed.scheme(), "http" | "https")
+        && parsed.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
+    {
+        return Ok(Some(normalized.to_string()));
+    }
+    Err("Slack API base URL overrides are disabled outside loopback tests")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelegramConfigFile {
     #[serde(default)]
@@ -377,7 +410,9 @@ fn resolve_slack_connection_entry(base: &Value, entry: &Value) -> ResolvedSlackC
             .or_else(|| raw_security_profile(base, "security_profile"))
             .unwrap_or_default(),
         require_approval_step_up: pick_bool("require_approval_step_up").unwrap_or(false),
-        api_base_url: pick_string("api_base_url"),
+        api_base_url: normalize_slack_api_base_url(pick_string("api_base_url").as_deref())
+            .ok()
+            .flatten(),
         org_units: raw_string_list(entry, "org_units")
             .or_else(|| raw_string_list(base, "org_units"))
             .unwrap_or_default(),
