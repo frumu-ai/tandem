@@ -12,6 +12,25 @@ fn direct_loopback_request() -> axum::http::request::Builder {
 }
 
 #[tokio::test]
+async fn private_mcp_oauth_requires_standalone_listener_posture() {
+    let state = test_state().await;
+    let tenant = tandem_types::TenantContext::local_implicit();
+    assert!(crate::http::mcp::allow_private_mcp_oauth_endpoint(
+        &state, &tenant
+    ));
+
+    state.set_host_operations_loopback_only(false);
+    state.set_server_base_url("https://tandem.example".to_string());
+    state
+        .trust_test_tenant_headers
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        !crate::http::mcp::allow_private_mcp_oauth_endpoint(&state, &tenant),
+        "local implicit identity alone must not authorize private OAuth egress"
+    );
+}
+
+#[tokio::test]
 async fn mcp_registration_audit_records_header_names_without_values() {
     let state = test_state().await;
     let app = app_router(state.clone());

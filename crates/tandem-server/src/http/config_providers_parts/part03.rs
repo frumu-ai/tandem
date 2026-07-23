@@ -892,6 +892,11 @@ async fn fetch_openai_compatible_models(
     };
 
     let url = format!("{}/models", normalize_openai_catalog_base(&base_url));
+    let allow_standalone_private_endpoint = allow_standalone_private_endpoint
+        && matches!(
+            canonical_provider_id(provider_id).as_str(),
+            "ollama" | "llama_cpp"
+        );
     let (status, body) =
         fetch_hardened_provider_response(&url, allow_standalone_private_endpoint, |request| {
             if let Some(api_key) = api_key {

@@ -34,8 +34,11 @@ const BUILTIN_TANDEM_DOCS_MCP_SERVER_NAME: &str = "tandem-mcp";
 const BUILTIN_TANDEM_DOCS_MCP_TRANSPORT_URL: &str = "https://tandem.ac/mcp";
 const MCP_OAUTH_SESSION_TTL_MS: u64 = 10 * 60 * 1000;
 
-fn allow_private_mcp_oauth_endpoint(state: &AppState, tenant_context: &TenantContext) -> bool {
-    if tenant_context.is_local_implicit() {
+pub(crate) fn allow_private_mcp_oauth_endpoint(
+    state: &AppState,
+    tenant_context: &TenantContext,
+) -> bool {
+    if crate::http::host_authority::standalone_local_runtime_posture(state, tenant_context) {
         return true;
     }
     #[cfg(test)]

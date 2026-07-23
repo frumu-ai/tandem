@@ -1387,7 +1387,7 @@ async fn provider_route_uses_runtime_auth_for_remote_catalog_fetch() {
         .config
         .patch_project(json!({
             "providers": {
-                "openai": {
+                "llama_cpp": {
                     "url": format!("http://{addr}/v1")
                 }
             }
@@ -1398,7 +1398,7 @@ async fn provider_route_uses_runtime_auth_for_remote_catalog_fetch() {
         .auth
         .write()
         .await
-        .insert("openai".to_string(), "test-key".to_string());
+        .insert("llama_cpp".to_string(), "test-key".to_string());
     state
         .providers
         .reload(state.config.get().await.into())
@@ -1421,18 +1421,18 @@ async fn provider_route_uses_runtime_auth_for_remote_catalog_fetch() {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let openai = all
+    let llama_cpp = all
         .iter()
-        .find(|entry| entry.get("id").and_then(Value::as_str) == Some("openai"))
+        .find(|entry| entry.get("id").and_then(Value::as_str) == Some("llama_cpp"))
         .cloned()
-        .expect("openai entry");
+        .expect("llama.cpp entry");
 
     assert_eq!(
-        openai.get("catalog_source").and_then(Value::as_str),
+        llama_cpp.get("catalog_source").and_then(Value::as_str),
         Some("remote")
     );
     assert!(
-        openai
+        llama_cpp
             .get("models")
             .and_then(Value::as_object)
             .and_then(|models| models.get("gpt-4.1-mini"))
@@ -1442,7 +1442,7 @@ async fn provider_route_uses_runtime_auth_for_remote_catalog_fetch() {
 }
 
 #[tokio::test]
-async fn local_implicit_catalog_blocks_private_origin_when_server_is_public() {
+async fn local_implicit_catalog_blocks_private_nonlocal_origin_for_every_runtime_posture() {
     let seen_auth = Arc::new(Mutex::new(Vec::<String>::new()));
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -1494,7 +1494,9 @@ async fn local_implicit_catalog_blocks_private_origin_when_server_is_public() {
         .reload(state.config.get().await.into())
         .await;
 
-    let response = app_router(state)
+    let app = app_router(state.clone());
+    let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
@@ -1504,7 +1506,6 @@ async fn local_implicit_catalog_blocks_private_origin_when_server_is_public() {
         )
         .await
         .expect("response");
-    server.abort();
 
     assert_eq!(response.status(), StatusCode::OK);
     let payload = json_body(response).await;
@@ -1525,6 +1526,39 @@ async fn local_implicit_catalog_blocks_private_origin_when_server_is_public() {
     assert!(
         seen_auth.lock().expect("seen auth lock").is_empty(),
         "public-listener catalog discovery must not contact a private origin"
+    );
+    state.set_host_operations_loopback_only(true);
+    state.set_server_base_url("http://127.0.0.1:39731".to_string());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/provider")
+                .body(Body::empty())
+                .expect("standalone request"),
+        )
+        .await
+        .expect("standalone response");
+    server.abort();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = json_body(response).await;
+    let openai = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("openai"))
+        })
+        .expect("standalone openai entry");
+    assert_eq!(
+        openai.get("catalog_status").and_then(Value::as_str),
+        Some("error"),
+        "standalone private discovery remains restricted to local provider IDs"
+    );
+    assert!(
+        seen_auth.lock().expect("seen auth lock").is_empty(),
+        "standalone posture must not send a non-local provider key to a private origin"
     );
 }
 

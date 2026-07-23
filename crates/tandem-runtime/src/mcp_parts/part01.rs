@@ -150,6 +150,7 @@ pub struct McpRegistry {
     servers: Arc<RwLock<HashMap<String, McpServer>>>,
     connections: Arc<RwLock<HashMap<String, McpConnection>>>,
     processes: Arc<Mutex<HashMap<String, Child>>>,
+    credential_mutation_lock: Arc<Mutex<()>>,
     state_file: Arc<PathBuf>,
     oauth_security_dir: Arc<PathBuf>,
     strict_tenant_enforcement: Arc<std::sync::atomic::AtomicBool>,
@@ -225,6 +226,7 @@ impl McpRegistry {
             servers: Arc::new(RwLock::new(loaded)),
             connections: Arc::new(RwLock::new(loaded_connections)),
             processes: Arc::new(Mutex::new(HashMap::new())),
+            credential_mutation_lock: Arc::new(Mutex::new(())),
             state_file: Arc::new(state_file),
             oauth_security_dir: Arc::new(oauth_security_dir),
             strict_tenant_enforcement: Arc::new(std::sync::atomic::AtomicBool::new(
@@ -335,6 +337,7 @@ impl McpRegistry {
         current_tenant: &TenantContext,
         enabled: bool,
     ) {
+        let _credential_guard = self.credential_mutation_lock.lock().await;
         let normalized_name = name.trim().to_string();
         let mut servers = self.servers.write().await;
         let existing = servers.get(&normalized_name).cloned();
@@ -511,6 +514,7 @@ impl McpRegistry {
         name: &str,
         current_tenant: &TenantContext,
     ) -> bool {
+        let _credential_guard = self.credential_mutation_lock.lock().await;
         let removed_server = {
             let mut servers = self.servers.write().await;
             servers.remove(name)
@@ -801,6 +805,7 @@ impl McpRegistry {
         name: &str,
         current_tenant: &TenantContext,
     ) -> bool {
+        let _credential_guard = self.credential_mutation_lock.lock().await;
         if !current_tenant.is_local_implicit() {
             let owner = McpPrincipalRef::from_tenant_context(current_tenant);
             let connection_id = mcp_connection_id(name, current_tenant, &owner);
@@ -946,6 +951,7 @@ impl McpRegistry {
         token: &str,
         current_tenant: &TenantContext,
     ) -> Result<bool, String> {
+        let _credential_guard = self.credential_mutation_lock.lock().await;
         let trimmed = token.trim();
         if trimmed.is_empty() {
             return Err("oauth access token cannot be empty".to_string());
@@ -1031,6 +1037,7 @@ impl McpRegistry {
         client_secret: Option<String>,
         current_tenant: &TenantContext,
     ) -> Result<bool, String> {
+        let _credential_guard = self.credential_mutation_lock.lock().await;
         let mut servers = self.servers.write().await;
         let Some(server) = servers.get_mut(name) else {
             return Ok(false);
@@ -1087,6 +1094,7 @@ impl McpRegistry {
         credential: tandem_core::OAuthProviderCredential,
         current_tenant: &TenantContext,
     ) -> Result<(), String> {
+        let _credential_guard = self.credential_mutation_lock.lock().await;
         if current_tenant.is_local_implicit() {
             tandem_core::set_provider_oauth_credential_in_dir(
                 &self.oauth_security_dir,
