@@ -1707,7 +1707,7 @@ async fn workflow_plan_import_accepts_exported_bundle() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(pack_signature_env)]
 async fn workflow_plan_pack_import_preview_and_commit_installs_pack_session() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -1763,7 +1763,7 @@ async fn workflow_plan_pack_import_preview_and_commit_installs_pack_session() {
 
     let temp = tempfile::tempdir().expect("tempdir");
     let pack_path = temp.path().join("workflow-pack.zip");
-    write_pack_zip_with_entries(
+    let _trusted_key = write_signed_pack_zip_with_entries(
         &pack_path,
         r#"
 name: workflow-pack-test

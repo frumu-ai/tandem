@@ -799,6 +799,11 @@ async fn slack_verify_reports_per_connection_binding_state() {
         .method("POST")
         .uri("/channels/slack/verify")
         .header("content-type", "application/json")
+        .extension(axum::extract::ConnectInfo(
+            "127.0.0.1:39731"
+                .parse::<std::net::SocketAddr>()
+                .expect("loopback socket address"),
+        ))
         .body(Body::from("{}"))
         .expect("verify request");
     let response = app.clone().oneshot(request).await.expect("verify response");
@@ -826,6 +831,11 @@ async fn slack_verify_reports_per_connection_binding_state() {
         .method("POST")
         .uri("/channels/slack/verify")
         .header("content-type", "application/json")
+        .extension(axum::extract::ConnectInfo(
+            "127.0.0.1:39731"
+                .parse::<std::net::SocketAddr>()
+                .expect("loopback socket address"),
+        ))
         .body(Body::from("{}"))
         .expect("verify request");
     let response = app.oneshot(request).await.expect("drifted verify response");

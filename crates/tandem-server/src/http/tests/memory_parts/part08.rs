@@ -228,52 +228,12 @@ async fn open_global_memory_db_for_state_test(
 /// so its output is shared within the writing tenant and excluded from others.
 #[tokio::test]
 async fn matrix_distillation_output_scoped_to_writing_tenant() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind listener");
-    let addr = listener.local_addr().expect("local addr");
-    let provider_app = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(|| async {
-            axum::Json(json!({
-                "choices": [
-                    {
-                        "message": {
-                            "content": r#"[{"category":"fact","content":"Tenant A prefers metric dashboards refreshed hourly.","importance":0.9,"follow_up_needed":false}]"#
-                        }
-                    }
-                ]
-            }))
-        }),
-    );
-    let server = tokio::spawn(async move {
-        axum::serve(listener, provider_app)
-            .await
-            .expect("serve test provider");
-    });
-
     let state = test_state().await;
-    state
-        .config
-        .patch_project(json!({
-            "default_provider": "openai",
-            "providers": {
-                "openai": {
-                    "url": format!("http://{addr}/v1")
-                }
-            }
-        }))
-        .await
-        .expect("patch project");
-    state
-        .auth
-        .write()
-        .await
-        .insert("openai".to_string(), "test-key".to_string());
-    state
-        .providers
-        .reload(state.config.get().await.into())
-        .await;
+    install_fixed_completion_provider(
+        &state,
+        r#"[{"category":"fact","content":"Tenant A prefers metric dashboards refreshed hourly.","importance":0.9,"follow_up_needed":false}]"#,
+    )
+    .await;
 
     let app = app_router(state.clone());
     let resp = app
@@ -360,6 +320,4 @@ async fn matrix_distillation_output_scoped_to_writing_tenant() {
         .await
         .expect("foreign search");
     assert!(foreign.is_empty(), "distilled facts must not cross tenants");
-
-    server.abort();
 }
