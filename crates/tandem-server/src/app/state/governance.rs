@@ -1816,65 +1816,6 @@ impl AppState {
         Ok(paused_run_ids)
     }
 
-    pub async fn record_automation_review_progress(
-        &self,
-        automation_id: &str,
-        reason: AutomationLifecycleReviewKind,
-        run_id: Option<String>,
-        detail: Option<String>,
-    ) -> anyhow::Result<()> {
-        let now = now_ms();
-        let evaluation = {
-            let guard = self.automation_governance.read().await;
-            let snapshot = self.governance_snapshot(&guard);
-            self.governance_engine
-                .evaluate_run_review_progress(
-                    &snapshot,
-                    automation_id,
-                    reason,
-                    run_id.clone(),
-                    detail.clone(),
-                    now,
-                )
-                .map_err(|error| anyhow::anyhow!(error.message))?
-        };
-        let Some(evaluation) = evaluation else {
-            return Ok(());
-        };
-        let approval = evaluation.approval_request.clone();
-        {
-            let mut guard = self.automation_governance.write().await;
-            guard
-                .records
-                .insert(automation_id.to_string(), evaluation.record);
-            if let Some(approval) = approval.clone() {
-                guard
-                    .approvals
-                    .insert(approval.approval_id.clone(), approval);
-            }
-            guard.updated_at_ms = now;
-        }
-        self.persist_automation_governance().await?;
-        if let Some(approval) = approval {
-            append_protected_audit_event(
-                self,
-                format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
-                &tandem_types::TenantContext::local_implicit(),
-                approval
-                    .requested_by
-                    .actor_id
-                    .clone()
-                    .or_else(|| approval.requested_by.source.clone()),
-                json!({
-                    "approvalID": approval.approval_id,
-                    "request": approval,
-                }),
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
     pub async fn run_automation_governance_health_check(&self) -> anyhow::Result<usize> {
         if !self.premium_governance_enabled() {
             return Ok(0);
@@ -1886,6 +1827,7 @@ impl AppState {
 
         let run_window = self.governance_engine.health_check_run_window(&limits);
         for automation in automations {
+            let tenant_context = automation.tenant_context();
             let runs = self
                 .list_automation_v2_runs(Some(&automation.automation_id), run_window)
                 .await;
@@ -1903,7 +1845,7 @@ impl AppState {
             let evaluation = {
                 let mut guard = self.automation_governance.write().await;
                 let snapshot = self.governance_snapshot(&guard);
-                let evaluation = self
+                let mut evaluation = self
                     .governance_engine
                     .evaluate_health_check(
                         &snapshot,
@@ -1926,7 +1868,11 @@ impl AppState {
                         now,
                     )
                     .map_err(|error| anyhow::anyhow!(error.message))?;
-                if let Some(evaluation) = evaluation.as_ref() {
+                if let Some(evaluation) = evaluation.as_mut() {
+                    bind_governance_record_to_tenant(&mut evaluation.record, &tenant_context)?;
+                    for approval in &mut evaluation.approval_requests {
+                        bind_governance_approval_to_tenant(approval, &tenant_context)?;
+                    }
                     let previous = guard.clone();
                     guard
                         .records
@@ -1969,7 +1915,7 @@ impl AppState {
                 append_protected_audit_event(
                     self,
                     format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
-                    &tandem_types::TenantContext::local_implicit(),
+                    &tenant_context,
                     approval
                         .requested_by
                         .actor_id

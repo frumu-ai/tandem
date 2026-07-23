@@ -474,18 +474,33 @@ pub(super) async fn workflow_run_gate_decide(
     .await
     .map_err(super::protected_audit_error_response)?;
     ensure_workflow_gate_digest_current(&state, &run, &gate, &tenant_context).await?;
+    if gate.expires_at_ms > 0 && crate::now_ms() >= gate.expires_at_ms {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "workflow approval gate has expired",
+                "code": "WORKFLOW_GATE_EXPIRED",
+            })),
+        ));
+    }
     let gate_action_id = gate.action_id.clone();
     let rework_targets = gate.rework_targets.clone();
     let decision_for_update = decision.clone();
     let record_for_update = record.clone();
+    let expired_at_persist = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let expired_at_persist_for_update = expired_at_persist.clone();
     let result = state
         .update_workflow_run_persisted(&id, |row| {
+            let Some(current_gate) = row.awaiting_gate.as_ref() else {
+                return false;
+            };
             if row.status != tandem_workflows::WorkflowRunStatus::AwaitingApproval
-                || row
-                    .awaiting_gate
-                    .as_ref()
-                    .is_none_or(|current| current.nonce != gate.nonce)
+                || current_gate.nonce != gate.nonce
             {
+                return false;
+            }
+            if current_gate.expires_at_ms > 0 && crate::now_ms() >= current_gate.expires_at_ms {
+                expired_at_persist_for_update.store(true, std::sync::atomic::Ordering::Relaxed);
                 return false;
             }
             row.awaiting_gate = None;
@@ -554,6 +569,15 @@ pub(super) async fn workflow_run_gate_decide(
         ));
     };
     if !applied {
+        if expired_at_persist.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "workflow approval gate has expired",
+                    "code": "WORKFLOW_GATE_EXPIRED",
+                })),
+            ));
+        }
         return Err((
             StatusCode::CONFLICT,
             Json(json!({

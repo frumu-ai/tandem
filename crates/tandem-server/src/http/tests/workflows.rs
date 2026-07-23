@@ -1302,6 +1302,71 @@ async fn workflow_gate_rejects_stale_and_expired_requests_without_resuming() {
 }
 
 #[tokio::test]
+async fn workflow_gate_expiring_after_audit_cannot_consume_nonce() {
+    let (state, crm_calls) = gated_workflow_state().await;
+    let app = app_router(state.clone());
+    let (run_id, _) = start_gated_run(&app).await;
+    let original_nonce = state
+        .get_workflow_run(&run_id)
+        .await
+        .expect("pending workflow run")
+        .awaiting_gate
+        .expect("pending workflow gate")
+        .nonce;
+
+    let persistence_guard = state.workflow_runs_persistence.lock().await;
+    let decision_app = app.clone();
+    let decision_run_id = run_id.clone();
+    let decision = tokio::spawn(async move {
+        decide_workflow_gate(&decision_app, &decision_run_id, "approve", "control_panel").await
+    });
+    let mut audit_committed = false;
+    for _ in 0..200 {
+        let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+            .await
+            .unwrap_or_default();
+        if audit.contains("workflow.governance.gate_decided") {
+            audit_committed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        audit_committed,
+        "gate decision audit did not reach commit barrier"
+    );
+    state
+        .workflow_runs
+        .write()
+        .await
+        .get_mut(&run_id)
+        .expect("workflow run at persistence boundary")
+        .awaiting_gate
+        .as_mut()
+        .expect("workflow gate at persistence boundary")
+        .expires_at_ms = crate::now_ms().saturating_sub(1);
+    drop(persistence_guard);
+
+    let (status, body) = tokio::time::timeout(std::time::Duration::from_secs(5), decision)
+        .await
+        .expect("gate decision unblocked")
+        .expect("gate decision task");
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"].as_str(), Some("WORKFLOW_GATE_EXPIRED"));
+    let run = state
+        .get_workflow_run(&run_id)
+        .await
+        .expect("expired workflow run");
+    assert_eq!(run.status, crate::WorkflowRunStatus::AwaitingApproval);
+    assert!(run.gate_history.is_empty());
+    assert_eq!(
+        run.awaiting_gate.as_ref().map(|gate| gate.nonce.as_str()),
+        Some(original_nonce.as_str())
+    );
+    assert!(crm_calls.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn workflow_gate_persistence_failure_keeps_nonce_pending() {
     let (state, crm_calls) = gated_workflow_state().await;
     let app = app_router(state.clone());

@@ -36,6 +36,163 @@ async fn lifecycle_pause_blocks_run_creation_outside_tenant_quarantine() {
 
 #[cfg(feature = "premium-governance")]
 #[tokio::test]
+async fn expired_lifecycle_review_cannot_acknowledge_automation() {
+    let state = test_state().await;
+    let tenant = TenantContext::explicit(
+        "org-expired-review",
+        "workspace-expired-review",
+        Some("owner".to_string()),
+    );
+    let automation = super::global::create_test_automation_v2_for_tenant(
+        &state,
+        "auto-governance-expired-review",
+        &tenant,
+    )
+    .await;
+    {
+        let mut governance = state.automation_governance.write().await;
+        let record = governance
+            .records
+            .get_mut(&automation.automation_id)
+            .expect("governance record");
+        record.review_required = true;
+        record.review_kind = Some(
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::RunDrift,
+        );
+        record.paused_for_lifecycle = true;
+    }
+    let approval = state
+        .request_approval(
+            crate::automation_v2::governance::GovernanceApprovalRequestType::LifecycleReview,
+            crate::automation_v2::governance::GovernanceActorRef::system("run_review"),
+            crate::automation_v2::governance::GovernanceResourceRef {
+                resource_type: "automation".to_string(),
+                id: automation.automation_id.clone(),
+            },
+            "review run drift".to_string(),
+            json!({"trigger": "run_drift"}),
+            None,
+            &tenant,
+        )
+        .await
+        .expect("request lifecycle review");
+    {
+        let mut governance = state.automation_governance.write().await;
+        let stored = governance
+            .approvals
+            .get_mut(&approval.approval_id)
+            .expect("stored lifecycle review");
+        stored.expires_at_ms = crate::now_ms().saturating_sub(1);
+        governance
+            .records
+            .get_mut(&automation.automation_id)
+            .expect("governance record")
+            .review_request_id = Some(approval.approval_id.clone());
+    }
+
+    let decided = state
+        .decide_approval_request(
+            &approval.approval_id,
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("reviewer".to_string()),
+                "expired_review_test",
+            ),
+            true,
+            Some("too late".to_string()),
+            &tenant,
+        )
+        .await
+        .expect("expired decision is materialized")
+        .expect("expired receipt remains addressable");
+    assert_eq!(
+        decided.status,
+        crate::automation_v2::governance::GovernanceApprovalStatus::Expired
+    );
+    let record = state
+        .get_automation_governance(&automation.automation_id)
+        .await
+        .expect("governance record remains paused");
+    assert!(record.review_required);
+    assert!(record.paused_for_lifecycle);
+    assert_eq!(
+        record.review_request_id.as_deref(),
+        Some(approval.approval_id.as_str())
+    );
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn engine_generated_lifecycle_reviews_inherit_automation_tenant() {
+    let state = test_state().await;
+    let tenant = TenantContext::explicit(
+        "org-engine-review",
+        "workspace-engine-review",
+        Some("owner".to_string()),
+    );
+    let run_automation = super::global::create_test_automation_v2_for_tenant(
+        &state,
+        "auto-engine-run-review",
+        &tenant,
+    )
+    .await;
+    state
+        .automation_governance
+        .write()
+        .await
+        .limits
+        .run_review_threshold = 1;
+    state
+        .record_automation_review_progress(
+            &run_automation.automation_id,
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::RunDrift,
+            Some("run-engine-review".to_string()),
+            Some("threshold reached".to_string()),
+        )
+        .await
+        .expect("record run review progress");
+
+    let health_automation = super::global::create_test_automation_v2_for_tenant(
+        &state,
+        "auto-engine-health-review",
+        &tenant,
+    )
+    .await;
+    {
+        let mut governance = state.automation_governance.write().await;
+        governance
+            .records
+            .get_mut(&health_automation.automation_id)
+            .expect("health governance record")
+            .expires_at_ms = Some(crate::now_ms().saturating_sub(1));
+    }
+    state
+        .run_automation_governance_health_check()
+        .await
+        .expect("run governance health check");
+
+    let governance = state.automation_governance.read().await;
+    for automation_id in [
+        run_automation.automation_id.as_str(),
+        health_automation.automation_id.as_str(),
+    ] {
+        let approval = governance
+            .approvals
+            .values()
+            .find(|approval| approval.target_resource.id == automation_id)
+            .unwrap_or_else(|| panic!("engine-generated approval for {automation_id}"));
+        let owner = approval
+            .tenant_context
+            .as_ref()
+            .expect("hosted engine-generated approval tenant");
+        assert_eq!(owner.org_id, tenant.org_id);
+        assert_eq!(owner.workspace_id, tenant.workspace_id);
+        assert_eq!(owner.deployment_id, tenant.deployment_id);
+        assert!(owner.actor_id.is_none());
+    }
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
 async fn dependency_revocation_supersedes_unrelated_lifecycle_review() {
     let state = test_state().await;
     let tenant = TenantContext::explicit(
