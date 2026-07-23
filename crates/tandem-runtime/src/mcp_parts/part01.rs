@@ -266,24 +266,7 @@ impl McpRegistry {
     }
 
     fn allow_private_endpoint_for(&self, current_tenant: &TenantContext) -> bool {
-        if current_tenant.is_local_implicit()
-            && self
-                .standalone_private_endpoint_access
-                .load(std::sync::atomic::Ordering::SeqCst)
-            && !self
-                .strict_tenant_enforcement
-                .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return true;
-        }
-        #[cfg(any(test, feature = "test-utils"))]
-        {
-            return self
-                .allow_private_test_endpoints
-                .load(std::sync::atomic::Ordering::SeqCst);
-        }
-        #[cfg(not(any(test, feature = "test-utils")))]
-        false
+        McpEndpointAuthorization::for_registry(self, current_tenant).allows_private_endpoint()
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -666,12 +649,14 @@ impl McpRegistry {
         let request_headers = self
             .effective_headers_for_current_tenant(name, &server, current_tenant)
             .await;
+        let endpoint_authorization =
+            McpEndpointAuthorization::for_registry(self, current_tenant);
         let discovery = self
             .discover_remote_tools(
                 name,
                 &endpoint,
                 &request_headers,
-                self.allow_private_endpoint_for(current_tenant),
+                &endpoint_authorization,
             )
             .await;
         let (tools, session_id) = match discovery {
@@ -716,7 +701,7 @@ impl McpRegistry {
                                     current_tenant,
                                 )
                                 .await,
-                            self.allow_private_endpoint_for(current_tenant),
+                            &endpoint_authorization,
                         )
                         .await
                     {
@@ -1303,12 +1288,14 @@ impl McpRegistry {
                 "arguments": normalized_args
             }
         });
+        let endpoint_authorization =
+            McpEndpointAuthorization::for_registry(self, current_tenant);
         let (response, session_id) = match post_json_rpc_with_session(
             &endpoint,
             &request_headers,
             request.clone(),
             request_session_id.as_deref(),
-            self.allow_private_endpoint_for(current_tenant),
+            &endpoint_authorization,
         )
         .await
         {
@@ -1349,7 +1336,7 @@ impl McpRegistry {
                         &refreshed_headers,
                         request,
                         refreshed_runtime.mcp_session_id.as_deref(),
-                        self.allow_private_endpoint_for(current_tenant),
+                        &endpoint_authorization,
                     )
                     .await?
                 } else {
@@ -1529,7 +1516,7 @@ impl McpRegistry {
         server_name: &str,
         endpoint: &str,
         headers: &HashMap<String, String>,
-        allow_private_endpoint: bool,
+        endpoint_authorization: &McpEndpointAuthorization,
     ) -> Result<(Vec<McpRemoteTool>, Option<String>), DiscoverRemoteToolsError> {
         let initialize = json!({
             "jsonrpc": "2.0",
@@ -1550,7 +1537,7 @@ impl McpRegistry {
                 headers,
                 initialize,
                 None,
-                allow_private_endpoint,
+                endpoint_authorization,
             )
             .await?;
         if let Some(err) = init_response.get("error") {
@@ -1576,7 +1563,7 @@ impl McpRegistry {
                 headers,
                 tools_list,
                 session_id.as_deref(),
-                allow_private_endpoint,
+                endpoint_authorization,
             )
             .await?;
         if next_session_id.is_some() {
@@ -1691,11 +1678,13 @@ impl McpRegistry {
         if !should_refresh {
             return Ok(false);
         }
+        let endpoint_authorization =
+            McpEndpointAuthorization::for_registry(self, current_tenant);
 
         let refreshed = refresh_mcp_oauth_credential(
             &oauth,
             &credential,
-            self.allow_private_endpoint_for(current_tenant),
+            &endpoint_authorization,
         )
         .await?;
         self.set_bearer_token_for_tenant(name, &refreshed.access_token, current_tenant)

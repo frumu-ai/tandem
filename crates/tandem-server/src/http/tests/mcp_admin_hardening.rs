@@ -68,8 +68,17 @@ async fn stopped_listener_posture_blocks_actual_private_mcp_request() {
     });
 
     let state = test_state().await;
-    let listener_posture = super::super::HttpListenerPostureGuard::activate(&state, addr);
     state.mcp.set_strict_tenant_enforcement(false);
+    state.mcp.deny_private_endpoints_for_tests();
+    state.set_http_listener_bound_loopback_only(false);
+    assert!(!state
+        .mcp
+        .standalone_private_endpoint_access_enabled_for_tests());
+
+    let listener_posture = super::super::HttpListenerPostureGuard::activate(&state, addr);
+    assert!(state
+        .mcp
+        .standalone_private_endpoint_access_enabled_for_tests());
     state
         .mcp
         .add(
@@ -80,11 +89,10 @@ async fn stopped_listener_posture_blocks_actual_private_mcp_request() {
     let _ = state.mcp.refresh("private-posture-canary").await;
     assert!(
         hits.load(std::sync::atomic::Ordering::SeqCst) > 0,
-        "test canary must observe a request while the test bypass is active"
+        "production listener posture must be the sole authorization for the positive request"
     );
 
     hits.store(0, std::sync::atomic::Ordering::SeqCst);
-    state.mcp.deny_private_endpoints_for_tests();
     drop(listener_posture);
     assert!(!state
         .mcp

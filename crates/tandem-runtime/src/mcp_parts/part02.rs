@@ -649,11 +649,56 @@ struct McpRefreshTokenResponse {
     expires_in: Option<u64>,
 }
 
+#[derive(Clone)]
+struct McpEndpointAuthorization {
+    local_implicit: bool,
+    standalone_private_endpoint_access: Arc<std::sync::atomic::AtomicBool>,
+    strict_tenant_enforcement: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(any(test, feature = "test-utils"))]
+    allow_private_test_endpoints: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl McpEndpointAuthorization {
+    fn for_registry(registry: &McpRegistry, tenant: &TenantContext) -> Self {
+        Self {
+            local_implicit: tenant.is_local_implicit(),
+            standalone_private_endpoint_access: registry
+                .standalone_private_endpoint_access
+                .clone(),
+            strict_tenant_enforcement: registry.strict_tenant_enforcement.clone(),
+            #[cfg(any(test, feature = "test-utils"))]
+            allow_private_test_endpoints: registry.allow_private_test_endpoints.clone(),
+        }
+    }
+
+    fn allows_private_endpoint(&self) -> bool {
+        if self.local_implicit
+            && self
+                .standalone_private_endpoint_access
+                .load(std::sync::atomic::Ordering::SeqCst)
+            && !self
+                .strict_tenant_enforcement
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return true;
+        }
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            return self
+                .allow_private_test_endpoints
+                .load(std::sync::atomic::Ordering::SeqCst);
+        }
+        #[cfg(not(any(test, feature = "test-utils")))]
+        false
+    }
+}
+
 #[derive(Debug)]
 struct McpResolvedHttpTarget {
     url: reqwest::Url,
     dns_override_host: Option<String>,
     dns_override_addrs: Vec<SocketAddr>,
+    requires_private_authorization: bool,
 }
 
 impl McpResolvedHttpTarget {
@@ -668,12 +713,23 @@ impl McpResolvedHttpTarget {
             .build()
             .map_err(|error| format!("failed to build hardened MCP HTTP client: {error}"))
     }
+
+    fn ensure_authorized(
+        &self,
+        authorization: &McpEndpointAuthorization,
+    ) -> Result<(), String> {
+        if self.requires_private_authorization && !authorization.allows_private_endpoint() {
+            return Err("MCP private endpoint authorization was revoked".to_string());
+        }
+        Ok(())
+    }
 }
 
 async fn resolve_mcp_http_target(
     raw: &str,
-    allow_private_endpoint: bool,
+    authorization: &McpEndpointAuthorization,
 ) -> Result<McpResolvedHttpTarget, String> {
+    let allow_private_endpoint = authorization.allows_private_endpoint();
     let url = reqwest::Url::parse(raw).map_err(|_| "invalid MCP endpoint URL".to_string())?;
     let insecure_http = url.scheme() == "http";
     if url.scheme() != "https" && !(insecure_http && allow_private_endpoint) {
@@ -700,6 +756,7 @@ async fn resolve_mcp_http_target(
             url,
             dns_override_host: None,
             dns_override_addrs: Vec::new(),
+            requires_private_authorization: !public || insecure_http,
         })
     } else {
         let normalized = host.trim().trim_end_matches('.').to_ascii_lowercase();
@@ -731,6 +788,7 @@ async fn resolve_mcp_http_target(
             url,
             dns_override_host: Some(host),
             dns_override_addrs: addrs,
+            requires_private_authorization: any_private || insecure_http,
         })
     }
 }
@@ -779,13 +837,13 @@ fn mcp_ipv6_is_publicly_routable(ip: Ipv6Addr) -> bool {
 async fn refresh_mcp_oauth_credential(
     oauth: &McpOAuthConfig,
     credential: &tandem_core::OAuthProviderCredential,
-    allow_private_endpoint: bool,
+    authorization: &McpEndpointAuthorization,
 ) -> Result<tandem_core::OAuthProviderCredential, String> {
     let refresh_token = credential.refresh_token.trim();
     if refresh_token.is_empty() {
         return Err("missing MCP OAuth refresh token".to_string());
     }
-    let target = resolve_mcp_http_target(&oauth.token_endpoint, allow_private_endpoint).await?;
+    let target = resolve_mcp_http_target(&oauth.token_endpoint, authorization).await?;
     let client = target.client(std::time::Duration::from_secs(15))?;
     let mut params = vec![
         ("grant_type", "refresh_token".to_string()),
@@ -800,14 +858,16 @@ async fn refresh_mcp_oauth_credential(
     {
         params.push(("client_secret", client_secret.to_string()));
     }
-    let mut response = client
-        .post(target.url)
+    let request = client
+        .post(target.url.clone())
         .header(
             "user-agent",
             format!("tandem/{}", env!("CARGO_PKG_VERSION")),
         )
         .header(ACCEPT, "application/json")
-        .form(&params)
+        .form(&params);
+    target.ensure_authorized(authorization)?;
+    let mut response = request
         .send()
         .await
         .map_err(|error| format!("mcp oauth token refresh failed: {error}"))?;
@@ -897,19 +957,22 @@ async fn post_json_rpc_with_session(
     headers: &HashMap<String, String>,
     request: Value,
     session_id: Option<&str>,
-    allow_private_endpoint: bool,
+    authorization: &McpEndpointAuthorization,
 ) -> Result<(Value, Option<String>), String> {
-    let target = resolve_mcp_http_target(endpoint, allow_private_endpoint).await?;
+    let target = resolve_mcp_http_target(endpoint, authorization).await?;
     let client = target.client(std::time::Duration::from_secs(12))?;
-    let mut req = client.post(target.url).headers(build_headers(headers)?);
+    let mut req = client
+        .post(target.url.clone())
+        .headers(build_headers(headers)?);
     if let Some(id) = session_id {
         let trimmed = id.trim();
         if !trimmed.is_empty() {
             req = req.header("Mcp-Session-Id", trimmed);
         }
     }
-    let mut response = req
-        .json(&request)
+    let request = req.json(&request);
+    target.ensure_authorized(authorization)?;
+    let mut response = request
         .send()
         .await
         .map_err(|e| format!("MCP request failed: {e}"))?;

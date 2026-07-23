@@ -40,6 +40,28 @@ mod credential_ordering_tests {
     }
 
     #[tokio::test]
+    async fn resolved_private_target_rechecks_authorization_before_send() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let tenant = TenantContext::local_implicit();
+        registry.set_standalone_private_endpoint_access(true);
+        let authorization = McpEndpointAuthorization::for_registry(&registry, &tenant);
+        let target = resolve_mcp_http_target("http://127.0.0.1:39731/mcp", &authorization)
+            .await
+            .expect("resolve authorized private target");
+        target
+            .ensure_authorized(&authorization)
+            .expect("authorization remains live");
+
+        registry.set_standalone_private_endpoint_access(false);
+        let error = target
+            .ensure_authorized(&authorization)
+            .expect_err("revocation after resolution must block the send boundary");
+        assert!(error.contains("authorization was revoked"));
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
     async fn auth_clear_and_replacement_share_one_mutation_order() {
         let _provider_auth_guard = super::tests::provider_auth_test_guard().await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
