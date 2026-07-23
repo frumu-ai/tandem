@@ -97,7 +97,14 @@ pub(in crate::http) async fn create_worktree(
     );
     let worktree_id = key.clone();
     let expose_host_paths = verified.is_none();
-    if let Some(existing) = state.managed_worktrees.read().await.get(&key).cloned() {
+    // Keep the active lease and managed-record write guards through the final
+    // registration check, Git mutation, and record insertion. Lease release
+    // must wait for the record to become visible, while lease cleanup cannot
+    // delete a checkout that a replacement create is adopting.
+    let _lease_guard =
+        hold_active_managed_worktree_lease(&state, input.lease_id.as_deref(), &tenant).await?;
+    let mut managed_worktrees = state.managed_worktrees.write().await;
+    if let Some(existing) = managed_worktrees.get(&key).cloned() {
         crate::http::sessions_actor_scope::ensure_same_session_actor(
             &tenant,
             &existing.tenant_context,
@@ -109,9 +116,6 @@ pub(in crate::http) async fn create_worktree(
             .revalidate(&state, &effect)
             .map_err(host_authorization_status)?;
         if worktree_registration_matches(&repo_root, &existing.path, &existing.branch).await? {
-            let _lease_guard =
-                hold_active_managed_worktree_lease(&state, input.lease_id.as_deref(), &tenant)
-                    .await?;
             grant
                 .revalidate(&state, &effect)
                 .map_err(host_authorization_status)?;
@@ -160,13 +164,11 @@ pub(in crate::http) async fn create_worktree(
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
     if worktree_registration_matches(&repo_root, &path_string, &branch).await? {
-        let _lease_guard =
-            hold_active_managed_worktree_lease(&state, input.lease_id.as_deref(), &tenant).await?;
         grant
             .revalidate(&state, &effect)
             .map_err(host_authorization_status)?;
         let now = crate::now_ms();
-        state.managed_worktrees.write().await.insert(
+        managed_worktrees.insert(
             key.clone(),
             crate::ManagedWorktreeRecord {
                 key: crate::runtime::worktrees::managed_worktree_key(
@@ -212,8 +214,6 @@ pub(in crate::http) async fn create_worktree(
         .map_err(host_authorization_status)?;
     crate::runtime::worktrees::validate_managed_worktree_path(&repo_root, &path, true)
         .map_err(|_| StatusCode::FORBIDDEN)?;
-    let _lease_guard =
-        hold_active_managed_worktree_lease(&state, input.lease_id.as_deref(), &tenant).await?;
     grant
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
@@ -226,7 +226,7 @@ pub(in crate::http) async fn create_worktree(
     let ok = output.success;
     if ok {
         let now = crate::now_ms();
-        state.managed_worktrees.write().await.insert(
+        managed_worktrees.insert(
             key.clone(),
             crate::ManagedWorktreeRecord {
                 key: crate::runtime::worktrees::managed_worktree_key(
@@ -1421,7 +1421,7 @@ mod lease_guard_tests {
     use super::*;
 
     #[tokio::test]
-    async fn active_lease_guard_blocks_release_until_worktree_recording_finishes() {
+    async fn lease_release_observes_in_flight_worktree_recording() {
         let state = crate::test_support::test_state().await;
         let tenant = TenantContext::local_implicit();
         let now = crate::now_ms();
@@ -1441,21 +1441,58 @@ mod lease_guard_tests {
         let guard = hold_active_managed_worktree_lease(&state, Some("lease-create-guard"), &tenant)
             .await
             .expect("active lease guard");
-        let leases = state.engine_leases.clone();
-        let mut release =
-            tokio::spawn(async move { leases.write().await.remove("lease-create-guard") });
+        let release_state = state.clone();
+        let release_tenant = tenant.clone();
+        let mut release = tokio::spawn(async move {
+            let mut leases = release_state.engine_leases.write().await;
+            let has_managed_worktrees =
+                release_state
+                    .managed_worktrees
+                    .read()
+                    .await
+                    .values()
+                    .any(|record| {
+                        record.lease_id.as_deref() == Some("lease-create-guard")
+                            && record.tenant_context == release_tenant
+                    });
+            let removed = leases.remove("lease-create-guard");
+            (removed, has_managed_worktrees)
+        });
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), &mut release)
                 .await
                 .is_err(),
             "lease removal must wait for worktree recording"
         );
+        let record = crate::ManagedWorktreeRecord {
+            key: "worktree-create-guard".to_string(),
+            repo_root: "/repo".to_string(),
+            repository_id: Some("repo-1".to_string()),
+            tenant_context: tenant,
+            path: "/repo/.tandem/worktrees/create-guard".to_string(),
+            branch: "tandem/create-guard".to_string(),
+            base: "HEAD".to_string(),
+            managed: true,
+            task_id: Some("task".to_string()),
+            owner_run_id: Some("run".to_string()),
+            lease_id: Some("lease-create-guard".to_string()),
+            cleanup_branch: true,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        state
+            .managed_worktrees
+            .write()
+            .await
+            .insert(record.key.clone(), record);
 
         drop(guard);
-        let removed = tokio::time::timeout(std::time::Duration::from_secs(5), release)
-            .await
-            .expect("lease removal unblocked")
-            .expect("release task");
+        let (removed, has_managed_worktrees) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), release)
+                .await
+                .expect("lease removal unblocked")
+                .expect("release task");
         assert!(removed.is_some());
+        assert!(has_managed_worktrees);
     }
 }

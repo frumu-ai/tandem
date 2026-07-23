@@ -102,6 +102,43 @@ pub(in crate::http::global) async fn cleanup_managed_worktrees_for_lease(
             }));
             continue;
         }
+        // Creation takes the same write guard before adopting or creating a
+        // checkout. Revalidate the exact snapshot while holding it and keep it
+        // through every destructive Git operation so a replacement record and
+        // checkout cannot be deleted by stale cleanup.
+        let mut managed_worktrees = state.managed_worktrees.write().await;
+        if managed_worktrees.get(&record.key) != Some(&record) {
+            result.failures.push(json!({
+                "worktree_id": record.key,
+                "code": "WORKTREE_RECORD_CHANGED",
+            }));
+            continue;
+        }
+        if let Some((caller_grant, caller_effect)) = caller_authority {
+            if let Err(error) = caller_grant.revalidate(state, caller_effect) {
+                result.failures.push(json!({
+                    "worktree_id": record.key,
+                    "code": error.code(),
+                    "authority": "caller",
+                }));
+                continue;
+            }
+        }
+        if let Err(error) = grant.revalidate(state, &effect) {
+            result.failures.push(json!({
+                "worktree_id": record.key,
+                "code": error.code(),
+            }));
+            continue;
+        }
+        let replacement_owns_path = replacement_owns_authorized_path(&managed_worktrees, &record);
+        if replacement_owns_path {
+            result.failures.push(json!({
+                "worktree_id": record.key,
+                "code": "WORKTREE_RECORD_REPLACED",
+            }));
+            continue;
+        }
         let registered_branch = match parse_registered_worktree_entries(&record.repo_root).await {
             Ok(entries) => entries
                 .into_iter()
@@ -224,7 +261,6 @@ pub(in crate::http::global) async fn cleanup_managed_worktrees_for_lease(
         if !branch_cleanup_complete {
             continue;
         }
-        let mut managed_worktrees = state.managed_worktrees.write().await;
         if let Some((caller_grant, caller_effect)) = caller_authority {
             if let Err(error) = caller_grant.revalidate(state, caller_effect) {
                 result.failures.push(json!({
@@ -258,7 +294,22 @@ fn remove_authorized_cleanup_record(
     records: &mut std::collections::HashMap<String, crate::ManagedWorktreeRecord>,
     authorized: &crate::ManagedWorktreeRecord,
 ) -> bool {
-    records.remove(&authorized.key).is_some()
+    if records.get(&authorized.key) != Some(authorized) {
+        return false;
+    }
+    records.remove(&authorized.key);
+    true
+}
+
+fn replacement_owns_authorized_path(
+    records: &std::collections::HashMap<String, crate::ManagedWorktreeRecord>,
+    authorized: &crate::ManagedWorktreeRecord,
+) -> bool {
+    records.values().any(|current| {
+        current.key != authorized.key
+            && current.repo_root == authorized.repo_root
+            && current.path == authorized.path
+    })
 }
 
 #[cfg(test)]
@@ -293,8 +344,20 @@ mod cleanup_record_tests {
             (replacement.key.clone(), replacement.clone()),
         ]);
 
+        assert!(replacement_owns_authorized_path(&records, &authorized));
         assert!(remove_authorized_cleanup_record(&mut records, &authorized));
         assert!(!records.contains_key(&authorized.key));
         assert_eq!(records.get(&replacement.key), Some(&replacement));
+    }
+
+    #[test]
+    fn cleanup_refuses_a_changed_authorized_record() {
+        let authorized = record("authorized", "lease-old");
+        let mut changed = authorized.clone();
+        changed.updated_at_ms = 2;
+        let mut records = std::collections::HashMap::from([(changed.key.clone(), changed.clone())]);
+
+        assert!(!remove_authorized_cleanup_record(&mut records, &authorized));
+        assert_eq!(records.get(&changed.key), Some(&changed));
     }
 }

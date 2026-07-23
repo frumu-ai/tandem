@@ -384,10 +384,12 @@ pub(super) async fn global_lease_release(
     Json(input): Json<EngineLeaseReleaseInput>,
 ) -> Result<Json<Value>, StatusCode> {
     prune_expired_leases(&state).await;
-    let lease_owned = state
-        .engine_leases
-        .read()
-        .await
+    // Worktree creation holds a lease read guard until its durable record has
+    // been inserted. Taking the write guard first therefore waits for every
+    // in-flight create and prevents a new one from starting while release
+    // decides whether cleanup is required.
+    let mut leases = state.engine_leases.write().await;
+    let lease_owned = leases
         .get(&input.lease_id)
         .is_some_and(|lease| lease.tenant_context == tenant);
     let has_managed_worktrees = state.managed_worktrees.read().await.values().any(|record| {
@@ -395,9 +397,11 @@ pub(super) async fn global_lease_release(
             && record.tenant_context == tenant
     });
     if !lease_owned && !has_managed_worktrees {
+        let lease_count = leases.len();
+        drop(leases);
         return Ok(Json(json!({
             "ok": false,
-            "lease_count": state.engine_leases.read().await.len(),
+            "lease_count": lease_count,
             "released_worktree_count": 0,
             "released_worktree_failure_count": 0,
         })));
@@ -421,18 +425,13 @@ pub(super) async fn global_lease_release(
     } else {
         None
     };
-    let removed = {
-        let mut leases = state.engine_leases.write().await;
-        if leases
-            .get(&input.lease_id)
-            .is_some_and(|lease| lease.tenant_context == tenant)
-        {
-            leases.remove(&input.lease_id);
-            true
-        } else {
-            false
-        }
+    let removed = if lease_owned {
+        leases.remove(&input.lease_id);
+        true
+    } else {
+        false
     };
+    drop(leases);
     let cleanup = if has_managed_worktrees {
         cleanup_managed_worktrees_for_lease(
             &state,
