@@ -22,7 +22,10 @@ pub(crate) fn normalize_slack_api_base_url(
     if normalized.eq_ignore_ascii_case("https://slack.com/api") {
         return Ok(None);
     }
-    if cfg!(test)
+    // The non-default `acme-demo` feature runs the production path against a
+    // loopback Slack mock from a standalone CLI process. Keep the exception
+    // compile-time scoped to tests/demo builds and loopback hosts only.
+    if (cfg!(test) || cfg!(feature = "acme-demo"))
         && matches!(parsed.scheme(), "http" | "https")
         && parsed.host_str().is_some_and(|host| {
             host.eq_ignore_ascii_case("localhost")
@@ -34,7 +37,7 @@ pub(crate) fn normalize_slack_api_base_url(
     {
         return Ok(Some(normalized.to_string()));
     }
-    Err("Slack API base URL overrides are disabled outside loopback tests")
+    Err("Slack API base URL overrides are disabled outside loopback test/demo builds")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
