@@ -171,7 +171,7 @@ fn has_proxy_forwarding_headers(headers: &HeaderMap) -> bool {
     .any(|name| headers.contains_key(*name))
 }
 
-fn server_base_url_is_loopback(value: &str) -> bool {
+pub(crate) fn server_base_url_is_loopback(value: &str) -> bool {
     let Ok(url) = Url::parse(value) else {
         return false;
     };

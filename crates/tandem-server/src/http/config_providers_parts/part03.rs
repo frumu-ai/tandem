@@ -1080,11 +1080,8 @@ async fn fetch_cohere_models(
         .and_then(Value::as_str)
         .unwrap_or("https://api.cohere.com/v2");
     let url = format!("{}/models", normalize_cohere_catalog_base(base_url));
-    let (status, body) = fetch_hardened_provider_response(
-        &url,
-        allow_shared_auth_sources,
-        |request| request.bearer_auth(api_key),
-    )
+    let (status, body) =
+        fetch_hardened_provider_response(&url, false, |request| request.bearer_auth(api_key))
         .await
         .map_err(|err| format!("Failed to fetch Cohere models: {err}"))?;
     if !status.is_success() {

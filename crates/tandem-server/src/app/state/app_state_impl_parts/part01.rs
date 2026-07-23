@@ -464,6 +464,7 @@ impl AppState {
         if let Ok(mut guard) = self.server_base_url.write() {
             *guard = base_url;
         }
+        self.sync_mcp_private_endpoint_posture();
     }
 
     pub fn server_base_url(&self) -> String {
@@ -476,10 +477,21 @@ impl AppState {
     pub fn set_host_operations_loopback_only(&self, loopback_only: bool) {
         self.host_operations_loopback_only
             .store(loopback_only, Ordering::Relaxed);
+        self.sync_mcp_private_endpoint_posture();
     }
 
     pub fn host_operations_loopback_only(&self) -> bool {
         self.host_operations_loopback_only.load(Ordering::Relaxed)
+    }
+
+    fn sync_mcp_private_endpoint_posture(&self) {
+        let allow_private = self.host_operations_loopback_only()
+            && crate::http::host_authority::server_base_url_is_loopback(&self.server_base_url());
+        if let Some(runtime) = self.runtime.get() {
+            runtime
+                .mcp
+                .set_standalone_private_endpoint_access(allow_private);
+        }
     }
 
     pub async fn api_token(&self) -> Option<String> {
@@ -719,6 +731,7 @@ impl AppState {
         self.runtime
             .set(runtime)
             .map_err(|_| anyhow::anyhow!("runtime already initialized"))?;
+        self.sync_mcp_private_endpoint_posture();
         self.tools
             .register_tool(
                 "pack_builder".to_string(),

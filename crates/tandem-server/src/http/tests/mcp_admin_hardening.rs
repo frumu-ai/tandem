@@ -15,6 +15,9 @@ fn direct_loopback_request() -> axum::http::request::Builder {
 async fn private_mcp_oauth_requires_standalone_listener_posture() {
     let state = test_state().await;
     let tenant = tandem_types::TenantContext::local_implicit();
+    assert!(state
+        .mcp
+        .standalone_private_endpoint_access_enabled_for_tests());
     assert!(crate::http::mcp::allow_private_mcp_oauth_endpoint(
         &state, &tenant
     ));
@@ -24,6 +27,9 @@ async fn private_mcp_oauth_requires_standalone_listener_posture() {
     state
         .trust_test_tenant_headers
         .store(false, std::sync::atomic::Ordering::Relaxed);
+    assert!(!state
+        .mcp
+        .standalone_private_endpoint_access_enabled_for_tests());
     assert!(
         !crate::http::mcp::allow_private_mcp_oauth_endpoint(&state, &tenant),
         "local implicit identity alone must not authorize private OAuth egress"

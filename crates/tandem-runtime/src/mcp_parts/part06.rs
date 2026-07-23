@@ -6,6 +6,39 @@ mod credential_ordering_tests {
     use super::*;
     use uuid::Uuid;
 
+    #[test]
+    fn private_endpoints_require_host_posture_and_local_identity() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let local = TenantContext::local_implicit();
+        let explicit = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            None,
+            "alice",
+        );
+
+        assert!(
+            !registry.allow_private_endpoint_for(&local),
+            "local identity without verified host posture must fail closed"
+        );
+        registry.set_standalone_private_endpoint_access(true);
+        assert!(registry.allow_private_endpoint_for(&local));
+        assert!(
+            !registry.allow_private_endpoint_for(&explicit),
+            "host posture must not grant private egress to an explicit hosted tenant"
+        );
+        registry.set_strict_tenant_enforcement(true);
+        assert!(
+            !registry.allow_private_endpoint_for(&local),
+            "hosted strict-tenant mode must fail closed even on a loopback bind"
+        );
+        registry.set_strict_tenant_enforcement(false);
+        registry.set_standalone_private_endpoint_access(false);
+        assert!(!registry.allow_private_endpoint_for(&local));
+        let _ = std::fs::remove_file(file);
+    }
+
     #[tokio::test]
     async fn auth_clear_and_replacement_share_one_mutation_order() {
         let _provider_auth_guard = super::tests::provider_auth_test_guard().await;

@@ -1449,21 +1449,18 @@ async fn local_implicit_catalog_blocks_private_nonlocal_origin_for_every_runtime
         .expect("bind listener");
     let addr = listener.local_addr().expect("local addr");
     let seen_auth_for_handler = seen_auth.clone();
-    let mock = Router::new().route(
-        "/v1/models",
-        get(move |headers: axum::http::HeaderMap| {
-            let seen_auth = seen_auth_for_handler.clone();
-            async move {
-                let auth = headers
-                    .get(axum::http::header::AUTHORIZATION)
-                    .and_then(|value| value.to_str().ok())
-                    .unwrap_or("")
-                    .to_string();
-                seen_auth.lock().expect("seen auth lock").push(auth);
-                Json(json!({"data": [{"id": "must-not-be-reached"}]}))
-            }
-        }),
-    );
+    let mock = Router::new().fallback(get(move |headers: axum::http::HeaderMap| {
+        let seen_auth = seen_auth_for_handler.clone();
+        async move {
+            let auth = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            seen_auth.lock().expect("seen auth lock").push(auth);
+            Json(json!({"data": [{"id": "must-not-be-reached"}]}))
+        }
+    }));
     let server = tokio::spawn(async move {
         axum::serve(listener, mock)
             .await
@@ -1479,6 +1476,9 @@ async fn local_implicit_catalog_blocks_private_nonlocal_origin_for_every_runtime
             "providers": {
                 "openai": {
                     "url": format!("http://{addr}/v1")
+                },
+                "cohere": {
+                    "url": format!("http://{addr}/v2")
                 }
             }
         }))
@@ -1489,6 +1489,11 @@ async fn local_implicit_catalog_blocks_private_nonlocal_origin_for_every_runtime
         .write()
         .await
         .insert("openai".to_string(), "test-key".to_string());
+    state
+        .auth
+        .write()
+        .await
+        .insert("cohere".to_string(), "cohere-test-key".to_string());
     state
         .providers
         .reload(state.config.get().await.into())
@@ -1523,6 +1528,20 @@ async fn local_implicit_catalog_blocks_private_nonlocal_origin_for_every_runtime
         Some("error"),
         "local implicit credentials do not establish standalone network posture"
     );
+    let cohere = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("cohere"))
+        })
+        .expect("cohere entry");
+    assert_eq!(
+        cohere.get("catalog_status").and_then(Value::as_str),
+        Some("error"),
+        "shared auth visibility must not authorize private Cohere discovery"
+    );
     assert!(
         seen_auth.lock().expect("seen auth lock").is_empty(),
         "public-listener catalog discovery must not contact a private origin"
@@ -1555,6 +1574,20 @@ async fn local_implicit_catalog_blocks_private_nonlocal_origin_for_every_runtime
         openai.get("catalog_status").and_then(Value::as_str),
         Some("error"),
         "standalone private discovery remains restricted to local provider IDs"
+    );
+    let cohere = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("cohere"))
+        })
+        .expect("standalone cohere entry");
+    assert_eq!(
+        cohere.get("catalog_status").and_then(Value::as_str),
+        Some("error"),
+        "standalone posture must not authorize private Cohere discovery"
     );
     assert!(
         seen_auth.lock().expect("seen auth lock").is_empty(),

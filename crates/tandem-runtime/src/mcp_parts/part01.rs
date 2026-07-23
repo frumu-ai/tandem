@@ -153,6 +153,7 @@ pub struct McpRegistry {
     credential_mutation_lock: Arc<Mutex<()>>,
     state_file: Arc<PathBuf>,
     oauth_security_dir: Arc<PathBuf>,
+    standalone_private_endpoint_access: Arc<std::sync::atomic::AtomicBool>,
     strict_tenant_enforcement: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(any(test, feature = "test-utils"))]
     allow_private_test_endpoints: Arc<std::sync::atomic::AtomicBool>,
@@ -229,6 +230,7 @@ impl McpRegistry {
             credential_mutation_lock: Arc::new(Mutex::new(())),
             state_file: Arc::new(state_file),
             oauth_security_dir: Arc::new(oauth_security_dir),
+            standalone_private_endpoint_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             strict_tenant_enforcement: Arc::new(std::sync::atomic::AtomicBool::new(
                 MCP_STRICT_TENANT_ENFORCEMENT_DEFAULT.load(std::sync::atomic::Ordering::SeqCst),
             )),
@@ -244,8 +246,29 @@ impl McpRegistry {
             .store(enabled, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Allow private/HTTP MCP endpoints only after the host has verified both
+    /// a loopback-only listener and a loopback public base URL.
+    pub fn set_standalone_private_endpoint_access(&self, enabled: bool) {
+        self.standalone_private_endpoint_access
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[doc(hidden)]
+    pub fn standalone_private_endpoint_access_enabled_for_tests(&self) -> bool {
+        self.standalone_private_endpoint_access
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn allow_private_endpoint_for(&self, current_tenant: &TenantContext) -> bool {
-        if current_tenant.is_local_implicit() {
+        if current_tenant.is_local_implicit()
+            && self
+                .standalone_private_endpoint_access
+                .load(std::sync::atomic::Ordering::SeqCst)
+            && !self
+                .strict_tenant_enforcement
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
             return true;
         }
         #[cfg(any(test, feature = "test-utils"))]
