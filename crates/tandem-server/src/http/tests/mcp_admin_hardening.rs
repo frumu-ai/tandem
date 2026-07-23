@@ -25,12 +25,23 @@ async fn private_mcp_oauth_requires_standalone_listener_posture() {
     assert!(crate::http::mcp::allow_private_mcp_oauth_endpoint(
         &state, &tenant
     ));
+    let authorization = crate::http::mcp::McpOAuthEndpointAuthorization::new(&state, &tenant);
+    let private_target = crate::http::mcp::resolve_mcp_oauth_target(
+        "http://127.0.0.1:39731/oauth/token",
+        &authorization,
+    )
+    .await
+    .expect("resolve private OAuth target while listener posture is live");
 
     state.mcp.set_strict_tenant_enforcement(true);
     assert!(
         !crate::http::mcp::allow_private_mcp_oauth_endpoint(&state, &tenant),
         "strict hosted mode must deny private OAuth even on a bound loopback listener"
     );
+    let error = private_target
+        .ensure_authorized(&authorization)
+        .expect_err("revoked standalone posture must block an already-resolved OAuth target");
+    assert!(error.contains("authorization was revoked"));
     state.mcp.set_strict_tenant_enforcement(false);
 
     state.set_host_operations_loopback_only(false);

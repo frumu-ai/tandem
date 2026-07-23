@@ -28,6 +28,9 @@ pub(crate) use super::mcp_run_as::{
 mod mcp_base_url;
 pub(super) use mcp_base_url::{mcp_public_base_url_from_config, mcp_public_base_url_from_env};
 
+mod mcp_oauth_target;
+pub(crate) use mcp_oauth_target::{resolve_mcp_oauth_target, McpOAuthEndpointAuthorization};
+
 const BUILTIN_GITHUB_MCP_SERVER_NAME: &str = "github";
 const BUILTIN_GITHUB_MCP_TRANSPORT_URL: &str = "https://api.githubcopilot.com/mcp/";
 const BUILTIN_TANDEM_DOCS_MCP_SERVER_NAME: &str = "tandem-mcp";
@@ -773,18 +776,6 @@ fn mcp_oauth_callback_html(ok: bool, title: &str, detail: &str) -> axum::respons
 
 const MCP_OAUTH_RESPONSE_MAX_BYTES: usize = 1024 * 1024;
 
-async fn resolve_mcp_oauth_target(
-    raw: &str,
-    allow_private_endpoint: bool,
-) -> Result<crate::outbound_http::ResolvedPublicHttpsTarget, String> {
-    let target = if allow_private_endpoint {
-        crate::outbound_http::resolve_standalone_provider_url(raw).await
-    } else {
-        crate::outbound_http::resolve_public_https_url(raw).await
-    };
-    target.map_err(|error| format!("MCP OAuth URL rejected: {error}"))
-}
-
 async fn read_mcp_oauth_response(
     response: reqwest::Response,
     label: &str,
@@ -799,9 +790,9 @@ async fn read_mcp_oauth_response(
 async fn discover_mcp_oauth_bootstrap(
     endpoint: &str,
     headers: &HashMap<String, String>,
-    allow_private_endpoint: bool,
+    authorization: &McpOAuthEndpointAuthorization<'_>,
 ) -> Result<McpOAuthBootstrap, String> {
-    let target = resolve_mcp_oauth_target(endpoint, allow_private_endpoint).await?;
+    let target = resolve_mcp_oauth_target(endpoint, authorization).await?;
     let client = target
         .client(std::time::Duration::from_secs(15))
         .map_err(|error| format!("failed to build MCP OAuth client: {error}"))?;
@@ -832,6 +823,7 @@ async fn discover_mcp_oauth_bootstrap(
     for (key, value) in headers {
         request = request.header(key, value);
     }
+    target.ensure_authorized(authorization)?;
     let response = request
         .send()
         .await
@@ -862,18 +854,19 @@ async fn discover_mcp_oauth_bootstrap(
             "mcp oauth discovery did not include resource metadata in WWW-Authenticate".to_string()
         })?;
 
-    let protected_target =
-        resolve_mcp_oauth_target(&resource_metadata_url, allow_private_endpoint).await?;
+    let protected_target = resolve_mcp_oauth_target(&resource_metadata_url, authorization).await?;
     let protected_client = protected_target
         .client(std::time::Duration::from_secs(15))
         .map_err(|error| format!("failed to build MCP OAuth metadata client: {error}"))?;
-    let protected_resource = protected_client
+    let protected_request = protected_client
         .get(protected_target.url().clone())
         .header(
             reqwest::header::USER_AGENT,
             format!("tandem/{}", env!("CARGO_PKG_VERSION")),
         )
-        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::ACCEPT, "application/json");
+    protected_target.ensure_authorized(authorization)?;
+    let protected_resource = protected_request
         .send()
         .await
         .map_err(|error| format!("failed to fetch MCP protected resource metadata: {error}"))?;
@@ -899,17 +892,19 @@ async fn discover_mcp_oauth_bootstrap(
         })?;
 
     let metadata_url = authorization_server_metadata_url(&authorization_server);
-    let metadata_target = resolve_mcp_oauth_target(&metadata_url, allow_private_endpoint).await?;
+    let metadata_target = resolve_mcp_oauth_target(&metadata_url, authorization).await?;
     let metadata_client = metadata_target
         .client(std::time::Duration::from_secs(15))
         .map_err(|error| format!("failed to build MCP authorization metadata client: {error}"))?;
-    let auth_server_response = metadata_client
+    let metadata_request = metadata_client
         .get(metadata_target.url().clone())
         .header(
             reqwest::header::USER_AGENT,
             format!("tandem/{}", env!("CARGO_PKG_VERSION")),
         )
-        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::ACCEPT, "application/json");
+    metadata_target.ensure_authorized(authorization)?;
+    let auth_server_response = metadata_request
         .send()
         .await
         .map_err(|error| format!("failed to fetch authorization server metadata: {error}"))?;
@@ -939,7 +934,7 @@ async fn discover_mcp_oauth_bootstrap(
         auth_metadata.token_endpoint.as_str(),
         registration_endpoint.as_str(),
     ] {
-        resolve_mcp_oauth_target(endpoint, allow_private_endpoint).await?;
+        resolve_mcp_oauth_target(endpoint, authorization).await?;
     }
 
     Ok(McpOAuthBootstrap {
@@ -1004,19 +999,16 @@ async fn start_mcp_oauth_session(
             .await;
     }
 
-    let allow_private_endpoint = allow_private_mcp_oauth_endpoint(state, tenant_context);
-    let bootstrap = discover_mcp_oauth_bootstrap(
-        &endpoint,
-        &effective_mcp_headers(&server),
-        allow_private_endpoint,
-    )
-    .await?;
+    let authorization = McpOAuthEndpointAuthorization::new(state, tenant_context);
+    let bootstrap =
+        discover_mcp_oauth_bootstrap(&endpoint, &effective_mcp_headers(&server), &authorization)
+            .await?;
     let registration_target =
-        resolve_mcp_oauth_target(&bootstrap.registration_endpoint, allow_private_endpoint).await?;
+        resolve_mcp_oauth_target(&bootstrap.registration_endpoint, &authorization).await?;
     let client = registration_target
         .client(std::time::Duration::from_secs(15))
         .map_err(|error| format!("failed to build MCP OAuth registration client: {error}"))?;
-    let registration_response = client
+    let registration_request = client
         .post(registration_target.url().clone())
         .header(
             reqwest::header::USER_AGENT,
@@ -1031,7 +1023,9 @@ async fn start_mcp_oauth_session(
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
-        }))
+        }));
+    registration_target.ensure_authorized(&authorization)?;
+    let registration_response = registration_request
         .send()
         .await
         .map_err(|error| format!("failed to register MCP OAuth client: {error}"))?;
@@ -1190,11 +1184,8 @@ async fn exchange_mcp_oauth_code(
     session: &McpOAuthSessionRecord,
     code: &str,
 ) -> Result<McpTokenExchangeResponse, String> {
-    let target = resolve_mcp_oauth_target(
-        &session.token_endpoint,
-        allow_private_mcp_oauth_endpoint(state, &session.tenant_context),
-    )
-    .await?;
+    let authorization = McpOAuthEndpointAuthorization::new(state, &session.tenant_context);
+    let target = resolve_mcp_oauth_target(&session.token_endpoint, &authorization).await?;
     let client = target
         .client(std::time::Duration::from_secs(15))
         .map_err(|error| format!("failed to build MCP OAuth token client: {error}"))?;
@@ -1213,14 +1204,16 @@ async fn exchange_mcp_oauth_code(
     {
         params.push(("client_secret", client_secret.to_string()));
     }
-    let response = client
+    let request = client
         .post(target.url().clone())
         .header(
             reqwest::header::USER_AGENT,
             format!("tandem/{}", env!("CARGO_PKG_VERSION")),
         )
         .header(reqwest::header::ACCEPT, "application/json")
-        .form(&params)
+        .form(&params);
+    target.ensure_authorized(&authorization)?;
+    let response = request
         .send()
         .await
         .map_err(|error| format!("mcp oauth token exchange failed: {error}"))?;
