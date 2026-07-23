@@ -263,6 +263,105 @@ async fn config_patch_preserves_saved_codex_default_over_runtime_provider() {
 }
 
 #[tokio::test]
+async fn config_patch_rejects_secret_aliases_before_authority_audit() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let secret = format!("secret-{}", Uuid::new_v4());
+    let patches = [
+        json!({"providers": {"custom": {"token": secret.clone()}}}),
+        json!({"providers": {"custom": {"clientSecret": secret.clone()}}}),
+        json!({"providers": {"custom": {"password": secret.clone()}}}),
+        json!({"providers": {"custom": {"headers": {"x-custom": secret.clone()}}}}),
+    ];
+
+    for patch in patches {
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/config")
+            .header("content-type", "application/json")
+            .body(Body::from(patch.to_string()))
+            .expect("request");
+        let resp = app.clone().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(resp).await.get("code").and_then(Value::as_str),
+            Some("CONFIG_SECRET_REJECTED")
+        );
+    }
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .unwrap_or_default();
+    assert!(!audit.contains(&secret));
+
+    state
+        .config
+        .patch_runtime(json!({
+            "providers": {"legacy": {"token": secret.clone()}}
+        }))
+        .await
+        .expect("seed legacy secret-bearing config");
+    let req = direct_loopback_request()
+        .method("GET")
+        .uri("/config")
+        .body(Body::empty())
+        .expect("request");
+    let payload = json_body(app.oneshot(req).await.expect("response")).await;
+    let rendered = payload.to_string();
+    assert!(!rendered.contains(&secret));
+    assert!(rendered.contains("[REDACTED]"));
+}
+
+#[tokio::test]
+async fn hosted_admin_cannot_configure_private_local_provider_origin() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = tenant_request(
+        "PATCH",
+        "/config",
+        "org-a",
+        "workspace-a",
+        "admin-a",
+        Some(json!({
+            "providers": {
+                "ollama": {"url": "http://127.0.0.1:11434/v1"}
+            }
+        })),
+    );
+
+    let resp = app.oneshot(req).await.expect("response");
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(resp).await.get("code").and_then(Value::as_str),
+        Some("PROVIDER_ORIGIN_CHANGE_REJECTED")
+    );
+}
+
+#[tokio::test]
+async fn standalone_loopback_owner_can_configure_private_local_provider_origin() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let req = direct_loopback_request()
+        .method("PATCH")
+        .uri("/config")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "providers": {
+                    "ollama": {"url": "http://127.0.0.1:11434/v1"}
+                }
+            })
+            .to_string(),
+        ))
+        .expect("request");
+
+    let resp = app.oneshot(req).await.expect("response");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn config_providers_heals_retired_codex_default_model() {
     let state = test_state().await;
     // Reproduce a deployment that persisted the retired phantom model as its

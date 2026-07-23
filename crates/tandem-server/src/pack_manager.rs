@@ -140,6 +140,12 @@ pub struct PackManager {
     pack_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PackSignaturePolicy {
+    RequireTrusted,
+    AllowUnsignedGenerated,
+}
+
 impl PackManager {
     pub fn new(root: PathBuf) -> Self {
         Self {
@@ -191,6 +197,51 @@ impl PackManager {
     }
 
     pub async fn install(&self, input: PackInstallRequest) -> anyhow::Result<PackInstallRecord> {
+        self.install_with_signature_policy(input, PackSignaturePolicy::RequireTrusted)
+            .await
+    }
+
+    pub(crate) fn generated_staging_root(&self) -> PathBuf {
+        self.root.join(STAGING_DIR).join("generated")
+    }
+
+    pub(crate) async fn install_generated(
+        &self,
+        path: PathBuf,
+        source: Value,
+    ) -> anyhow::Result<PackInstallRecord> {
+        let generated_root = self.generated_staging_root();
+        let canonical_root = tokio::fs::canonicalize(&generated_root)
+            .await
+            .context("resolve generated pack staging root")?;
+        let canonical_path = tokio::fs::canonicalize(&path)
+            .await
+            .with_context(|| format!("resolve generated pack {}", path.display()))?;
+        if canonical_path == canonical_root || !canonical_path.starts_with(&canonical_root) {
+            return Err(anyhow!(
+                "generated pack must be a file beneath the PackManager staging root"
+            ));
+        }
+        if !tokio::fs::metadata(&canonical_path).await?.is_file() {
+            return Err(anyhow!("generated pack must be a regular file"));
+        }
+        self.install_with_signature_policy(
+            PackInstallRequest {
+                path: Some(canonical_path.to_string_lossy().to_string()),
+                url: None,
+                expected_sha256: None,
+                source,
+            },
+            PackSignaturePolicy::AllowUnsignedGenerated,
+        )
+        .await
+    }
+
+    async fn install_with_signature_policy(
+        &self,
+        input: PackInstallRequest,
+        signature_policy: PackSignaturePolicy,
+    ) -> anyhow::Result<PackInstallRecord> {
         self.ensure_layout().await?;
         let source_file = if let Some(path) = input.path.as_deref() {
             PathBuf::from(path)
@@ -261,7 +312,10 @@ impl PackManager {
             ));
         }
         let signature_status = verify_pack_signature(&stage_unpacked)?;
-        if pack_signature_required() && matches!(signature_status, PackSignatureStatus::Unsigned) {
+        if signature_policy == PackSignaturePolicy::RequireTrusted
+            && pack_signature_required()
+            && matches!(signature_status, PackSignatureStatus::Unsigned)
+        {
             let _ = tokio::fs::remove_dir_all(&stage_root).await;
             return Err(anyhow!("pack signature is required"));
         }
@@ -314,7 +368,29 @@ impl PackManager {
             marker_detected: true,
             routines_enabled: false,
         };
-        if let Err(error) = self.write_record(record.clone()).await {
+        let index_guard = self.index_lock.lock().await;
+        let previous_index = match self.read_index_unlocked().await {
+            Ok(index) => index,
+            Err(error) => {
+                drop(index_guard);
+                if let Err(rollback_error) = tokio::fs::remove_dir_all(&install_target).await {
+                    return Err(error.context(format!(
+                        "read pack index; failed to roll back {}: {rollback_error}",
+                        install_target.display()
+                    )));
+                }
+                return Err(error).context("read pack index; installation rolled back");
+            }
+        };
+        let mut next_index = previous_index.clone();
+        next_index.packs.retain(|row| {
+            !(row.pack_id == record.pack_id
+                && row.name == record.name
+                && row.version == record.version)
+        });
+        next_index.packs.push(record.clone());
+        if let Err(error) = self.write_index_unlocked(&next_index).await {
+            drop(index_guard);
             if let Err(rollback_error) = tokio::fs::remove_dir_all(&install_target).await {
                 return Err(error.context(format!(
                     "persist pack index; failed to roll back {}: {rollback_error}",
@@ -323,9 +399,26 @@ impl PackManager {
             }
             return Err(error).context("persist pack index; installation rolled back");
         }
-        let _ = self
+        if let Err(error) = self
             .write_current_version(&manifest.name, &manifest.version)
-            .await;
+            .await
+        {
+            if let Err(rollback_error) = self.write_index_unlocked(&previous_index).await {
+                drop(index_guard);
+                return Err(error.context(format!(
+                    "commit pack current pointer; failed to roll back index: {rollback_error}; installed files retained"
+                )));
+            }
+            drop(index_guard);
+            if let Err(rollback_error) = tokio::fs::remove_dir_all(&install_target).await {
+                return Err(error.context(format!(
+                    "commit pack current pointer; index rolled back but failed to remove {}: {rollback_error}",
+                    install_target.display()
+                )));
+            }
+            return Err(error).context("commit pack current pointer; installation rolled back");
+        }
+        drop(index_guard);
         Ok(record)
     }
 
@@ -345,6 +438,7 @@ impl PackManager {
         // pack names cannot be lost through a read/modify/write race.
         let index_guard = self.index_lock.lock().await;
         let mut index = self.read_index_unlocked().await?;
+        let previous_index = index.clone();
         let Some(record) = select_record(&index, selector, req.version.as_deref()) else {
             return Err(anyhow!("pack not found"));
         };
@@ -386,11 +480,33 @@ impl PackManager {
             }
             return Err(error).context("persist pack index; uninstall rolled back");
         }
+        if let Err(error) = self
+            .write_current_for_index_unlocked(&index, &record.name)
+            .await
+        {
+            if let Err(rollback_error) = self.write_index_unlocked(&previous_index).await {
+                drop(index_guard);
+                return Err(error.context(format!(
+                    "commit pack current pointer; failed to roll back index: {rollback_error}; staged files retained"
+                )));
+            }
+            if let Some(staged) = staged_removal.as_ref() {
+                if let Err(rollback_error) = tokio::fs::rename(staged, &install_path).await {
+                    drop(index_guard);
+                    return Err(error.context(format!(
+                        "commit pack current pointer; index rolled back but failed to restore {} -> {}: {rollback_error}",
+                        staged.display(),
+                        install_path.display()
+                    )));
+                }
+            }
+            drop(index_guard);
+            return Err(error).context("commit pack current pointer; uninstall rolled back");
+        }
         drop(index_guard);
         if let Some(staged) = staged_removal {
             let _ = tokio::fs::remove_dir_all(staged).await;
         }
-        self.repoint_current_if_needed(&record.name).await?;
         Ok(record)
     }
 
@@ -582,20 +698,11 @@ impl PackManager {
         Ok(())
     }
 
-    async fn write_record(&self, record: PackInstallRecord) -> anyhow::Result<()> {
-        let _index_guard = self.index_lock.lock().await;
-        let mut index = self.read_index_unlocked().await?;
-        index.packs.retain(|row| {
-            !(row.pack_id == record.pack_id
-                && row.name == record.name
-                && row.version == record.version)
-        });
-        index.packs.push(record);
-        self.write_index_unlocked(&index).await
-    }
-
-    async fn repoint_current_if_needed(&self, pack_name: &str) -> anyhow::Result<()> {
-        let index = self.read_index().await?;
+    async fn write_current_for_index_unlocked(
+        &self,
+        index: &PackIndex,
+        pack_name: &str,
+    ) -> anyhow::Result<()> {
         let mut versions = index
             .packs
             .iter()
@@ -604,9 +711,19 @@ impl PackManager {
         versions.sort_by(|a, b| b.installed_at_ms.cmp(&a.installed_at_ms));
         let current_path = self.root.join(pack_name).join(CURRENT_FILE);
         if let Some(latest) = versions.first() {
-            let _ = self.write_current_version(pack_name, &latest.version).await;
-        } else if current_path.exists() {
-            let _ = tokio::fs::remove_file(current_path).await;
+            self.write_current_version(pack_name, &latest.version)
+                .await?;
+        } else {
+            match tokio::fs::symlink_metadata(&current_path).await {
+                Ok(metadata) if metadata.file_type().is_file() => {
+                    tokio::fs::remove_file(&current_path)
+                        .await
+                        .context("remove pack current pointer")?;
+                }
+                Ok(_) => return Err(anyhow!("pack current pointer is not a regular file")),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("inspect pack current pointer"),
+            }
         }
         Ok(())
     }
@@ -633,11 +750,66 @@ impl PackManager {
             return Err(error).context("sync pack current pointer");
         }
         drop(output);
-        if let Err(error) = tokio::fs::rename(&temporary, &current_path).await {
-            let _ = tokio::fs::remove_file(&temporary).await;
-            return Err(error).context("commit pack current pointer");
+
+        match tokio::fs::symlink_metadata(&current_path).await {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(anyhow!("pack current pointer is not a regular file"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(error).context("inspect previous pack current pointer");
+            }
         }
-        Ok(())
+
+        #[cfg(not(windows))]
+        {
+            if let Err(error) = tokio::fs::rename(&temporary, &current_path).await {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(error).context("commit pack current pointer");
+            }
+            return Ok(());
+        }
+
+        #[cfg(windows)]
+        {
+            let backup = parent.join(format!(".{CURRENT_FILE}.{}.bak", Uuid::new_v4()));
+            let previous_moved = match tokio::fs::symlink_metadata(&current_path).await {
+                Ok(metadata) if metadata.file_type().is_file() => {
+                    if let Err(error) = tokio::fs::rename(&current_path, &backup).await {
+                        let _ = tokio::fs::remove_file(&temporary).await;
+                        return Err(error).context("stage previous pack current pointer");
+                    }
+                    true
+                }
+                Ok(_) => {
+                    let _ = tokio::fs::remove_file(&temporary).await;
+                    return Err(anyhow!("pack current pointer is not a regular file"));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&temporary).await;
+                    return Err(error).context("inspect previous pack current pointer");
+                }
+            };
+            if let Err(error) = tokio::fs::rename(&temporary, &current_path).await {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                if previous_moved {
+                    if let Err(rollback_error) = tokio::fs::rename(&backup, &current_path).await {
+                        return Err(error).context(format!(
+                        "commit pack current pointer; failed to restore previous pointer: {rollback_error}"
+                    ));
+                    }
+                }
+                return Err(error).context("commit pack current pointer");
+            }
+            if previous_moved {
+                let _ = tokio::fs::remove_file(&backup).await;
+            }
+            Ok(())
+        }
     }
 
     async fn pack_lock(&self, pack_name: &str) -> Arc<Mutex<()>> {
@@ -1792,6 +1964,91 @@ mod tests {
             !pack_root.join("rollback-pack").join("1.0.0").exists(),
             "failed index persistence must not leave an installed pack directory"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(pack_signature_env)]
+    async fn install_rolls_back_index_and_files_when_current_pointer_commit_fails() {
+        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let pack_zip = root.join("pointer-rollback.zip");
+        let trusted_key = write_signed_zip(
+            &pack_zip,
+            &[(
+                "tandempack.yaml",
+                "name: pointer-rollback-pack\nversion: 1.0.0\ntype: workflow\npack_id: pointer-rollback-pack\n",
+            )],
+        );
+        let _trusted_keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &trusted_key);
+        let pack_root = root.join("packs");
+        std::fs::create_dir_all(pack_root.join("pointer-rollback-pack").join(CURRENT_FILE))
+            .expect("make current pointer path a directory");
+        let manager = PackManager::new(pack_root.clone());
+
+        let error = manager
+            .install(PackInstallRequest {
+                path: Some(pack_zip.to_string_lossy().to_string()),
+                url: None,
+                expected_sha256: None,
+                source: Value::Null,
+            })
+            .await
+            .expect_err("current pointer failure must abort install");
+
+        assert!(error.to_string().contains("installation rolled back"));
+        assert!(manager.list().await.expect("list").is_empty());
+        assert!(
+            !pack_root
+                .join("pointer-rollback-pack")
+                .join("1.0.0")
+                .exists(),
+            "failed current-pointer persistence must not leave installed files"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(pack_signature_env)]
+    async fn uninstall_rolls_back_index_and_files_when_current_pointer_commit_fails() {
+        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let pack_zip = root.join("uninstall-pointer-rollback.zip");
+        let trusted_key = write_signed_zip(
+            &pack_zip,
+            &[(
+                "tandempack.yaml",
+                "name: uninstall-pointer-pack\nversion: 1.0.0\ntype: workflow\npack_id: uninstall-pointer-pack\n",
+            )],
+        );
+        let _trusted_keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &trusted_key);
+        let pack_root = root.join("packs");
+        let manager = PackManager::new(pack_root.clone());
+        let installed = manager
+            .install(PackInstallRequest {
+                path: Some(pack_zip.to_string_lossy().to_string()),
+                url: None,
+                expected_sha256: None,
+                source: Value::Null,
+            })
+            .await
+            .expect("install");
+        let current = pack_root.join("uninstall-pointer-pack").join(CURRENT_FILE);
+        std::fs::remove_file(&current).expect("remove current pointer");
+        std::fs::create_dir(&current).expect("replace current pointer with directory");
+
+        let error = manager
+            .uninstall(PackUninstallRequest {
+                pack_id: Some(installed.pack_id.clone()),
+                name: None,
+                version: None,
+            })
+            .await
+            .expect_err("current pointer failure must abort uninstall");
+
+        assert!(error.to_string().contains("uninstall rolled back"));
+        assert_eq!(manager.list().await.expect("list").len(), 1);
+        assert!(Path::new(&installed.install_path).exists());
         let _ = std::fs::remove_dir_all(root);
     }
 

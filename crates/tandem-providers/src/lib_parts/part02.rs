@@ -44,7 +44,9 @@ impl Provider for OpenAICompatibleProvider {
                 Ok(resp) => {
                     let status = resp.status();
                     if !status.is_success() {
-                        let text = resp.text().await.unwrap_or_default();
+                        let text = read_provider_response_text_limited(resp)
+                            .await
+                            .unwrap_or_default();
                         if let Some(affordable_max) = openrouter_affordability_retry_max_tokens(
                             &self.id, status, &text, max_tokens,
                         ) {
@@ -93,7 +95,7 @@ impl Provider for OpenAICompatibleProvider {
                 err
             );
         };
-        let value: serde_json::Value = response.json().await?;
+        let value = read_provider_response_json_limited(response).await?;
 
         if let Some(detail) = extract_openai_error(&value) {
             anyhow::bail!(detail);
@@ -199,7 +201,9 @@ impl Provider for OpenAICompatibleProvider {
                 Ok(resp) => {
                     let status = resp.status();
                     if !status.is_success() {
-                        let text = resp.text().await.unwrap_or_default();
+                        let text = read_provider_response_text_limited(resp)
+                            .await
+                            .unwrap_or_default();
                         if has_tools
                             && !downgraded_openrouter_tool_choice
                             && openrouter_tool_choice_retry_supported(&self.id, &tool_mode, &text)
@@ -261,7 +265,9 @@ impl Provider for OpenAICompatibleProvider {
         };
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_provider_response_text_limited(resp)
+                .await
+                .unwrap_or_default();
             if text.contains("Failed to authenticate request with Clerk") {
                 let key_hint = provider_api_key_env_hint(&self.id);
                 anyhow::bail!(
@@ -546,7 +552,9 @@ impl Provider for OpenAIResponsesProvider {
                 Ok(resp) => {
                     let status = resp.status();
                     if !status.is_success() {
-                        let text = resp.text().await.unwrap_or_default();
+                        let text = read_provider_response_text_limited(resp)
+                            .await
+                            .unwrap_or_default();
                         if text.contains("Stream must be set to true") {
                             return self.complete_via_streamed_responses(prompt, model).await;
                         }
@@ -591,7 +599,7 @@ impl Provider for OpenAIResponsesProvider {
             );
         };
 
-        let value: serde_json::Value = response.json().await?;
+        let value = read_provider_response_json_limited(response).await?;
         if let Some(detail) = extract_openai_error(&value) {
             anyhow::bail!(detail);
         }
@@ -713,7 +721,9 @@ impl Provider for OpenAIResponsesProvider {
                 Ok(resp) => {
                     let status = resp.status();
                     if !status.is_success() {
-                        let text = resp.text().await.unwrap_or_default();
+                        let text = read_provider_response_text_limited(resp)
+                            .await
+                            .unwrap_or_default();
                         last_error = Some(openai_response_error(status, &text));
                         break;
                     }
@@ -1261,10 +1271,12 @@ impl OpenAIResponsesProvider {
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_provider_response_text_limited(resp)
+                .await
+                .unwrap_or_default();
             return Err(openai_response_error(status, &text));
         }
-        let sse_text = resp.text().await?;
+        let sse_text = read_provider_response_text_limited(resp).await?;
         parse_openai_responses_sse_text(&sse_text)
     }
 }

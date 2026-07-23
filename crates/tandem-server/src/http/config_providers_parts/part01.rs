@@ -144,6 +144,13 @@ pub(super) async fn patch_config(
             .into_response();
     }
     let normalized_input = normalize_config_patch_input(input);
+    let allow_standalone_private_endpoint = locality.is_direct_loopback()
+        && crate::http::host_authority::require_loopback_local_operator(
+            &state,
+            &tenant,
+            verified.as_deref(),
+        )
+        .is_ok();
     let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
         &state,
         &tenant,
@@ -160,7 +167,13 @@ pub(super) async fn patch_config(
         Err(status) => return status.into_response(),
     };
     let updates_openai_codex_default = config_patch_updates_openai_codex_default(&normalized_input);
-    if let Err(error) = validate_provider_origin_patch(&state, &normalized_input).await {
+    if let Err(error) = validate_provider_origin_patch(
+        &state,
+        &normalized_input,
+        allow_standalone_private_endpoint,
+    )
+    .await
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -223,6 +236,13 @@ pub(super) async fn global_config_patch(
             .into_response();
     }
     let normalized_input = normalize_config_patch_input(input);
+    let allow_standalone_private_endpoint = locality.is_direct_loopback()
+        && crate::http::host_authority::require_loopback_local_operator(
+            &state,
+            &tenant,
+            verified.as_deref(),
+        )
+        .is_ok();
     let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
         &state,
         &tenant,
@@ -241,7 +261,13 @@ pub(super) async fn global_config_patch(
         Ok(authorized) => authorized,
         Err(status) => return status.into_response(),
     };
-    if let Err(error) = validate_provider_origin_patch(&state, &normalized_input).await {
+    if let Err(error) = validate_provider_origin_patch(
+        &state,
+        &normalized_input,
+        allow_standalone_private_endpoint,
+    )
+    .await
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -271,7 +297,11 @@ pub(super) async fn global_config_patch(
         .into_response()
 }
 
-async fn validate_provider_origin_patch(state: &AppState, patch: &Value) -> Result<(), String> {
+async fn validate_provider_origin_patch(
+    state: &AppState,
+    patch: &Value,
+    allow_standalone_private_endpoint: bool,
+) -> Result<(), String> {
     let Some(provider_root) = patch
         .get("providers")
         .and_then(Value::as_object)
@@ -313,7 +343,8 @@ async fn validate_provider_origin_patch(state: &AppState, patch: &Value) -> Resu
                 ));
             }
         }
-        let local_provider = matches!(
+        let local_provider = allow_standalone_private_endpoint
+            && matches!(
             provider_id.trim().to_ascii_lowercase().as_str(),
             "ollama" | "llama_cpp" | "llama.cpp"
         );

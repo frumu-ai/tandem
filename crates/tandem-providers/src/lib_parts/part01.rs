@@ -21,15 +21,60 @@ struct HardenedProviderTarget {
     client: Client,
 }
 
+const PROVIDER_RESPONSE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+async fn read_provider_response_bytes_limited(
+    response: reqwest::Response,
+) -> anyhow::Result<Vec<u8>> {
+    read_provider_response_bytes_with_limit(response, PROVIDER_RESPONSE_MAX_BYTES).await
+}
+
+async fn read_provider_response_bytes_with_limit(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> anyhow::Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        anyhow::bail!("provider response exceeds {limit} bytes");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > limit {
+            anyhow::bail!("provider response exceeds {limit} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn read_provider_response_text_limited(
+    response: reqwest::Response,
+) -> anyhow::Result<String> {
+    let body = read_provider_response_bytes_limited(response).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+async fn read_provider_response_json_limited(
+    response: reqwest::Response,
+) -> anyhow::Result<serde_json::Value> {
+    let body = read_provider_response_bytes_limited(response).await?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
 async fn resolve_provider_request_target(
     raw: &str,
     provider_id: &str,
 ) -> anyhow::Result<HardenedProviderTarget> {
     let url = reqwest::Url::parse(raw)?;
-    let local_provider = matches!(
+    let local_provider = PROVIDER_PRIVATE_ENDPOINTS_ALLOWED
+        .try_with(|allowed| *allowed)
+        .unwrap_or(false)
+        && matches!(
         provider_id.trim().to_ascii_lowercase().as_str(),
         "ollama" | "llama_cpp" | "llama.cpp"
-    ) || cfg!(test);
+    );
     let insecure_http = url.scheme() == "http";
     if url.scheme() != "https" && !(insecure_http && local_provider) {
         anyhow::bail!("provider endpoint must use https");
@@ -136,6 +181,10 @@ tokio::task_local! {
 
 tokio::task_local! {
     static PROVIDER_AUTH_RECOVERY: ProviderAuthRecovery;
+}
+
+tokio::task_local! {
+    static PROVIDER_PRIVATE_ENDPOINTS_ALLOWED: bool;
 }
 
 fn provider_max_tokens_for(provider_id: &str) -> u32 {
@@ -975,15 +1024,19 @@ impl ProviderRegistry {
         &self,
         tenant_context: TenantContext,
         recovery: ProviderAuthRecovery,
+        allow_private_provider_endpoints: bool,
         future: F,
     ) -> F::Output
     where
         F: std::future::Future,
     {
-        PROVIDER_TENANT_CONTEXT
+        PROVIDER_PRIVATE_ENDPOINTS_ALLOWED
             .scope(
-                tenant_context,
-                PROVIDER_AUTH_RECOVERY.scope(recovery, future),
+                allow_private_provider_endpoints,
+                PROVIDER_TENANT_CONTEXT.scope(
+                    tenant_context,
+                    PROVIDER_AUTH_RECOVERY.scope(recovery, future),
+                ),
             )
             .await
     }

@@ -62,6 +62,15 @@ pub(super) fn require_loopback_local_operator(
     }
 }
 
+pub(crate) fn standalone_local_runtime_posture(state: &AppState, tenant: &TenantContext) -> bool {
+    is_loopback_local_operator(
+        state.host_operations_loopback_only(),
+        &state.server_base_url(),
+        tenant,
+        false,
+    )
+}
+
 fn is_loopback_local_operator(
     listener_is_loopback: bool,
     server_base_url: &str,
