@@ -1120,6 +1120,8 @@ impl AppState {
         >,
     ) -> anyhow::Result<AutomationV2RunRecord> {
         let now = now_ms();
+        self.ensure_automation_governance_run_allowed(automation)
+            .await?;
         self.validate_automation_enterprise_delegation_grants(automation)
             .await?;
         let runtime_context = self
@@ -1197,11 +1199,30 @@ impl AppState {
             requested_execution_profile,
         };
         crate::stateful_runtime::ensure_automation_run_definition_metadata(&mut run);
+        // Linearize run creation with lifecycle/governance writers. The early
+        // check avoids unnecessary preparation for an already-paused record;
+        // this final check retains the governance read guard until the run is
+        // durably inserted, so no writer can pause the record in between.
+        let governance_run_guard = if self.premium_governance_enabled() {
+            let guard = self.automation_governance.read().await;
+            let record = guard
+                .records
+                .get(&automation.automation_id)
+                .ok_or_else(|| anyhow::anyhow!("automation governance record not found"))?;
+            crate::app::state::governance::ensure_governance_record_allows_run(
+                record,
+                &automation.tenant_context(),
+            )?;
+            Some(guard)
+        } else {
+            None
+        };
         self.automation_v2_runs
             .write()
             .await
             .insert(run.run_id.clone(), run.clone());
         self.persist_automation_v2_runs().await?;
+        drop(governance_run_guard);
         crate::http::context_runs::sync_automation_v2_run_blackboard(self, automation, &run)
             .await
             .map_err(|status| anyhow::anyhow!("failed to sync automation context run: {status}"))?;
@@ -1226,6 +1247,8 @@ impl AppState {
         >,
     ) -> anyhow::Result<AutomationV2RunRecord> {
         let now = now_ms();
+        self.ensure_automation_governance_run_allowed(automation)
+            .await?;
         self.validate_automation_enterprise_delegation_grants(automation)
             .await?;
         let runtime_context = self
@@ -1294,11 +1317,26 @@ impl AppState {
             requested_execution_profile,
         };
         crate::stateful_runtime::ensure_automation_run_definition_metadata(&mut run);
+        let governance_run_guard = if self.premium_governance_enabled() {
+            let guard = self.automation_governance.read().await;
+            let record = guard
+                .records
+                .get(&automation.automation_id)
+                .ok_or_else(|| anyhow::anyhow!("automation governance record not found"))?;
+            crate::app::state::governance::ensure_governance_record_allows_run(
+                record,
+                &automation.tenant_context(),
+            )?;
+            Some(guard)
+        } else {
+            None
+        };
         self.automation_v2_runs
             .write()
             .await
             .insert(run.run_id.clone(), run.clone());
         self.persist_automation_v2_runs().await?;
+        drop(governance_run_guard);
         crate::http::context_runs::sync_automation_v2_run_blackboard(self, automation, &run)
             .await
             .map_err(|status| anyhow::anyhow!("failed to sync automation context run: {status}"))?;

@@ -30,6 +30,7 @@ impl DefaultGovernanceEngine {
     ) -> AutomationGovernanceRecord {
         AutomationGovernanceRecord {
             automation_id,
+            tenant_context: None,
             provenance,
             declared_capabilities,
             modify_grants: Vec::new(),
@@ -322,22 +323,17 @@ impl GovernancePolicyEngine for DefaultGovernanceEngine {
         if existing.status != GovernanceApprovalStatus::Pending {
             return Ok(existing.clone());
         }
-        // GOV-B4: an agent-filed request may never be reviewed by that same agent
-        // identity. Authoritative guard at the governance layer, independent of the
-        // HTTP surface, so no caller path can self-approve an escalation it raised.
-        // (Human operators legitimately file requests on an agent's behalf and
-        // approve them, so the guard is scoped to agent-filed requests.)
-        if existing.requested_by.kind == GovernanceActorKind::Agent {
-            if let (Some(reviewer_id), Some(requester_id)) = (
-                reviewer.actor_id.as_deref().map(str::trim),
-                existing.requested_by.actor_id.as_deref().map(str::trim),
-            ) {
-                if !reviewer_id.is_empty() && reviewer_id.eq_ignore_ascii_case(requester_id) {
-                    return Err(GovernanceError::forbidden(
-                        "GOVERNANCE_APPROVAL_SELF_REVIEW",
-                        "An agent-filed approval request may not be reviewed by the same agent",
-                    ));
-                }
+        // GOV-B4: the same identified human or agent may never review a request
+        // it filed. This authoritative guard is independent of the HTTP surface.
+        if let (Some(reviewer_id), Some(requester_id)) = (
+            reviewer.actor_id.as_deref().map(str::trim),
+            existing.requested_by.actor_id.as_deref().map(str::trim),
+        ) {
+            if !reviewer_id.is_empty() && reviewer_id.eq_ignore_ascii_case(requester_id) {
+                return Err(GovernanceError::forbidden(
+                    "GOVERNANCE_APPROVAL_SELF_REVIEW",
+                    "A governance request may not be reviewed by its requester",
+                ));
             }
         }
         let mut next = existing.clone();
@@ -783,6 +779,17 @@ impl GovernancePolicyEngine for DefaultGovernanceEngine {
             }
         }
 
+        if record.review_kind == Some(AutomationLifecycleReviewKind::HealthDrift) {
+            if let Some(review_request_id) = approval_requests
+                .iter()
+                .find(|approval| {
+                    approval.request_type == GovernanceApprovalRequestType::LifecycleReview
+                })
+                .map(|approval| approval.approval_id.clone())
+            {
+                record.review_request_id = Some(review_request_id);
+            }
+        }
         record.health_findings = findings;
         record.updated_at_ms = now_ms;
 
@@ -1013,5 +1020,65 @@ impl GovernancePolicyEngine for DefaultGovernanceEngine {
         }
 
         Ok(evaluation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn health_input(
+        current_record: Option<AutomationGovernanceRecord>,
+    ) -> GovernanceHealthCheckInput {
+        GovernanceHealthCheckInput {
+            automation_id: "automation-health-receipt".to_string(),
+            current_record,
+            default_provenance: AutomationProvenanceRecord::human(
+                Some("owner".to_string()),
+                "test",
+            ),
+            declared_capabilities: AutomationDeclaredCapabilities::default(),
+            terminal_run_count: 1,
+            failure_count: 0,
+            empty_output_count: 1,
+            guardrail_stop_count: 0,
+            last_terminal_run_id: Some("run-empty-output".to_string()),
+        }
+    }
+
+    #[test]
+    fn repeated_health_evaluation_preserves_pending_review_receipt() {
+        let engine = DefaultGovernanceEngine;
+        let mut snapshot = GovernanceContextSnapshot::default();
+        let first = engine
+            .evaluate_health_check(&snapshot, health_input(None), 1_000)
+            .expect("first health evaluation")
+            .expect("health finding");
+        let approval = first
+            .approval_requests
+            .first()
+            .cloned()
+            .expect("lifecycle approval");
+        assert_eq!(
+            first.record.review_request_id.as_deref(),
+            Some(approval.approval_id.as_str())
+        );
+        snapshot
+            .records
+            .insert(first.record.automation_id.clone(), first.record.clone());
+        snapshot
+            .approvals
+            .insert(approval.approval_id.clone(), approval.clone());
+
+        let second = engine
+            .evaluate_health_check(&snapshot, health_input(Some(first.record)), 1_001)
+            .expect("repeat health evaluation")
+            .expect("repeated health finding");
+
+        assert!(second.approval_requests.is_empty());
+        assert_eq!(
+            second.record.review_request_id.as_deref(),
+            Some(approval.approval_id.as_str())
+        );
     }
 }

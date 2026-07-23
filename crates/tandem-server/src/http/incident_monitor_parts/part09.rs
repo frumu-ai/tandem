@@ -3,25 +3,46 @@
 
 use axum::extract::Extension;
 use std::collections::HashSet;
-use tandem_types::{ApprovalListFilter, TenantContext, VerifiedTenantContext};
+use tandem_types::{ApprovalListFilter, RequestPrincipal, TenantContext, VerifiedTenantContext};
 
 const INCIDENT_MONITOR_AUTHORITY_INVENTORY_SCHEMA_VERSION: u64 = 1;
 const INCIDENT_MONITOR_AUTHORITY_INVENTORY_LIMIT: usize = 100;
 
+pub(in crate::http) enum IncidentMonitorApprovalInventoryAccess<'a> {
+    Caller(&'a crate::automation_v2::governance::GovernanceActorRef),
+    Omit,
+}
+
 pub(super) async fn get_incident_monitor_authority_inventory(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    headers: HeaderMap,
 ) -> Response {
     let verified = verified_tenant_context.as_ref().map(|context| &context.0);
-    Json(incident_monitor_authority_inventory_payload(&state, tenant_context, verified).await)
-        .into_response()
+    let actor = super::governance::resolve_governance_actor(
+        &headers,
+        &tenant_context,
+        &request_principal,
+    );
+    Json(
+        incident_monitor_authority_inventory_payload(
+            &state,
+            tenant_context,
+            verified,
+            IncidentMonitorApprovalInventoryAccess::Caller(&actor),
+        )
+        .await,
+    )
+    .into_response()
 }
 
-async fn incident_monitor_authority_inventory_payload(
+pub(in crate::http) async fn incident_monitor_authority_inventory_payload(
     state: &AppState,
     tenant_context: TenantContext,
     verified: Option<&VerifiedTenantContext>,
+    approval_access: IncidentMonitorApprovalInventoryAccess<'_>,
 ) -> Value {
     let config = state.incident_monitor_config().await;
     let destinations = config.effective_destinations();
@@ -38,9 +59,38 @@ async fn incident_monitor_authority_inventory_payload(
         })
         .collect::<Vec<_>>();
     let intake_keys = state.list_incident_monitor_intake_keys().await;
-    let governance_approvals = state
+    let mut governance_approvals = state
         .list_approval_requests_for_tenant(None, None, &tenant_context)
         .await;
+    if let IncidentMonitorApprovalInventoryAccess::Caller(actor) = approval_access {
+        let standalone_local_owner = tenant_context.is_local_implicit()
+            && actor.kind
+                == crate::automation_v2::governance::GovernanceActorKind::System;
+        let reviewer_wide = (actor.kind
+            == crate::automation_v2::governance::GovernanceActorKind::Human
+            || standalone_local_owner)
+            && super::workflows::workflow_reviewer_is_eligible(&tenant_context, verified);
+        if !reviewer_wide {
+            let caller = actor
+                .actor_id
+                .as_deref()
+                .or(actor.source.as_deref())
+                .map(str::trim)
+                .filter(|actor_id| !actor_id.is_empty());
+            governance_approvals.retain(|approval| {
+                caller.is_some_and(|caller| {
+                    approval
+                        .requested_by
+                        .actor_id
+                        .as_deref()
+                        .or(approval.requested_by.source.as_deref())
+                        .is_some_and(|requester| requester.eq_ignore_ascii_case(caller))
+                })
+            });
+        }
+    } else {
+        governance_approvals.clear();
+    }
     let pending_approvals = crate::http::approvals::list_pending_approvals(
         &state,
         &ApprovalListFilter {

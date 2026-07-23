@@ -207,7 +207,21 @@ async fn evaluate_capability_deny(
                 return Some("git push disabled for this agent instance".to_string());
             }
             if caps.git_caps.push_requires_approval {
-                let action = state.permissions.evaluate("git_push", "git_push").await;
+                let tenant_context = state
+                    .storage
+                    .get_session(session_id)
+                    .await
+                    .map(|session| session.tenant_context)
+                    .unwrap_or_else(tandem_types::TenantContext::local_implicit);
+                let action = state
+                    .permissions
+                    .evaluate_for_tenant_and_session(
+                        &tenant_context,
+                        Some(session_id),
+                        "git_push",
+                        "git_push",
+                    )
+                    .await;
                 match action {
                     tandem_core::PermissionAction::Allow => {}
                     tandem_core::PermissionAction::Deny => {
@@ -216,7 +230,8 @@ async fn evaluate_capability_deny(
                     tandem_core::PermissionAction::Ask => {
                         let pending = state
                             .permissions
-                            .ask_for_session_with_context(
+                            .ask_for_session_with_context_for_tenant(
+                                &tenant_context,
                                 Some(session_id),
                                 "git_push",
                                 args.clone(),

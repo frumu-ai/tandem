@@ -264,6 +264,7 @@ pub struct AppState {
     pub(crate) oauth: OAuthState,
     pub workflows: Arc<RwLock<WorkflowRegistry>>,
     pub workflow_runs: Arc<RwLock<std::collections::HashMap<String, WorkflowRunRecord>>>,
+    pub(crate) workflow_runs_persistence: Arc<tokio::sync::Mutex<()>>,
     pub workflow_hook_overrides: Arc<RwLock<std::collections::HashMap<String, bool>>>,
     pub workflow_dispatch_seen: Arc<RwLock<std::collections::HashMap<String, u64>>>,
     pub routine_session_policies:
@@ -377,7 +378,14 @@ impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
                 "server runtime permissions are not initialized",
             ));
         };
-        let permission_action = runtime.permissions.evaluate_tool(&dispatch_tool).await;
+        let permission_action = runtime
+            .permissions
+            .evaluate_tool_for_tenant_and_session(
+                &context.tenant_context,
+                context.source.session_id.as_deref(),
+                &dispatch_tool,
+            )
+            .await;
         if matches!(permission_action, tandem_core::PermissionAction::Deny) {
             return Ok(ToolDispatchDecision::deny(format!(
                 "server tool `{dispatch_tool}` is denied by permission rule"
@@ -515,6 +523,7 @@ include!("app_state_impl_parts/part13.rs");
 include!("app_state_impl_parts/part15.rs");
 include!("app_state_impl_parts/part16.rs");
 include!("app_state_impl_parts/part02.rs");
+include!("app_state_impl_parts/part19.rs");
 include!("app_state_impl_parts/part10.rs");
 include!("app_state_impl_parts/part03.rs");
 include!("app_state_impl_parts/part05.rs");

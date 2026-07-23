@@ -545,6 +545,10 @@ impl EngineLoop {
             .as_ref()
             .map(|session| &session.tenant_context)
             .filter(|tenant| !tenant.is_local_implicit());
+        let permission_tenant_context = session
+            .as_ref()
+            .map(|session| session.tenant_context.clone())
+            .unwrap_or_else(TenantContext::local_implicit);
         let operation_id = format!("{session_id}:post_tool_narrative");
         let data_classes = [
             tandem_data_boundary::SensitiveDataClass::CustomerData,
@@ -594,7 +598,8 @@ impl EngineLoop {
                 approval,
             } => {
                 self.event_bus.publish(event);
-                let pending = self.permissions.ask_for_session(
+                let pending = self.permissions.ask_for_session_for_tenant(
+                    &permission_tenant_context,
                     Some(session_id),
                     "data_boundary_egress",
                     evidence,

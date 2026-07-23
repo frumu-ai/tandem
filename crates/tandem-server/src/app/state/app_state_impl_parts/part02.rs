@@ -814,57 +814,6 @@ impl AppState {
             .cloned())
     }
 
-    pub async fn put_workflow_run(&self, run: WorkflowRunRecord) -> anyhow::Result<()> {
-        self.workflow_runs
-            .write()
-            .await
-            .insert(run.run_id.clone(), run);
-        self.persist_workflow_runs().await
-    }
-
-    pub async fn update_workflow_run(
-        &self,
-        run_id: &str,
-        update: impl FnOnce(&mut WorkflowRunRecord),
-    ) -> Option<WorkflowRunRecord> {
-        let mut guard = self.workflow_runs.write().await;
-        let row = guard.get_mut(run_id)?;
-        update(row);
-        row.updated_at_ms = now_ms();
-        if matches!(
-            row.status,
-            WorkflowRunStatus::Completed | WorkflowRunStatus::Failed
-        ) {
-            row.finished_at_ms.get_or_insert_with(now_ms);
-        }
-        let out = row.clone();
-        drop(guard);
-        let _ = self.persist_workflow_runs().await;
-        Some(out)
-    }
-
-    pub async fn list_workflow_runs(
-        &self,
-        workflow_id: Option<&str>,
-        limit: usize,
-    ) -> Vec<WorkflowRunRecord> {
-        let mut rows = self
-            .workflow_runs
-            .read()
-            .await
-            .values()
-            .filter(|row| workflow_id.map(|id| row.workflow_id == id).unwrap_or(true))
-            .cloned()
-            .collect::<Vec<_>>();
-        rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
-        rows.truncate(limit.clamp(1, 500));
-        rows
-    }
-
-    pub async fn get_workflow_run(&self, run_id: &str) -> Option<WorkflowRunRecord> {
-        self.workflow_runs.read().await.get(run_id).cloned()
-    }
-
     pub async fn put_automation_v2(
         &self,
         mut automation: AutomationV2Spec,

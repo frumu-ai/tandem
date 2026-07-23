@@ -678,11 +678,20 @@ async fn reload_automation_state_after_restart(source: &AppState) -> (AppState, 
     let mut reloaded = ready_test_state().await;
     reloaded.automations_v2_path = source.automations_v2_path.clone();
     reloaded.automation_v2_runs_path = source.automation_v2_runs_path.clone();
+    reloaded.automation_governance_path = source.automation_governance_path.clone();
     reloaded.memory_db_path = source.memory_db_path.clone();
     reloaded
         .load_automations_v2()
         .await
         .expect("load persisted automations");
+    reloaded
+        .load_automation_governance()
+        .await
+        .expect("load persisted automation governance");
+    reloaded
+        .bootstrap_automation_governance()
+        .await
+        .expect("bootstrap persisted automation governance");
     reloaded
         .load_automation_v2_runs()
         .await

@@ -16,6 +16,7 @@ pub(crate) async fn incident_monitor_reassessment_posture_payload(
         state,
         tenant_context.clone(),
         None,
+        IncidentMonitorApprovalInventoryAccess::Omit,
         &IncidentMonitorAssessmentReportInput::default(),
         generated_at_ms,
     )

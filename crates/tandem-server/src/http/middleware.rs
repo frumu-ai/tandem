@@ -727,13 +727,23 @@ fn resolve_test_header_local_enterprise_request_context(
     headers: &HeaderMap,
 ) -> ResolvedEnterpriseRequestContext {
     let resolver = HeaderTenantContextResolver;
-    let tenant_context = resolver.resolve_tenant_context(
-        first_header(headers, &["x-tandem-org-id", "x-tenant-org-id"]).as_deref(),
-        first_header(headers, &["x-tandem-workspace-id", "x-tenant-workspace-id"]).as_deref(),
-        first_header(headers, &["x-tandem-actor-id", "x-user-id"]).as_deref(),
-    );
+    let org_id = first_header(headers, &["x-tandem-org-id", "x-tenant-org-id"]);
+    let workspace_id = first_header(headers, &["x-tandem-workspace-id", "x-tenant-workspace-id"]);
+    let actor_id = first_header(headers, &["x-tandem-actor-id", "x-user-id"]);
+    // Actor identity does not change tenancy in real standalone mode. Keep
+    // actor-only test requests production-faithful while still allowing tests
+    // with explicit org/workspace headers to exercise hosted tenant contexts.
+    let tenant_context = if org_id.is_none() && workspace_id.is_none() {
+        TenantContext::local_implicit()
+    } else {
+        resolver.resolve_tenant_context(
+            org_id.as_deref(),
+            workspace_id.as_deref(),
+            actor_id.as_deref(),
+        )
+    };
     let request_principal = RequestPrincipal {
-        actor_id: tenant_context.actor_id.clone(),
+        actor_id,
         source: local_request_source(headers),
     };
     ResolvedEnterpriseRequestContext::local(tenant_context, request_principal)

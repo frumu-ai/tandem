@@ -143,6 +143,14 @@ pub struct WorkflowPendingGate {
     #[serde(default)]
     pub rework_targets: Vec<String>,
     pub requested_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub action_digest: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub nonce: String,
 }
 
 /// Audit record of a decided workflow gate.
@@ -155,6 +163,10 @@ pub struct WorkflowGateDecisionRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub decided_at_ms: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub action_digest: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub nonce: String,
     /// Serialized governance actor (kind/actor_id/source).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_by: Option<Value>,

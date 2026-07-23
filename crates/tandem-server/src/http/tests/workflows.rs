@@ -857,6 +857,65 @@ async fn start_gated_run(app: &axum::Router) -> (String, Value) {
     (run_id, payload["run"].clone())
 }
 
+async fn start_gated_run_as(
+    app: &axum::Router,
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+) -> (String, Value) {
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/workflows/crm_outreach/run")
+                .header("x-tandem-org-id", org_id)
+                .header("x-tandem-workspace-id", workspace_id)
+                .header("x-user-id", actor_id)
+                .body(Body::empty())
+                .expect("tenant run request"),
+        )
+        .await
+        .expect("tenant run response");
+    assert_eq!(run_resp.status(), StatusCode::OK);
+    let body = to_bytes(run_resp.into_body(), usize::MAX)
+        .await
+        .expect("tenant run body");
+    let payload: Value = serde_json::from_slice(&body).expect("tenant run json");
+    let run_id = payload["run"]["run_id"]
+        .as_str()
+        .expect("tenant run id")
+        .to_string();
+    (run_id, payload["run"].clone())
+}
+
+fn verified_workflow_reviewer_app(
+    state: AppState,
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+) -> axum::Router {
+    let tenant_context = TenantContext::explicit(org_id, workspace_id, Some(actor_id.to_string()));
+    let principal = tandem_types::RequestPrincipal::authenticated_user(actor_id, "tandem-test");
+    let verified = tandem_types::VerifiedTenantContext {
+        tenant_context,
+        human_actor: tandem_types::HumanActor::tandem_user(actor_id),
+        authority_chain: tandem_types::AuthorityChain::from_request(principal),
+        roles: vec!["admin".to_string()],
+        org_units: Vec::new(),
+        capabilities: vec!["approval.review".to_string()],
+        policy_version: None,
+        strict_projection: None,
+        issuer: "tandem-test".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1,
+        expires_at_ms: 9_999_999_999_999,
+        assertion_id: format!("workflow-test-{org_id}-{workspace_id}-{actor_id}"),
+        assertion_key_id: None,
+    };
+    app_router(state).layer(axum::Extension(verified))
+}
+
 async fn decide_workflow_gate(
     app: &axum::Router,
     run_id: &str,
@@ -882,6 +941,39 @@ async fn decide_workflow_gate(
     let body = to_bytes(resp.into_body(), usize::MAX)
         .await
         .expect("gate body");
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+async fn decide_workflow_gate_as(
+    app: &axum::Router,
+    run_id: &str,
+    decision: &str,
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+) -> (StatusCode, Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/workflows/runs/{run_id}/gate"))
+                .header("content-type", "application/json")
+                .header("x-tandem-org-id", org_id)
+                .header("x-tandem-workspace-id", workspace_id)
+                .header("x-user-id", actor_id)
+                .header("x-tandem-request-source", "control_panel")
+                .body(Body::from(
+                    json!({ "decision": decision, "reason": "security check" }).to_string(),
+                ))
+                .expect("tenant gate request"),
+        )
+        .await
+        .expect("tenant gate response");
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("tenant gate body");
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
@@ -1049,4 +1141,265 @@ async fn workflow_gate_cancel_never_runs_protected_action() {
     let (status, body) = decide_workflow_gate(&app, &run_id, "approve", "control_panel").await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["decidedGate"]["decision"].as_str(), Some("cancel"));
+}
+
+#[tokio::test]
+async fn workflow_gate_hosted_visibility_and_review_are_actor_scoped() {
+    let (state, crm_calls) = gated_workflow_state().await;
+    let app = app_router(state.clone());
+    let (run_id, run) = start_gated_run_as(&app, "org-a", "workspace-a", "user-a").await;
+    assert_eq!(run["status"].as_str(), Some("awaiting_approval"));
+
+    let list_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/workflows/runs")
+                .header("x-tandem-org-id", "org-a")
+                .header("x-tandem-workspace-id", "workspace-a")
+                .header("x-user-id", "user-b")
+                .body(Body::empty())
+                .expect("unassigned list request"),
+        )
+        .await
+        .expect("unassigned list response");
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let list_body = to_bytes(list_resp.into_body(), usize::MAX)
+        .await
+        .expect("unassigned list body");
+    let list: Value = serde_json::from_slice(&list_body).expect("unassigned list json");
+    assert_eq!(list["count"].as_u64(), Some(0));
+
+    let get_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/workflows/runs/{run_id}"))
+                .header("x-tandem-org-id", "org-a")
+                .header("x-tandem-workspace-id", "workspace-a")
+                .header("x-user-id", "user-b")
+                .body(Body::empty())
+                .expect("unassigned get request"),
+        )
+        .await
+        .expect("unassigned get response");
+    assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
+
+    let (status, body) =
+        decide_workflow_gate_as(&app, &run_id, "approve", "org-a", "workspace-a", "user-b").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body["code"].as_str(),
+        Some("WORKFLOW_GATE_REVIEWER_FORBIDDEN")
+    );
+
+    let self_review_app =
+        verified_workflow_reviewer_app(state.clone(), "org-a", "workspace-a", "user-a");
+    let (status, body) = decide_workflow_gate_as(
+        &self_review_app,
+        &run_id,
+        "approve",
+        "org-a",
+        "workspace-a",
+        "user-a",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"].as_str(), Some("WORKFLOW_GATE_SELF_APPROVAL"));
+
+    let reviewer_app =
+        verified_workflow_reviewer_app(state.clone(), "org-a", "workspace-a", "user-b");
+    let reviewer_get = reviewer_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/workflows/runs/{run_id}"))
+                .header("x-tandem-org-id", "org-a")
+                .header("x-tandem-workspace-id", "workspace-a")
+                .header("x-user-id", "user-b")
+                .body(Body::empty())
+                .expect("reviewer get request"),
+        )
+        .await
+        .expect("reviewer get response");
+    assert_eq!(reviewer_get.status(), StatusCode::OK);
+
+    let (status, body) = decide_workflow_gate_as(
+        &reviewer_app,
+        &run_id,
+        "approve",
+        "org-a",
+        "workspace-a",
+        "user-b",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "independent review failed: {body}");
+    wait_for_call_count(&crm_calls, 1).await;
+    assert_eq!(crm_calls.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn workflow_gate_rejects_stale_and_expired_requests_without_resuming() {
+    let (state, crm_calls) = gated_workflow_state().await;
+    let app = app_router(state.clone());
+
+    let (stale_run_id, _) = start_gated_run(&app).await;
+    let workflows_dir = state
+        .workflow_runs_path
+        .parent()
+        .expect("state dir")
+        .join("builtin_workflows")
+        .join("workflows");
+    let workflow_path = workflows_dir.join("crm_outreach.yaml");
+    let original = std::fs::read_to_string(&workflow_path).expect("read gated workflow");
+    std::fs::write(
+        &workflow_path,
+        original.replace("record: contact-42", "record: substituted-contact"),
+    )
+    .expect("substitute protected workflow action");
+    state
+        .reload_workflows()
+        .await
+        .expect("reload substituted workflow");
+    let (status, body) =
+        decide_workflow_gate(&app, &stale_run_id, "approve", "control_panel").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"].as_str(), Some("WORKFLOW_GATE_STALE"));
+    let stale_run = state
+        .get_workflow_run(&stale_run_id)
+        .await
+        .expect("stale run");
+    assert_eq!(stale_run.status, crate::WorkflowRunStatus::AwaitingApproval);
+    assert!(stale_run.gate_history.is_empty());
+
+    let (expired_run_id, _) = start_gated_run(&app).await;
+    state
+        .update_workflow_run(&expired_run_id, |run| {
+            run.awaiting_gate
+                .as_mut()
+                .expect("pending expired gate")
+                .expires_at_ms = crate::now_ms().saturating_sub(1);
+        })
+        .await
+        .expect("mutate expired gate");
+    let (status, body) =
+        decide_workflow_gate(&app, &expired_run_id, "approve", "control_panel").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"].as_str(), Some("WORKFLOW_GATE_EXPIRED"));
+    let expired_run = state
+        .get_workflow_run(&expired_run_id)
+        .await
+        .expect("expired run");
+    assert_eq!(
+        expired_run.status,
+        crate::WorkflowRunStatus::AwaitingApproval
+    );
+    assert!(expired_run.gate_history.is_empty());
+    assert!(crm_calls.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn workflow_gate_expiring_after_audit_cannot_consume_nonce() {
+    let (state, crm_calls) = gated_workflow_state().await;
+    let app = app_router(state.clone());
+    let (run_id, _) = start_gated_run(&app).await;
+    let original_nonce = state
+        .get_workflow_run(&run_id)
+        .await
+        .expect("pending workflow run")
+        .awaiting_gate
+        .expect("pending workflow gate")
+        .nonce;
+
+    let persistence_guard = state.workflow_runs_persistence.lock().await;
+    let decision_app = app.clone();
+    let decision_run_id = run_id.clone();
+    let decision = tokio::spawn(async move {
+        decide_workflow_gate(&decision_app, &decision_run_id, "approve", "control_panel").await
+    });
+    let mut audit_committed = false;
+    for _ in 0..200 {
+        let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+            .await
+            .unwrap_or_default();
+        if audit.contains("workflow.governance.gate_decided") {
+            audit_committed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        audit_committed,
+        "gate decision audit did not reach commit barrier"
+    );
+    state
+        .workflow_runs
+        .write()
+        .await
+        .get_mut(&run_id)
+        .expect("workflow run at persistence boundary")
+        .awaiting_gate
+        .as_mut()
+        .expect("workflow gate at persistence boundary")
+        .expires_at_ms = crate::now_ms().saturating_sub(1);
+    drop(persistence_guard);
+
+    let (status, body) = tokio::time::timeout(std::time::Duration::from_secs(5), decision)
+        .await
+        .expect("gate decision unblocked")
+        .expect("gate decision task");
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"].as_str(), Some("WORKFLOW_GATE_EXPIRED"));
+    let run = state
+        .get_workflow_run(&run_id)
+        .await
+        .expect("expired workflow run");
+    assert_eq!(run.status, crate::WorkflowRunStatus::AwaitingApproval);
+    assert!(run.gate_history.is_empty());
+    assert_eq!(
+        run.awaiting_gate.as_ref().map(|gate| gate.nonce.as_str()),
+        Some(original_nonce.as_str())
+    );
+    assert!(crm_calls.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn workflow_gate_persistence_failure_keeps_nonce_pending() {
+    let (state, crm_calls) = gated_workflow_state().await;
+    let app = app_router(state.clone());
+    let (run_id, _) = start_gated_run(&app).await;
+    let original = state
+        .get_workflow_run(&run_id)
+        .await
+        .expect("pending workflow run");
+    let nonce = original
+        .awaiting_gate
+        .as_ref()
+        .expect("pending workflow gate")
+        .nonce
+        .clone();
+
+    std::fs::remove_file(&state.workflow_runs_path).expect("remove workflow run store");
+    std::fs::create_dir(&state.workflow_runs_path).expect("sabotage workflow run store");
+
+    let (status, body) = decide_workflow_gate(&app, &run_id, "approve", "control_panel").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        body["code"].as_str(),
+        Some("WORKFLOW_GATE_PERSISTENCE_FAILED")
+    );
+    let after = state
+        .get_workflow_run(&run_id)
+        .await
+        .expect("rolled back workflow run");
+    assert_eq!(after.status, crate::WorkflowRunStatus::AwaitingApproval);
+    assert_eq!(
+        after.awaiting_gate.as_ref().map(|gate| gate.nonce.as_str()),
+        Some(nonce.as_str())
+    );
+    assert!(after.gate_history.is_empty());
+    assert!(crm_calls.lock().await.is_empty());
 }

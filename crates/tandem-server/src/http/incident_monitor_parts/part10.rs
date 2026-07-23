@@ -108,12 +108,24 @@ impl IncidentMonitorPostureRulePolicy {
 pub(super) async fn get_incident_monitor_security_posture_checks(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<IncidentMonitorPostureChecksQuery>,
+    headers: HeaderMap,
 ) -> Response {
+    let actor = super::governance::resolve_governance_actor(
+        &headers,
+        &tenant_context,
+        &request_principal,
+    );
     let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let authority_inventory =
-        incident_monitor_authority_inventory_payload(&state, tenant_context, verified).await;
+        incident_monitor_authority_inventory_payload(
+            &state,
+            tenant_context,
+            verified,
+            IncidentMonitorApprovalInventoryAccess::Caller(&actor),
+        ).await;
     let policy = IncidentMonitorPostureRulePolicy::from_query(&query);
     let findings = incident_monitor_security_posture_findings(&authority_inventory, &policy);
     let counts = json!({

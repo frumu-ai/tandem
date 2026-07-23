@@ -182,7 +182,13 @@ impl AppState {
             "runtime context partition missing for automation run";
         const STARTUP_RUNTIME_CONTEXT_FAILURE_NODE: &str = "runtime_context";
 
-        let (automation_snapshot, previous_status, automation_id, stored_runtime_context) = {
+        let (
+            automation_snapshot,
+            previous_status,
+            automation_id,
+            tenant_context,
+            stored_runtime_context,
+        ) = {
             let mut guard = self.automation_v2_runs.write().await;
             let run = guard.get_mut(run_id)?;
             if run.status != AutomationRunStatus::Queued {
@@ -195,6 +201,7 @@ impl AppState {
                 run.automation_snapshot.clone(),
                 run.status.clone(),
                 run.automation_id.clone(),
+                run.tenant_context.clone(),
                 run.runtime_context.clone(),
             )
         };
@@ -294,6 +301,22 @@ impl AppState {
             }
         }
 
+        // Linearize the claim with lifecycle/governance writers using the same
+        // governance -> hot-run lock order as run creation and revocation. A
+        // queued run must not become Running after a dependency-revocation
+        // writer has closed admission but before that writer pauses the row.
+        let governance_run_guard = if self.premium_governance_enabled() {
+            let guard = self.automation_governance.read().await;
+            let record = guard.records.get(&automation_id)?;
+            crate::app::state::governance::ensure_governance_record_allows_run(
+                record,
+                &tenant_context,
+            )
+            .ok()?;
+            Some(guard)
+        } else {
+            None
+        };
         let mut guard = self.automation_v2_runs.write().await;
         let run = guard.get_mut(run_id)?;
         if run.status != AutomationRunStatus::Queued {
@@ -335,6 +358,7 @@ impl AppState {
         let _ = self.persist_automation_v2_runs().await;
         self.project_automation_v2_stateful_boundaries_or_warn(&claimed)
             .await;
+        drop(governance_run_guard);
         Some(claimed)
     }
 }

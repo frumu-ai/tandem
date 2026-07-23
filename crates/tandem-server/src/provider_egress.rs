@@ -101,15 +101,20 @@ pub(crate) fn memory_egress_context(
         .get()
         .map(|runtime| runtime.permissions.clone());
     let approval_session_id = session_id.map(str::to_string);
+    let approval_tenant_context = tenant_context
+        .cloned()
+        .unwrap_or_else(TenantContext::local_implicit);
     let approval_handler: MemoryProviderEgressApprovalHandler = Arc::new(move |event| {
         let permissions = permissions.clone();
         let session_id = approval_session_id.clone();
+        let tenant_context = approval_tenant_context.clone();
         Box::pin(async move {
             let permissions = permissions.ok_or_else(|| {
                 "DATA_BOUNDARY_APPROVAL_UNAVAILABLE: memory runtime is not initialized".to_string()
             })?;
             let pending = permissions
-                .ask_for_session(
+                .ask_for_session_for_tenant(
+                    &tenant_context,
                     session_id.as_deref(),
                     "data_boundary_egress",
                     serde_json::json!({
@@ -183,6 +188,9 @@ pub(crate) async fn prepare_chat_messages(
     model_id: Option<&str>,
     messages: &[ChatMessage],
 ) -> Result<PreparedChatDispatch, String> {
+    let approval_tenant_context = tenant_context
+        .cloned()
+        .unwrap_or_else(TenantContext::local_implicit);
     let authority = authority_for_dispatch(
         tenant_context,
         verified_tenant_context,
@@ -243,7 +251,12 @@ pub(crate) async fn prepare_chat_messages(
                     )
                 })?;
             let pending = permissions
-                .ask_for_session(Some(session_id), "data_boundary_egress", evidence)
+                .ask_for_session_for_tenant(
+                    &approval_tenant_context,
+                    Some(session_id),
+                    "data_boundary_egress",
+                    evidence,
+                )
                 .await;
             let (reply, timed_out) =
                 wait_for_provider_egress_reply(&permissions, &pending.id).await;
@@ -343,9 +356,11 @@ mod tests {
         ]);
 
         let state = crate::test_support::test_state().await;
+        let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
         let mut published_events = state.event_bus.subscribe();
         let mut events = state.event_bus.subscribe();
         let permissions = state.runtime.wait().permissions.clone();
+        let approval_tenant = tenant.clone();
         let reply_task = tokio::spawn(async move {
             tokio::time::timeout(APPROVAL_RESPONDER_TIMEOUT, async move {
                 loop {
@@ -356,14 +371,24 @@ mod tests {
                     let request_id = event.properties["requestID"]
                         .as_str()
                         .expect("permission request id");
-                    assert!(permissions.reply(request_id, "allow").await);
+                    assert!(permissions
+                        .reply_with_provenance_for_tenant(
+                            &approval_tenant,
+                            Some("session-a"),
+                            request_id,
+                            "allow",
+                            Some("test-reviewer".to_string()),
+                            Some("provider-egress-test".to_string()),
+                        )
+                        .await
+                        .expect("scoped permission reply")
+                        .is_some());
                     break;
                 }
             })
             .await
             .expect("approval responder timed out");
         });
-        let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
         let messages = [ChatMessage {
             role: "user".to_string(),
             content: "ordinary mission content".to_string(),

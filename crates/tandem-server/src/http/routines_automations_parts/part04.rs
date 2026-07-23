@@ -31,7 +31,7 @@ pub(super) async fn automations_v2_pause(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false).await,
+        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
     )
     .await?;
     automation.status = AutomationV2Status::Paused;
@@ -122,9 +122,10 @@ pub(super) async fn automations_v2_resume(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false).await,
+        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
     )
     .await?;
+    let before = automation.clone();
     automation.status = AutomationV2Status::Active;
     let stored = state.put_automation_v2(automation).await.map_err(|error| {
         (
@@ -132,6 +133,23 @@ pub(super) async fn automations_v2_resume(
             Json(json!({"error": error.to_string(), "code":"AUTOMATION_V2_UPDATE_FAILED"})),
         )
     })?;
+    if let Err(error) = state
+        .complete_tenant_ownership_quarantine_restore(
+            &id,
+            &actor,
+            &tenant_context,
+        )
+        .await
+    {
+        let _ = state.put_automation_v2(before).await;
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "AUTOMATION_GOVERNANCE_QUARANTINE_RESTORE_FAILED",
+            })),
+        ));
+    }
     crate::audit::append_protected_audit_event(
         &state,
         "automation.governance.resumed",

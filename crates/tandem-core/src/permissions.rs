@@ -6,16 +6,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokio::sync::{watch, Mutex, RwLock};
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use tandem_types::EngineEvent;
+use tandem_types::{EngineEvent, TenantContext};
 
 use crate::event_bus::EventBus;
 
-const PERMISSION_STATE_SCHEMA_VERSION: u32 = 1;
+const PERMISSION_STATE_SCHEMA_VERSION: u32 = 3;
+const PERMISSION_REQUEST_TTL_MS: u64 = 15 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -28,6 +30,10 @@ pub enum PermissionAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionRule {
     pub id: String,
+    #[serde(default = "TenantContext::local_implicit", rename = "tenantContext")]
+    pub tenant_context: TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "sessionID")]
+    pub session_id: Option<String>,
     pub permission: String,
     pub pattern: String,
     pub action: PermissionAction,
@@ -52,6 +58,22 @@ pub struct PermissionRule {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionRequest {
     pub id: String,
+    #[serde(default = "TenantContext::local_implicit", rename = "tenantContext")]
+    pub tenant_context: TenantContext,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "requestedBy"
+    )]
+    pub requested_by: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "String::is_empty",
+        rename = "actionDigest"
+    )]
+    pub action_digest: String,
+    #[serde(default, rename = "expiresAtMs")]
+    pub expires_at_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none", rename = "sessionID")]
     pub session_id: Option<String>,
     pub permission: String,
@@ -87,6 +109,14 @@ pub struct PermissionRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionDecisionRecord {
+    #[serde(default = "TenantContext::local_implicit", rename = "tenantContext")]
+    pub tenant_context: TenantContext,
+    #[serde(
+        default,
+        skip_serializing_if = "String::is_empty",
+        rename = "actionDigest"
+    )]
+    pub action_digest: String,
     #[serde(rename = "requestID")]
     pub request_id: String,
     #[serde(skip_serializing_if = "Option::is_none", rename = "sessionID")]
@@ -112,6 +142,14 @@ pub struct PermissionReplyOutcome {
     pub decision: PermissionDecisionRecord,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule: Option<PermissionRule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionReplyError {
+    Expired,
+    ActionMismatch,
+    SessionMismatch,
+    PersistenceFailed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +197,61 @@ fn standing_allow_is_unsafe(permission: &str, pattern: &str) -> bool {
                     | "run_command"
                     | "runcommand"
                     | "terminal"
+            )
+    })
+}
+
+fn permission_tenant_matches(left: &TenantContext, right: &TenantContext) -> bool {
+    left.org_id == right.org_id
+        && left.workspace_id == right.workspace_id
+        && left.deployment_id == right.deployment_id
+}
+
+fn permission_action_digest(
+    tenant_context: &TenantContext,
+    session_id: Option<&str>,
+    permission: &str,
+    pattern: &str,
+    tool: Option<&str>,
+    args: Option<&Value>,
+) -> String {
+    let payload = json!({
+        "tenant": tenant_context,
+        "sessionID": session_id,
+        "permission": permission,
+        "pattern": pattern,
+        "tool": tool,
+        "args": args,
+    });
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&payload).unwrap_or_default())
+    )
+}
+
+fn permission_request_digest(request: &PermissionRequest) -> String {
+    permission_action_digest(
+        &request.tenant_context,
+        request.session_id.as_deref(),
+        &request.permission,
+        &request.pattern,
+        request.tool.as_deref(),
+        request.args.as_ref(),
+    )
+}
+
+pub fn permission_requires_independent_review(request: &PermissionRequest) -> bool {
+    [
+        request.permission.as_str(),
+        request.pattern.as_str(),
+        request.tool.as_deref().unwrap_or_default(),
+    ]
+    .into_iter()
+    .any(|name| {
+        standing_allow_is_unsafe(name, name)
+            || matches!(
+                normalize_permission_alias(name).as_str(),
+                "data_boundary_egress" | "git_push" | "provider_config" | "channel_config"
             )
     })
 }
@@ -234,6 +327,8 @@ impl PermissionManager {
                 request.decision_reason =
                     Some("runtime restarted before the permission request was decided".to_string());
                 file.decisions.push(PermissionDecisionRecord {
+                    tenant_context: request.tenant_context.clone(),
+                    action_digest: request.action_digest.clone(),
                     request_id: request.id.clone(),
                     session_id: request.session_id.clone(),
                     permission: request.permission.clone(),
@@ -256,12 +351,23 @@ impl PermissionManager {
         Ok(restarted_pending)
     }
 
-    pub async fn evaluate(&self, permission: &str, pattern: &str) -> PermissionAction {
+    pub async fn evaluate_for_tenant_and_session(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: Option<&str>,
+        permission: &str,
+        pattern: &str,
+    ) -> PermissionAction {
         let permission = normalize_permission_alias(permission);
         let pattern = normalize_permission_alias(pattern);
         let rules = self.rules.read().await;
         let matches_rule = |rule: &&PermissionRule| {
-            wildcard_matches(&normalize_permission_alias(&rule.permission), &permission)
+            permission_tenant_matches(&rule.tenant_context, tenant_context)
+                && match rule.session_id.as_deref() {
+                    Some(rule_session_id) => Some(rule_session_id) == session_id,
+                    None => true,
+                }
+                && wildcard_matches(&normalize_permission_alias(&rule.permission), &permission)
                 && wildcard_matches(&normalize_permission_alias(&rule.pattern), &pattern)
         };
         if rules
@@ -277,11 +383,45 @@ impl PermissionManager {
         PermissionAction::Ask
     }
 
+    pub async fn evaluate_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+        permission: &str,
+        pattern: &str,
+    ) -> PermissionAction {
+        self.evaluate_for_tenant_and_session(tenant_context, None, permission, pattern)
+            .await
+    }
+
+    pub async fn evaluate(&self, permission: &str, pattern: &str) -> PermissionAction {
+        self.evaluate_for_tenant(&TenantContext::local_implicit(), permission, pattern)
+            .await
+    }
+
     /// Convenience wrapper for the common case where both the permission name
     /// and the match pattern are the same tool name. Prefer this over
     /// `evaluate(&tool, &tool)` at call sites to make the intent explicit.
     pub async fn evaluate_tool(&self, tool_name: &str) -> PermissionAction {
         self.evaluate(tool_name, tool_name).await
+    }
+
+    pub async fn evaluate_tool_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+        tool_name: &str,
+    ) -> PermissionAction {
+        self.evaluate_for_tenant(tenant_context, tool_name, tool_name)
+            .await
+    }
+
+    pub async fn evaluate_tool_for_tenant_and_session(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: Option<&str>,
+        tool_name: &str,
+    ) -> PermissionAction {
+        self.evaluate_for_tenant_and_session(tenant_context, session_id, tool_name, tool_name)
+            .await
     }
 
     pub async fn ask_for_session(
@@ -294,6 +434,17 @@ impl PermissionManager {
             .await
     }
 
+    pub async fn ask_for_session_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: Option<&str>,
+        tool: &str,
+        args: Value,
+    ) -> PermissionRequest {
+        self.ask_for_session_with_context_for_tenant(tenant_context, session_id, tool, args, None)
+            .await
+    }
+
     pub async fn ask_for_session_with_context(
         &self,
         session_id: Option<&str>,
@@ -301,8 +452,39 @@ impl PermissionManager {
         args: Value,
         context: Option<PermissionArgsContext>,
     ) -> PermissionRequest {
+        self.ask_for_session_with_context_for_tenant(
+            &TenantContext::local_implicit(),
+            session_id,
+            tool,
+            args,
+            context,
+        )
+        .await
+    }
+
+    pub async fn ask_for_session_with_context_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: Option<&str>,
+        tool: &str,
+        args: Value,
+        context: Option<PermissionArgsContext>,
+    ) -> PermissionRequest {
+        let requested_at_ms = now_ms();
+        let action_digest = permission_action_digest(
+            tenant_context,
+            session_id,
+            tool,
+            tool,
+            Some(tool),
+            Some(&args),
+        );
         let req = PermissionRequest {
             id: Uuid::new_v4().to_string(),
+            tenant_context: tenant_context.clone(),
+            requested_by: tenant_context.actor_id.clone(),
+            action_digest,
+            expires_at_ms: requested_at_ms.saturating_add(PERMISSION_REQUEST_TTL_MS),
             session_id: session_id.map(ToString::to_string),
             permission: tool.to_string(),
             pattern: tool.to_string(),
@@ -312,20 +494,26 @@ impl PermissionManager {
             args_integrity: context.as_ref().map(|c| c.args_integrity.clone()),
             query: context.as_ref().and_then(|c| c.query.clone()),
             status: "pending".to_string(),
-            requested_at_ms: now_ms(),
+            requested_at_ms,
             decided_at_ms: None,
             decided_by: None,
             decision_reason: None,
         };
         let (tx, _rx) = watch::channel(None);
+        let transaction_guard = self.state_write_lock.lock().await;
         self.requests
             .write()
             .await
             .insert(req.id.clone(), req.clone());
         self.waiters.write().await.insert(req.id.clone(), tx);
-        if let Err(error) = self.persist_state().await {
+        if let Err(error) = self.persist_state_unlocked().await {
+            self.requests.write().await.remove(&req.id);
+            self.waiters.write().await.remove(&req.id);
+            drop(transaction_guard);
             tracing::warn!(?error, "failed to persist permission request");
+            return req;
         }
+        drop(transaction_guard);
         self.event_bus.publish(EngineEvent::new(
             "permission.asked",
             json!({
@@ -336,7 +524,10 @@ impl PermissionManager {
                 "argsSource": req.args_source,
                 "argsIntegrity": req.args_integrity,
                 "query": req.query,
-                "requestedAtMs": req.requested_at_ms
+                "requestedAtMs": req.requested_at_ms,
+                "expiresAtMs": req.expires_at_ms,
+                "actionDigest": req.action_digest,
+                "tenantContext": req.tenant_context
             }),
         ));
         req
@@ -355,16 +546,63 @@ impl PermissionManager {
         self.requests.read().await.values().cloned().collect()
     }
 
+    pub async fn list_for_tenant(&self, tenant_context: &TenantContext) -> Vec<PermissionRequest> {
+        self.list()
+            .await
+            .into_iter()
+            .filter(|request| permission_tenant_matches(&request.tenant_context, tenant_context))
+            .collect()
+    }
+
+    pub async fn get_for_tenant(
+        &self,
+        id: &str,
+        tenant_context: &TenantContext,
+    ) -> Option<PermissionRequest> {
+        self.requests
+            .read()
+            .await
+            .get(id)
+            .filter(|request| permission_tenant_matches(&request.tenant_context, tenant_context))
+            .cloned()
+    }
+
     pub async fn list_rules(&self) -> Vec<PermissionRule> {
         self.rules.read().await.clone()
+    }
+
+    pub async fn list_rules_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+    ) -> Vec<PermissionRule> {
+        self.list_rules()
+            .await
+            .into_iter()
+            .filter(|rule| permission_tenant_matches(&rule.tenant_context, tenant_context))
+            .collect()
     }
 
     pub async fn list_decisions(&self) -> Vec<PermissionDecisionRecord> {
         self.decisions.read().await.clone()
     }
 
+    pub async fn list_decisions_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+    ) -> Vec<PermissionDecisionRecord> {
+        self.list_decisions()
+            .await
+            .into_iter()
+            .filter(|decision| permission_tenant_matches(&decision.tenant_context, tenant_context))
+            .collect()
+    }
+
     async fn persist_state(&self) -> anyhow::Result<()> {
         let _write_guard = self.state_write_lock.lock().await;
+        self.persist_state_unlocked().await
+    }
+
+    async fn persist_state_unlocked(&self) -> anyhow::Result<()> {
         let Some(path) = self.state_path.read().await.clone() else {
             return Ok(());
         };
@@ -383,8 +621,56 @@ impl PermissionManager {
         pattern: impl Into<String>,
         action: PermissionAction,
     ) -> PermissionRule {
+        self.add_rule_for_tenant(
+            &TenantContext::local_implicit(),
+            permission,
+            pattern,
+            action,
+        )
+        .await
+    }
+
+    pub async fn add_rule_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+        permission: impl Into<String>,
+        pattern: impl Into<String>,
+        action: PermissionAction,
+    ) -> PermissionRule {
+        self.add_rule_for_scope(tenant_context, None, permission, pattern, action)
+            .await
+    }
+
+    pub async fn add_rule_for_session(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: &str,
+        permission: impl Into<String>,
+        pattern: impl Into<String>,
+        action: PermissionAction,
+    ) -> PermissionRule {
+        self.add_rule_for_scope(
+            tenant_context,
+            Some(session_id.to_string()),
+            permission,
+            pattern,
+            action,
+        )
+        .await
+    }
+
+    async fn add_rule_for_scope(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: Option<String>,
+        permission: impl Into<String>,
+        pattern: impl Into<String>,
+        action: PermissionAction,
+    ) -> PermissionRule {
         let rule = PermissionRule {
             id: Uuid::new_v4().to_string(),
+            tenant_context: tenant_context.clone(),
+            session_id,
             permission: permission.into(),
             pattern: pattern.into(),
             action,
@@ -393,9 +679,12 @@ impl PermissionManager {
             source_request_id: None,
             provenance: Some("default_or_system_rule".to_string()),
         };
+        let transaction_guard = self.state_write_lock.lock().await;
         let mut rules = self.rules.write().await;
         if rules.iter().any(|existing| {
-            existing.permission == rule.permission
+            permission_tenant_matches(&existing.tenant_context, tenant_context)
+                && existing.session_id == rule.session_id
+                && existing.permission == rule.permission
                 && existing.pattern == rule.pattern
                 && std::mem::discriminant(&existing.action) == std::mem::discriminant(&rule.action)
         }) {
@@ -403,9 +692,14 @@ impl PermissionManager {
         }
         rules.push(rule.clone());
         drop(rules);
-        if let Err(error) = self.persist_state().await {
+        if let Err(error) = self.persist_state_unlocked().await {
+            self.rules
+                .write()
+                .await
+                .retain(|existing| existing.id != rule.id);
             tracing::warn!(?error, "failed to persist permission rule");
         }
+        drop(transaction_guard);
         rule
     }
 
@@ -422,14 +716,58 @@ impl PermissionManager {
         decided_by: Option<String>,
         reason: Option<String>,
     ) -> Option<PermissionReplyOutcome> {
+        self.reply_with_provenance_for_tenant(
+            &TenantContext::local_implicit(),
+            None,
+            id,
+            reply,
+            decided_by,
+            reason,
+        )
+        .await
+        .ok()
+        .flatten()
+    }
+
+    pub async fn reply_with_provenance_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+        expected_session_id: Option<&str>,
+        id: &str,
+        reply: &str,
+        decided_by: Option<String>,
+        reason: Option<String>,
+    ) -> Result<Option<PermissionReplyOutcome>, PermissionReplyError> {
+        let transaction_guard = self.state_write_lock.lock().await;
+        let before_requests = self.requests.read().await.clone();
+        let before_rules = self.rules.read().await.clone();
+        let before_decisions = self.decisions.read().await.clone();
         let now = now_ms();
         let request = {
             let mut requests = self.requests.write().await;
             let Some(req) = requests.get_mut(id) else {
-                return None;
+                return Ok(None);
             };
+            if !permission_tenant_matches(&req.tenant_context, tenant_context) {
+                return Ok(None);
+            }
             if req.status != "pending" {
-                return None;
+                return Ok(None);
+            }
+            if expected_session_id.is_some() && req.session_id.as_deref() != expected_session_id {
+                return Err(PermissionReplyError::SessionMismatch);
+            }
+            if req.expires_at_ms > 0 && now >= req.expires_at_ms {
+                return Err(PermissionReplyError::Expired);
+            }
+            let expected_digest = permission_request_digest(req);
+            if req.action_digest.is_empty() {
+                if !tenant_context.is_local_implicit() {
+                    return Err(PermissionReplyError::ActionMismatch);
+                }
+                req.action_digest = expected_digest;
+            } else if req.action_digest != expected_digest {
+                return Err(PermissionReplyError::ActionMismatch);
             }
             req.status = reply.to_string();
             req.decided_at_ms = Some(now);
@@ -448,6 +786,8 @@ impl PermissionManager {
             if !standing_allow_is_unsafe(&request.permission, &request.pattern) {
                 let standing_rule = PermissionRule {
                     id: Uuid::new_v4().to_string(),
+                    tenant_context: request.tenant_context.clone(),
+                    session_id: request.session_id.clone(),
                     permission: request.permission.clone(),
                     pattern: request.pattern.clone(),
                     action: PermissionAction::Allow,
@@ -462,6 +802,8 @@ impl PermissionManager {
         } else if matches!(reply, "reject" | "deny") {
             let standing_rule = PermissionRule {
                 id: Uuid::new_v4().to_string(),
+                tenant_context: request.tenant_context.clone(),
+                session_id: request.session_id.clone(),
                 permission: request.permission.clone(),
                 pattern: request.pattern.clone(),
                 action: PermissionAction::Deny,
@@ -475,6 +817,8 @@ impl PermissionManager {
         }
 
         let decision = PermissionDecisionRecord {
+            tenant_context: request.tenant_context.clone(),
+            action_digest: request.action_digest.clone(),
             request_id: request.id.clone(),
             session_id: request.session_id.clone(),
             permission: request.permission.clone(),
@@ -487,9 +831,13 @@ impl PermissionManager {
             standing_rule_persisted: rule.is_some(),
         };
         self.decisions.write().await.push(decision.clone());
-        if let Err(error) = self.persist_state().await {
-            tracing::warn!(?error, "failed to persist permission reply");
+        if self.persist_state_unlocked().await.is_err() {
+            *self.requests.write().await = before_requests;
+            *self.rules.write().await = before_rules;
+            *self.decisions.write().await = before_decisions;
+            return Err(PermissionReplyError::PersistenceFailed);
         }
+        drop(transaction_guard);
         self.event_bus.publish(EngineEvent::new(
             "permission.replied",
             json!({
@@ -499,17 +847,19 @@ impl PermissionManager {
                 "decidedAtMs": now,
                 "decidedBy": decided_by,
                 "standingRuleID": rule.as_ref().map(|rule| rule.id.clone()),
-                "standingRulePersisted": rule.is_some()
+                "standingRulePersisted": rule.is_some(),
+                "actionDigest": request.action_digest,
+                "tenantContext": request.tenant_context
             }),
         ));
         if let Some(waiter) = self.waiters.read().await.get(id).cloned() {
             let _ = waiter.send(Some(reply.to_string()));
         }
-        Some(PermissionReplyOutcome {
+        Ok(Some(PermissionReplyOutcome {
             request,
             decision,
             rule,
-        })
+        }))
     }
 
     pub async fn wait_for_reply(&self, id: &str, cancel: CancellationToken) -> Option<String> {
@@ -774,6 +1124,20 @@ mod tests {
         assert_eq!(asked.event_type, "permission.asked");
 
         assert!(manager.reply(&request.id, "allow").await);
+        let rules = manager.list_rules().await;
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].session_id.as_deref(), Some("ses_1"));
+        assert!(matches!(
+            manager
+                .evaluate_for_tenant_and_session(
+                    &TenantContext::local_implicit(),
+                    Some("ses_2"),
+                    "read",
+                    "read",
+                )
+                .await,
+            PermissionAction::Ask
+        ));
         let replied = rx.recv().await.expect("replied event");
         assert_eq!(replied.event_type, "permission.replied");
         assert_eq!(
@@ -798,6 +1162,8 @@ mod tests {
         let manager = PermissionManager::new(bus);
         manager.rules.write().await.push(PermissionRule {
             id: Uuid::new_v4().to_string(),
+            tenant_context: TenantContext::local_implicit(),
+            session_id: None,
             permission: "todowrite".to_string(),
             pattern: "todowrite".to_string(),
             action: PermissionAction::Allow,
@@ -817,6 +1183,8 @@ mod tests {
         let manager = PermissionManager::new(bus);
         manager.rules.write().await.push(PermissionRule {
             id: Uuid::new_v4().to_string(),
+            tenant_context: TenantContext::local_implicit(),
+            session_id: None,
             permission: "mcp*".to_string(),
             pattern: "*".to_string(),
             action: PermissionAction::Allow,
@@ -917,7 +1285,14 @@ mod tests {
             .expect("persisted request");
         assert_eq!(recovered.status, "runtime_restarted");
         assert!(matches!(
-            restarted.evaluate("read", "read").await,
+            restarted
+                .evaluate_for_tenant_and_session(
+                    &TenantContext::local_implicit(),
+                    Some("ses_1"),
+                    "read",
+                    "read",
+                )
+                .await,
             PermissionAction::Ask
         ));
         assert!(restarted
@@ -939,7 +1314,14 @@ mod tests {
             .is_none());
         assert_eq!(restarted.list_decisions().await.len(), decision_count);
         assert!(matches!(
-            restarted.evaluate("read", "read").await,
+            restarted
+                .evaluate_for_tenant_and_session(
+                    &TenantContext::local_implicit(),
+                    Some("ses_1"),
+                    "read",
+                    "read"
+                )
+                .await,
             PermissionAction::Ask
         ));
 
@@ -998,11 +1380,25 @@ mod tests {
             .await
             .expect("restarted manager");
         assert!(matches!(
-            restarted.evaluate("read", "read").await,
+            restarted
+                .evaluate_for_tenant_and_session(
+                    &TenantContext::local_implicit(),
+                    Some("ses_1"),
+                    "read",
+                    "read"
+                )
+                .await,
             PermissionAction::Allow
         ));
         assert!(matches!(
-            restarted.evaluate("bash", "bash").await,
+            restarted
+                .evaluate_for_tenant_and_session(
+                    &TenantContext::local_implicit(),
+                    Some("ses_1"),
+                    "bash",
+                    "bash",
+                )
+                .await,
             PermissionAction::Ask
         ));
         assert!(restarted
@@ -1057,6 +1453,207 @@ mod tests {
                 "persisted state should retain request {id}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn tenant_scoped_permission_state_cannot_be_discovered_or_decided_cross_tenant() {
+        let manager = PermissionManager::new(EventBus::new());
+        let tenant_a = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "alice",
+        );
+        let tenant_b = TenantContext::explicit_user_workspace(
+            "org-b",
+            "workspace-b",
+            Some("deployment-b".to_string()),
+            "bob",
+        );
+        let request = manager
+            .ask_for_session_for_tenant(
+                &tenant_a,
+                Some("session-a"),
+                "read",
+                json!({"path": "README.md"}),
+            )
+            .await;
+
+        assert!(manager.list_for_tenant(&tenant_b).await.is_empty());
+        assert!(manager
+            .get_for_tenant(&request.id, &tenant_b)
+            .await
+            .is_none());
+        assert!(manager
+            .reply_with_provenance_for_tenant(
+                &tenant_b,
+                Some("session-a"),
+                &request.id,
+                "allow",
+                Some("bob".to_string()),
+                Some("cross-tenant attempt".to_string()),
+            )
+            .await
+            .expect("cross-tenant lookup")
+            .is_none());
+
+        let outcome = manager
+            .reply_with_provenance_for_tenant(
+                &tenant_a,
+                Some("session-a"),
+                &request.id,
+                "allow",
+                Some("reviewer-a".to_string()),
+                Some("tenant-local decision".to_string()),
+            )
+            .await
+            .expect("tenant-local reply")
+            .expect("pending request");
+        assert_eq!(outcome.request.tenant_context, tenant_a);
+        assert_eq!(manager.list_decisions_for_tenant(&tenant_a).await.len(), 1);
+        assert!(manager
+            .list_decisions_for_tenant(&tenant_b)
+            .await
+            .is_empty());
+        assert_eq!(manager.list_rules_for_tenant(&tenant_a).await.len(), 1);
+        assert!(manager.list_rules_for_tenant(&tenant_b).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn permission_reply_rejects_session_expiry_and_digest_mismatch_without_transition() {
+        let manager = PermissionManager::new(EventBus::new());
+        let tenant = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "alice",
+        );
+        let request = manager
+            .ask_for_session_for_tenant(
+                &tenant,
+                Some("session-a"),
+                "bash",
+                json!({"command": "echo safe"}),
+            )
+            .await;
+
+        assert!(matches!(
+            manager
+                .reply_with_provenance_for_tenant(
+                    &tenant,
+                    Some("session-b"),
+                    &request.id,
+                    "allow",
+                    Some("reviewer".to_string()),
+                    None,
+                )
+                .await,
+            Err(PermissionReplyError::SessionMismatch)
+        ));
+        {
+            let mut requests = manager.requests.write().await;
+            requests
+                .get_mut(&request.id)
+                .expect("request")
+                .action_digest = "tampered".to_string();
+        }
+        assert!(matches!(
+            manager
+                .reply_with_provenance_for_tenant(
+                    &tenant,
+                    Some("session-a"),
+                    &request.id,
+                    "allow",
+                    Some("reviewer".to_string()),
+                    None,
+                )
+                .await,
+            Err(PermissionReplyError::ActionMismatch)
+        ));
+        {
+            let mut requests = manager.requests.write().await;
+            let request = requests.get_mut(&request.id).expect("request");
+            request.action_digest = permission_request_digest(request);
+            request.expires_at_ms = now_ms().saturating_sub(1);
+        }
+        assert!(matches!(
+            manager
+                .reply_with_provenance_for_tenant(
+                    &tenant,
+                    Some("session-a"),
+                    &request.id,
+                    "allow",
+                    Some("reviewer".to_string()),
+                    None,
+                )
+                .await,
+            Err(PermissionReplyError::Expired)
+        ));
+        assert_eq!(
+            manager
+                .get_for_tenant(&request.id, &tenant)
+                .await
+                .unwrap()
+                .status,
+            "pending"
+        );
+        assert!(manager.list_decisions_for_tenant(&tenant).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn permission_persistence_failure_rolls_back_before_notifying_waiter() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("permissions.json");
+        let manager = PermissionManager::new_with_state_file(EventBus::new(), path)
+            .await
+            .expect("manager");
+        let tenant = TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            Some("deployment-a".to_string()),
+            "alice",
+        );
+        let request = manager
+            .ask_for_session_for_tenant(
+                &tenant,
+                Some("session-a"),
+                "read",
+                json!({"path": "README.md"}),
+            )
+            .await;
+        *manager.state_path.write().await = Some(dir.path().to_path_buf());
+
+        assert!(matches!(
+            manager
+                .reply_with_provenance_for_tenant(
+                    &tenant,
+                    Some("session-a"),
+                    &request.id,
+                    "allow",
+                    Some("reviewer".to_string()),
+                    None,
+                )
+                .await,
+            Err(PermissionReplyError::PersistenceFailed)
+        ));
+        assert_eq!(
+            manager
+                .get_for_tenant(&request.id, &tenant)
+                .await
+                .unwrap()
+                .status,
+            "pending"
+        );
+        assert!(manager.list_decisions_for_tenant(&tenant).await.is_empty());
+        assert!(manager.list_rules_for_tenant(&tenant).await.is_empty());
+        let waiter = manager
+            .waiters
+            .read()
+            .await
+            .get(&request.id)
+            .expect("waiter retained")
+            .subscribe();
+        assert!(waiter.borrow().is_none());
     }
 
     #[test]

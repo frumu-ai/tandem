@@ -345,7 +345,9 @@ async fn load_automation_for_mutation(
         tenant_context,
         id,
         &actor,
-        state.can_mutate_automation(id, &actor, delete_intent).await,
+        state
+            .can_mutate_automation(id, &actor, delete_intent, tenant_context)
+            .await,
     )
     .await?;
     Ok(automation)

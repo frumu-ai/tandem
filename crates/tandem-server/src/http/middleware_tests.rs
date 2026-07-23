@@ -21,6 +21,40 @@ fn resolve_enterprise_request_context_defaults_to_local_tenant() {
 }
 
 #[test]
+fn actor_only_test_header_preserves_standalone_local_tenancy() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-tandem-actor-id", HeaderValue::from_static("operator-a"));
+
+    let resolved = resolve_test_header_local_enterprise_request_context(&headers);
+
+    assert!(resolved.tenant_context.is_local_implicit());
+    assert_eq!(
+        resolved.request_principal.actor_id.as_deref(),
+        Some("operator-a")
+    );
+}
+
+#[test]
+fn explicit_test_tenant_headers_remain_explicit() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-tandem-org-id", HeaderValue::from_static("org-a"));
+    headers.insert(
+        "x-tandem-workspace-id",
+        HeaderValue::from_static("workspace-a"),
+    );
+    headers.insert("x-tandem-actor-id", HeaderValue::from_static("operator-a"));
+
+    let resolved = resolve_test_header_local_enterprise_request_context(&headers);
+
+    assert!(!resolved.tenant_context.is_local_implicit());
+    assert_eq!(resolved.tenant_context.org_id, "org-a");
+    assert_eq!(
+        resolved.request_principal.actor_id.as_deref(),
+        Some("operator-a")
+    );
+}
+
+#[test]
 fn resolve_enterprise_request_context_ignores_unsigned_tenant_headers_in_local_mode() {
     let mut headers = HeaderMap::new();
     headers.insert("x-tandem-org-id", HeaderValue::from_static("acme"));

@@ -397,13 +397,12 @@ async fn recover_in_flight_runs_records_attributed_protected_audit() {
         "workspace-recovery",
         Some("user-recovery".to_string()),
     );
-    let mut automation =
-        super::global::create_test_automation_v2(&state, "auto-v2-restart-recovery-audit").await;
-    automation.set_tenant_context(&tenant);
-    state
-        .put_automation_v2(automation.clone())
-        .await
-        .expect("store tenant automation");
+    let automation = super::global::create_test_automation_v2_for_tenant(
+        &state,
+        "auto-v2-restart-recovery-audit",
+        &tenant,
+    )
+    .await;
     let run = state
         .create_automation_v2_run(&automation, "manual")
         .await

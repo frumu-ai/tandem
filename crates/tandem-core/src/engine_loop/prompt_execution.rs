@@ -868,6 +868,10 @@ impl EngineLoop {
                 // A local-implicit tenant context means tenancy was never
                 // positively established — the boundary must see no tenant at
                 // all, so strict policies can fail closed on it (TAN-400).
+                let permission_tenant_context = session_record
+                    .as_ref()
+                    .map(|session| session.tenant_context.clone())
+                    .unwrap_or_else(TenantContext::local_implicit);
                 let boundary_tenant =
                     observability_tenant.filter(|tenant| !tenant.is_local_implicit());
                 let mut dispatch_data_classes = trusted_data_classes.clone();
@@ -938,7 +942,12 @@ impl EngineLoop {
                         self.event_bus.publish(event);
                         let pending = self
                             .permissions
-                            .ask_for_session(Some(&session_id), "data_boundary_egress", evidence)
+                            .ask_for_session_for_tenant(
+                                &permission_tenant_context,
+                                Some(&session_id),
+                                "data_boundary_egress",
+                                evidence,
+                            )
                             .await;
                         let (reply, timed_out) = self
                             .permissions

@@ -41,6 +41,38 @@ async fn create_capability_approval(
 }
 
 #[cfg(feature = "premium-governance")]
+fn verified_governance_app(
+    state: AppState,
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+) -> axum::Router {
+    let tenant_context = TenantContext::explicit(
+        org_id,
+        workspace_id,
+        Some(actor_id.to_string()),
+    );
+    let principal = tandem_types::RequestPrincipal::authenticated_user(actor_id, "tandem-test");
+    let verified = tandem_types::VerifiedTenantContext {
+        tenant_context,
+        human_actor: tandem_types::HumanActor::tandem_user(actor_id),
+        authority_chain: tandem_types::AuthorityChain::from_request(principal),
+        roles: vec!["admin".to_string()],
+        org_units: Vec::new(),
+        capabilities: vec!["governance.review".to_string(), "governance.admin".to_string()],
+        policy_version: None,
+        strict_projection: None,
+        issuer: "tandem-test".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1,
+        expires_at_ms: 9_999_999_999_999,
+        assertion_id: format!("governance-test-{org_id}-{workspace_id}-{actor_id}"),
+        assertion_key_id: None,
+    };
+    app_router(state).layer(axum::Extension(verified))
+}
+
+#[cfg(feature = "premium-governance")]
 /// GOV-B4: an agent-context caller cannot review (approve) a governance approval.
 #[tokio::test]
 async fn governance_approval_approve_rejects_agent_reviewer() {
@@ -118,15 +150,50 @@ async fn governance_approval_rejects_agent_self_review() {
 }
 
 #[cfg(feature = "premium-governance")]
+/// A human-filed governance request still requires a different human reviewer.
+#[tokio::test]
+async fn governance_approval_rejects_human_self_review() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let approval_id = create_capability_approval(
+        &app,
+        "agent-human-self-review",
+        "creates_agents",
+        &[("x-tandem-actor-id", "human-requester")],
+    )
+    .await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/governance/approvals/{approval_id}/approve"))
+                .header("content-type", "application/json")
+                .header("x-tandem-actor-id", "human-requester")
+                .body(Body::from(json!({ "notes": "self review" }).to_string()))
+                .expect("human self-review request"),
+        )
+        .await
+        .expect("human self-review response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(response).await["code"].as_str(),
+        Some("GOVERNANCE_APPROVAL_SELF_REVIEW")
+    );
+}
+
+#[cfg(feature = "premium-governance")]
 /// CT-09: an approval receipt issued in tenant A must not be approved (replayed)
 /// from tenant B. The cross-tenant caller sees the same 404 as a missing receipt so
 /// existence is not leaked, while the owning tenant can still approve its own receipt.
 #[tokio::test]
 async fn governance_approval_rejects_cross_tenant_approve_replay() {
     let state = test_state().await;
-    let app = app_router(state);
+    let requester_app = verified_governance_app(state.clone(), "org-a", "workspace-a", "operator-a");
+    let tenant_b_app = verified_governance_app(state.clone(), "org-b", "workspace-b", "operator-b");
+    let reviewer_app = verified_governance_app(state, "org-a", "workspace-a", "reviewer-a");
     let approval_id = create_capability_approval(
-        &app,
+        &requester_app,
         "agent-ct09-approve",
         "creates_agents",
         &[
@@ -147,7 +214,7 @@ async fn governance_approval_rejects_cross_tenant_approve_replay() {
         .header("x-tandem-actor-id", "operator-b")
         .body(Body::from(json!({ "notes": "cross-tenant" }).to_string()))
         .expect("replay request");
-    let resp = app.clone().oneshot(replay).await.expect("replay response");
+    let resp = tenant_b_app.clone().oneshot(replay).await.expect("replay response");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert_eq!(
         response_json(resp)
@@ -164,10 +231,10 @@ async fn governance_approval_rejects_cross_tenant_approve_replay() {
         .header("content-type", "application/json")
         .header("x-tandem-org-id", "org-a")
         .header("x-tandem-workspace-id", "workspace-a")
-        .header("x-tandem-actor-id", "operator-a")
+        .header("x-tandem-actor-id", "reviewer-a")
         .body(Body::from(json!({ "notes": "owner approves" }).to_string()))
         .expect("owner request");
-    let resp = app.clone().oneshot(owner).await.expect("owner response");
+    let resp = reviewer_app.clone().oneshot(owner).await.expect("owner response");
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
         response_json(resp).await["approval"]["status"].as_str(),
@@ -181,9 +248,11 @@ async fn governance_approval_rejects_cross_tenant_approve_replay() {
 #[tokio::test]
 async fn governance_approval_rejects_cross_tenant_deny_revocation() {
     let state = test_state().await;
-    let app = app_router(state);
+    let requester_app = verified_governance_app(state.clone(), "org-a", "workspace-a", "operator-a");
+    let tenant_b_app = verified_governance_app(state.clone(), "org-b", "workspace-b", "operator-b");
+    let reviewer_app = verified_governance_app(state, "org-a", "workspace-a", "reviewer-a");
     let approval_id = create_capability_approval(
-        &app,
+        &requester_app,
         "agent-ct09-deny",
         "creates_agents",
         &[
@@ -205,7 +274,7 @@ async fn governance_approval_rejects_cross_tenant_deny_revocation() {
             json!({ "notes": "cross-tenant revoke" }).to_string(),
         ))
         .expect("deny request");
-    let resp = app.clone().oneshot(replay).await.expect("deny response");
+    let resp = tenant_b_app.clone().oneshot(replay).await.expect("deny response");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert_eq!(
         response_json(resp)
@@ -222,10 +291,10 @@ async fn governance_approval_rejects_cross_tenant_deny_revocation() {
         .header("content-type", "application/json")
         .header("x-tandem-org-id", "org-a")
         .header("x-tandem-workspace-id", "workspace-a")
-        .header("x-tandem-actor-id", "operator-a")
+        .header("x-tandem-actor-id", "reviewer-a")
         .body(Body::from(json!({ "notes": "owner denies" }).to_string()))
         .expect("owner deny request");
-    let resp = app
+    let resp = reviewer_app
         .clone()
         .oneshot(owner)
         .await
@@ -243,7 +312,7 @@ async fn governance_approval_rejects_cross_tenant_deny_revocation() {
 #[tokio::test]
 async fn governance_approvals_list_is_tenant_scoped() {
     let state = test_state().await;
-    let app = app_router(state);
+    let app = app_router(state.clone());
     let approval_id = create_capability_approval(
         &app,
         "agent-ct09-list",
@@ -256,13 +325,13 @@ async fn governance_approvals_list_is_tenant_scoped() {
     )
     .await;
 
-    let list_for = |org: &str, workspace: &str| {
+    let list_for = |org: &str, workspace: &str, actor: &str| {
         Request::builder()
             .method("GET")
             .uri("/governance/approvals")
             .header("x-tandem-org-id", org)
             .header("x-tandem-workspace-id", workspace)
-            .header("x-tandem-actor-id", "operator")
+            .header("x-tandem-actor-id", actor)
             .body(Body::empty())
             .expect("list request")
     };
@@ -270,7 +339,7 @@ async fn governance_approvals_list_is_tenant_scoped() {
     // Tenant B must not see tenant A's approval.
     let resp = app
         .clone()
-        .oneshot(list_for("org-b", "workspace-b"))
+        .oneshot(list_for("org-b", "workspace-b", "operator-b"))
         .await
         .expect("tenant-b list response");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -286,10 +355,22 @@ async fn governance_approvals_list_is_tenant_scoped() {
         "tenant B must not see tenant A's approval: {ids_b:?}"
     );
 
-    // Tenant A still sees its own approval.
+    // A sibling actor in tenant A also cannot enumerate the request.
     let resp = app
         .clone()
-        .oneshot(list_for("org-a", "workspace-a"))
+        .oneshot(list_for("org-a", "workspace-a", "operator-sibling"))
+        .await
+        .expect("tenant-a sibling list response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(response_json(resp).await["approvals"]
+        .as_array()
+        .expect("approvals array")
+        .is_empty());
+
+    // The requester still sees its own approval.
+    let resp = app
+        .clone()
+        .oneshot(list_for("org-a", "workspace-a", "operator-a"))
         .await
         .expect("tenant-a list response");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -303,6 +384,869 @@ async fn governance_approvals_list_is_tenant_scoped() {
     assert!(
         ids_a.contains(&approval_id.as_str()),
         "tenant A must see its own approval: {ids_a:?}"
+    );
+
+    // An eligible tenant reviewer can enumerate the review queue.
+    let reviewer_app = verified_governance_app(
+        state,
+        "org-a",
+        "workspace-a",
+        "reviewer-a",
+    );
+    let resp = reviewer_app
+        .clone()
+        .oneshot(list_for("org-a", "workspace-a", "reviewer-a"))
+        .await
+        .expect("reviewer list response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    assert!(body["approvals"]
+        .as_array()
+        .expect("approvals array")
+        .iter()
+        .any(|row| row["approval_id"] == approval_id));
+
+    let resp = reviewer_app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/governance/approvals")
+                .header("x-tandem-org-id", "org-a")
+                .header("x-tandem-workspace-id", "workspace-a")
+                .header("x-tandem-actor-id", "reviewer-a")
+                .header("x-tandem-agent-id", "agent-reviewer")
+                .body(Body::empty())
+                .expect("agent reviewer list request"),
+        )
+        .await
+        .expect("agent reviewer list response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        response_json(resp).await["approvals"]
+            .as_array()
+            .expect("approvals array")
+            .is_empty(),
+        "authoritative agent must not inherit reviewer-wide approval access"
+    );
+}
+
+#[cfg(feature = "premium-governance")]
+/// Known automation IDs must not expose governance or grant records across tenants.
+#[tokio::test]
+async fn automation_governance_reads_reject_cross_tenant_known_ids() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let automation_id = "auto-governance-cross-tenant";
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/automations/v2")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-a")
+        .header("x-tandem-workspace-id", "workspace-a")
+        .header("x-tandem-actor-id", "owner-a")
+        .body(Body::from(
+            automation_v2_payload(automation_id, "agent-a", None).to_string(),
+        ))
+        .expect("tenant-a automation create");
+    assert_eq!(
+        app.clone()
+            .oneshot(create)
+            .await
+            .expect("tenant-a create response")
+            .status(),
+        StatusCode::OK
+    );
+
+    for uri in [
+        format!("/automations/v2/{automation_id}/governance"),
+        format!("/automations/v2/{automation_id}/grants"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header("x-tandem-org-id", "org-b")
+                    .header("x-tandem-workspace-id", "workspace-b")
+                    .header("x-tandem-actor-id", "reader-b")
+                    .body(Body::empty())
+                    .expect("tenant-b known-id request"),
+            )
+            .await
+            .expect("tenant-b known-id response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response_json(response).await["code"].as_str(),
+            Some("AUTOMATION_GOVERNANCE_NOT_FOUND")
+        );
+    }
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn committed_grant_with_unconsumed_reservation_cannot_duplicate() {
+    let state = test_state().await;
+    let requester_app =
+        verified_governance_app(state.clone(), "org-a", "workspace-a", "operator-a");
+    let reviewer_app =
+        verified_governance_app(state.clone(), "org-a", "workspace-a", "reviewer-a");
+    let tenant_b_app =
+        verified_governance_app(state.clone(), "org-b", "workspace-b", "operator-b");
+    let automation_id = "auto-governance-positive-grant";
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/automations/v2")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-a")
+        .header("x-tandem-workspace-id", "workspace-a")
+        .header("x-tandem-actor-id", "operator-a")
+        .body(Body::from(
+            automation_v2_payload(automation_id, "agent-a", None).to_string(),
+        ))
+        .expect("automation create");
+    assert_eq!(
+        requester_app
+            .clone()
+            .oneshot(create)
+            .await
+            .expect("automation create response")
+            .status(),
+        StatusCode::OK
+    );
+
+    let approval_create = Request::builder()
+        .method("POST")
+        .uri("/governance/approvals")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-a")
+        .header("x-tandem-workspace-id", "workspace-a")
+        .header("x-tandem-actor-id", "operator-a")
+        .body(Body::from(
+            json!({
+                "request_type": "capability_request",
+                "target_resource": { "type": "automation", "id": automation_id },
+                "rationale": "allow a tenant-scoped automation modifier",
+                "context": {
+                    "action": "grant_modify_access",
+                    "parameters": {
+                        "grantedToAgentID": "agent-modifier",
+                        "reason": "reviewed delegation"
+                    }
+                }
+            })
+            .to_string(),
+        ))
+        .expect("approval create");
+    let response = requester_app
+        .clone()
+        .oneshot(approval_create)
+        .await
+        .expect("approval create response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let approval_id = response_json(response).await["approval"]["approval_id"]
+        .as_str()
+        .expect("approval id")
+        .to_string();
+
+    let approve = Request::builder()
+        .method("POST")
+        .uri(format!("/governance/approvals/{approval_id}/approve"))
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-a")
+        .header("x-tandem-workspace-id", "workspace-a")
+        .header("x-tandem-actor-id", "reviewer-a")
+        .body(Body::from(
+            json!({ "notes": "independent review complete" }).to_string(),
+        ))
+        .expect("approval decision");
+    assert_eq!(
+        reviewer_app
+            .oneshot(approve)
+            .await
+            .expect("approval decision response")
+            .status(),
+        StatusCode::OK
+    );
+
+    let create_grant = |org: &str, workspace: &str, actor: &str, agent_id: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/automations/v2/{automation_id}/grants"))
+            .header("content-type", "application/json")
+            .header("x-tandem-org-id", org)
+            .header("x-tandem-workspace-id", workspace)
+            .header("x-tandem-actor-id", actor)
+            .body(Body::from(
+                json!({
+                    "approval_id": approval_id,
+                    "granted_to_agent_id": agent_id,
+                    "reason": "reviewed delegation"
+                })
+                .to_string(),
+            ))
+            .expect("grant create")
+    };
+
+    let cross_tenant = tenant_b_app
+        .oneshot(create_grant(
+            "org-b",
+            "workspace-b",
+            "operator-b",
+            "agent-modifier",
+        ))
+        .await
+        .expect("cross-tenant grant response");
+    assert_eq!(cross_tenant.status(), StatusCode::NOT_FOUND);
+
+    let mismatched_payload = requester_app
+        .clone()
+        .oneshot(create_grant(
+            "org-a",
+            "workspace-a",
+            "operator-a",
+            "agent-not-reviewed",
+        ))
+        .await
+        .expect("mismatched grant response");
+    assert_eq!(mismatched_payload.status(), StatusCode::FORBIDDEN);
+
+    // Simulate an earlier request that reserved the approval and durably
+    // created its grant, but failed before approval consumption. A retry must
+    // not reuse the reservation and create a second grant.
+    let tenant = TenantContext::explicit(
+        "org-a",
+        "workspace-a",
+        Some("operator-a".to_string()),
+    );
+    let reservation_id = state
+        .reserve_governance_mutation_approval(
+            &approval_id,
+            &crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("operator-a".to_string()),
+                "governance_mutation_retry_test",
+            ),
+            automation_id,
+            "grant_modify_access",
+            &json!({
+                "grantedToAgentID": "agent-modifier",
+                "reason": "reviewed delegation"
+            }),
+            &[
+                crate::automation_v2::governance::GovernanceApprovalRequestType::CapabilityRequest,
+                crate::automation_v2::governance::GovernanceApprovalRequestType::ElevatedCapability,
+                crate::automation_v2::governance::GovernanceApprovalRequestType::LifecycleReview,
+            ],
+            &tenant,
+        )
+        .await
+        .expect("persist exact mutation reservation");
+
+    let committed = state
+        .grant_automation_modify_access(
+            automation_id,
+            crate::automation_v2::governance::GovernanceActorRef::agent(
+                Some("agent-modifier".to_string()),
+                "governance_mutation_commit_failure_test",
+            ),
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("operator-a".to_string()),
+                "governance_mutation_commit_failure_test",
+            ),
+            Some("reviewed delegation".to_string()),
+            &tenant,
+        )
+        .await
+        .expect("simulate committed grant before reservation consumption");
+    assert!(!reservation_id.is_empty());
+
+    let response = requester_app
+        .clone()
+        .oneshot(create_grant(
+            "org-a",
+            "workspace-a",
+            "operator-a",
+            "agent-modifier",
+        ))
+        .await
+        .expect("committed grant retry response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let governance = state
+        .get_automation_governance(automation_id)
+        .await
+        .expect("governance record after rejected retry");
+    let matching = governance
+        .modify_grants
+        .iter()
+        .filter(|grant| {
+            grant.granted_to.actor_id.as_deref() == Some("agent-modifier")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(matching.len(), 1);
+    assert_eq!(matching[0].grant_id, committed.grant_id);
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn approved_lifecycle_retry_does_not_acknowledge_newer_review() {
+    let state = test_state().await;
+    let tenant = TenantContext::explicit(
+        "org-review-retry",
+        "workspace-review-retry",
+        Some("owner".to_string()),
+    );
+    let automation = super::global::create_test_automation_v2_for_tenant(
+        &state,
+        "auto-governance-review-retry",
+        &tenant,
+    )
+    .await;
+    {
+        let mut governance = state.automation_governance.write().await;
+        let record = governance
+            .records
+            .get_mut(&automation.automation_id)
+            .expect("governance record");
+        record.review_required = true;
+        record.review_kind = Some(
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::RunDrift,
+        );
+        record.paused_for_lifecycle = true;
+        record.review_request_id = None;
+    }
+    let approval = state
+        .request_approval(
+            crate::automation_v2::governance::GovernanceApprovalRequestType::LifecycleReview,
+            crate::automation_v2::governance::GovernanceActorRef::system("run_review"),
+            crate::automation_v2::governance::GovernanceResourceRef {
+                resource_type: "automation".to_string(),
+                id: automation.automation_id.clone(),
+            },
+            "review run drift".to_string(),
+            json!({"trigger": "run_drift"}),
+            None,
+            &tenant,
+        )
+        .await
+        .expect("request lifecycle review");
+    let reviewer = crate::automation_v2::governance::GovernanceActorRef::human(
+        Some("reviewer".to_string()),
+        "test",
+    );
+    state
+        .decide_approval_request(
+            &approval.approval_id,
+            reviewer.clone(),
+            true,
+            Some("reviewed".to_string()),
+            &tenant,
+        )
+        .await
+        .expect("approve old review")
+        .expect("approved receipt");
+    {
+        let mut governance = state.automation_governance.write().await;
+        let record = governance
+            .records
+            .get_mut(&automation.automation_id)
+            .expect("governance record");
+        record.review_required = true;
+        record.review_kind = Some(
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::HealthDrift,
+        );
+        record.paused_for_lifecycle = true;
+        record.review_request_id = Some("apr-newer-review".to_string());
+    }
+    state
+        .decide_approval_request(
+            &approval.approval_id,
+            reviewer,
+            true,
+            Some("retry old receipt".to_string()),
+            &tenant,
+        )
+        .await
+        .expect("retry is idempotent")
+        .expect("existing approved receipt");
+    let record = state
+        .get_automation_governance(&automation.automation_id)
+        .await
+        .expect("new review remains");
+    assert!(record.review_required);
+    assert!(record.paused_for_lifecycle);
+    assert_eq!(
+        record.review_kind,
+        Some(crate::automation_v2::governance::AutomationLifecycleReviewKind::HealthDrift)
+    );
+    assert_eq!(record.review_request_id.as_deref(), Some("apr-newer-review"));
+}
+
+#[tokio::test]
+async fn governance_bootstrap_migrates_unscoped_record_and_grant_tenant() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation_id = "auto-governance-tenant-migration";
+    let tenant_context =
+        TenantContext::explicit("org-migrate", "workspace-migrate", Some("owner".to_string()));
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/automations/v2")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-migrate")
+        .header("x-tandem-workspace-id", "workspace-migrate")
+        .header("x-tandem-actor-id", "owner")
+        .body(Body::from(
+            automation_v2_payload(automation_id, "agent-a", None).to_string(),
+        ))
+        .expect("automation create");
+    assert_eq!(
+        app.oneshot(create)
+            .await
+            .expect("automation create response")
+            .status(),
+        StatusCode::OK
+    );
+    state
+        .grant_automation_modify_access(
+            automation_id,
+            crate::automation_v2::governance::GovernanceActorRef::agent(
+                Some("grantee".to_string()),
+                "test",
+            ),
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("owner".to_string()),
+                "test",
+            ),
+            None,
+            &tenant_context,
+        )
+        .await
+        .expect("seed scoped grant");
+    {
+        let mut governance = state.automation_governance.write().await;
+        let record = governance
+            .records
+            .get_mut(automation_id)
+            .expect("governance record");
+        record.tenant_context = None;
+        record.modify_grants[0].tenant_context = None;
+    }
+
+    assert_eq!(
+        state
+            .bootstrap_automation_governance()
+            .await
+            .expect("bootstrap migration"),
+        1
+    );
+    let record = state
+        .get_automation_governance(automation_id)
+        .await
+        .expect("migrated governance record");
+    let owner = record.tenant_context.as_ref().expect("record tenant");
+    assert_eq!(owner.org_id, "org-migrate");
+    assert_eq!(owner.workspace_id, "workspace-migrate");
+    let grant_owner = record.modify_grants[0]
+        .tenant_context
+        .as_ref()
+        .expect("grant tenant");
+    assert_eq!(grant_owner.org_id, "org-migrate");
+    assert_eq!(grant_owner.workspace_id, "workspace-migrate");
+}
+
+#[tokio::test]
+async fn governance_bootstrap_persists_quarantine_for_tenant_mismatch() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation_id = "auto-governance-tenant-quarantine";
+    let tenant = TenantContext::explicit("org-owner", "workspace-owner", Some("owner".to_string()));
+    let create = Request::builder()
+        .method("POST")
+        .uri("/automations/v2")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-owner")
+        .header("x-tandem-workspace-id", "workspace-owner")
+        .header("x-tandem-actor-id", "owner")
+        .body(Body::from(
+            automation_v2_payload(automation_id, "agent-a", None).to_string(),
+        ))
+        .expect("automation create");
+    assert_eq!(
+        app.oneshot(create)
+            .await
+            .expect("automation create response")
+            .status(),
+        StatusCode::OK
+    );
+    state
+        .grant_automation_modify_access(
+            automation_id,
+            crate::automation_v2::governance::GovernanceActorRef::agent(
+                Some("grantee".to_string()),
+                "test",
+            ),
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("owner".to_string()),
+                "test",
+            ),
+            None,
+            &tenant,
+        )
+        .await
+        .expect("seed grant");
+    {
+        let mut governance = state.automation_governance.write().await;
+        let record = governance.records.get_mut(automation_id).expect("record");
+        record.tenant_context = Some(TenantContext::explicit(
+            "org-foreign",
+            "workspace-foreign",
+            None,
+        ));
+    }
+
+    assert_eq!(
+        state
+            .bootstrap_automation_governance()
+            .await
+            .expect("bootstrap quarantine"),
+        1
+    );
+    let record = state
+        .get_automation_governance(automation_id)
+        .await
+        .expect("quarantined record");
+    let owner = record.tenant_context.as_ref().expect("quarantine owner");
+    assert_eq!(owner.org_id, "org-owner");
+    assert_eq!(owner.workspace_id, "workspace-owner");
+    assert!(record.creation_paused);
+    assert!(record.paused_for_lifecycle);
+    assert!(record.review_required);
+    assert_eq!(
+        record.review_kind,
+        Some(
+            crate::automation_v2::governance::AutomationLifecycleReviewKind::TenantOwnershipMismatch
+        )
+    );
+    assert!(record.modify_grants.is_empty());
+    assert!(record.capability_grants.is_empty());
+    let quarantine_finding = record
+        .health_findings
+        .iter()
+        .find(|finding| {
+            finding.kind
+                == crate::automation_v2::governance::AutomationLifecycleReviewKind::TenantOwnershipMismatch
+        })
+        .expect("tenant mismatch finding");
+    assert_eq!(
+        quarantine_finding
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.pointer("/foreignTenant/org_id"))
+            .and_then(Value::as_str),
+        Some("org-foreign")
+    );
+    assert!(state
+        .get_automation_governance_for_tenant(automation_id, &tenant)
+        .await
+        .is_some());
+    let automation = state
+        .get_automation_v2(automation_id)
+        .await
+        .expect("quarantined automation");
+    assert_eq!(automation.status, crate::AutomationV2Status::Paused);
+    #[cfg(feature = "premium-governance")]
+    assert!(state
+        .create_automation_v2_run(&automation, "webhook")
+        .await
+        .is_err());
+    #[cfg(feature = "premium-governance")]
+    {
+        let response = app_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/governance/reviews")
+                    .header("x-tandem-org-id", "org-owner")
+                    .header("x-tandem-workspace-id", "workspace-owner")
+                    .header("x-tandem-actor-id", "owner")
+                    .body(Body::empty())
+                    .expect("quarantine review list request"),
+            )
+            .await
+            .expect("quarantine review list response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["automation_lifecycle_reviews"]
+            .as_array()
+            .expect("lifecycle reviews")
+            .iter()
+            .any(|review| review["automation_id"] == automation_id));
+    }
+    assert!(state
+        .can_mutate_automation(
+            automation_id,
+            &crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("owner".to_string()),
+                "test",
+            ),
+            false,
+            &tenant,
+        )
+        .await
+        .is_err());
+
+    {
+        let mut governance = state.automation_governance.write().await;
+        let record = governance.records.get_mut(automation_id).expect("record");
+        record.creation_paused = false;
+        record.paused_for_lifecycle = false;
+        record.review_required = false;
+    }
+    state
+        .load_automation_governance()
+        .await
+        .expect("reload persisted governance");
+    let reloaded = state
+        .get_automation_governance(automation_id)
+        .await
+        .expect("reloaded quarantine");
+    assert!(reloaded.creation_paused && reloaded.paused_for_lifecycle && reloaded.review_required);
+    let owner = reloaded
+        .tenant_context
+        .as_ref()
+        .expect("reloaded quarantine owner");
+    assert_eq!(owner.org_id, "org-owner");
+    assert_eq!(owner.workspace_id, "workspace-owner");
+
+    #[cfg(feature = "premium-governance")]
+    {
+        let approval = state
+            .request_approval(
+                crate::automation_v2::governance::GovernanceApprovalRequestType::LifecycleReview,
+                crate::automation_v2::governance::GovernanceActorRef::system(
+                    "tenant_ownership_quarantine",
+                ),
+                crate::automation_v2::governance::GovernanceResourceRef {
+                    resource_type: "automation".to_string(),
+                    id: automation_id.to_string(),
+                },
+                "independent tenant ownership review".to_string(),
+                json!({"trigger": "tenant_ownership_mismatch"}),
+                None,
+                &tenant,
+            )
+            .await
+            .expect("quarantine lifecycle approval");
+
+        tokio::fs::remove_file(&state.protected_audit_path)
+            .await
+            .expect("remove protected audit ledger");
+        tokio::fs::create_dir_all(&state.protected_audit_path)
+            .await
+            .expect("make protected audit path unwritable as a file");
+        crate::audit::reset_protected_audit_tail_for_test(&state.protected_audit_path).await;
+        let failed = state
+            .decide_approval_request(
+                &approval.approval_id,
+                crate::automation_v2::governance::GovernanceActorRef::human(
+                    Some("owner".to_string()),
+                    "test",
+                ),
+                true,
+                Some("audit must succeed".to_string()),
+                &tenant,
+            )
+            .await;
+        assert!(failed.is_err());
+        assert_eq!(
+            state
+                .get_governance_approval_request_for_tenant(&approval.approval_id, &tenant)
+                .await
+                .expect("approval remains visible")
+                .status,
+            crate::automation_v2::governance::GovernanceApprovalStatus::Pending
+        );
+        let still_quarantined = state
+            .get_automation_governance(automation_id)
+            .await
+            .expect("quarantine survives failed review audit");
+        assert!(still_quarantined.review_required);
+        assert_eq!(
+            still_quarantined.review_kind,
+            Some(
+                crate::automation_v2::governance::AutomationLifecycleReviewKind::TenantOwnershipMismatch
+            )
+        );
+        tokio::fs::remove_dir_all(&state.protected_audit_path)
+            .await
+            .expect("remove audit failure directory");
+        crate::audit::reset_protected_audit_tail_for_test(&state.protected_audit_path).await;
+
+        let reviewer_app =
+            verified_governance_app(state.clone(), "org-owner", "workspace-owner", "owner");
+        let approve = reviewer_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/governance/approvals/{}/approve",
+                        approval.approval_id
+                    ))
+                    .header("content-type", "application/json")
+                    .header("x-tandem-org-id", "org-owner")
+                    .header("x-tandem-workspace-id", "workspace-owner")
+                    .header("x-tandem-actor-id", "owner")
+                    .body(Body::from(json!({"notes": "ownership verified"}).to_string()))
+                    .expect("approve quarantine review"),
+            )
+            .await
+            .expect("approve quarantine response");
+        assert_eq!(approve.status(), StatusCode::OK);
+        let acknowledged = state
+            .get_automation_governance(automation_id)
+            .await
+            .expect("acknowledged quarantine");
+        assert!(!acknowledged.review_required);
+        assert!(acknowledged.creation_paused && acknowledged.paused_for_lifecycle);
+        assert_eq!(
+            acknowledged.review_kind,
+            Some(
+                crate::automation_v2::governance::AutomationLifecycleReviewKind::TenantOwnershipMismatch
+            )
+        );
+        assert!(state
+            .create_automation_v2_run(
+                &state
+                    .get_automation_v2(automation_id)
+                    .await
+                    .expect("still paused automation"),
+                "manual",
+            )
+            .await
+            .is_err());
+
+        let resume = reviewer_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/automations/v2/{automation_id}/resume"))
+                    .header("x-tandem-org-id", "org-owner")
+                    .header("x-tandem-workspace-id", "workspace-owner")
+                    .header("x-tandem-actor-id", "owner")
+                    .body(Body::empty())
+                    .expect("resume quarantined automation"),
+            )
+            .await
+            .expect("resume quarantine response");
+        assert_eq!(resume.status(), StatusCode::OK);
+        let restored_record = state
+            .get_automation_governance(automation_id)
+            .await
+            .expect("restored governance");
+        assert!(!restored_record.creation_paused);
+        assert!(!restored_record.paused_for_lifecycle);
+        assert_eq!(restored_record.review_kind, None);
+        let restored = state
+            .get_automation_v2(automation_id)
+            .await
+            .expect("restored automation");
+        assert_eq!(restored.status, crate::AutomationV2Status::Active);
+        state
+            .create_automation_v2_run(&restored, "manual")
+            .await
+            .expect("reviewed and explicitly resumed run");
+    }
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn governance_approval_scope_includes_deployment_id() {
+    let state = test_state().await;
+    let mut issuer = TenantContext::explicit("org-a", "workspace-a", Some("requester".to_string()));
+    issuer.deployment_id = Some("deployment-a".to_string());
+    let mut sibling_deployment = issuer.clone();
+    sibling_deployment.deployment_id = Some("deployment-b".to_string());
+    let approval = state
+        .request_approval(
+            crate::automation_v2::governance::GovernanceApprovalRequestType::CapabilityRequest,
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("requester".to_string()),
+                "test",
+            ),
+            crate::automation_v2::governance::GovernanceResourceRef {
+                resource_type: "agent".to_string(),
+                id: "agent-a".to_string(),
+            },
+            "deployment isolation".to_string(),
+            json!({}),
+            None,
+            &issuer,
+        )
+        .await
+        .expect("create approval");
+    assert!(state
+        .get_governance_approval_request_for_tenant(&approval.approval_id, &sibling_deployment)
+        .await
+        .is_none());
+    assert!(state
+        .list_approval_requests_for_tenant(None, None, &sibling_deployment)
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn governance_grant_audit_failure_leaves_state_unchanged() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation_id = "auto-governance-audit-failure";
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/automations/v2")
+        .header("content-type", "application/json")
+        .header("x-tandem-actor-id", "owner")
+        .body(Body::from(
+            automation_v2_payload(automation_id, "agent-a", None).to_string(),
+        ))
+        .expect("automation create");
+    assert_eq!(
+        app.oneshot(create)
+            .await
+            .expect("automation create response")
+            .status(),
+        StatusCode::OK
+    );
+
+    tokio::fs::remove_file(&state.protected_audit_path)
+        .await
+        .expect("remove protected audit ledger");
+    tokio::fs::create_dir_all(&state.protected_audit_path)
+        .await
+        .expect("make protected audit path unwritable as a file");
+    crate::audit::reset_protected_audit_tail_for_test(&state.protected_audit_path).await;
+
+    let tenant_context = TenantContext::local_implicit();
+    let result = state
+        .grant_automation_modify_access(
+            automation_id,
+            crate::automation_v2::governance::GovernanceActorRef::agent(Some("grantee".to_string()), "test"),
+            crate::automation_v2::governance::GovernanceActorRef::human(Some("owner".to_string()), "test"),
+            Some("audit must precede mutation".to_string()),
+            &tenant_context,
+        )
+        .await;
+    assert!(result.is_err(), "grant must fail when its audit cannot persist");
+    let governance = state
+        .get_automation_governance(automation_id)
+        .await
+        .expect("governance record");
+    assert!(
+        governance.modify_grants.is_empty(),
+        "failed audit must leave no visible modify grant"
     );
 }
 
