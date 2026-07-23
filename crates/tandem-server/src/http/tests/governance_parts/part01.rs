@@ -486,7 +486,7 @@ async fn automation_governance_reads_reject_cross_tenant_known_ids() {
 
 #[cfg(feature = "premium-governance")]
 #[tokio::test]
-async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
+async fn committed_grant_with_unconsumed_reservation_cannot_duplicate() {
     let state = test_state().await;
     let requester_app =
         verified_governance_app(state.clone(), "org-a", "workspace-a", "operator-a");
@@ -613,15 +613,15 @@ async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
         .expect("mismatched grant response");
     assert_eq!(mismatched_payload.status(), StatusCode::FORBIDDEN);
 
-    // Simulate an earlier attempt that persisted its exact mutation
-    // reservation but failed before the mutation completed. The same actor and
-    // payload must be able to reuse that reservation as an idempotency token.
+    // Simulate an earlier request that reserved the approval and durably
+    // created its grant, but failed before approval consumption. A retry must
+    // not reuse the reservation and create a second grant.
     let tenant = TenantContext::explicit(
         "org-a",
         "workspace-a",
         Some("operator-a".to_string()),
     );
-    state
+    let reservation_id = state
         .reserve_governance_mutation_approval(
             &approval_id,
             &crate::automation_v2::governance::GovernanceActorRef::human(
@@ -644,6 +644,24 @@ async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
         .await
         .expect("persist exact mutation reservation");
 
+    let committed = state
+        .grant_automation_modify_access(
+            automation_id,
+            crate::automation_v2::governance::GovernanceActorRef::agent(
+                Some("agent-modifier".to_string()),
+                "governance_mutation_commit_failure_test",
+            ),
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("operator-a".to_string()),
+                "governance_mutation_commit_failure_test",
+            ),
+            Some("reviewed delegation".to_string()),
+            &tenant,
+        )
+        .await
+        .expect("simulate committed grant before reservation consumption");
+    assert!(!reservation_id.is_empty());
+
     let response = requester_app
         .clone()
         .oneshot(create_grant(
@@ -653,23 +671,21 @@ async fn authorized_admin_and_independent_reviewer_can_create_tenant_grant() {
             "agent-modifier",
         ))
         .await
-        .expect("authorized grant response");
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response_json(response).await["grant"]["granted_to"]["actor_id"].as_str(),
-        Some("agent-modifier")
-    );
-
-    let replay = requester_app
-        .oneshot(create_grant(
-            "org-a",
-            "workspace-a",
-            "operator-a",
-            "agent-modifier",
-        ))
+        .expect("committed grant retry response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let governance = state
+        .get_automation_governance(automation_id)
         .await
-        .expect("replayed grant response");
-    assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+        .expect("governance record after rejected retry");
+    let matching = governance
+        .modify_grants
+        .iter()
+        .filter(|grant| {
+            grant.granted_to.actor_id.as_deref() == Some("agent-modifier")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(matching.len(), 1);
+    assert_eq!(matching[0].grant_id, committed.grant_id);
 }
 
 #[cfg(feature = "premium-governance")]

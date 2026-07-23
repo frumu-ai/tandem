@@ -160,16 +160,16 @@ async fn dependency_revocation_pauses_already_queued_run_and_blocks_the_next_one
 
 #[cfg(feature = "premium-governance")]
 #[tokio::test]
-async fn dependency_revocation_persistence_failure_keeps_admission_closed() {
+async fn dependency_revocation_failure_allows_only_exact_route_retry() {
     let mut state = test_state().await;
     let tenant = TenantContext::explicit(
-        "org-dependency-persist-failure",
-        "workspace-dependency-persist-failure",
-        Some("owner".to_string()),
+        "org-dependency-retry",
+        "workspace-dependency-retry",
+        Some("operator-a".to_string()),
     );
     let automation = super::global::create_test_automation_v2_for_tenant(
         &state,
-        "auto-governance-dependency-persist-failure",
+        "auto-governance-dependency-retry",
         &tenant,
     )
     .await;
@@ -178,11 +178,10 @@ async fn dependency_revocation_persistence_failure_keeps_admission_closed() {
         .await
         .expect("queue run before dependency pause");
 
-    let revoked_by =
-        crate::automation_v2::governance::GovernanceActorRef::human(
-            Some("owner".to_string()),
-            "dependency_retry_test",
-        );
+    let revoked_by = crate::automation_v2::governance::GovernanceActorRef::human(
+        Some("operator-a".to_string()),
+        "dependency_retry_test",
+    );
     let grant = state
         .grant_automation_modify_access(
             &automation.automation_id,
@@ -196,37 +195,124 @@ async fn dependency_revocation_persistence_failure_keeps_admission_closed() {
         )
         .await
         .expect("grant modify access");
-    let revoked = state
-        .revoke_automation_modify_access(
-            &automation.automation_id,
-            &grant.grant_id,
-            revoked_by.clone(),
-            Some("connected capability revoked".to_string()),
-            &tenant,
-        )
+
+    let requester_app = verified_governance_app(
+        state.clone(),
+        "org-dependency-retry",
+        "workspace-dependency-retry",
+        "operator-a",
+    );
+    let reviewer_app = verified_governance_app(
+        state.clone(),
+        "org-dependency-retry",
+        "workspace-dependency-retry",
+        "reviewer-a",
+    );
+    let approval_create = Request::builder()
+        .method("POST")
+        .uri("/governance/approvals")
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-dependency-retry")
+        .header("x-tandem-workspace-id", "workspace-dependency-retry")
+        .header("x-tandem-actor-id", "operator-a")
+        .body(Body::from(
+            json!({
+                "request_type": "capability_request",
+                "target_resource": {
+                    "type": "automation",
+                    "id": automation.automation_id
+                },
+                "rationale": "approve exact dependency revoke retry",
+                "context": {
+                    "action": "revoke_modify_access",
+                    "parameters": {
+                        "grantID": grant.grant_id,
+                        "reason": "connected capability revoked"
+                    }
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create revoke approval request");
+    let approval_response = requester_app
+        .clone()
+        .oneshot(approval_create)
         .await
-        .expect("persist grant revocation")
-        .expect("active grant");
-    assert!(revoked.revoked_at_ms.is_some());
+        .expect("create revoke approval response");
+    assert_eq!(approval_response.status(), StatusCode::OK);
+    let approval_id = response_json(approval_response).await["approval"]["approval_id"]
+        .as_str()
+        .expect("revoke approval id")
+        .to_string();
+    let approve = Request::builder()
+        .method("POST")
+        .uri(format!("/governance/approvals/{approval_id}/approve"))
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", "org-dependency-retry")
+        .header("x-tandem-workspace-id", "workspace-dependency-retry")
+        .header("x-tandem-actor-id", "reviewer-a")
+        .body(Body::from(
+            json!({"notes": "independent revoke review"}).to_string(),
+        ))
+        .expect("approve revoke request");
+    assert_eq!(
+        reviewer_app
+            .oneshot(approve)
+            .await
+            .expect("approve revoke response")
+            .status(),
+        StatusCode::OK
+    );
 
-    let durable_governance_path = state.automation_governance_path.clone();
-
+    let durable_runs_path = state.automation_v2_runs_path.clone();
     let blocked_path = std::env::temp_dir().join(format!(
-        "tandem-governance-write-blocked-{}",
+        "tandem-runs-write-blocked-{}",
         uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&blocked_path).expect("create blocking directory");
-    state.automation_governance_path = blocked_path.clone();
+    state.automation_v2_runs_path = blocked_path.clone();
 
-    let result = state
-        .pause_automation_for_dependency_revocation(
-            &automation.automation_id,
-            "connected capability revoked".to_string(),
-            json!({"capability": "mcp:revoked"}),
-            &tenant,
-        )
+    let revoke_request = |org: &str, workspace: &str, actor: &str, reason: &str| {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!(
+                "/automations/v2/{}/grants/{}",
+                automation.automation_id, grant.grant_id
+            ))
+            .header("content-type", "application/json")
+            .header("x-tandem-org-id", org)
+            .header("x-tandem-workspace-id", workspace)
+            .header("x-tandem-actor-id", actor)
+            .body(Body::from(
+                json!({
+                    "approval_id": approval_id,
+                    "reason": reason,
+                })
+                .to_string(),
+            ))
+            .expect("grant revoke request")
+    };
+
+    let failing_app = verified_governance_app(
+        state.clone(),
+        "org-dependency-retry",
+        "workspace-dependency-retry",
+        "operator-a",
+    );
+    let failed = failing_app
+        .oneshot(revoke_request(
+            "org-dependency-retry",
+            "workspace-dependency-retry",
+            "operator-a",
+            "connected capability revoked",
+        ))
         .await;
-    assert!(result.is_err(), "the governance snapshot write must fail");
+    let failed = failed.expect("failed dependency revoke response");
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        response_json(failed).await["code"].as_str(),
+        Some("AUTOMATION_GOVERNANCE_DEPENDENCY_PAUSE_FAILED")
+    );
     let paused = state
         .get_automation_v2_run(&queued.run_id)
         .await
@@ -237,45 +323,116 @@ async fn dependency_revocation_persistence_failure_keeps_admission_closed() {
             .create_automation_v2_run(&automation, "scheduler")
             .await
             .is_err(),
-        "failed persistence must not restore admissible in-memory governance"
+        "failed run persistence must retain fail-closed admission"
     );
+    let durable_pause = state
+        .get_automation_governance(&automation.automation_id)
+        .await
+        .expect("governance after failed run persistence");
+    assert!(durable_pause.creation_paused);
+    assert!(durable_pause.paused_for_lifecycle);
+    assert!(durable_pause.review_required);
 
-    // Simulate a restart from the last durable snapshot. It contains the
-    // revoked grant but not the failed lifecycle-pause write. An exact DELETE
-    // retry must recover the revoked record and finish the pause.
-    let _ = std::fs::remove_dir_all(blocked_path);
-    state.automation_governance_path = durable_governance_path;
+    // Reload the durable governance snapshot as startup does. Admission must
+    // remain closed even though the final paused-run snapshot failed.
     state
         .load_automation_governance()
         .await
-        .expect("reload durable governance snapshot");
-    let reloaded = state
-        .get_automation_governance(&automation.automation_id)
+        .expect("reload durable fail-closed governance snapshot");
+    assert!(
+        state
+            .get_automation_governance(&automation.automation_id)
+            .await
+            .expect("reloaded governance record")
+            .paused_for_lifecycle
+    );
+    let _ = std::fs::remove_dir_all(blocked_path);
+    state.automation_v2_runs_path = durable_runs_path;
+
+    let wrong_actor_app = verified_governance_app(
+        state.clone(),
+        "org-dependency-retry",
+        "workspace-dependency-retry",
+        "operator-b",
+    );
+    let wrong_actor = wrong_actor_app
+        .oneshot(revoke_request(
+            "org-dependency-retry",
+            "workspace-dependency-retry",
+            "operator-b",
+            "connected capability revoked",
+        ))
         .await
-        .expect("reloaded governance record");
-    assert!(!reloaded.paused_for_lifecycle);
-    let retried = state
-        .revoke_automation_modify_access(
-            &automation.automation_id,
-            &grant.grant_id,
-            revoked_by,
-            Some("connected capability revoked".to_string()),
-            &tenant,
-        )
+        .expect("wrong actor retry response");
+    assert_eq!(wrong_actor.status(), StatusCode::FORBIDDEN);
+
+    let wrong_tenant_app = verified_governance_app(
+        state.clone(),
+        "org-other",
+        "workspace-other",
+        "operator-a",
+    );
+    let wrong_tenant = wrong_tenant_app
+        .oneshot(revoke_request(
+            "org-other",
+            "workspace-other",
+            "operator-a",
+            "connected capability revoked",
+        ))
         .await
-        .expect("retry revoked grant lookup")
-        .expect("revoked grant remains addressable for exact retry");
-    assert_eq!(retried.grant_id, grant.grant_id);
-    assert!(retried.revoked_at_ms.is_some());
-    state
-        .pause_automation_for_dependency_revocation(
-            &automation.automation_id,
-            "connected capability revoked".to_string(),
-            json!({"capability": "mcp:revoked", "retry": true}),
-            &tenant,
-        )
+        .expect("wrong tenant retry response");
+    assert_eq!(wrong_tenant.status(), StatusCode::NOT_FOUND);
+
+    let retry_app = verified_governance_app(
+        state.clone(),
+        "org-dependency-retry",
+        "workspace-dependency-retry",
+        "operator-a",
+    );
+    let altered_payload = retry_app
+        .clone()
+        .oneshot(revoke_request(
+            "org-dependency-retry",
+            "workspace-dependency-retry",
+            "operator-a",
+            "different revoke reason",
+        ))
         .await
-        .expect("retry dependency pause");
+        .expect("altered payload retry response");
+    assert_eq!(altered_payload.status(), StatusCode::FORBIDDEN);
+
+    let retried = retry_app
+        .clone()
+        .oneshot(revoke_request(
+            "org-dependency-retry",
+            "workspace-dependency-retry",
+            "operator-a",
+            "connected capability revoked",
+        ))
+        .await
+        .expect("exact retry response");
+    assert_eq!(retried.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(retried).await["grant"]["grant_id"].as_str(),
+        Some(grant.grant_id.as_str())
+    );
+    let consumed = state
+        .get_governance_approval_request(&approval_id)
+        .await
+        .expect("consumed revoke approval");
+    assert!(consumed.context.get("_mutation_reservation").is_none());
+    assert!(consumed.context.get("_mutation_consumption").is_some());
+
+    let replay = retry_app
+        .oneshot(revoke_request(
+            "org-dependency-retry",
+            "workspace-dependency-retry",
+            "operator-a",
+            "connected capability revoked",
+        ))
+        .await
+        .expect("consumed replay response");
+    assert_eq!(replay.status(), StatusCode::FORBIDDEN);
     assert!(
         state
             .get_automation_governance(&automation.automation_id)

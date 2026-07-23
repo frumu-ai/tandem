@@ -1442,13 +1442,35 @@ impl AppState {
             if !governance_record_owned_by(current_record, tenant_context) {
                 anyhow::bail!("automation governance record not found");
             }
+            // Close and persist admission before touching the run snapshot.
+            // If the process exits or run persistence fails during the pause,
+            // restart still reloads a governance record that cannot launch or
+            // claim more work for the revoked dependency.
+            let record = guard
+                .records
+                .get_mut(automation_id)
+                .expect("validated governance record remains present");
+            record.creation_paused = true;
+            record.paused_for_lifecycle = true;
+            record.review_required = true;
+            record.review_kind = Some(AutomationLifecycleReviewKind::DependencyRevoked);
+            record.review_requested_at_ms = Some(now);
+            record.updated_at_ms = now;
+            guard.updated_at_ms = now;
+            if let Err(error) = self.persist_automation_governance_snapshot(&guard).await {
+                return Err(error.context(
+                    "failed to persist dependency admission closure; admission remains paused in memory",
+                ));
+            }
+
             let paused_runs = self
                 .pause_running_automation_v2_runs(
                     automation_id,
                     reason.clone(),
                     crate::AutomationStopKind::GuardrailStopped,
                 )
-                .await?;
+                .await
+                .context("failed to persist paused runs; admission remains durably closed")?;
             let dependency_context = json!({
                 "trigger": "dependency_revoked",
                 "reason": reason.clone(),

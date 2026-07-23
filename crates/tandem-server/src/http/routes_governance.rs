@@ -227,11 +227,15 @@ async fn require_independent_mutation_approval(
         (reserved_action == action && reserved_actor.eq_ignore_ascii_case(actor_id))
             .then(|| reservation_id.to_string())
     });
-    // A reservation is also the idempotency token for an exact retry. Reuse it
-    // when a prior attempt failed after reserving (for example after durably
-    // revoking a grant but before persisting the dependency pause).
+    // Only grant revocation has a mutation-level idempotent continuation: an
+    // already-revoked grant remains addressable so an exact retry can finish a
+    // failed dependency pause. Reusing a reservation for create/restore/retire
+    // operations could repeat a mutation that committed before approval
+    // consumption failed (for example by creating a second grant).
+    let retryable_after_reservation = action == "revoke_modify_access";
     let unconsumed = approval.context.get("_mutation_consumption").is_none()
-        && (existing_reservation.is_none() || reusable_reservation_id.is_some());
+        && (existing_reservation.is_none()
+            || (retryable_after_reservation && reusable_reservation_id.is_some()));
     if approval.status != GovernanceApprovalStatus::Approved
         || crate::now_ms() >= approval.expires_at_ms
         || !allowed_types.contains(&approval.request_type)
