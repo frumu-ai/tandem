@@ -770,7 +770,7 @@ impl PackManager {
                 let _ = tokio::fs::remove_file(&temporary).await;
                 return Err(error).context("commit pack current pointer");
             }
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(windows)]
