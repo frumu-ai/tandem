@@ -242,9 +242,59 @@ pub(in crate::http::global) async fn cleanup_managed_worktrees_for_lease(
             }));
             continue;
         }
-        managed_worktrees
-            .retain(|_, row| !(row.repo_root == record.repo_root && row.path == record.path));
+        if !remove_authorized_cleanup_record(&mut managed_worktrees, &record) {
+            result.failures.push(json!({
+                "worktree_id": record.key,
+                "code": "WORKTREE_RECORD_CHANGED",
+            }));
+            continue;
+        }
         result.cleaned_paths.push(record.path);
     }
     result
+}
+
+fn remove_authorized_cleanup_record(
+    records: &mut std::collections::HashMap<String, crate::ManagedWorktreeRecord>,
+    authorized: &crate::ManagedWorktreeRecord,
+) -> bool {
+    records.remove(&authorized.key).is_some()
+}
+
+#[cfg(test)]
+mod cleanup_record_tests {
+    use super::*;
+
+    fn record(key: &str, lease_id: &str) -> crate::ManagedWorktreeRecord {
+        crate::ManagedWorktreeRecord {
+            key: key.to_string(),
+            repo_root: "/repo".to_string(),
+            repository_id: Some("repo-1".to_string()),
+            tenant_context: TenantContext::local_implicit(),
+            path: "/repo/.tandem/worktrees/shared".to_string(),
+            branch: format!("tandem/{key}"),
+            base: "HEAD".to_string(),
+            managed: true,
+            task_id: Some("task".to_string()),
+            owner_run_id: Some("run".to_string()),
+            lease_id: Some(lease_id.to_string()),
+            cleanup_branch: true,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn cleanup_removes_only_the_exact_authorized_record() {
+        let authorized = record("authorized", "lease-old");
+        let replacement = record("replacement", "lease-new");
+        let mut records = std::collections::HashMap::from([
+            (authorized.key.clone(), authorized.clone()),
+            (replacement.key.clone(), replacement.clone()),
+        ]);
+
+        assert!(remove_authorized_cleanup_record(&mut records, &authorized));
+        assert!(!records.contains_key(&authorized.key));
+        assert_eq!(records.get(&replacement.key), Some(&replacement));
+    }
 }

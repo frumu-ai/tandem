@@ -109,6 +109,12 @@ pub(in crate::http) async fn create_worktree(
             .revalidate(&state, &effect)
             .map_err(host_authorization_status)?;
         if worktree_registration_matches(&repo_root, &existing.path, &existing.branch).await? {
+            let _lease_guard =
+                hold_active_managed_worktree_lease(&state, input.lease_id.as_deref(), &tenant)
+                    .await?;
+            grant
+                .revalidate(&state, &effect)
+                .map_err(host_authorization_status)?;
             return Ok(Json(json!({
                 "ok": true,
                 "worktree_id": existing.key,
@@ -154,6 +160,11 @@ pub(in crate::http) async fn create_worktree(
         .revalidate(&state, &effect)
         .map_err(host_authorization_status)?;
     if worktree_registration_matches(&repo_root, &path_string, &branch).await? {
+        let _lease_guard =
+            hold_active_managed_worktree_lease(&state, input.lease_id.as_deref(), &tenant).await?;
+        grant
+            .revalidate(&state, &effect)
+            .map_err(host_authorization_status)?;
         let now = crate::now_ms();
         state.managed_worktrees.write().await.insert(
             key.clone(),
@@ -201,6 +212,11 @@ pub(in crate::http) async fn create_worktree(
         .map_err(host_authorization_status)?;
     crate::runtime::worktrees::validate_managed_worktree_path(&repo_root, &path, true)
         .map_err(|_| StatusCode::FORBIDDEN)?;
+    let _lease_guard =
+        hold_active_managed_worktree_lease(&state, input.lease_id.as_deref(), &tenant).await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(host_authorization_status)?;
     let output = crate::runtime::worktrees::run_managed_git(
         &repo_root,
         &["worktree", "add", "-b", &branch, &path_string, "--", &base],
@@ -1221,6 +1237,28 @@ async fn validate_managed_worktree_lease(
     Ok(Some(lease))
 }
 
+async fn hold_active_managed_worktree_lease(
+    state: &AppState,
+    lease_id: Option<&str>,
+    tenant: &TenantContext,
+) -> Result<
+    tokio::sync::OwnedRwLockReadGuard<std::collections::HashMap<String, crate::EngineLease>>,
+    StatusCode,
+> {
+    let lease_id = lease_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(StatusCode::CONFLICT)?;
+    let leases = state.engine_leases.clone().read_owned().await;
+    let lease = leases.get(lease_id).ok_or(StatusCode::CONFLICT)?;
+    if lease.is_expired(crate::now_ms()) {
+        return Err(StatusCode::CONFLICT);
+    }
+    if lease.tenant_context != *tenant {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(leases)
+}
+
 pub(in crate::http) async fn prune_expired_leases(state: &AppState) -> usize {
     let now = crate::now_ms();
     let expired = {
@@ -1376,4 +1414,48 @@ async fn find_managed_worktree_by_path(
         .values()
         .find(|row| row.repo_root == repo_root && row.path == path)
         .cloned()
+}
+
+#[cfg(test)]
+mod lease_guard_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn active_lease_guard_blocks_release_until_worktree_recording_finishes() {
+        let state = crate::test_support::test_state().await;
+        let tenant = TenantContext::local_implicit();
+        let now = crate::now_ms();
+        state.engine_leases.write().await.insert(
+            "lease-create-guard".to_string(),
+            crate::EngineLease {
+                lease_id: "lease-create-guard".to_string(),
+                client_id: "test-client".to_string(),
+                client_type: "test".to_string(),
+                acquired_at_ms: now,
+                last_renewed_at_ms: now,
+                ttl_ms: 60_000,
+                tenant_context: tenant.clone(),
+            },
+        );
+
+        let guard = hold_active_managed_worktree_lease(&state, Some("lease-create-guard"), &tenant)
+            .await
+            .expect("active lease guard");
+        let leases = state.engine_leases.clone();
+        let mut release =
+            tokio::spawn(async move { leases.write().await.remove("lease-create-guard") });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut release)
+                .await
+                .is_err(),
+            "lease removal must wait for worktree recording"
+        );
+
+        drop(guard);
+        let removed = tokio::time::timeout(std::time::Duration::from_secs(5), release)
+            .await
+            .expect("lease removal unblocked")
+            .expect("release task");
+        assert!(removed.is_some());
+    }
 }
