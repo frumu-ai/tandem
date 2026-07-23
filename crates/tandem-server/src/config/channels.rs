@@ -3,9 +3,49 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(feature = "acme-demo")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(feature = "acme-demo")]
+static ACME_SLACK_LOOPBACK_RUNTIME: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "acme-demo")]
+pub(crate) struct AcmeSlackLoopbackRuntimeGuard;
+
+#[cfg(feature = "acme-demo")]
+impl Drop for AcmeSlackLoopbackRuntimeGuard {
+    fn drop(&mut self) {
+        ACME_SLACK_LOOPBACK_RUNTIME.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(feature = "acme-demo")]
+pub(crate) fn enter_acme_slack_loopback_runtime() -> Option<AcmeSlackLoopbackRuntimeGuard> {
+    ACME_SLACK_LOOPBACK_RUNTIME
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|_| AcmeSlackLoopbackRuntimeGuard)
+}
 
 pub(crate) fn normalize_slack_api_base_url(
     raw: Option<&str>,
+) -> Result<Option<String>, &'static str> {
+    let allow_loopback_override = cfg!(test) || {
+        #[cfg(feature = "acme-demo")]
+        {
+            ACME_SLACK_LOOPBACK_RUNTIME.load(Ordering::Acquire)
+        }
+        #[cfg(not(feature = "acme-demo"))]
+        {
+            false
+        }
+    };
+    normalize_slack_api_base_url_with_loopback_override(raw, allow_loopback_override)
+}
+
+fn normalize_slack_api_base_url_with_loopback_override(
+    raw: Option<&str>,
+    allow_loopback_override: bool,
 ) -> Result<Option<String>, &'static str> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -22,10 +62,10 @@ pub(crate) fn normalize_slack_api_base_url(
     if normalized.eq_ignore_ascii_case("https://slack.com/api") {
         return Ok(None);
     }
-    // The non-default `acme-demo` feature runs the production path against a
-    // loopback Slack mock from a standalone CLI process. Keep the exception
-    // compile-time scoped to tests/demo builds and loopback hosts only.
-    if (cfg!(test) || cfg!(feature = "acme-demo"))
+    // Tests and the explicitly entered, exclusive ACME demo command may use a
+    // loopback Slack mock. Merely compiling the feature must not grant this to
+    // the ordinary `serve` command in the same binary.
+    if allow_loopback_override
         && matches!(parsed.scheme(), "http" | "https")
         && parsed.host_str().is_some_and(|host| {
             host.eq_ignore_ascii_case("localhost")
@@ -568,6 +608,28 @@ fn normalize_non_empty_list(raw: Vec<String>) -> Vec<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn slack_loopback_override_requires_explicit_runtime_posture() {
+        let loopback = Some("http://127.0.0.1:34567/api");
+        assert!(
+            normalize_slack_api_base_url_with_loopback_override(loopback, false).is_err(),
+            "compiling a demo-capable binary must not authorize the ordinary server"
+        );
+        assert_eq!(
+            normalize_slack_api_base_url_with_loopback_override(loopback, true)
+                .expect("explicit demo runtime accepts loopback"),
+            Some("http://127.0.0.1:34567/api".to_string())
+        );
+        assert!(
+            normalize_slack_api_base_url_with_loopback_override(
+                Some("http://127.0.0.1:34567/api?token=secret"),
+                true,
+            )
+            .is_err(),
+            "demo posture must not bypass credential/query/fragment validation"
+        );
+    }
 
     #[test]
     fn partial_channel_entries_without_tokens_still_deserialize() {

@@ -226,26 +226,43 @@ pub(super) async fn delete_auth_mcp(
     if let Err(error) = grant.revalidate(&state, &effect) {
         return crate::http::host_authority::host_authorization_status(error).into_response();
     }
-    let removed_tool_count = unregister_mcp_bridge_tools_for_server(&state, &name).await;
-    let removed_oauth_session_count = remove_mcp_oauth_sessions_for_server(&state, &name).await;
+    let removed_tool_count = state
+        .mcp
+        .server_tools_for_tenant(&name, &tenant_context)
+        .await
+        .len();
     let ok = state
         .mcp
         .clear_auth_material_for_tenant(&name, &tenant_context)
         .await;
+    let (removed_oauth_session_count, remaining_tool_count) = if ok {
+        let removed_sessions =
+            remove_mcp_oauth_sessions_for_server_and_tenant(&state, &name, &tenant_context).await;
+        let (_, remaining) = resync_mcp_bridge_tools_for_server(&state, &name).await;
+        (removed_sessions, remaining)
+    } else {
+        (0, 0)
+    };
     if ok {
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.auth.deleted",
-            json!({
-                "name": name,
-                "removedToolCount": removed_tool_count,
-                "removedOauthSessionCount": removed_oauth_session_count,
-            }),
+            mcp_tenant_event_payload(
+                &state,
+                &name,
+                &tenant_context,
+                json!({
+                    "removedToolCount": removed_tool_count,
+                    "removedOauthSessionCount": removed_oauth_session_count,
+                    "remainingToolCount": remaining_tool_count,
+                }),
+            ),
         ));
     }
     Json(json!({
         "ok": ok,
         "removedToolCount": removed_tool_count,
         "removedOauthSessionCount": removed_oauth_session_count,
+        "remainingToolCount": remaining_tool_count,
     }))
     .into_response()
 }

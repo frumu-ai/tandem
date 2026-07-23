@@ -872,6 +872,7 @@ async fn fetch_openai_compatible_models(
     runtime_auth: &HashMap<String, String>,
     persisted_auth: &HashMap<String, String>,
     allow_shared_auth_sources: bool,
+    allow_standalone_private_endpoint: bool,
 ) -> Result<HashMap<String, WireProviderModel>, String> {
     let api_key = provider_config_api_key(
         cfg,
@@ -892,7 +893,7 @@ async fn fetch_openai_compatible_models(
 
     let url = format!("{}/models", normalize_openai_catalog_base(&base_url));
     let (status, body) =
-        fetch_hardened_provider_response(&url, allow_shared_auth_sources, |request| {
+        fetch_hardened_provider_response(&url, allow_standalone_private_endpoint, |request| {
             if let Some(api_key) = api_key {
                 request.bearer_auth(api_key)
             } else {
@@ -1099,6 +1100,7 @@ async fn fetch_remote_provider_models(
     runtime_auth: &HashMap<String, String>,
     persisted_auth: &HashMap<String, String>,
     allow_shared_auth_sources: bool,
+    allow_standalone_private_endpoint: bool,
 ) -> ProviderCatalogFetchResult {
     match provider_id {
         "openai-codex" => {
@@ -1146,6 +1148,7 @@ async fn fetch_remote_provider_models(
                 runtime_auth,
                 persisted_auth,
                 allow_shared_auth_sources,
+                allow_standalone_private_endpoint,
             )
             .await
             {

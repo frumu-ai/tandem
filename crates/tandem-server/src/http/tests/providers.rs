@@ -1442,6 +1442,93 @@ async fn provider_route_uses_runtime_auth_for_remote_catalog_fetch() {
 }
 
 #[tokio::test]
+async fn local_implicit_catalog_blocks_private_origin_when_server_is_public() {
+    let seen_auth = Arc::new(Mutex::new(Vec::<String>::new()));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+    let seen_auth_for_handler = seen_auth.clone();
+    let mock = Router::new().route(
+        "/v1/models",
+        get(move |headers: axum::http::HeaderMap| {
+            let seen_auth = seen_auth_for_handler.clone();
+            async move {
+                let auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                seen_auth.lock().expect("seen auth lock").push(auth);
+                Json(json!({"data": [{"id": "must-not-be-reached"}]}))
+            }
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock)
+            .await
+            .expect("serve test provider");
+    });
+
+    let state = test_state().await;
+    state.set_host_operations_loopback_only(false);
+    state.set_server_base_url("https://tandem.example".to_string());
+    state
+        .config
+        .patch_project(json!({
+            "providers": {
+                "openai": {
+                    "url": format!("http://{addr}/v1")
+                }
+            }
+        }))
+        .await
+        .expect("patch project");
+    state
+        .auth
+        .write()
+        .await
+        .insert("openai".to_string(), "test-key".to_string());
+    state
+        .providers
+        .reload(state.config.get().await.into())
+        .await;
+
+    let response = app_router(state)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/provider")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    server.abort();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = json_body(response).await;
+    let openai = payload
+        .get("all")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some("openai"))
+        })
+        .expect("openai entry");
+    assert_eq!(
+        openai.get("catalog_status").and_then(Value::as_str),
+        Some("error"),
+        "local implicit credentials do not establish standalone network posture"
+    );
+    assert!(
+        seen_auth.lock().expect("seen auth lock").is_empty(),
+        "public-listener catalog discovery must not contact a private origin"
+    );
+}
+
+#[tokio::test]
 async fn explicit_tenant_provider_route_ignores_shared_config_api_key_for_remote_catalog_fetch() {
     let seen_auth = Arc::new(Mutex::new(Vec::<String>::new()));
     let listener = TcpListener::bind("127.0.0.1:0")

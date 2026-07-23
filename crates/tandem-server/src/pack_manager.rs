@@ -680,8 +680,6 @@ impl PackManager {
         reject_symlink_path(&self.root, "pack root")?;
         reject_symlink_path(&self.root.join(STAGING_DIR), "pack staging directory")?;
         reject_symlink_path(&self.root.join(EXPORTS_DIR), "pack export directory")?;
-        #[cfg(windows)]
-        self.recover_current_pointer_transactions().await?;
         Ok(())
     }
 
@@ -699,6 +697,8 @@ impl PackManager {
     async fn read_index(&self) -> anyhow::Result<PackIndex> {
         self.ensure_layout().await?;
         let _index_guard = self.index_lock.lock().await;
+        #[cfg(windows)]
+        self.recover_current_pointer_transactions().await?;
         self.read_index_unlocked().await
     }
 

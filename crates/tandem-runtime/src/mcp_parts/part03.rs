@@ -534,6 +534,84 @@ mod tests {
             .map(|tool| tool.namespaced_name)
             .collect::<Vec<_>>();
         assert_eq!(alice_names, vec!["mcp.notion.alice_search".to_string()]);
+
+        assert!(registry.disconnect_for_tenant("notion", &tenant_a).await);
+        assert!(
+            registry
+                .server_tools_for_tenant("notion", &tenant_a)
+                .await
+                .is_empty(),
+            "tenant disconnect clears only the caller's runtime cache"
+        );
+        assert_eq!(
+            registry
+                .server_tools_for_tenant("notion", &tenant_b)
+                .await
+                .into_iter()
+                .map(|tool| tool.namespaced_name)
+                .collect::<Vec<_>>(),
+            vec!["mcp.notion.bob_search".to_string()]
+        );
+        assert_eq!(
+            registry
+                .bridge_tools_for_server("notion")
+                .await
+                .into_iter()
+                .map(|tool| tool.namespaced_name)
+                .collect::<Vec<_>>(),
+            vec!["mcp.notion.bob_search".to_string()],
+            "shared bridge union must retain the other tenant's connected tools"
+        );
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn clear_auth_material_for_tenant_preserves_other_connection_credentials() {
+        let _provider_auth_guard = provider_auth_test_guard().await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        registry
+            .add_or_update(
+                "notion".to_string(),
+                "https://example.com/mcp".to_string(),
+                HashMap::new(),
+                true,
+            )
+            .await;
+        let tenant_a =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+        let tenant_b =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
+        registry
+            .set_bearer_token_for_tenant("notion", "alice-token", &tenant_a)
+            .await
+            .expect("set Alice token");
+        registry
+            .set_bearer_token_for_tenant("notion", "bob-token", &tenant_b)
+            .await
+            .expect("set Bob token");
+
+        assert!(
+            registry
+                .clear_auth_material_for_tenant("notion", &tenant_a)
+                .await
+        );
+        let connections = registry.list_connections().await;
+        let alice = connections
+            .get(&registry.connection_id_for_tenant("notion", &tenant_a))
+            .expect("Alice connection");
+        let bob = connections
+            .get(&registry.connection_id_for_tenant("notion", &tenant_b))
+            .expect("Bob connection");
+        assert!(alice.credential_ref.is_none());
+        assert!(alice.secret_headers.is_empty());
+        assert!(!alice.connected);
+        assert!(bob.credential_ref.is_some());
+        assert!(!bob.secret_headers.is_empty());
+
+        let _ = registry
+            .clear_auth_material_for_tenant("notion", &tenant_b)
+            .await;
         let _ = std::fs::remove_file(file);
     }
 

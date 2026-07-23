@@ -246,6 +246,39 @@ fn tenant_request(
         .expect("tenant request")
 }
 
+fn tenant_admin_request(
+    method: &str,
+    uri: impl AsRef<str>,
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+) -> Request<Body> {
+    let tenant_context =
+        tandem_types::TenantContext::explicit_user_workspace(org_id, workspace_id, None, actor_id);
+    let now = crate::now_ms();
+    let verified = tandem_types::VerifiedTenantContext {
+        tenant_context,
+        human_actor: tandem_types::HumanActor::tandem_user(actor_id),
+        authority_chain: tandem_types::AuthorityChain::from_request(
+            tandem_types::RequestPrincipal::authenticated_user(actor_id, "mcp-test"),
+        ),
+        roles: Vec::new(),
+        org_units: Vec::new(),
+        capabilities: vec!["deployment.admin".to_string()],
+        policy_version: None,
+        strict_projection: None,
+        issuer: "mcp-test".to_string(),
+        audience: "tandem".to_string(),
+        issued_at_ms: now,
+        expires_at_ms: now.saturating_add(60_000),
+        assertion_id: format!("mcp-admin-{actor_id}-{now}"),
+        assertion_key_id: None,
+    };
+    let mut request = tenant_request(method, uri, org_id, workspace_id, actor_id);
+    request.extensions_mut().insert(verified);
+    request
+}
+
 async fn spawn_fake_notion_oauth_mcp_server() -> (String, tokio::task::JoinHandle<()>) {
     async fn handle(
         headers: axum::http::HeaderMap,

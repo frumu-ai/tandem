@@ -757,10 +757,38 @@ impl McpRegistry {
             server.mcp_session_id = None;
             server.pending_auth_by_tool.clear();
             drop(servers);
+            self.upsert_compatibility_connection_for_server(name, &local_tenant_context())
+                .await;
             self.persist_state().await;
             return true;
         }
         false
+    }
+
+    pub async fn disconnect_for_tenant(
+        &self,
+        name: &str,
+        current_tenant: &TenantContext,
+    ) -> bool {
+        if current_tenant.is_local_implicit() {
+            return self.disconnect(name).await;
+        }
+        if !self.servers.read().await.contains_key(name)
+            || self
+                .connection_for_tenant(name, current_tenant)
+                .await
+                .is_none()
+        {
+            return false;
+        }
+        self.set_runtime_state_for_current_tenant(
+            name,
+            current_tenant,
+            McpRuntimeState::disconnected(None, None),
+        )
+        .await;
+        self.persist_state().await;
+        true
     }
 
     pub async fn clear_auth_material(&self, name: &str) -> bool {
@@ -773,6 +801,37 @@ impl McpRegistry {
         name: &str,
         current_tenant: &TenantContext,
     ) -> bool {
+        if !current_tenant.is_local_implicit() {
+            let owner = McpPrincipalRef::from_tenant_context(current_tenant);
+            let connection_id = mcp_connection_id(name, current_tenant, &owner);
+            let (secret_headers, oauth) = {
+                let mut connections = self.connections.write().await;
+                let Some(connection) = connections.get_mut(&connection_id) else {
+                    return false;
+                };
+                let secret_headers = connection.secret_headers.clone();
+                let oauth = connection.oauth.clone();
+                connection.connection_generation = new_mcp_connection_generation();
+                connection.credential_ref = None;
+                connection.secret_headers.clear();
+                connection.oauth = None;
+                connection.upstream_account = None;
+                connection.reset_transient_runtime_state();
+                connection.updated_at_ms = now_ms();
+                (secret_headers, oauth)
+            };
+            delete_secret_header_refs(&secret_headers, current_tenant);
+            delete_oauth_secret_ref(oauth.as_ref(), current_tenant);
+            delete_oauth_credential(
+                name,
+                oauth.as_ref(),
+                current_tenant,
+                &self.oauth_security_dir,
+            );
+            self.persist_state().await;
+            return true;
+        }
+
         if let Some(mut child) = self.processes.lock().await.remove(name) {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -802,6 +861,8 @@ impl McpRegistry {
         server.tools_fetched_at_ms = None;
         server.pending_auth_by_tool.clear();
         drop(servers);
+        self.upsert_compatibility_connection_for_server(name, current_tenant)
+            .await;
         self.persist_state().await;
         true
     }

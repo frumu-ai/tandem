@@ -516,6 +516,8 @@ pub(super) async fn list_providers(
         HashMap::new()
     };
     let allow_shared_auth_sources = tenant_context.is_local_implicit();
+    let allow_standalone_private_endpoint =
+        crate::http::host_authority::standalone_local_runtime_posture(&state, &tenant_context);
     let config_model_provider_set = merge_provider_models_from_config(&mut wire, &effective_cfg)
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
@@ -536,6 +538,7 @@ pub(super) async fn list_providers(
         let runtime_auth = &runtime_auth;
         let persisted_auth = &persisted_auth;
         let allow_shared_auth_sources = allow_shared_auth_sources;
+        let allow_standalone_private_endpoint = allow_standalone_private_endpoint;
         async move {
             let has_discovery_key = provider_config_api_key(
                 effective_cfg,
@@ -565,6 +568,7 @@ pub(super) async fn list_providers(
                     &runtime_auth,
                     &persisted_auth,
                     allow_shared_auth_sources,
+                    allow_standalone_private_endpoint,
                 )
                 .await
             };

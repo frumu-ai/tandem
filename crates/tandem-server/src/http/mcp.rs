@@ -1116,10 +1116,16 @@ async fn find_pending_mcp_oauth_session(
         .await
 }
 
-async fn remove_mcp_oauth_sessions_for_server(state: &AppState, server_name: &str) -> usize {
+async fn remove_mcp_oauth_sessions_for_server_and_tenant(
+    state: &AppState,
+    server_name: &str,
+    tenant_context: &TenantContext,
+) -> usize {
     state
         .oauth
-        .retain_mcp_sessions(|session| session.server_name != server_name)
+        .retain_mcp_sessions(|session| {
+            session.server_name != server_name || session.tenant_context != *tenant_context
+        })
         .await
 }
 
@@ -1666,15 +1672,28 @@ pub(super) async fn disconnect_mcp(
     if let Err(error) = grant.revalidate(&state, &effect) {
         return crate::http::host_authority::host_authorization_status(error).into_response();
     }
-    let ok = state.mcp.disconnect(&name).await;
+    let removed = state
+        .mcp
+        .server_tools_for_tenant(&name, &tenant_context)
+        .await
+        .len();
+    let ok = state
+        .mcp
+        .disconnect_for_tenant(&name, &tenant_context)
+        .await;
     if ok {
-        let removed = unregister_mcp_bridge_tools_for_server(&state, &name).await;
+        let (_, remaining) = resync_mcp_bridge_tools_for_server(&state, &name).await;
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.disconnected",
-            json!({
-                "name": name,
-                "removedToolCount": removed,
-            }),
+            mcp_tenant_event_payload(
+                &state,
+                &name,
+                &tenant_context,
+                json!({
+                    "removedToolCount": removed,
+                    "remainingToolCount": remaining,
+                }),
+            ),
         ));
     }
     Json(json!({"ok": ok})).into_response()
