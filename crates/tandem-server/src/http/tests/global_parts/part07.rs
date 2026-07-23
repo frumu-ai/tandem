@@ -604,6 +604,167 @@ async fn releasing_lease_cleans_up_managed_worktrees() {
 }
 
 #[tokio::test]
+async fn releasing_lease_retries_retained_branch_cleanup_after_lease_removal() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let repo_root = init_git_repo();
+    let repo_root_str = repo_root.to_string_lossy().to_string();
+    insert_test_lease(&state, "lease-cleanup-retry").await;
+
+    let create_req = Request::builder()
+        .method("POST")
+        .extension(direct_loopback_peer())
+        .uri("/worktree")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "repo_root": repo_root_str,
+                "task_id": "task-cleanup-retry",
+                "owner_run_id": "run-cleanup-retry",
+                "lease_id": "lease-cleanup-retry",
+                "managed": true
+            })
+            .to_string(),
+        ))
+        .expect("create worktree request");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create worktree response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create worktree body"),
+    )
+    .expect("create worktree json");
+    let worktree_id = create_payload
+        .get("worktree_id")
+        .and_then(Value::as_str)
+        .expect("worktree id")
+        .to_string();
+    let worktree_path = create_payload
+        .get("path")
+        .and_then(Value::as_str)
+        .expect("worktree path")
+        .to_string();
+    let branch = create_payload
+        .get("branch")
+        .and_then(Value::as_str)
+        .expect("branch")
+        .to_string();
+    let duplicate_path =
+        std::env::temp_dir().join(format!("tandem-worktree-duplicate-{}", Uuid::new_v4()));
+    let duplicate_path_str = duplicate_path.to_string_lossy().to_string();
+    let duplicate = Command::new("git")
+        .args([
+            "-C",
+            &repo_root_str,
+            "worktree",
+            "add",
+            "--force",
+            &duplicate_path_str,
+            &branch,
+        ])
+        .output()
+        .expect("create duplicate branch checkout");
+    assert!(
+        duplicate.status.success(),
+        "duplicate worktree creation failed: {}",
+        String::from_utf8_lossy(&duplicate.stderr)
+    );
+
+    let release = |app: axum::Router| async move {
+        let request = Request::builder()
+            .method("POST")
+            .extension(direct_loopback_peer())
+            .uri("/global/lease/release")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "lease_id": "lease-cleanup-retry" }).to_string(),
+            ))
+            .expect("release request");
+        let response = app.oneshot(request).await.expect("release response");
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice::<Value>(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("release body"),
+        )
+        .expect("release json")
+    };
+
+    let first_release = release(app.clone()).await;
+    assert_eq!(
+        first_release.get("ok").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        first_release
+            .get("released_worktree_failure_count")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert!(!state
+        .engine_leases
+        .read()
+        .await
+        .contains_key("lease-cleanup-retry"));
+    assert!(!std::path::Path::new(&worktree_path).exists());
+    assert!(state
+        .managed_worktrees
+        .read()
+        .await
+        .contains_key(&worktree_id));
+
+    let remove_duplicate = Command::new("git")
+        .args([
+            "-C",
+            &repo_root_str,
+            "worktree",
+            "remove",
+            "--force",
+            &duplicate_path_str,
+        ])
+        .output()
+        .expect("remove duplicate branch checkout");
+    assert!(
+        remove_duplicate.status.success(),
+        "duplicate worktree removal failed: {}",
+        String::from_utf8_lossy(&remove_duplicate.stderr)
+    );
+
+    let retry_release = release(app).await;
+    assert_eq!(
+        retry_release.get("ok").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        retry_release
+            .get("released_worktree_failure_count")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(!state
+        .managed_worktrees
+        .read()
+        .await
+        .contains_key(&worktree_id));
+    let branch_output = Command::new("git")
+        .args(["branch", "--list", &branch])
+        .current_dir(&repo_root)
+        .output()
+        .expect("git branch list");
+    assert!(String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .is_empty());
+
+    let _ = std::fs::remove_dir_all(duplicate_path);
+    let _ = std::fs::remove_dir_all(repo_root);
+}
+
+#[tokio::test]
 async fn expired_leases_are_pruned_and_cleanup_managed_worktrees() {
     let state = test_state().await;
     let app = app_router(state.clone());

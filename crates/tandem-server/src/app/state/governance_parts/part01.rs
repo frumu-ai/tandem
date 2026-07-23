@@ -18,6 +18,24 @@ fn governance_tenant_matches(
         && left.deployment_id == right.deployment_id
 }
 
+fn bind_governance_approval_to_tenant(
+    approval: &mut GovernanceApprovalRequest,
+    tenant_context: &tandem_types::TenantContext,
+) -> anyhow::Result<bool> {
+    let scope = governance_tenant_scope(tenant_context);
+    match approval.tenant_context.as_ref() {
+        Some(owner) if !governance_tenant_matches(owner, &scope) => {
+            anyhow::bail!("governance approval tenant ownership mismatch");
+        }
+        Some(_) => Ok(false),
+        None if tenant_context.is_local_implicit() => Ok(false),
+        None => {
+            approval.tenant_context = Some(scope);
+            Ok(true)
+        }
+    }
+}
+
 fn quarantine_governance_record_for_tenant(
     record: &mut AutomationGovernanceRecord,
     tenant_context: &tandem_types::TenantContext,
@@ -149,6 +167,45 @@ fn lifecycle_review_kind_for_trigger(trigger: &str) -> Option<AutomationLifecycl
 }
 
 impl AppState {
+    async fn materialize_expired_approval(
+        &self,
+        guard: &mut GovernanceState,
+        existing: &GovernanceApprovalRequest,
+        reviewer: &GovernanceActorRef,
+        tenant_context: &tandem_types::TenantContext,
+        reason: &str,
+    ) -> anyhow::Result<GovernanceApprovalRequest> {
+        let expired_at_ms = now_ms();
+        let mut expired = existing.clone();
+        expired.status = GovernanceApprovalStatus::Expired;
+        expired.updated_at_ms = expired_at_ms;
+        append_protected_audit_event(
+            self,
+            format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.expired"),
+            tenant_context,
+            reviewer
+                .actor_id
+                .clone()
+                .or_else(|| reviewer.source.clone()),
+            json!({
+                "approvalID": existing.approval_id,
+                "expiresAtMs": existing.expires_at_ms,
+                "reason": reason,
+            }),
+        )
+        .await?;
+        let previous = guard.clone();
+        guard
+            .approvals
+            .insert(expired.approval_id.clone(), expired.clone());
+        guard.updated_at_ms = expired_at_ms;
+        if let Err(error) = self.persist_automation_governance_snapshot(guard).await {
+            *guard = previous;
+            return Err(error);
+        }
+        Ok(expired)
+    }
+
     pub async fn decide_approval_request(
         &self,
         approval_id: &str,
@@ -186,6 +243,18 @@ impl AppState {
         // receipt must never acknowledge a newer review raised on the resource.
         if existing.status != GovernanceApprovalStatus::Pending {
             return Ok(Some(existing));
+        }
+        if existing.expires_at_ms <= now {
+            return self
+                .materialize_expired_approval(
+                    &mut guard,
+                    &existing,
+                    &reviewer,
+                    tenant_context,
+                    "expired_before_decision",
+                )
+                .await
+                .map(Some);
         }
         let stored = self
             .governance_engine
@@ -249,6 +318,18 @@ impl AppState {
             }),
         )
         .await?;
+        if existing.expires_at_ms <= now_ms() {
+            return self
+                .materialize_expired_approval(
+                    &mut guard,
+                    &existing,
+                    &reviewer,
+                    tenant_context,
+                    "expired_during_decision_audit",
+                )
+                .await
+                .map(Some);
+        }
         if let Some(record) = automation_review.as_ref() {
             append_protected_audit_event(
                 self,
@@ -260,12 +341,24 @@ impl AppState {
                     .or_else(|| reviewer.source.clone()),
                 json!({
                     "automationID": stored.target_resource.id,
-                    "reviewer": reviewer,
-                    "notes": notes,
+                    "reviewer": &reviewer,
+                    "notes": &notes,
                     "reviewKind": record.review_kind,
                 }),
             )
             .await?;
+        }
+        if existing.expires_at_ms <= now_ms() {
+            return self
+                .materialize_expired_approval(
+                    &mut guard,
+                    &existing,
+                    &reviewer,
+                    tenant_context,
+                    "expired_before_persistence",
+                )
+                .await
+                .map(Some);
         }
         let previous = guard.clone();
         guard
@@ -1054,6 +1147,76 @@ impl AppState {
             .await?;
         }
 
+        Ok(())
+    }
+}
+
+impl AppState {
+    pub async fn record_automation_review_progress(
+        &self,
+        automation_id: &str,
+        reason: AutomationLifecycleReviewKind,
+        run_id: Option<String>,
+        detail: Option<String>,
+    ) -> anyhow::Result<()> {
+        let automation = self
+            .get_automation_v2(automation_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("automation not found"))?;
+        let tenant_context = automation.tenant_context();
+        let now = now_ms();
+        let evaluation = {
+            let guard = self.automation_governance.read().await;
+            let snapshot = self.governance_snapshot(&guard);
+            self.governance_engine
+                .evaluate_run_review_progress(
+                    &snapshot,
+                    automation_id,
+                    reason,
+                    run_id.clone(),
+                    detail.clone(),
+                    now,
+                )
+                .map_err(|error| anyhow::anyhow!(error.message))?
+        };
+        let Some(mut evaluation) = evaluation else {
+            return Ok(());
+        };
+        bind_governance_record_to_tenant(&mut evaluation.record, &tenant_context)?;
+        let mut approval = evaluation.approval_request.take();
+        if let Some(approval) = approval.as_mut() {
+            bind_governance_approval_to_tenant(approval, &tenant_context)?;
+        }
+        {
+            let mut guard = self.automation_governance.write().await;
+            guard
+                .records
+                .insert(automation_id.to_string(), evaluation.record);
+            if let Some(approval) = approval.clone() {
+                guard
+                    .approvals
+                    .insert(approval.approval_id.clone(), approval);
+            }
+            guard.updated_at_ms = now;
+        }
+        self.persist_automation_governance().await?;
+        if let Some(approval) = approval {
+            append_protected_audit_event(
+                self,
+                format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
+                &tenant_context,
+                approval
+                    .requested_by
+                    .actor_id
+                    .clone()
+                    .or_else(|| approval.requested_by.source.clone()),
+                json!({
+                    "approvalID": approval.approval_id,
+                    "request": approval,
+                }),
+            )
+            .await?;
+        }
         Ok(())
     }
 }
