@@ -1518,48 +1518,6 @@ impl AppState {
                 )
                 .await
                 .context("failed to persist paused runs; admission remains durably closed")?;
-            // Pausing and persisting runs may take long enough for the exact
-            // receipt selected above to expire. Recheck immediately before
-            // governance evaluation; if it crossed the deadline, audit and
-            // expire it so the engine creates a fresh dependency-bound review.
-            let mut evaluation_now = now_ms();
-            if let Some(review_id) = matching_dependency_review_id.clone() {
-                let still_live = guard.approvals.get(&review_id).is_some_and(|approval| {
-                    approval.status == GovernanceApprovalStatus::Pending
-                        && approval.expires_at_ms > evaluation_now
-                        && approval.context.get("trigger")
-                            == Some(&Value::String("dependency_revoked".to_string()))
-                        && approval.context.get("reason") == Some(&Value::String(reason.clone()))
-                        && approval.context.pointer("/evidence/evidence") == Some(&evidence)
-                });
-                if !still_live {
-                    append_protected_audit_event(
-                        self,
-                        format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.superseded"),
-                        tenant_context,
-                        Some("automation_dependency_revocation".to_string()),
-                        json!({
-                            "automationID": automation_id,
-                            "supersededApprovalIDs": [review_id.clone()],
-                            "reason": "dependency_revocation_exact_review_expired_during_pause",
-                        }),
-                    )
-                    .await?;
-                    evaluation_now = now_ms();
-                    if let Some(approval) = guard.approvals.get_mut(&review_id) {
-                        if approval.status == GovernanceApprovalStatus::Pending {
-                            approval.status = GovernanceApprovalStatus::Expired;
-                            approval.updated_at_ms = evaluation_now;
-                        }
-                    }
-                    if let Some(record) = guard.records.get_mut(automation_id) {
-                        if record.review_request_id.as_deref() == Some(review_id.as_str()) {
-                            record.review_request_id = None;
-                            record.updated_at_ms = evaluation_now;
-                        }
-                    }
-                }
-            }
             let dependency_context = json!({
                 "trigger": "dependency_revoked",
                 "reason": reason.clone(),
@@ -1568,6 +1526,12 @@ impl AppState {
             });
             let snapshot = self.governance_snapshot(&guard);
             let current_record = guard.records.get(automation_id).cloned();
+            // Sample time only after snapshot/input construction and pass it
+            // directly to the synchronous engine invocation. If the selected
+            // receipt crossed its deadline during audit, run persistence, or
+            // snapshot construction, the engine sees it as expired and must
+            // produce a fresh dependency-bound review.
+            let evaluation_now = now_ms();
             let mut evaluation = self
                 .governance_engine
                 .evaluate_dependency_revocation(
@@ -1586,6 +1550,42 @@ impl AppState {
                     evaluation_now,
                 )
                 .map_err(|error| anyhow::anyhow!(error.message))?;
+            if let Some(review_id) = matching_dependency_review_id.as_ref() {
+                let expired_at_evaluation = guard
+                    .approvals
+                    .get(review_id)
+                    .is_none_or(|approval| approval.expires_at_ms <= evaluation_now);
+                if expired_at_evaluation {
+                    anyhow::ensure!(
+                        evaluation
+                            .approval_request
+                            .as_ref()
+                            .is_some_and(|approval| {
+                                approval.approval_id.as_str() != review_id.as_str()
+                            }),
+                        "dependency revocation did not replace an expired lifecycle review"
+                    );
+                    append_protected_audit_event(
+                        self,
+                        format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.superseded"),
+                        tenant_context,
+                        Some("automation_dependency_revocation".to_string()),
+                        json!({
+                            "automationID": automation_id,
+                            "supersededApprovalIDs": [review_id],
+                            "reason": "dependency_revocation_exact_review_expired_during_transition",
+                        }),
+                    )
+                    .await?;
+                    let expired_at_ms = now_ms();
+                    if let Some(approval) = guard.approvals.get_mut(review_id) {
+                        if approval.status == GovernanceApprovalStatus::Pending {
+                            approval.status = GovernanceApprovalStatus::Expired;
+                            approval.updated_at_ms = expired_at_ms;
+                        }
+                    }
+                }
+            }
             bind_governance_record_to_tenant(&mut evaluation.record, tenant_context)?;
             // Dependency revocation is an admission-closing event. Keep these
             // gates explicit even if an engine implementation changes how it
