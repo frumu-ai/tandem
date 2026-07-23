@@ -115,7 +115,11 @@ pub(in crate::http::global) async fn cleanup_managed_worktrees_for_lease(
                 continue;
             }
         };
-        if registered_branch.as_deref() != Some(record.branch.as_str()) {
+        let worktree_already_removed = registered_branch.is_none()
+            && !StdPath::new(&record.path).exists()
+            && record.cleanup_branch;
+        if !worktree_already_removed && registered_branch.as_deref() != Some(record.branch.as_str())
+        {
             result.failures.push(json!({
                 "worktree_id": record.key,
                 "expected_branch": record.branch,
@@ -124,49 +128,51 @@ pub(in crate::http::global) async fn cleanup_managed_worktrees_for_lease(
             }));
             continue;
         }
-        if let Some((caller_grant, caller_effect)) = caller_authority {
-            if let Err(error) = caller_grant.revalidate(state, caller_effect) {
+        if !worktree_already_removed {
+            if let Some((caller_grant, caller_effect)) = caller_authority {
+                if let Err(error) = caller_grant.revalidate(state, caller_effect) {
+                    result.failures.push(json!({
+                        "worktree_id": record.key,
+                        "code": error.code(),
+                        "authority": "caller",
+                    }));
+                    continue;
+                }
+            }
+            if let Err(error) = grant.revalidate(state, &effect) {
                 result.failures.push(json!({
                     "worktree_id": record.key,
                     "code": error.code(),
-                    "authority": "caller",
                 }));
                 continue;
             }
-        }
-        if let Err(error) = grant.revalidate(state, &effect) {
-            result.failures.push(json!({
-                "worktree_id": record.key,
-                "code": error.code(),
-            }));
-            continue;
-        }
-        let output = match crate::runtime::worktrees::run_managed_git(
-            &record.repo_root,
-            &["worktree", "remove", "--", &record.path],
-        )
-        .await
-        {
-            Ok(output) => output,
-            Err(_) => {
+            let output = match crate::runtime::worktrees::run_managed_git(
+                &record.repo_root,
+                &["worktree", "remove", "--", &record.path],
+            )
+            .await
+            {
+                Ok(output) => output,
+                Err(_) => {
+                    result.failures.push(json!({
+                        "path": record.path,
+                        "branch": record.branch,
+                        "repo_root": record.repo_root,
+                        "code": "WORKTREE_REMOVE_FAILED",
+                    }));
+                    continue;
+                }
+            };
+            if !output.success {
                 result.failures.push(json!({
                     "path": record.path,
                     "branch": record.branch,
                     "repo_root": record.repo_root,
                     "code": "WORKTREE_REMOVE_FAILED",
+                    "stderr": output.stderr.clone(),
                 }));
                 continue;
             }
-        };
-        if !output.success {
-            result.failures.push(json!({
-                "path": record.path,
-                "branch": record.branch,
-                "repo_root": record.repo_root,
-                "code": "WORKTREE_REMOVE_FAILED",
-                "stderr": output.stderr.clone(),
-            }));
-            continue;
         }
         let mut branch_cleanup_complete = true;
         if record.cleanup_branch {

@@ -390,7 +390,11 @@ pub(super) async fn global_lease_release(
         .await
         .get(&input.lease_id)
         .is_some_and(|lease| lease.tenant_context == tenant);
-    if !lease_owned {
+    let has_managed_worktrees = state.managed_worktrees.read().await.values().any(|record| {
+        record.lease_id.as_deref() == Some(input.lease_id.as_str())
+            && record.tenant_context == tenant
+    });
+    if !lease_owned && !has_managed_worktrees {
         return Ok(Json(json!({
             "ok": false,
             "lease_count": state.engine_leases.read().await.len(),
@@ -398,10 +402,6 @@ pub(super) async fn global_lease_release(
             "released_worktree_failure_count": 0,
         })));
     }
-    let has_managed_worktrees = state.managed_worktrees.read().await.values().any(|record| {
-        record.lease_id.as_deref() == Some(input.lease_id.as_str())
-            && record.tenant_context == tenant
-    });
     let caller_authority = if has_managed_worktrees {
         Some(
             authorize_global_host_effect(
@@ -433,7 +433,7 @@ pub(super) async fn global_lease_release(
             false
         }
     };
-    let cleanup = if removed {
+    let cleanup = if has_managed_worktrees {
         cleanup_managed_worktrees_for_lease(
             &state,
             &input.lease_id,
@@ -447,9 +447,10 @@ pub(super) async fn global_lease_release(
     };
     let released_worktree_count = cleanup.cleaned_paths.len();
     let released_worktree_failure_count = cleanup.failures.len();
+    let ok = (removed || has_managed_worktrees) && released_worktree_failure_count == 0;
     let expose_host_details = verified.is_none() && tenant.is_local_implicit();
     Ok(Json(json!({
-        "ok": removed,
+        "ok": ok,
         "lease_count": state.engine_leases.read().await.len(),
         "released_worktree_count": released_worktree_count,
         "released_worktree_failure_count": released_worktree_failure_count,
