@@ -15,6 +15,9 @@ fn direct_loopback_request() -> axum::http::request::Builder {
 async fn private_mcp_oauth_requires_standalone_listener_posture() {
     let state = test_state().await;
     let tenant = tandem_types::TenantContext::local_implicit();
+    state
+        .trust_test_tenant_headers
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     state.mcp.set_strict_tenant_enforcement(false);
     assert!(state
         .mcp
