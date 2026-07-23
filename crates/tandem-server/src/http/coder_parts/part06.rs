@@ -41,25 +41,19 @@ async fn run_issue_fix_worker_session(
         "Coder {workflow_label} {} / {}",
         record.coder_run_id, worker_kind
     );
+    let worker_tenant_context =
+        load_context_run_state(state, &record.linked_context_run_id).await?.tenant_context;
     let managed_worktree = prepare_coder_worker_workspace(
         state,
         &record.repo_binding.workspace_root,
         task_id,
         &record.linked_context_run_id,
         worker_kind,
+        worker_tenant_context,
     )
-    .await;
-    let canonical_repo_root = managed_worktree
-        .as_ref()
-        .map(|result| result.record.repo_root.clone())
-        .or_else(|| {
-            crate::runtime::worktrees::resolve_git_repo_root(&record.repo_binding.workspace_root)
-        })
-        .unwrap_or_else(|| record.repo_binding.workspace_root.clone());
-    let worker_workspace_root = managed_worktree
-        .as_ref()
-        .map(|result| result.record.path.clone())
-        .unwrap_or_else(|| record.repo_binding.workspace_root.clone());
+    .await?;
+    let canonical_repo_root = managed_worktree.record.repo_root.clone();
+    let worker_workspace_root = managed_worktree.record.path.clone();
     let result = async {
         let mut session = Session::new(
             Some(session_title),
@@ -211,21 +205,21 @@ async fn run_issue_fix_worker_session(
             "task_id": task_id,
             "worker_workspace_root": worker_workspace_root,
             "worker_workspace_repo_root": canonical_repo_root,
-            "worker_workspace_branch": managed_worktree.as_ref().map(|row| row.record.branch.clone()),
-            "worker_workspace_reused": managed_worktree.as_ref().map(|row| row.reused),
-            "worker_workspace_cleanup_branch": managed_worktree.as_ref().map(|row| row.record.cleanup_branch),
-            "managed_worktree": managed_worktree.as_ref().map(|row| json!({
-                "key": row.record.key,
-                "path": row.record.path,
-                "repo_root": row.record.repo_root,
-                "branch": row.record.branch,
-                "base": row.record.base,
-                "task_id": row.record.task_id,
-                "owner_run_id": row.record.owner_run_id,
-                "lease_id": row.record.lease_id,
-                "cleanup_branch": row.record.cleanup_branch,
-                "reused": row.reused,
-            })),
+            "worker_workspace_branch": managed_worktree.record.branch.clone(),
+            "worker_workspace_reused": managed_worktree.reused,
+            "worker_workspace_cleanup_branch": managed_worktree.record.cleanup_branch,
+            "managed_worktree": json!({
+                "key": managed_worktree.record.key,
+                "path": managed_worktree.record.path,
+                "repo_root": managed_worktree.record.repo_root,
+                "branch": managed_worktree.record.branch,
+                "base": managed_worktree.record.base,
+                "task_id": managed_worktree.record.task_id,
+                "owner_run_id": managed_worktree.record.owner_run_id,
+                "lease_id": managed_worktree.record.lease_id,
+                "cleanup_branch": managed_worktree.record.cleanup_branch,
+                "reused": managed_worktree.reused,
+            }),
             "session_id": session_id,
             "session_run_id": run_id,
             "session_context_run_id": worker_context_run_id,
@@ -277,10 +271,11 @@ async fn run_issue_fix_worker_session(
     .await;
     let preserve_worktree = worker_kind.starts_with("issue_fix_");
     if !preserve_worktree {
-        if let Some(worktree) = managed_worktree.as_ref() {
-            let _ =
-                crate::runtime::worktrees::delete_managed_worktree(state, &worktree.record).await;
-        }
+        let _ = crate::runtime::worktrees::delete_managed_worktree(
+            state,
+            &managed_worktree.record,
+        )
+        .await;
     }
     let (artifact, payload, run_ok) = result?;
     if !run_ok {
@@ -296,12 +291,17 @@ async fn prepare_coder_worker_workspace(
     task_id: Option<&str>,
     owner_run_id: &str,
     worker_kind: &str,
-) -> Option<crate::runtime::worktrees::ManagedWorktreeEnsureResult> {
-    let repo_root = crate::runtime::worktrees::resolve_git_repo_root(workspace_root)?;
+    tenant_context: tandem_types::TenantContext,
+) -> Result<crate::runtime::worktrees::ManagedWorktreeEnsureResult, StatusCode> {
+    super::host_authority::require_loopback_local_operator(state, &tenant_context, None)?;
+    let repo_root = crate::runtime::worktrees::resolve_git_repo_root(workspace_root)
+        .ok_or(StatusCode::CONFLICT)?;
     crate::runtime::worktrees::ensure_managed_worktree(
         state,
         crate::runtime::worktrees::ManagedWorktreeEnsureInput {
             repo_root,
+            repository_id: None,
+            tenant_context,
             task_id: task_id.map(ToString::to_string),
             owner_run_id: Some(owner_run_id.to_string()),
             lease_id: None,
@@ -311,7 +311,37 @@ async fn prepare_coder_worker_workspace(
         },
     )
     .await
-    .ok()
+    .map_err(|_| StatusCode::FORBIDDEN)
+}
+
+#[cfg(test)]
+mod coder_worker_security_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn hosted_worker_denial_precedes_repository_fallback() {
+        let state = crate::test_support::test_state().await;
+        state.set_host_operations_loopback_only(false);
+        state.set_server_base_url("https://engine.example.test".to_string());
+        let tenant = tandem_types::TenantContext::explicit(
+            "org-a",
+            "workspace-a",
+            Some("actor-a".to_string()),
+        );
+
+        let error = prepare_coder_worker_workspace(
+            &state,
+            "/path-that-must-not-be-probed",
+            Some("task-a"),
+            "run-a",
+            "issue_fix_prepare",
+            tenant,
+        )
+        .await
+        .expect_err("hosted coder workspaces must fail before raw repository probing");
+
+        assert_eq!(error, StatusCode::FORBIDDEN);
+    }
 }
 
 fn build_coder_worker_contract_prompt(
@@ -341,70 +371,67 @@ fn build_coder_worker_contract_prompt(
 }
 
 async fn collect_git_handoff_evidence(workspace_root: &str) -> Value {
-    let workspace_root = workspace_root.to_string();
-    tokio::task::spawn_blocking(move || {
-        let status = std::process::Command::new("git")
-            .args(["-C", &workspace_root, "status", "--porcelain"])
-            .output();
-        let diff = std::process::Command::new("git")
-            .args(["-C", &workspace_root, "diff", "--", "."])
-            .output();
-        let head = std::process::Command::new("git")
-            .args(["-C", &workspace_root, "rev-parse", "HEAD"])
-            .output();
-        let branch = std::process::Command::new("git")
-            .args(["-C", &workspace_root, "branch", "--show-current"])
-            .output();
+    let status = crate::runtime::worktrees::run_managed_git(
+        workspace_root,
+        &["status", "--porcelain"],
+    )
+    .await;
+    let diff = crate::runtime::worktrees::run_managed_git(
+        workspace_root,
+        &["diff", "--", "."],
+    )
+    .await;
+    let head = crate::runtime::worktrees::run_managed_git(
+        workspace_root,
+        &["rev-parse", "HEAD"],
+    )
+    .await;
+    let branch = crate::runtime::worktrees::run_managed_git(
+        workspace_root,
+        &["branch", "--show-current"],
+    )
+    .await;
 
-        let status_text = status
+    let status_text = status
+        .as_ref()
+        .ok()
+        .filter(|output| output.success)
+        .map(|output| output.stdout.clone())
+        .unwrap_or_default();
+    let mut changed_files = status_text
+        .lines()
+        .filter_map(|line| {
+            let path = line.get(3..).unwrap_or_default().trim();
+            if path.is_empty() {
+                None
+            } else {
+                Some(path.trim_matches('"').to_string())
+            }
+        })
+        .collect::<Vec<_>>();
+    changed_files.sort();
+    changed_files.dedup();
+    json!({
+        "workspace_root": workspace_root,
+        "changed_files": changed_files,
+        "status_porcelain": status_text,
+        "diff": diff
             .as_ref()
             .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
-            .unwrap_or_default();
-        let mut changed_files = status_text
-            .lines()
-            .filter_map(|line| {
-                let path = line.get(3..).unwrap_or_default().trim();
-                if path.is_empty() {
-                    None
-                } else {
-                    Some(path.trim_matches('"').to_string())
-                }
-            })
-            .collect::<Vec<_>>();
-        changed_files.sort();
-        changed_files.dedup();
-        json!({
-            "workspace_root": workspace_root,
-            "changed_files": changed_files,
-            "status_porcelain": status_text,
-            "diff": diff
-                .as_ref()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| crate::truncate_text(String::from_utf8_lossy(&output.stdout).as_ref(), 48_000))
-                .unwrap_or_default(),
-            "commit_sha": head
-                .as_ref()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()),
-            "branch_name": branch
-                .as_ref()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()),
-            "ok": status.as_ref().map(|output| output.status.success()).unwrap_or(false),
-        })
-    })
-    .await
-    .unwrap_or_else(|error| {
-        json!({
-            "ok": false,
-            "error": crate::truncate_text(&error.to_string(), 500),
-            "changed_files": [],
-        })
+            .filter(|output| output.success)
+            .map(|output| crate::truncate_text(&output.stdout, 48_000))
+            .unwrap_or_default(),
+        "commit_sha": head
+            .as_ref()
+            .ok()
+            .filter(|output| output.success)
+            .map(|output| output.stdout.trim().to_string()),
+        "branch_name": branch
+            .as_ref()
+            .ok()
+            .filter(|output| output.success)
+            .map(|output| output.stdout.trim().to_string()),
+        "ok": status.as_ref().is_ok_and(|output| output.success),
     })
 }
 

@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-use serial_test::serial;
 use sha2::{Digest, Sha256};
 use tandem_memory::decrypt_broker::{MemoryDecryptBroker, MemoryDecryptBrokerConfig};
 use tandem_memory::dek_cache::MemoryDekCache;
@@ -170,24 +169,7 @@ async fn randomized_ciphertext_uses_stable_tenant_scoped_digest() {
 }
 
 #[tokio::test]
-#[serial]
 async fn hosted_required_without_kms_fails_closed() {
-    let names = [
-        "TANDEM_MEMORY_ENCRYPTION_REQUIRED",
-        "TANDEM_MEMORY_DECRYPT_PROVIDER",
-        "TANDEM_MEMORY_LOCAL_KEY_FILE",
-        "TANDEM_MEMORY_GOOGLE_KMS_ENCRYPT_COMMAND",
-        "TANDEM_MEMORY_GOOGLE_KMS_DECRYPT_COMMAND",
-        "TANDEM_MEMORY_KEK_ID",
-        "TANDEM_MEMORY_KEK_VERSION",
-    ];
-    let previous = names.map(|name| std::env::var(name).ok());
-    std::env::set_var("TANDEM_MEMORY_ENCRYPTION_REQUIRED", "true");
-    std::env::set_var("TANDEM_MEMORY_DECRYPT_PROVIDER", "google_cloud_kms");
-    for name in &names[2..] {
-        std::env::remove_var(name);
-    }
-
     let provider = MemoryCryptoProvider::from_mode(tandem_memory::MemoryCryptoMode::HostedKms {
         provider: "google_cloud_kms".to_string(),
     });
@@ -202,12 +184,6 @@ async fn hosted_required_without_kms_fails_closed() {
     })
     .await;
 
-    for (name, value) in names.into_iter().zip(previous) {
-        match value {
-            Some(value) => std::env::set_var(name, value),
-            None => std::env::remove_var(name),
-        }
-    }
     assert!(format!("{error:?}").contains("refusing to store plaintext"));
 }
 

@@ -61,6 +61,7 @@
 )]
 
 pub mod acme_demo;
+pub mod action_authorization;
 pub mod agent_teams;
 pub mod app;
 pub mod audit;

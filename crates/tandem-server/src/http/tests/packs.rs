@@ -3,6 +3,27 @@
 
 use super::*;
 
+fn direct_loopback() -> axum::extract::ConnectInfo<std::net::SocketAddr> {
+    axum::extract::ConnectInfo("127.0.0.1:39731".parse().expect("loopback socket address"))
+}
+
+#[tokio::test]
+async fn pack_host_effects_reject_requests_without_direct_loopback_peer() {
+    let app = app_router(test_state().await);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/packs/detect")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "path": "/tmp/not-inspected.zip" }).to_string(),
+        ))
+        .expect("request");
+
+    let response = app.oneshot(request).await.expect("response");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn packs_detect_requires_root_marker() {
     let state = test_state().await;
@@ -18,6 +39,7 @@ async fn packs_detect_requires_root_marker() {
     let req = Request::builder()
         .method("POST")
         .uri("/packs/detect")
+        .extension(direct_loopback())
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -54,6 +76,7 @@ async fn packs_detect_returns_false_without_marker() {
     let req = Request::builder()
         .method("POST")
         .uri("/packs/detect")
+        .extension(direct_loopback())
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -88,6 +111,7 @@ async fn packs_install_list_and_uninstall_roundtrip() {
     let install_req = Request::builder()
         .method("POST")
         .uri("/packs/install")
+        .extension(direct_loopback())
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -155,6 +179,7 @@ async fn packs_install_list_and_uninstall_roundtrip() {
     let uninstall_req = Request::builder()
         .method("POST")
         .uri("/packs/uninstall")
+        .extension(direct_loopback())
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -183,6 +208,7 @@ async fn packs_updates_endpoints_return_stub_payload() {
     let install_req = Request::builder()
         .method("POST")
         .uri("/packs/install")
+        .extension(direct_loopback())
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -301,6 +327,7 @@ contents:
             Request::builder()
                 .method("POST")
                 .uri("/packs/install")
+                .extension(direct_loopback())
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
@@ -410,6 +437,7 @@ contents:
     let install_req = Request::builder()
         .method("POST")
         .uri("/packs/install")
+        .extension(direct_loopback())
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -502,6 +530,7 @@ contents:
     let install_req = Request::builder()
         .method("POST")
         .uri("/packs/install")
+        .extension(direct_loopback())
         .header("content-type", "application/json")
         .body(Body::from(
             json!({

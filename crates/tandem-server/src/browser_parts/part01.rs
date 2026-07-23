@@ -349,8 +349,12 @@ impl BrowserSubsystem {
         &self.config
     }
 
-    pub async fn install_sidecar(&self) -> anyhow::Result<BrowserSidecarInstallResult> {
-        let mut result = install_browser_sidecar(&self.config).await?;
+    pub async fn install_sidecar<F>(
+        &self,
+        authorize_write: F,
+    ) -> anyhow::Result<BrowserSidecarInstallResult>
+    where F: Fn() -> anyhow::Result<()> + Send + Sync {
+        let mut result = install_browser_sidecar(&self.config, authorize_write).await?;
         result.status = self.refresh_status().await;
         Ok(result)
     }

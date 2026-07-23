@@ -29,22 +29,27 @@ export function SettingsPageMaintenanceBrowserSections({
     worktreeCleanupMutation,
     worktreeCleanupPendingMessage,
     worktreeCleanupRepoRoot,
+    worktreeCleanupRepositoryId,
     worktreeCleanupResult,
     setWorktreeCleanupDryRun,
     setWorktreeCleanupRepoRoot,
+    setWorktreeCleanupRepositoryId,
     setWorktreeCleanupResult,
   } = controller;
   const safeWorktreeCleanupActionRows = Array.isArray(worktreeCleanupActionRows)
     ? worktreeCleanupActionRows
     : [];
   const safeBrowserIssues = Array.isArray(browserIssues) ? browserIssues : [];
+  const worktreeCleanupTargetReady = localEngine
+    ? Boolean(worktreeCleanupRepoRoot.trim())
+    : Boolean(worktreeCleanupRepositoryId.trim());
 
   return (
     <>
       {activeSection === "maintenance" ? (
         <PanelCard
           title="Managed worktree cleanup"
-          subtitle="Scan repo-local .tandem/worktrees entries, keep live runtime worktrees, and remove stale or orphaned leftovers."
+          subtitle="Scan managed worktrees through a local repository root or an opaque remote repository resource, keep live entries, and remove stale or orphaned leftovers."
           actions={
             <Toolbar>
               <button
@@ -61,11 +66,12 @@ export function SettingsPageMaintenanceBrowserSections({
                 className="tcp-btn"
                 onClick={() =>
                   worktreeCleanupMutation.mutate({
-                    repoRoot: worktreeCleanupRepoRoot.trim(),
+                    repoRoot: localEngine ? worktreeCleanupRepoRoot.trim() : undefined,
+                    repositoryId: localEngine ? undefined : worktreeCleanupRepositoryId.trim(),
                     dryRun: true,
                   })
                 }
-                disabled={worktreeCleanupMutation.isPending || !worktreeCleanupRepoRoot.trim()}
+                disabled={worktreeCleanupMutation.isPending || !worktreeCleanupTargetReady}
               >
                 <Icon name="search" />
                 Preview stale worktrees
@@ -74,11 +80,12 @@ export function SettingsPageMaintenanceBrowserSections({
                 className="tcp-btn-primary"
                 onClick={() =>
                   worktreeCleanupMutation.mutate({
-                    repoRoot: worktreeCleanupRepoRoot.trim(),
+                    repoRoot: localEngine ? worktreeCleanupRepoRoot.trim() : undefined,
+                    repositoryId: localEngine ? undefined : worktreeCleanupRepositoryId.trim(),
                     dryRun: worktreeCleanupDryRun,
                   })
                 }
-                disabled={worktreeCleanupMutation.isPending || !worktreeCleanupRepoRoot.trim()}
+                disabled={worktreeCleanupMutation.isPending || !worktreeCleanupTargetReady}
               >
                 <Icon name="trash-2" />
                 {worktreeCleanupMutation.isPending
@@ -91,17 +98,34 @@ export function SettingsPageMaintenanceBrowserSections({
           }
         >
           <div className="grid gap-4">
-            <label className="grid gap-2">
-              <span className="text-sm font-medium">Repository root</span>
-              <input
-                className="tcp-input"
-                value={worktreeCleanupRepoRoot}
-                onInput={(event) =>
-                  setWorktreeCleanupRepoRoot((event.target as HTMLInputElement).value)
-                }
-                placeholder="/absolute/path/to/repo"
-              />
-            </label>
+            {localEngine ? (
+              <label className="grid gap-2">
+                <span className="text-sm font-medium">Repository root</span>
+                <input
+                  className="tcp-input"
+                  value={worktreeCleanupRepoRoot}
+                  onInput={(event) =>
+                    setWorktreeCleanupRepoRoot((event.target as HTMLInputElement).value)
+                  }
+                  placeholder="/absolute/path/to/repo"
+                />
+              </label>
+            ) : (
+              <label className="grid gap-2">
+                <span className="text-sm font-medium">Repository resource ID</span>
+                <input
+                  className="tcp-input"
+                  value={worktreeCleanupRepositoryId}
+                  onInput={(event) =>
+                    setWorktreeCleanupRepositoryId((event.target as HTMLInputElement).value)
+                  }
+                  placeholder="Tenant-owned session ID"
+                />
+                <span className="tcp-subtle text-xs">
+                  Remote cleanup resolves the repository through an opaque tenant-owned session.
+                </span>
+              </label>
+            )}
             <label className="flex items-center gap-3 text-sm">
               <input
                 type="checkbox"
@@ -121,7 +145,9 @@ export function SettingsPageMaintenanceBrowserSections({
                 <div className="text-sm font-medium">Cleanup target</div>
                 <div className="mt-1 break-all text-xs">
                   {worktreeCleanupResult?.managed_root ||
-                    `${worktreeCleanupRepoRoot || "repo"}/.tandem/worktrees`}
+                    (localEngine
+                      ? `${worktreeCleanupRepoRoot || "repo"}/.tandem/worktrees`
+                      : worktreeCleanupRepositoryId || "Repository resource")}
                 </div>
               </div>
               <div className="tcp-list-item">
@@ -192,7 +218,8 @@ export function SettingsPageMaintenanceBrowserSections({
                         {worktreeCleanupResult.dry_run ? "Preview results" : "Cleanup log"}
                       </div>
                       <div className="tcp-subtle mt-1 text-xs">
-                        {worktreeCleanupResult.repo_root || worktreeCleanupRepoRoot}
+                        {worktreeCleanupResult.repo_root ||
+                          (localEngine ? worktreeCleanupRepoRoot : worktreeCleanupRepositoryId)}
                       </div>
                     </div>
                     <Badge

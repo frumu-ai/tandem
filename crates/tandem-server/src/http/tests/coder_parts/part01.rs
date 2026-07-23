@@ -218,44 +218,6 @@ where
     }
 }
 
-fn init_coder_git_repo() -> std::path::PathBuf {
-    let repo_root =
-        std::env::temp_dir().join(format!("tandem-coder-worktree-test-{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&repo_root).expect("create repo dir");
-    let status = std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&repo_root)
-        .status()
-        .expect("git init");
-    assert!(status.success());
-    let status = std::process::Command::new("git")
-        .args(["config", "user.email", "tests@tandem.local"])
-        .current_dir(&repo_root)
-        .status()
-        .expect("git config email");
-    assert!(status.success());
-    let status = std::process::Command::new("git")
-        .args(["config", "user.name", "Tandem Tests"])
-        .current_dir(&repo_root)
-        .status()
-        .expect("git config name");
-    assert!(status.success());
-    std::fs::write(repo_root.join("README.md"), "# coder test\n").expect("seed readme");
-    let status = std::process::Command::new("git")
-        .args(["add", "README.md"])
-        .current_dir(&repo_root)
-        .status()
-        .expect("git add");
-    assert!(status.success());
-    let status = std::process::Command::new("git")
-        .args(["commit", "-m", "init"])
-        .current_dir(&repo_root)
-        .status()
-        .expect("git commit");
-    assert!(status.success());
-    repo_root
-}
-
 async fn create_coder_run_for_replay(app: axum::Router, body: Value) -> (Value, String) {
     let create_req = Request::builder()
         .method("POST")
@@ -1105,6 +1067,7 @@ async fn coder_issue_fix_failed_validation_writes_regression_signal() {
 fn coder_issue_fix_worker_failure_writes_run_outcome() {
     run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
+    let repo_root = init_coder_git_repo();
     state
         .capability_resolver
         .refresh_builtin_bindings()
@@ -1125,7 +1088,7 @@ fn coder_issue_fix_worker_failure_writes_run_outcome() {
                 "repo_binding": {
                     "project_id": "proj-engine",
                     "workspace_id": "ws-tandem",
-                    "workspace_root": "/tmp/tandem-repo",
+                    "workspace_root": repo_root.to_string_lossy(),
                     "repo_slug": "user123/tandem"
                 },
                 "github_ref": {
@@ -1199,10 +1162,12 @@ fn coder_issue_fix_worker_failure_writes_run_outcome() {
     });
 }
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn coder_pr_review_worker_failure_writes_run_outcome() {
+fn coder_pr_review_worker_failure_writes_run_outcome() {
+    run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
+    let repo_root = init_coder_git_repo();
     state
         .capability_resolver
         .refresh_builtin_bindings()
@@ -1223,7 +1188,7 @@ async fn coder_pr_review_worker_failure_writes_run_outcome() {
                 "repo_binding": {
                     "project_id": "proj-engine",
                     "workspace_id": "ws-tandem",
-                    "workspace_root": "/tmp/tandem-repo",
+                    "workspace_root": repo_root.to_string_lossy(),
                     "repo_slug": "user123/tandem"
                 },
                 "github_ref": {
@@ -1290,6 +1255,7 @@ async fn coder_pr_review_worker_failure_writes_run_outcome() {
             .and_then(|row| row.get("worker_session_context_run_id"))
             .and_then(Value::as_str)
     );
+    });
 }
 
 #[test]
@@ -1297,6 +1263,7 @@ async fn coder_pr_review_worker_failure_writes_run_outcome() {
 fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
     run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
+    let repo_root = init_coder_git_repo();
     state
         .capability_resolver
         .refresh_builtin_bindings()
@@ -1317,7 +1284,7 @@ fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
                 "repo_binding": {
                     "project_id": "proj-engine",
                     "workspace_id": "ws-tandem",
-                    "workspace_root": "/tmp/tandem-repo",
+                    "workspace_root": repo_root.to_string_lossy(),
                     "repo_slug": "user123/tandem"
                 },
                 "github_ref": {
@@ -1558,6 +1525,7 @@ fn coder_issue_fix_worker_uses_managed_worktree_for_git_repo() {
 fn coder_issue_fix_execute_all_runs_to_completion() {
     run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
+    let repo_root = init_coder_git_repo();
     state
         .capability_resolver
         .refresh_builtin_bindings()
@@ -1576,7 +1544,7 @@ fn coder_issue_fix_execute_all_runs_to_completion() {
                 "repo_binding": {
                     "project_id": "proj-engine",
                     "workspace_id": "ws-tandem",
-                    "workspace_root": "/tmp/tandem-repo",
+                    "workspace_root": repo_root.to_string_lossy(),
                     "repo_slug": "user123/tandem"
                 },
                 "github_ref": {
@@ -1638,10 +1606,12 @@ fn coder_issue_fix_execute_all_runs_to_completion() {
     });
 }
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn coder_pr_review_execute_all_runs_to_completion() {
+fn coder_pr_review_execute_all_runs_to_completion() {
+    run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
+    let repo_root = init_coder_git_repo();
     state
         .capability_resolver
         .refresh_builtin_bindings()
@@ -1660,7 +1630,7 @@ async fn coder_pr_review_execute_all_runs_to_completion() {
                 "repo_binding": {
                     "project_id": "proj-engine",
                     "workspace_id": "ws-tandem",
-                    "workspace_root": "/tmp/tandem-repo",
+                    "workspace_root": repo_root.to_string_lossy(),
                     "repo_slug": "user123/tandem",
                     "default_branch": "main"
                 },
@@ -1720,6 +1690,7 @@ async fn coder_pr_review_execute_all_runs_to_completion() {
         .get("executed_steps")
         .and_then(Value::as_u64)
         .is_some_and(|count| count >= 2));
+    });
 }
 
 /// GOV-B2a: creating a coder run from an agent context is rejected. Coder runs

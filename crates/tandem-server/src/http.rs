@@ -294,6 +294,10 @@ struct WorkspaceOverrideInput {
 #[derive(Debug, Deserialize, Default)]
 struct WorktreeInput {
     repo_root: Option<String>,
+    #[serde(default, alias = "repositoryId")]
+    repository_id: Option<String>,
+    #[serde(default, alias = "worktreeId")]
+    worktree_id: Option<String>,
     path: Option<String>,
     branch: Option<String>,
     base: Option<String>,
@@ -307,12 +311,16 @@ struct WorktreeInput {
 #[derive(Debug, Deserialize, Default)]
 struct WorktreeListQuery {
     repo_root: Option<String>,
+    #[serde(default, alias = "repositoryId")]
+    repository_id: Option<String>,
     managed_only: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct WorktreeCleanupInput {
     repo_root: Option<String>,
+    #[serde(default, alias = "repositoryId")]
+    repository_id: Option<String>,
     #[serde(default)]
     dry_run: Option<bool>,
     #[serde(default)]

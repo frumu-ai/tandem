@@ -8,6 +8,18 @@ use std::time::{Duration, UNIX_EPOCH};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 
 use super::*;
+use crate::action_authorization::{
+    authorize_host_effect, AuthorizedHostEffect, CanonicalHostResource, HostAction,
+    HostAuthorizationError, HostEffectRequest,
+};
+
+#[path = "global_worktrees.rs"]
+mod worktrees;
+use worktrees::{cleanup_managed_worktrees_for_lease, LeaseWorktreeCleanupResult};
+pub(super) use worktrees::{
+    cleanup_worktrees, create_worktree, delete_worktree, list_worktrees, prune_expired_leases,
+    reset_worktree,
+};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct BrowserSmokeTestInput {
@@ -21,6 +33,35 @@ fn event_tenant_context(event: &EngineEvent) -> TenantContext {
         .get("tenantContext")
         .and_then(|value| serde_json::from_value(value.clone()).ok())
         .unwrap_or_else(TenantContext::local_implicit)
+}
+fn host_authorization_status(error: HostAuthorizationError) -> StatusCode {
+    match error {
+        HostAuthorizationError::AuditPersistenceFailed => StatusCode::INTERNAL_SERVER_ERROR,
+        HostAuthorizationError::InvalidEffectArguments => StatusCode::BAD_REQUEST,
+        _ => StatusCode::FORBIDDEN,
+    }
+}
+
+async fn authorize_global_host_effect(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    locality: super::host_authority::RequestLocality,
+    action: HostAction,
+    resource: CanonicalHostResource,
+    arguments: Value,
+) -> Result<(AuthorizedHostEffect, HostEffectRequest), StatusCode> {
+    let effect = HostEffectRequest::new(action, resource, arguments);
+    let grant = authorize_host_effect(
+        state,
+        tenant,
+        verified,
+        locality.is_direct_loopback(),
+        &effect,
+    )
+    .await
+    .map_err(host_authorization_status)?;
+    Ok((grant, effect))
 }
 
 pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoResponse {
@@ -112,48 +153,165 @@ pub(super) async fn global_diagnostics(
     })))
 }
 
-pub(super) async fn browser_status(State(state): State<AppState>) -> impl IntoResponse {
-    Json(json!(state.browser_status().await))
+fn redact_browser_host_details(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("installed_path");
+            object.remove("path");
+            object.remove("last_error");
+            object.remove("install_hints");
+            object.remove("recommendations");
+            if let Some(Value::Array(issues)) = object.get_mut("blocking_issues") {
+                for issue in issues {
+                    if let Some(issue) = issue.as_object_mut() {
+                        issue.remove("message");
+                    }
+                }
+            }
+            for child in object.values_mut() {
+                redact_browser_host_details(child);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                redact_browser_host_details(child);
+            }
+        }
+        _ => {}
+    }
 }
 
-pub(super) async fn browser_install(State(state): State<AppState>) -> impl IntoResponse {
-    match state.install_browser_sidecar().await {
-        Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "ok": false,
-                "code": "browser_install_failed",
-                "error": err.to_string(),
-            })),
-        )
-            .into_response(),
+pub(super) async fn browser_status(
+    State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> impl IntoResponse {
+    let mut payload = json!(state.browser_status().await);
+    if verified.is_some() {
+        redact_browser_host_details(&mut payload);
+    }
+    Json(payload)
+}
+
+pub(super) async fn browser_install(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> impl IntoResponse {
+    let deployment_id = tenant
+        .deployment_id
+        .as_deref()
+        .unwrap_or("local-deployment");
+    let (grant, effect) = match authorize_global_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        HostAction::BrowserInstall,
+        CanonicalHostResource::new("deployment", deployment_id, tenant.clone()),
+        json!({"operation": "install_browser_sidecar"}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return host_authorization_status(error).into_response();
+    }
+    let authorization_state = state.clone();
+    let expose_host_details = verified.is_none();
+    match state
+        .install_browser_sidecar(move || {
+            grant
+                .revalidate(&authorization_state, &effect)
+                .map_err(|error| anyhow::anyhow!(error.code()))
+        })
+        .await
+    {
+        Ok(result) => {
+            let mut payload = json!(result);
+            if !expose_host_details {
+                redact_browser_host_details(&mut payload);
+            }
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Err(err) => {
+            let detail = expose_host_details.then(|| err.to_string());
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "ok": false,
+                    "code": "browser_install_failed",
+                    "error": detail,
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
 pub(super) async fn browser_smoke_test(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     payload: Option<Json<BrowserSmokeTestInput>>,
 ) -> impl IntoResponse {
     let input = payload
         .map(|Json(value)| value)
         .unwrap_or(BrowserSmokeTestInput { url: None });
+    let deployment_id = tenant
+        .deployment_id
+        .as_deref()
+        .unwrap_or("local-deployment");
+    let (grant, effect) = match authorize_global_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        HostAction::BrowserSmokeTest,
+        CanonicalHostResource::new("deployment", deployment_id, tenant.clone()),
+        json!({
+            "operation": "browser_smoke_test",
+            "url": input.url,
+        }),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return host_authorization_status(error).into_response();
+    }
+    let expose_host_details = verified.is_none();
     match state.browser_smoke_test(input.url).await {
-        Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "ok": false,
-                "code": "browser_smoke_test_failed",
-                "error": err.to_string(),
-            })),
-        )
-            .into_response(),
+        Ok(result) => {
+            let mut payload = json!(result);
+            if !expose_host_details {
+                redact_browser_host_details(&mut payload);
+            }
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Err(err) => {
+            let detail = expose_host_details.then(|| err.to_string());
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "ok": false,
+                    "code": "browser_smoke_test_failed",
+                    "error": detail,
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
 pub(super) async fn global_lease_acquire(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
     Json(input): Json<EngineLeaseAcquireInput>,
 ) -> Json<Value> {
     let now = crate::now_ms();
@@ -171,6 +329,7 @@ pub(super) async fn global_lease_acquire(
         acquired_at_ms: now,
         last_renewed_at_ms: now,
         ttl_ms: input.ttl_ms.unwrap_or(60_000).clamp(5_000, 10 * 60_000),
+        tenant_context: tenant,
     };
     let mut leases = state.engine_leases.write().await;
     let expired = leases
@@ -182,7 +341,7 @@ pub(super) async fn global_lease_acquire(
     leases.insert(lease_id.clone(), lease.clone());
     drop(leases);
     for expired_lease_id in expired {
-        cleanup_managed_worktrees_for_lease(&state, &expired_lease_id).await;
+        cleanup_managed_worktrees_for_lease(&state, &expired_lease_id, None).await;
     }
     let lease_count = state.engine_leases.read().await.len();
     Json(json!({
@@ -198,14 +357,19 @@ pub(super) async fn global_lease_acquire(
 
 pub(super) async fn global_lease_renew(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
     Json(input): Json<EngineLeaseRenewInput>,
 ) -> Json<Value> {
     prune_expired_leases(&state).await;
     let now = crate::now_ms();
     let mut leases = state.engine_leases.write().await;
     let renewed = if let Some(lease) = leases.get_mut(&input.lease_id) {
-        lease.last_renewed_at_ms = now;
-        true
+        if lease.tenant_context != tenant {
+            false
+        } else {
+            lease.last_renewed_at_ms = now;
+            true
+        }
     } else {
         false
     };
@@ -214,27 +378,111 @@ pub(super) async fn global_lease_renew(
 
 pub(super) async fn global_lease_release(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<EngineLeaseReleaseInput>,
-) -> Json<Value> {
+) -> Result<Json<Value>, StatusCode> {
     prune_expired_leases(&state).await;
-    let removed = {
-        let mut leases = state.engine_leases.write().await;
-        leases.remove(&input.lease_id).is_some()
+    // Worktree creation holds a lease read guard until its durable record has
+    // been inserted. Taking the write guard first therefore waits for every
+    // in-flight create and prevents a new one from starting while release
+    // decides whether cleanup is required.
+    let mut leases = state.engine_leases.write().await;
+    let lease_owned = leases
+        .get(&input.lease_id)
+        .is_some_and(|lease| lease.tenant_context == tenant);
+    let has_managed_worktrees = state.managed_worktrees.read().await.values().any(|record| {
+        record.lease_id.as_deref() == Some(input.lease_id.as_str())
+            && record.tenant_context == tenant
+    });
+    if !lease_owned && !has_managed_worktrees {
+        let lease_count = leases.len();
+        drop(leases);
+        return Ok(Json(json!({
+            "ok": false,
+            "lease_count": lease_count,
+            "released_worktree_count": 0,
+            "released_worktree_failure_count": 0,
+        })));
+    }
+    let caller_authority = if has_managed_worktrees {
+        Some(
+            authorize_global_host_effect(
+                &state,
+                &tenant,
+                verified.as_deref(),
+                locality,
+                HostAction::WorktreeCleanup,
+                CanonicalHostResource::new("engine_lease", &input.lease_id, tenant.clone()),
+                json!({
+                    "lease_id": &input.lease_id,
+                    "reason": "caller_requested_release",
+                }),
+            )
+            .await?,
+        )
+    } else {
+        None
     };
-    let cleanup = cleanup_managed_worktrees_for_lease(&state, &input.lease_id).await;
-    Json(json!({
-        "ok": removed,
+    let removed = if lease_owned {
+        leases.remove(&input.lease_id);
+        true
+    } else {
+        false
+    };
+    drop(leases);
+    let cleanup = if has_managed_worktrees {
+        cleanup_managed_worktrees_for_lease(
+            &state,
+            &input.lease_id,
+            caller_authority
+                .as_ref()
+                .map(|(grant, effect)| (grant, effect)),
+        )
+        .await
+    } else {
+        LeaseWorktreeCleanupResult::default()
+    };
+    let released_worktree_count = cleanup.cleaned_paths.len();
+    let released_worktree_failure_count = cleanup.failures.len();
+    let ok = (removed || has_managed_worktrees) && released_worktree_failure_count == 0;
+    let expose_host_details = verified.is_none() && tenant.is_local_implicit();
+    Ok(Json(json!({
+        "ok": ok,
         "lease_count": state.engine_leases.read().await.len(),
-        "released_worktrees": cleanup.cleaned_paths,
-        "released_worktree_failures": cleanup.failures,
-    }))
+        "released_worktree_count": released_worktree_count,
+        "released_worktree_failure_count": released_worktree_failure_count,
+        "released_worktrees": expose_host_details.then_some(cleanup.cleaned_paths),
+        "released_worktree_failures": expose_host_details.then_some(cleanup.failures),
+    })))
 }
 
 pub(super) async fn global_storage_repair(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<StorageRepairInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let force = input.force.unwrap_or(false);
+    let deployment_id = tenant
+        .deployment_id
+        .as_deref()
+        .unwrap_or("local-deployment");
+    let (grant, effect) = authorize_global_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        HostAction::StorageRepair,
+        CanonicalHostResource::new("deployment", deployment_id, tenant.clone()),
+        json!({"force": force}),
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(host_authorization_status)?;
     let report = state
         .storage
         .run_legacy_storage_repair_scan(force)
@@ -460,14 +708,36 @@ fn event_matches_filter(event: &EngineEvent, filter: &EventFilterQuery) -> bool 
     true
 }
 
-pub(super) async fn global_dispose(State(state): State<AppState>) -> Json<Value> {
+pub(super) async fn global_dispose(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Result<Json<Value>, StatusCode> {
+    let deployment_id = tenant
+        .deployment_id
+        .as_deref()
+        .unwrap_or("local-deployment");
+    let (grant, effect) = authorize_global_host_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        HostAction::GlobalDispose,
+        CanonicalHostResource::new("deployment", deployment_id, tenant.clone()),
+        json!({"operation": "cancel_all_sessions_and_close_all_browser_sessions"}),
+    )
+    .await?;
+    grant
+        .revalidate(&state, &effect)
+        .map_err(host_authorization_status)?;
     let cancelled = state.cancellations.cancel_all().await;
     let closed_browser_sessions = state.close_all_browser_sessions().await;
-    Json(json!({
+    Ok(Json(json!({
         "ok": true,
         "cancelledSessions": cancelled,
         "closedBrowserSessions": closed_browser_sessions,
-    }))
+    })))
 }
 
 pub(super) async fn tool_ids(State(state): State<AppState>) -> Json<Value> {
@@ -559,846 +829,6 @@ pub(super) async fn execute_tool(
         "output": result.output,
         "metadata": result.metadata
     })))
-}
-
-pub(super) async fn create_worktree(
-    State(state): State<AppState>,
-    Json(input): Json<WorktreeInput>,
-) -> Result<Json<Value>, StatusCode> {
-    let repo_root = resolve_worktree_repo_root(&state, input.repo_root.as_deref()).await?;
-    let managed = input.managed.unwrap_or(
-        input.task_id.is_some() || input.owner_run_id.is_some() || input.lease_id.is_some(),
-    );
-    let base = input.base.unwrap_or_else(|| "HEAD".to_string());
-    let slug = crate::runtime::worktrees::managed_worktree_slug(
-        input.task_id.as_deref(),
-        input.owner_run_id.as_deref(),
-        input.lease_id.as_deref(),
-        input.branch.as_deref(),
-    );
-    let default_path = if managed {
-        PathBuf::from(&repo_root)
-            .join(".tandem")
-            .join("worktrees")
-            .join(&slug)
-    } else {
-        PathBuf::from(&repo_root).join("worktree-temp")
-    };
-    let path = resolve_worktree_path(&repo_root, input.path.as_deref(), &default_path)?;
-    if managed && !is_within_managed_worktree_root(&repo_root, &path) {
-        return Err(StatusCode::CONFLICT);
-    }
-    let branch = input.branch.unwrap_or_else(|| {
-        if managed {
-            format!("tandem/{slug}")
-        } else {
-            format!("wt-{}", chrono::Utc::now().timestamp())
-        }
-    });
-    let cleanup_branch = input.cleanup_branch.unwrap_or(managed);
-    let lease = validate_managed_worktree_lease(&state, managed, input.lease_id.as_deref()).await?;
-    let path_string = path.to_string_lossy().to_string();
-    let key = crate::runtime::worktrees::managed_worktree_key(
-        &repo_root,
-        input.task_id.as_deref(),
-        input.owner_run_id.as_deref(),
-        input.lease_id.as_deref(),
-        &path_string,
-        &branch,
-    );
-    if let Some(existing) = state.managed_worktrees.read().await.get(&key).cloned() {
-        if worktree_is_registered(&repo_root, &existing.path)? {
-            return Ok(Json(json!({
-                "ok": true,
-                "repo_root": existing.repo_root,
-                "path": existing.path,
-                "branch": existing.branch,
-                "base": existing.base,
-                "managed": existing.managed,
-                "task_id": existing.task_id,
-                "owner_run_id": existing.owner_run_id,
-                "lease_id": existing.lease_id,
-                "lease_client_id": lease.as_ref().map(|row| row.client_id.clone()),
-                "lease_client_type": lease.as_ref().map(|row| row.client_type.clone()),
-                "cleanup_branch": existing.cleanup_branch,
-                "reused": true,
-            })));
-        }
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    }
-    if path.exists() && !worktree_is_registered(&repo_root, &path_string)? {
-        return Ok(Json(json!({
-            "ok": false,
-            "repo_root": repo_root,
-            "path": path_string,
-            "branch": branch,
-            "base": base,
-            "managed": managed,
-            "error": "target path already exists but is not a registered worktree",
-            "code": "WORKTREE_PATH_CONFLICT",
-        })));
-    }
-    if worktree_is_registered(&repo_root, &path_string)? {
-        let now = crate::now_ms();
-        state.managed_worktrees.write().await.insert(
-            key,
-            crate::ManagedWorktreeRecord {
-                key: crate::runtime::worktrees::managed_worktree_key(
-                    &repo_root,
-                    input.task_id.as_deref(),
-                    input.owner_run_id.as_deref(),
-                    input.lease_id.as_deref(),
-                    &path_string,
-                    &branch,
-                ),
-                repo_root: repo_root.clone(),
-                path: path_string.clone(),
-                branch: branch.clone(),
-                base: base.clone(),
-                managed,
-                task_id: input.task_id,
-                owner_run_id: input.owner_run_id,
-                lease_id: input.lease_id,
-                cleanup_branch,
-                created_at_ms: now,
-                updated_at_ms: now,
-            },
-        );
-        return Ok(Json(json!({
-        "ok": true,
-        "repo_root": repo_root,
-        "path": path_string,
-        "branch": branch,
-        "base": base,
-            "managed": managed,
-            "cleanup_branch": cleanup_branch,
-            "lease_client_id": lease.as_ref().map(|row| row.client_id.clone()),
-            "lease_client_type": lease.as_ref().map(|row| row.client_type.clone()),
-            "reused": true,
-        })));
-    }
-    let output = std::process::Command::new("git")
-        .args([
-            "-C",
-            &repo_root,
-            "worktree",
-            "add",
-            "-b",
-            &branch,
-            &path_string,
-            &base,
-        ])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let ok = output.status.success();
-    if ok {
-        let now = crate::now_ms();
-        state.managed_worktrees.write().await.insert(
-            key,
-            crate::ManagedWorktreeRecord {
-                key: crate::runtime::worktrees::managed_worktree_key(
-                    &repo_root,
-                    input.task_id.as_deref(),
-                    input.owner_run_id.as_deref(),
-                    input.lease_id.as_deref(),
-                    &path_string,
-                    &branch,
-                ),
-                repo_root: repo_root.clone(),
-                path: path_string.clone(),
-                branch: branch.clone(),
-                base: base.clone(),
-                managed,
-                task_id: input.task_id,
-                owner_run_id: input.owner_run_id,
-                lease_id: input.lease_id,
-                cleanup_branch,
-                created_at_ms: now,
-                updated_at_ms: now,
-            },
-        );
-    }
-    Ok(Json(json!({
-        "ok": ok,
-        "repo_root": repo_root,
-        "path": path_string,
-        "branch": branch,
-        "base": base,
-        "managed": managed,
-        "cleanup_branch": cleanup_branch,
-        "lease_client_id": lease.as_ref().map(|row| row.client_id.clone()),
-        "lease_client_type": lease.as_ref().map(|row| row.client_type.clone()),
-        "reused": false,
-        "stderr": String::from_utf8_lossy(&output.stderr).to_string()
-    })))
-}
-
-pub(super) async fn list_worktrees(
-    State(state): State<AppState>,
-    Query(query): Query<WorktreeListQuery>,
-) -> Result<Json<Value>, StatusCode> {
-    let repo_root = resolve_worktree_repo_root(&state, query.repo_root.as_deref()).await?;
-    let output = std::process::Command::new("git")
-        .args(["-C", &repo_root, "worktree", "list", "--porcelain"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let raw = String::from_utf8_lossy(&output.stdout).to_string();
-    let mut worktrees = Vec::new();
-    let mut current = serde_json::Map::new();
-    let managed_records = state.managed_worktrees.read().await.clone();
-    for line in raw.lines() {
-        if line.is_empty() {
-            if !current.is_empty() {
-                let mut record = current.clone();
-                annotate_managed_worktree(&mut record, &repo_root, &managed_records);
-                if !query.managed_only.unwrap_or(false)
-                    || record.get("managed").and_then(Value::as_bool) == Some(true)
-                {
-                    worktrees.push(Value::Object(record));
-                }
-                current.clear();
-            }
-            continue;
-        }
-        let mut parts = line.splitn(2, ' ');
-        let key = parts.next().unwrap_or_default();
-        let value = parts.next().unwrap_or_default();
-        current.insert(key.to_string(), Value::String(value.to_string()));
-    }
-    if !current.is_empty() {
-        let mut record = current;
-        annotate_managed_worktree(&mut record, &repo_root, &managed_records);
-        if !query.managed_only.unwrap_or(false)
-            || record.get("managed").and_then(Value::as_bool) == Some(true)
-        {
-            worktrees.push(Value::Object(record));
-        }
-    }
-    for managed in managed_records
-        .values()
-        .filter(|record| record.repo_root == repo_root)
-    {
-        if worktrees.iter().any(|row| {
-            row.get("path").and_then(Value::as_str) == Some(managed.path.as_str())
-                || row.get("worktree").and_then(Value::as_str) == Some(managed.path.as_str())
-        }) {
-            continue;
-        }
-        if query.managed_only.unwrap_or(false)
-            || !worktree_is_registered(&repo_root, &managed.path)?
-        {
-            worktrees.push(json!({
-                "path": managed.path,
-                "branch": managed.branch,
-                "base": managed.base,
-                "managed": managed.managed,
-                "task_id": managed.task_id,
-                "owner_run_id": managed.owner_run_id,
-                "lease_id": managed.lease_id,
-                "cleanup_branch": managed.cleanup_branch,
-                "repo_root": managed.repo_root,
-                "registered": false,
-            }));
-        }
-    }
-    Ok(Json(json!(worktrees)))
-}
-
-pub(super) async fn delete_worktree(
-    State(state): State<AppState>,
-    Json(input): Json<WorktreeInput>,
-) -> Result<Json<Value>, StatusCode> {
-    let Some(path) = input.path else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
-    let repo_root = resolve_worktree_repo_root(&state, input.repo_root.as_deref()).await?;
-    let record = find_managed_worktree_by_path(&state, &repo_root, &path).await;
-    validate_worktree_mutation_authority(&state, record.as_ref(), input.lease_id.as_deref())
-        .await?;
-    let output = std::process::Command::new("git")
-        .args(["-C", &repo_root, "worktree", "remove", "--force", &path])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let cleanup_branch = input
-        .cleanup_branch
-        .or_else(|| record.as_ref().map(|row| row.cleanup_branch))
-        .unwrap_or(false);
-    let branch = input
-        .branch
-        .or_else(|| record.as_ref().map(|row| row.branch.clone()));
-    let mut branch_deleted = false;
-    if output.status.success() && cleanup_branch {
-        if let Some(branch) = branch.as_deref() {
-            let branch_out = std::process::Command::new("git")
-                .args(["-C", &repo_root, "branch", "-D", branch])
-                .output()
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            branch_deleted = branch_out.status.success();
-        }
-    }
-    if output.status.success() {
-        state
-            .managed_worktrees
-            .write()
-            .await
-            .retain(|_, row| !(row.repo_root == repo_root && row.path == path));
-    }
-    Ok(Json(json!({
-        "ok": output.status.success(),
-        "repo_root": repo_root,
-        "path": path,
-        "branch": branch,
-        "cleanup_branch": cleanup_branch,
-        "branch_deleted": branch_deleted,
-        "stderr": String::from_utf8_lossy(&output.stderr).to_string()
-    })))
-}
-
-pub(super) async fn reset_worktree(
-    State(state): State<AppState>,
-    Json(input): Json<WorktreeInput>,
-) -> Result<Json<Value>, StatusCode> {
-    let Some(path) = input.path else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
-    let repo_root = resolve_worktree_repo_root(&state, input.repo_root.as_deref()).await?;
-    let record = find_managed_worktree_by_path(&state, &repo_root, &path).await;
-    validate_worktree_mutation_authority(&state, record.as_ref(), input.lease_id.as_deref())
-        .await?;
-    let target = input.base.unwrap_or_else(|| "HEAD".to_string());
-    let output = std::process::Command::new("git")
-        .args(["-C", &path, "reset", "--hard", &target])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({
-        "ok": output.status.success(),
-        "repo_root": repo_root,
-        "path": path,
-        "target": target,
-        "stderr": String::from_utf8_lossy(&output.stderr).to_string()
-    })))
-}
-
-#[derive(Debug, Clone)]
-struct RegisteredWorktreeEntry {
-    path: String,
-    branch: Option<String>,
-}
-
-fn parse_registered_worktree_entries(
-    repo_root: &str,
-) -> Result<Vec<RegisteredWorktreeEntry>, StatusCode> {
-    let output = std::process::Command::new("git")
-        .args(["-C", repo_root, "worktree", "list", "--porcelain"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !output.status.success() {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    let mut entries = Vec::new();
-    let mut current_path: Option<String> = None;
-    let mut current_branch: Option<String> = None;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        if line.is_empty() {
-            if let Some(path) = current_path.take() {
-                entries.push(RegisteredWorktreeEntry {
-                    path,
-                    branch: current_branch.take(),
-                });
-            }
-            continue;
-        }
-        if let Some(path) = line.strip_prefix("worktree ") {
-            current_path = Some(path.trim().to_string());
-            continue;
-        }
-        if let Some(branch) = line.strip_prefix("branch ") {
-            current_branch = branch
-                .trim()
-                .strip_prefix("refs/heads/")
-                .map(ToString::to_string)
-                .or_else(|| Some(branch.trim().to_string()));
-        }
-    }
-    if let Some(path) = current_path.take() {
-        entries.push(RegisteredWorktreeEntry {
-            path,
-            branch: current_branch.take(),
-        });
-    }
-    Ok(entries)
-}
-
-pub(super) async fn cleanup_worktrees(
-    State(state): State<AppState>,
-    payload: Option<Json<WorktreeCleanupInput>>,
-) -> Result<Json<Value>, StatusCode> {
-    let input = payload
-        .map(|Json(value)| value)
-        .unwrap_or_else(WorktreeCleanupInput::default);
-    let repo_root = resolve_worktree_repo_root(&state, input.repo_root.as_deref()).await?;
-    let dry_run = input.dry_run.unwrap_or(false);
-    let remove_orphan_dirs = input.remove_orphan_dirs.unwrap_or(true);
-    let managed_root = crate::runtime::worktrees::managed_worktree_root(&repo_root);
-    let managed_root_string = managed_root.to_string_lossy().to_string();
-    let records = state.managed_worktrees.read().await.clone();
-    let git_managed_worktrees = parse_registered_worktree_entries(&repo_root)?
-        .into_iter()
-        .filter(|entry| StdPath::new(&entry.path).starts_with(&managed_root))
-        .collect::<Vec<_>>();
-
-    let active_paths = records
-        .values()
-        .filter(|row| row.repo_root == repo_root)
-        .map(|row| row.path.clone())
-        .collect::<std::collections::HashSet<_>>();
-    let tracked_paths = records
-        .values()
-        .filter(|row| row.repo_root == repo_root)
-        .map(|row| row.path.clone())
-        .collect::<Vec<_>>();
-
-    let mut stale = Vec::new();
-    let mut active = Vec::new();
-    for entry in &git_managed_worktrees {
-        if active_paths.contains(&entry.path) {
-            active.push(entry.path.clone());
-        } else {
-            stale.push(entry.clone());
-        }
-    }
-
-    let mut cleaned = Vec::new();
-    let mut failures = Vec::new();
-    if !dry_run {
-        for entry in &stale {
-            let remove_output = std::process::Command::new("git")
-                .args([
-                    "-C",
-                    &repo_root,
-                    "worktree",
-                    "remove",
-                    "--force",
-                    &entry.path,
-                ])
-                .output();
-            match remove_output {
-                Ok(result) if result.status.success() => {
-                    state
-                        .managed_worktrees
-                        .write()
-                        .await
-                        .retain(|_, row| row.repo_root != repo_root || row.path != entry.path);
-                    let mut branch_deleted = None;
-                    let mut branch_delete_error = None;
-                    if let Some(branch) = entry.branch.as_deref() {
-                        match std::process::Command::new("git")
-                            .args(["-C", &repo_root, "branch", "-D", branch])
-                            .output()
-                        {
-                            Ok(branch_output) if branch_output.status.success() => {
-                                branch_deleted = Some(true);
-                            }
-                            Ok(branch_output) => {
-                                branch_deleted = Some(false);
-                                branch_delete_error = Some(
-                                    String::from_utf8_lossy(&branch_output.stderr).to_string(),
-                                );
-                            }
-                            Err(err) => {
-                                branch_deleted = Some(false);
-                                branch_delete_error = Some(err.to_string());
-                            }
-                        }
-                    }
-                    cleaned.push(json!({
-                        "path": entry.path,
-                        "branch": entry.branch,
-                        "branch_deleted": branch_deleted,
-                        "branch_delete_error": branch_delete_error,
-                        "via": "git_worktree_remove",
-                    }));
-                }
-                Ok(result) => {
-                    failures.push(json!({
-                        "path": entry.path,
-                        "branch": entry.branch,
-                        "code": "WORKTREE_REMOVE_FAILED",
-                        "stderr": String::from_utf8_lossy(&result.stderr).to_string(),
-                    }));
-                }
-                Err(err) => {
-                    failures.push(json!({
-                        "path": entry.path,
-                        "branch": entry.branch,
-                        "code": "WORKTREE_REMOVE_FAILED",
-                        "error": err.to_string(),
-                    }));
-                }
-            }
-        }
-    }
-
-    let mut orphan_dirs = Vec::new();
-    if managed_root.exists() {
-        let entries =
-            std::fs::read_dir(&managed_root).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let registered_paths = if dry_run {
-            git_managed_worktrees
-                .iter()
-                .map(|entry| entry.path.clone())
-                .collect::<std::collections::HashSet<_>>()
-        } else {
-            parse_registered_worktree_entries(&repo_root)?
-                .into_iter()
-                .map(|entry| entry.path)
-                .filter(|path| StdPath::new(path).starts_with(&managed_root))
-                .collect::<std::collections::HashSet<_>>()
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let path_string = path.to_string_lossy().to_string();
-            if registered_paths.contains(&path_string) {
-                continue;
-            }
-            if active_paths.contains(&path_string) {
-                continue;
-            }
-            orphan_dirs.push(path_string);
-        }
-    }
-
-    let mut orphan_removed = Vec::new();
-    if !dry_run && remove_orphan_dirs {
-        for path in &orphan_dirs {
-            match std::fs::remove_dir_all(path) {
-                Ok(_) => {
-                    orphan_removed.push(json!({
-                        "path": path,
-                        "via": "filesystem_remove_dir_all",
-                    }));
-                }
-                Err(err) => {
-                    failures.push(json!({
-                        "path": path,
-                        "code": "WORKTREE_ORPHAN_DIR_REMOVE_FAILED",
-                        "error": err.to_string(),
-                    }));
-                }
-            }
-        }
-    }
-
-    Ok(Json(json!({
-        "ok": failures.is_empty(),
-        "dry_run": dry_run,
-        "repo_root": repo_root,
-        "managed_root": managed_root_string,
-        "tracked_paths": tracked_paths,
-        "active_paths": active,
-        "stale_paths": stale.iter().map(|entry| json!({
-            "path": entry.path,
-            "branch": entry.branch,
-        })).collect::<Vec<_>>(),
-        "cleaned_worktrees": cleaned,
-        "orphan_dirs": orphan_dirs,
-        "orphan_dirs_removed": orphan_removed,
-        "failures": failures,
-    })))
-}
-
-async fn resolve_worktree_repo_root(
-    state: &AppState,
-    repo_root: Option<&str>,
-) -> Result<String, StatusCode> {
-    let requested = if let Some(repo_root) = repo_root {
-        crate::normalize_absolute_workspace_root(repo_root).map_err(|_| StatusCode::BAD_REQUEST)?
-    } else {
-        let root = state.workspace_index.snapshot().await.root;
-        if StdPath::new(&root).is_absolute() {
-            crate::normalize_absolute_workspace_root(&root).map_err(|_| StatusCode::BAD_REQUEST)?
-        } else {
-            let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let joined = cwd.join(root);
-            crate::normalize_absolute_workspace_root(&joined.to_string_lossy())
-                .map_err(|_| StatusCode::BAD_REQUEST)?
-        }
-    };
-    let output = std::process::Command::new("git")
-        .args(["-C", &requested, "rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !output.status.success() {
-        return Err(StatusCode::CONFLICT);
-    }
-    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    crate::normalize_absolute_workspace_root(&resolved).map_err(|_| StatusCode::CONFLICT)
-}
-
-async fn validate_managed_worktree_lease(
-    state: &AppState,
-    managed: bool,
-    lease_id: Option<&str>,
-) -> Result<Option<crate::EngineLease>, StatusCode> {
-    if !managed {
-        return Ok(None);
-    }
-    let Some(lease_id) = lease_id.filter(|value| !value.trim().is_empty()) else {
-        return Ok(None);
-    };
-    let now = crate::now_ms();
-    let mut leases = state.engine_leases.write().await;
-    leases.retain(|_, lease| !lease.is_expired(now));
-    leases
-        .get(lease_id)
-        .cloned()
-        .ok_or(StatusCode::CONFLICT)
-        .map(Some)
-}
-
-async fn prune_expired_leases(state: &AppState) -> usize {
-    let now = crate::now_ms();
-    let expired = {
-        let mut leases = state.engine_leases.write().await;
-        let expired = leases
-            .iter()
-            .filter(|(_, lease)| lease.is_expired(now))
-            .map(|(lease_id, _)| lease_id.clone())
-            .collect::<Vec<_>>();
-        leases.retain(|_, lease| !lease.is_expired(now));
-        expired
-    };
-    for lease_id in expired {
-        cleanup_managed_worktrees_for_lease(state, &lease_id).await;
-    }
-    state.engine_leases.read().await.len()
-}
-
-async fn validate_worktree_mutation_authority(
-    state: &AppState,
-    record: Option<&crate::ManagedWorktreeRecord>,
-    lease_id: Option<&str>,
-) -> Result<(), StatusCode> {
-    let Some(record) = record else {
-        return Ok(());
-    };
-    let Some(record_lease_id) = record.lease_id.as_deref() else {
-        return Ok(());
-    };
-    let Some(request_lease_id) = lease_id.filter(|value| !value.trim().is_empty()) else {
-        return Err(StatusCode::CONFLICT);
-    };
-    if request_lease_id != record_lease_id {
-        return Err(StatusCode::CONFLICT);
-    }
-    validate_managed_worktree_lease(state, true, Some(request_lease_id))
-        .await
-        .map(|_| ())
-}
-
-#[derive(Default)]
-struct LeaseWorktreeCleanupResult {
-    cleaned_paths: Vec<String>,
-    failures: Vec<Value>,
-}
-
-async fn cleanup_managed_worktrees_for_lease(
-    state: &AppState,
-    lease_id: &str,
-) -> LeaseWorktreeCleanupResult {
-    let records = state
-        .managed_worktrees
-        .read()
-        .await
-        .values()
-        .filter(|row| row.lease_id.as_deref() == Some(lease_id))
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut result = LeaseWorktreeCleanupResult::default();
-    for record in records {
-        let output = match std::process::Command::new("git")
-            .args([
-                "-C",
-                &record.repo_root,
-                "worktree",
-                "remove",
-                "--force",
-                &record.path,
-            ])
-            .output()
-        {
-            Ok(output) => output,
-            Err(_) => {
-                result.failures.push(json!({
-                    "path": record.path,
-                    "branch": record.branch,
-                    "repo_root": record.repo_root,
-                    "code": "WORKTREE_REMOVE_FAILED",
-                }));
-                continue;
-            }
-        };
-        if !output.status.success() {
-            result.failures.push(json!({
-                "path": record.path,
-                "branch": record.branch,
-                "repo_root": record.repo_root,
-                "code": "WORKTREE_REMOVE_FAILED",
-                "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
-            }));
-            continue;
-        }
-        if record.cleanup_branch {
-            match std::process::Command::new("git")
-                .args(["-C", &record.repo_root, "branch", "-D", &record.branch])
-                .output()
-            {
-                Ok(branch_output) if branch_output.status.success() => {}
-                Ok(branch_output) => {
-                    result.failures.push(json!({
-                        "path": record.path,
-                        "branch": record.branch,
-                        "repo_root": record.repo_root,
-                        "code": "WORKTREE_BRANCH_DELETE_FAILED",
-                        "stderr": String::from_utf8_lossy(&branch_output.stderr).to_string(),
-                    }));
-                }
-                Err(_) => {
-                    result.failures.push(json!({
-                        "path": record.path,
-                        "branch": record.branch,
-                        "repo_root": record.repo_root,
-                        "code": "WORKTREE_BRANCH_DELETE_FAILED",
-                    }));
-                }
-            }
-        }
-        state
-            .managed_worktrees
-            .write()
-            .await
-            .retain(|_, row| !(row.repo_root == record.repo_root && row.path == record.path));
-        result.cleaned_paths.push(record.path);
-    }
-    result
-}
-
-fn resolve_worktree_path(
-    repo_root: &str,
-    raw: Option<&str>,
-    default_path: &StdPath,
-) -> Result<PathBuf, StatusCode> {
-    let candidate = raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_path.to_path_buf());
-    let path = if candidate.is_absolute() {
-        candidate
-    } else {
-        PathBuf::from(repo_root).join(candidate)
-    };
-    Ok(path)
-}
-
-fn is_within_managed_worktree_root(repo_root: &str, path: &StdPath) -> bool {
-    let managed_root = PathBuf::from(repo_root).join(".tandem").join("worktrees");
-    path.starts_with(managed_root)
-}
-
-fn worktree_is_registered(repo_root: &str, path: &str) -> Result<bool, StatusCode> {
-    let output = std::process::Command::new("git")
-        .args(["-C", repo_root, "worktree", "list", "--porcelain"])
-        .output()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !output.status.success() {
-        return Ok(false);
-    }
-    let needle = PathBuf::from(path);
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        if let Some(value) = line.strip_prefix("worktree ") {
-            if PathBuf::from(value) == needle {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
-fn annotate_managed_worktree(
-    record: &mut serde_json::Map<String, Value>,
-    repo_root: &str,
-    managed_records: &std::collections::HashMap<String, crate::ManagedWorktreeRecord>,
-) {
-    let path = record
-        .get("worktree")
-        .and_then(Value::as_str)
-        .or_else(|| record.get("path").and_then(Value::as_str));
-    let Some(path) = path else {
-        return;
-    };
-    if let Some(managed) = managed_records
-        .values()
-        .find(|row| row.repo_root == repo_root && row.path == path)
-    {
-        record.insert("path".to_string(), Value::String(managed.path.clone()));
-        record.insert("branch".to_string(), Value::String(managed.branch.clone()));
-        record.insert("base".to_string(), Value::String(managed.base.clone()));
-        record.insert("managed".to_string(), Value::Bool(managed.managed));
-        record.insert(
-            "repo_root".to_string(),
-            Value::String(managed.repo_root.clone()),
-        );
-        record.insert(
-            "cleanup_branch".to_string(),
-            Value::Bool(managed.cleanup_branch),
-        );
-        record.insert(
-            "task_id".to_string(),
-            managed
-                .task_id
-                .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
-        );
-        record.insert(
-            "owner_run_id".to_string(),
-            managed
-                .owner_run_id
-                .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
-        );
-        record.insert(
-            "lease_id".to_string(),
-            managed
-                .lease_id
-                .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
-        );
-        record.insert("registered".to_string(), Value::Bool(true));
-    }
-}
-
-async fn find_managed_worktree_by_path(
-    state: &AppState,
-    repo_root: &str,
-    path: &str,
-) -> Option<crate::ManagedWorktreeRecord> {
-    state
-        .managed_worktrees
-        .read()
-        .await
-        .values()
-        .find(|row| row.repo_root == repo_root && row.path == path)
-        .cloned()
 }
 
 pub(super) async fn agent_list(State(state): State<AppState>) -> Json<Value> {

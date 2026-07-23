@@ -1325,6 +1325,7 @@ export function useSettingsPageController({
   const [incidentMonitorLogSourceActionResult, setIncidentMonitorLogSourceActionResult] =
     useState<Record<string, unknown> | null>(null);
   const [worktreeCleanupRepoRoot, setWorktreeCleanupRepoRoot] = useState("");
+  const [worktreeCleanupRepositoryId, setWorktreeCleanupRepositoryId] = useState("");
   const [worktreeCleanupDryRun, setWorktreeCleanupDryRun] = useState(false);
   const [worktreeCleanupPulse, setWorktreeCleanupPulse] = useState(0);
   const [worktreeCleanupResult, setWorktreeCleanupResult] =
@@ -1599,11 +1600,12 @@ export function useSettingsPageController({
     },
   });
   const worktreeCleanupMutation = useMutation({
-    mutationFn: (payload: { repoRoot?: string; dryRun?: boolean }) =>
+    mutationFn: (payload: { repoRoot?: string; repositoryId?: string; dryRun?: boolean }) =>
       api("/api/engine/worktree/cleanup", {
         method: "POST",
         body: JSON.stringify({
           repo_root: payload.repoRoot,
+          repository_id: payload.repositoryId,
           dry_run: payload.dryRun,
           remove_orphan_dirs: true,
         }),
@@ -3881,6 +3883,7 @@ export function useSettingsPageController({
     setWorktreeCleanupDryRun: setWorktreeCleanupDryRun,
     setWorktreeCleanupPulse: setWorktreeCleanupPulse,
     setWorktreeCleanupRepoRoot: setWorktreeCleanupRepoRoot,
+    setWorktreeCleanupRepositoryId: setWorktreeCleanupRepositoryId,
     setWorktreeCleanupResult: setWorktreeCleanupResult,
     showAllNavigationSections: showAllNavigationSections,
     smokeTestBrowserMutation: smokeTestBrowserMutation,
@@ -3899,6 +3902,7 @@ export function useSettingsPageController({
     worktreeCleanupPendingMessages: worktreeCleanupPendingMessages,
     worktreeCleanupPulse: worktreeCleanupPulse,
     worktreeCleanupRepoRoot: worktreeCleanupRepoRoot,
+    worktreeCleanupRepositoryId: worktreeCleanupRepositoryId,
     worktreeCleanupResult: worktreeCleanupResult,
   };
 }

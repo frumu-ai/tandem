@@ -66,8 +66,8 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
                 .post(create_worktree)
                 .delete(delete_worktree),
         )
-        .route("/worktree/cleanup", post(cleanup_worktrees))
         .route("/worktree/reset", post(reset_worktree))
+        .route("/worktree/cleanup", post(cleanup_worktrees))
         .route("/agent", get(agent_list))
         .route("/instance/dispose", post(instance_dispose))
         .route("/log", post(push_log))
