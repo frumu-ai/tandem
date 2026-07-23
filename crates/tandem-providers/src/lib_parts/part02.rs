@@ -1374,7 +1374,7 @@ impl Provider for AnthropicProvider {
         if let Some(key) = &self.api_key {
             req = req.header("x-api-key", key);
         }
-        let value: serde_json::Value = req.send().await?.json().await?;
+        let value = read_provider_response_json_limited(req.send().await?).await?;
         let text = value["content"][0]["text"]
             .as_str()
             .unwrap_or("No completion content.")
@@ -1504,7 +1504,7 @@ impl Provider for CohereProvider {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let value: serde_json::Value = req.send().await?.json().await?;
+        let value = read_provider_response_json_limited(req.send().await?).await?;
         let text = value["message"]["content"][0]["text"]
             .as_str()
             .or_else(|| value["text"].as_str())

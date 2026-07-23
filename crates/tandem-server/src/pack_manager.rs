@@ -27,6 +27,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 const MARKER_FILE: &str = "tandempack.yaml";
 const INDEX_FILE: &str = "index.json";
 const CURRENT_FILE: &str = "current";
+const CURRENT_BACKUP_FILE: &str = ".current.backup";
 const STAGING_DIR: &str = ".staging";
 const EXPORTS_DIR: &str = "exports";
 const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
@@ -146,6 +147,22 @@ enum PackSignaturePolicy {
     AllowUnsignedGenerated,
 }
 
+struct StagingDirCleanup(PathBuf);
+
+impl Drop for StagingDirCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+struct StagingFileCleanup(PathBuf);
+
+impl Drop for StagingFileCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 impl PackManager {
     pub fn new(root: PathBuf) -> Self {
         Self {
@@ -243,10 +260,11 @@ impl PackManager {
         signature_policy: PackSignaturePolicy,
     ) -> anyhow::Result<PackInstallRecord> {
         self.ensure_layout().await?;
-        let source_file = if let Some(path) = input.path.as_deref() {
-            PathBuf::from(path)
+        let (source_file, _download_cleanup) = if let Some(path) = input.path.as_deref() {
+            (PathBuf::from(path), None)
         } else if let Some(url) = input.url.as_deref() {
-            self.download_to_staging(url).await?
+            let path = self.download_to_staging(url).await?;
+            (path.clone(), Some(StagingFileCleanup(path)))
         } else {
             return Err(anyhow!("install requires either `path` or `url`"));
         };
@@ -293,6 +311,7 @@ impl PackManager {
         let stage_root = self.root.join(STAGING_DIR).join(stage_id);
         let stage_unpacked = stage_root.join("unpacked");
         tokio::fs::create_dir_all(&stage_unpacked).await?;
+        let _stage_cleanup = StagingDirCleanup(stage_root.clone());
         safe_extract_zip(&source_file, &stage_unpacked)?;
         let manifest_value = serde_json::to_value(&manifest)?;
         validate_manifest(&manifest, &manifest_value, &stage_unpacked)?;
@@ -661,10 +680,24 @@ impl PackManager {
         reject_symlink_path(&self.root, "pack root")?;
         reject_symlink_path(&self.root.join(STAGING_DIR), "pack staging directory")?;
         reject_symlink_path(&self.root.join(EXPORTS_DIR), "pack export directory")?;
+        #[cfg(windows)]
+        self.recover_current_pointer_transactions().await?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    async fn recover_current_pointer_transactions(&self) -> anyhow::Result<()> {
+        let mut entries = tokio::fs::read_dir(&self.root).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                recover_current_pointer_backup(&entry.path()).await?;
+            }
+        }
         Ok(())
     }
 
     async fn read_index(&self) -> anyhow::Result<PackIndex> {
+        self.ensure_layout().await?;
         let _index_guard = self.index_lock.lock().await;
         self.read_index_unlocked().await
     }
@@ -734,6 +767,8 @@ impl PackManager {
         let parent = self.root.join(pack_name);
         tokio::fs::create_dir_all(&parent).await?;
         reject_symlink_path(&parent, "pack current directory")?;
+        #[cfg(windows)]
+        recover_current_pointer_backup(&parent).await?;
         let current_path = parent.join(CURRENT_FILE);
         let temporary = parent.join(format!(".{CURRENT_FILE}.{}.tmp", Uuid::new_v4()));
         let mut output = tokio::fs::OpenOptions::new()
@@ -775,7 +810,7 @@ impl PackManager {
 
         #[cfg(windows)]
         {
-            let backup = parent.join(format!(".{CURRENT_FILE}.{}.bak", Uuid::new_v4()));
+            let backup = parent.join(CURRENT_BACKUP_FILE);
             let previous_moved = match tokio::fs::symlink_metadata(&current_path).await {
                 Ok(metadata) if metadata.file_type().is_file() => {
                     if let Err(error) = tokio::fs::rename(&current_path, &backup).await {
@@ -819,6 +854,38 @@ impl PackManager {
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
+}
+
+async fn recover_current_pointer_backup(parent: &Path) -> anyhow::Result<()> {
+    let current_path = parent.join(CURRENT_FILE);
+    let backup_path = parent.join(CURRENT_BACKUP_FILE);
+    let current_exists = match tokio::fs::symlink_metadata(&current_path).await {
+        Ok(metadata) if metadata.file_type().is_file() => true,
+        Ok(_) => return Err(anyhow!("pack current pointer is not a regular file")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error).context("inspect pack current pointer during recovery"),
+    };
+    let backup_exists = match tokio::fs::symlink_metadata(&backup_path).await {
+        Ok(metadata) if metadata.file_type().is_file() => true,
+        Ok(_) => return Err(anyhow!("pack current pointer backup is not a regular file")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(error).context("inspect pack current pointer backup during recovery")
+        }
+    };
+    if !backup_exists {
+        return Ok(());
+    }
+    if current_exists {
+        tokio::fs::remove_file(&backup_path)
+            .await
+            .context("remove committed pack current pointer backup")?;
+    } else {
+        tokio::fs::rename(&backup_path, &current_path)
+            .await
+            .context("restore interrupted pack current pointer")?;
+    }
+    Ok(())
 }
 
 fn select_record<'a>(
@@ -1927,6 +1994,76 @@ mod tests {
             .await
             .expect_err("unsigned pack must fail");
         assert!(error.to_string().contains("signature is required"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(pack_signature_env)]
+    async fn invalid_signature_cleans_extracted_staging() {
+        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let pack_zip = root.join("untrusted-signature.zip");
+        let _ = write_signed_zip(
+            &pack_zip,
+            &[(
+                "tandempack.yaml",
+                "name: untrusted-signature-pack\nversion: 1.0.0\ntype: workflow\n",
+            )],
+        );
+        let _trusted_keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", "");
+        let pack_root = root.join("packs");
+        let manager = PackManager::new(pack_root.clone());
+
+        let error = manager
+            .install(PackInstallRequest {
+                path: Some(pack_zip.to_string_lossy().to_string()),
+                url: None,
+                expected_sha256: None,
+                source: Value::Null,
+            })
+            .await
+            .expect_err("untrusted signature must fail");
+
+        assert!(error.to_string().contains("signature key is not trusted"));
+        let staged = std::fs::read_dir(pack_root.join(STAGING_DIR))
+            .expect("read staging")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("staging entries");
+        assert!(
+            staged.is_empty(),
+            "rejected pack must not leave staging data"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn current_pointer_recovery_restores_or_discards_fixed_backup() {
+        let root = std::env::temp_dir().join(format!("tandem-pack-test-{}", Uuid::new_v4()));
+        let pack_parent = root.join("recover-pack");
+        std::fs::create_dir_all(&pack_parent).expect("mkdir");
+        let current = pack_parent.join(CURRENT_FILE);
+        let backup = pack_parent.join(CURRENT_BACKUP_FILE);
+
+        std::fs::write(&backup, "1.0.0\n").expect("write interrupted backup");
+        recover_current_pointer_backup(&pack_parent)
+            .await
+            .expect("restore interrupted pointer");
+        assert_eq!(
+            std::fs::read_to_string(&current).expect("current"),
+            "1.0.0\n"
+        );
+        assert!(!backup.exists());
+
+        std::fs::write(&current, "2.0.0\n").expect("write committed pointer");
+        std::fs::write(&backup, "1.0.0\n").expect("write stale backup");
+        recover_current_pointer_backup(&pack_parent)
+            .await
+            .expect("discard committed backup");
+        assert_eq!(
+            std::fs::read_to_string(&current).expect("current"),
+            "2.0.0\n"
+        );
+        assert!(!backup.exists());
         let _ = std::fs::remove_dir_all(root);
     }
 
