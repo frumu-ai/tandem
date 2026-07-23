@@ -288,6 +288,7 @@ mod tests {
         let (endpoint, server) = spawn_fake_http_mcp_server().await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         registry
             .add("githubcopilot".to_string(), endpoint.to_string())
             .await;
@@ -351,6 +352,7 @@ mod tests {
         let (endpoint, server) = spawn_fake_http_mcp_server().await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         registry
             .add("githubcopilot".to_string(), endpoint.to_string())
             .await;
@@ -369,6 +371,7 @@ mod tests {
         let (endpoint, server) = spawn_fake_http_mcp_server().await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         registry
             .add("githubcopilot".to_string(), endpoint.to_string())
             .await;
@@ -1862,6 +1865,7 @@ mod tests {
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        registry.allow_private_endpoints_for_tests();
         let server_name = "tenant-server-mismatch-connected";
         let tenant_a =
             TenantContext::explicit(format!("tenant-a-{}", Uuid::new_v4()), "workspace-a", None);

@@ -15,12 +15,20 @@ fn direct_loopback_request() -> axum::http::request::Builder {
 async fn private_mcp_oauth_requires_standalone_listener_posture() {
     let state = test_state().await;
     let tenant = tandem_types::TenantContext::local_implicit();
+    state.mcp.set_strict_tenant_enforcement(false);
     assert!(state
         .mcp
         .standalone_private_endpoint_access_enabled_for_tests());
     assert!(crate::http::mcp::allow_private_mcp_oauth_endpoint(
         &state, &tenant
     ));
+
+    state.mcp.set_strict_tenant_enforcement(true);
+    assert!(
+        !crate::http::mcp::allow_private_mcp_oauth_endpoint(&state, &tenant),
+        "strict hosted mode must deny private OAuth even on a bound loopback listener"
+    );
+    state.mcp.set_strict_tenant_enforcement(false);
 
     state.set_host_operations_loopback_only(false);
     state.set_server_base_url("https://tandem.example".to_string());
@@ -34,6 +42,57 @@ async fn private_mcp_oauth_requires_standalone_listener_posture() {
         !crate::http::mcp::allow_private_mcp_oauth_endpoint(&state, &tenant),
         "local implicit identity alone must not authorize private OAuth egress"
     );
+}
+
+#[tokio::test]
+async fn stopped_listener_posture_blocks_actual_private_mcp_request() {
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind canary");
+    let addr = listener.local_addr().expect("canary address");
+    let hits_for_handler = hits.clone();
+    let canary = axum::Router::new().fallback(axum::routing::any(move || {
+        let hits = hits_for_handler.clone();
+        async move {
+            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            axum::Json(json!({
+                "jsonrpc": "2.0",
+                "id": "canary",
+                "result": {}
+            }))
+        }
+    }));
+    let canary_task = tokio::spawn(async move {
+        axum::serve(listener, canary).await.expect("serve canary");
+    });
+
+    let state = test_state().await;
+    let listener_posture = super::super::HttpListenerPostureGuard::activate(&state, addr);
+    state.mcp.set_strict_tenant_enforcement(false);
+    state
+        .mcp
+        .add(
+            "private-posture-canary".to_string(),
+            format!("http://{addr}/mcp"),
+        )
+        .await;
+    let _ = state.mcp.refresh("private-posture-canary").await;
+    assert!(
+        hits.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "test canary must observe a request while the test bypass is active"
+    );
+
+    hits.store(0, std::sync::atomic::Ordering::SeqCst);
+    state.mcp.deny_private_endpoints_for_tests();
+    drop(listener_posture);
+    assert!(!state
+        .mcp
+        .standalone_private_endpoint_access_enabled_for_tests());
+    let result = state.mcp.refresh("private-posture-canary").await;
+    assert!(result.is_err());
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    canary_task.abort();
 }
 
 #[tokio::test]

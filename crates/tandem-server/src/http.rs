@@ -407,6 +407,26 @@ where
     result
 }
 
+struct HttpListenerPostureGuard {
+    state: AppState,
+}
+
+impl HttpListenerPostureGuard {
+    fn activate(state: &AppState, bound_addr: SocketAddr) -> Self {
+        state.set_host_operations_loopback_only(bound_addr.ip().is_loopback());
+        state.set_http_listener_bound_loopback_only(bound_addr.ip().is_loopback());
+        Self {
+            state: state.clone(),
+        }
+    }
+}
+
+impl Drop for HttpListenerPostureGuard {
+    fn drop(&mut self) {
+        self.state.set_http_listener_bound_loopback_only(false);
+    }
+}
+
 fn http_error(status: StatusCode, error: impl Into<String>, code: ErrorCode) -> HttpError {
     (status, Json(ErrorEnvelope::new(error.into(), code)))
 }
@@ -473,8 +493,15 @@ pub async fn serve_with_route_extensions(
     state: AppState,
     route_extensions: &[RouteRegistrar],
 ) -> anyhow::Result<()> {
+    state.set_http_listener_bound_loopback_only(false);
     state.set_host_operations_loopback_only(addr.ip().is_loopback());
-    apply_strict_tenant_enforcement_defaults()?;
+    let memory_context_policy = apply_strict_tenant_enforcement_defaults()?;
+    if memory_context_policy.strict_required {
+        if let Some(runtime) = state.runtime.get() {
+            runtime.mcp.set_strict_tenant_enforcement(true);
+            runtime.tools.set_strict_tenant_enforcement(true);
+        }
+    }
     slack_interactions::start_slack_event_recovery_worker(&state).await?;
     let reaper_state = state.clone();
     let session_part_persister_state = state.clone();
@@ -747,6 +774,8 @@ pub async fn serve_with_route_extensions(
     // (`initialize_runtime()` in `engine/src/main.rs`) so `serve()` only owns
     // the HTTP server lifecycle.
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let bound_addr = listener.local_addr()?;
+    let _listener_posture_guard = HttpListenerPostureGuard::activate(&state, bound_addr);
     let result = after_http_server_stops(
         axum::serve(
             listener,
@@ -754,6 +783,7 @@ pub async fn serve_with_route_extensions(
         )
         .with_graceful_shutdown(wait_for_shutdown_signal()),
         || async move {
+            shutdown_state.set_http_listener_bound_loopback_only(false);
             approval_outbound_cancel_for_shutdown.store(true, Ordering::Relaxed);
             shutdown_state.stop_provider_oauth_refresh().await;
             shutdown_state.set_automation_scheduler_stopping(true);

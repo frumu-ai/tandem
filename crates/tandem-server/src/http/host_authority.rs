@@ -63,6 +63,13 @@ pub(super) fn require_loopback_local_operator(
 }
 
 pub(crate) fn standalone_local_runtime_posture(state: &AppState, tenant: &TenantContext) -> bool {
+    let runtime_allows_local_implicit = state
+        .runtime
+        .get()
+        .is_some_and(|runtime| !runtime.mcp.strict_tenant_enforcement_enabled());
+    if !state.http_listener_bound_loopback_only() || !runtime_allows_local_implicit {
+        return false;
+    }
     is_loopback_local_operator(
         state.host_operations_loopback_only(),
         &state.server_base_url(),

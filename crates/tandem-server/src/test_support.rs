@@ -219,6 +219,8 @@ pub async fn test_state() -> AppState {
         })
         .await
         .expect("runtime ready");
+    state.set_host_operations_loopback_only(true);
+    state.set_http_listener_bound_loopback_only(true);
     assert!(state.mcp.connect("github").await);
     state
 }

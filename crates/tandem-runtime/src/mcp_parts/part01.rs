@@ -246,6 +246,11 @@ impl McpRegistry {
             .store(enabled, std::sync::atomic::Ordering::SeqCst);
     }
 
+    pub fn strict_tenant_enforcement_enabled(&self) -> bool {
+        self.strict_tenant_enforcement
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Allow private/HTTP MCP endpoints only after the host has verified both
     /// a loopback-only listener and a loopback public base URL.
     pub fn set_standalone_private_endpoint_access(&self, enabled: bool) {
@@ -286,6 +291,13 @@ impl McpRegistry {
     pub fn allow_private_endpoints_for_tests(&self) {
         self.allow_private_test_endpoints
             .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[doc(hidden)]
+    pub fn deny_private_endpoints_for_tests(&self) {
+        self.allow_private_test_endpoints
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub async fn list(&self) -> HashMap<String, McpServer> {

@@ -389,6 +389,7 @@ impl AppState {
             web_ui_prefix: Arc::new(std::sync::RwLock::new("/admin".to_string())),
             server_base_url: Arc::new(std::sync::RwLock::new("http://127.0.0.1:39731".to_string())),
             host_operations_loopback_only: Arc::new(AtomicBool::new(true)),
+            http_listener_bound_loopback_only: Arc::new(AtomicBool::new(false)),
             trust_test_tenant_headers: Arc::new(AtomicBool::new(false)),
             allow_unsigned_dev_webhooks: Arc::new(AtomicBool::new(
                 config::env::resolve_allow_unsigned_dev_webhooks(),
@@ -484,8 +485,20 @@ impl AppState {
         self.host_operations_loopback_only.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn set_http_listener_bound_loopback_only(&self, loopback_only: bool) {
+        self.http_listener_bound_loopback_only
+            .store(loopback_only, Ordering::SeqCst);
+        self.sync_mcp_private_endpoint_posture();
+    }
+
+    pub(crate) fn http_listener_bound_loopback_only(&self) -> bool {
+        self.http_listener_bound_loopback_only
+            .load(Ordering::SeqCst)
+    }
+
     fn sync_mcp_private_endpoint_posture(&self) {
-        let allow_private = self.host_operations_loopback_only()
+        let allow_private = self.http_listener_bound_loopback_only()
+            && self.host_operations_loopback_only()
             && crate::http::host_authority::server_base_url_is_loopback(&self.server_base_url());
         if let Some(runtime) = self.runtime.get() {
             runtime
