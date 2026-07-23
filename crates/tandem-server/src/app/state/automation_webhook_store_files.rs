@@ -13,7 +13,6 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::automation_webhook_store::AutomationWebhookSecretMaterialRecord;
 use crate::automation_v2::types::{
     AutomationWebhookDeliveryRecord, AutomationWebhookTriggerRecord,
 };
@@ -34,14 +33,6 @@ struct AutomationWebhookDeliveriesFile {
     schema_version: u32,
     #[serde(default)]
     deliveries: HashMap<String, AutomationWebhookDeliveryRecord>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct AutomationWebhookSecretMaterialFile {
-    #[serde(default)]
-    schema_version: u32,
-    #[serde(default)]
-    secrets: HashMap<String, AutomationWebhookSecretMaterialRecord>,
 }
 
 pub(super) fn parse_automation_webhook_triggers_file(
@@ -80,24 +71,6 @@ pub(super) fn parse_automation_webhook_deliveries_file(
     Ok(file.deliveries)
 }
 
-pub(super) fn parse_automation_webhook_secret_material_file(
-    raw: &str,
-) -> anyhow::Result<HashMap<String, AutomationWebhookSecretMaterialRecord>> {
-    if raw.trim().is_empty() || raw.trim() == "{}" {
-        return Ok(HashMap::new());
-    }
-    let value: Value = serde_json::from_str(raw)
-        .context("failed to parse automation webhook secret material state file")?;
-    if value.get("schema_version").is_none() {
-        return serde_json::from_value(value)
-            .context("failed to parse legacy automation webhook secret material map");
-    }
-    let file = serde_json::from_value::<AutomationWebhookSecretMaterialFile>(value)
-        .context("failed to parse versioned automation webhook secret material state file")?;
-    ensure_supported_schema(file.schema_version, "automation webhook secret material")?;
-    Ok(file.secrets)
-}
-
 fn ensure_supported_schema(schema_version: u32, label: &str) -> anyhow::Result<()> {
     if schema_version > AUTOMATION_WEBHOOK_SCHEMA_VERSION {
         anyhow::bail!(
@@ -125,14 +98,4 @@ pub(super) fn serialize_automation_webhook_deliveries_file(
         deliveries,
     })
     .context("failed to serialize automation webhook deliveries state file")
-}
-
-pub(super) fn serialize_automation_webhook_secret_material_file(
-    secrets: HashMap<String, AutomationWebhookSecretMaterialRecord>,
-) -> anyhow::Result<String> {
-    serde_json::to_string_pretty(&AutomationWebhookSecretMaterialFile {
-        schema_version: AUTOMATION_WEBHOOK_SCHEMA_VERSION,
-        secrets,
-    })
-    .context("failed to serialize automation webhook secret material state file")
 }

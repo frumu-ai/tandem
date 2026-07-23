@@ -144,6 +144,11 @@ async fn notion_trigger_create_and_one_time_verification_token_reveal() {
         .and_then(Value::as_str)
         .expect("trigger id")
         .to_string();
+    let initial_setup_path = created
+        .get("setup_callback_path")
+        .and_then(Value::as_str)
+        .expect("one-time setup callback path")
+        .to_string();
 
     // Notion posts its verification token to the public intake.
     let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
@@ -152,17 +157,12 @@ async fn notion_trigger_create_and_one_time_verification_token_reveal() {
         None,
         "actor-a",
     );
-    let public_token = state
-        .get_automation_webhook_trigger(&tenant_context, &trigger_id)
-        .await
-        .expect("trigger")
-        .public_path_token;
     let intake_resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/webhooks/automations/{public_token}"))
+                .uri(initial_setup_path.clone())
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({ "verification_token": "notion_secret_token" }).to_string(),
@@ -226,6 +226,7 @@ async fn notion_trigger_create_and_one_time_verification_token_reveal() {
     // Rotating a Tandem secret on a Notion trigger is rejected — it would clobber
     // the provider-owned verification token.
     let rotate_resp = app
+        .clone()
         .oneshot(tenant_request(
             "POST",
             format!("/automations/v2/auto-notion-mgmt/webhook-triggers/{trigger_id}/rotate-secret"),
@@ -237,6 +238,117 @@ async fn notion_trigger_create_and_one_time_verification_token_reveal() {
         .await
         .expect("rotate");
     assert_eq!(rotate_resp.status(), StatusCode::BAD_REQUEST);
+
+    let cross_reset = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            format!(
+                "/automations/v2/auto-notion-mgmt/webhook-triggers/{trigger_id}/reset-verification"
+            ),
+            "org-b",
+            "workspace-b",
+            "actor-b",
+            Some(json!({})),
+        ))
+        .await
+        .expect("cross-tenant reset");
+    assert_ne!(cross_reset.status(), StatusCode::OK);
+
+    let reset_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            format!(
+                "/automations/v2/auto-notion-mgmt/webhook-triggers/{trigger_id}/reset-verification"
+            ),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({})),
+        ))
+        .await
+        .expect("authorized reset");
+    assert_eq!(reset_resp.status(), StatusCode::OK);
+    let reset = response_json(reset_resp).await;
+    let reset_setup_path = reset
+        .get("setup_callback_path")
+        .and_then(Value::as_str)
+        .expect("new one-time setup path")
+        .to_string();
+    assert_ne!(reset_setup_path, initial_setup_path);
+    assert_eq!(
+        reset
+            .pointer("/trigger/secret_status/secret_version")
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        reset
+            .pointer("/trigger/verification_status/status")
+            .and_then(Value::as_str),
+        Some("awaiting_token")
+    );
+
+    // The original one-time URL remains an opaque no-op after reset.
+    let stale_setup = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(initial_setup_path)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "verification_token": "stale_reset_token" }).to_string(),
+                ))
+                .expect("stale setup request"),
+        )
+        .await
+        .expect("stale setup response");
+    assert_eq!(stale_setup.status(), StatusCode::OK);
+
+    let new_setup = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(reset_setup_path)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "verification_token": "replacement_notion_token" }).to_string(),
+                ))
+                .expect("replacement setup request"),
+        )
+        .await
+        .expect("replacement setup response");
+    assert_eq!(new_setup.status(), StatusCode::OK);
+
+    let reveal_after_reset = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            format!("/automations/v2/auto-notion-mgmt/webhook-triggers/{trigger_id}/reveal-verification-token"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({})),
+        ))
+        .await
+        .expect("reveal replacement token");
+    assert_eq!(reveal_after_reset.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(reveal_after_reset)
+            .await
+            .get("verification_token")
+            .and_then(Value::as_str),
+        Some("replacement_notion_token")
+    );
+
+    let audit = crate::audit::load_protected_audit_events_for_tenant(&state, &tenant_context).await;
+    assert!(audit.iter().any(|event| {
+        event.event_type == "automation.webhook_trigger.verification_reset"
+            && event.payload.get("triggerID").and_then(Value::as_str) == Some(trigger_id.as_str())
+    }));
 }
 
 #[tokio::test]

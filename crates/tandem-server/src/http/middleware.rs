@@ -59,8 +59,34 @@ pub(super) async fn auth_gate(
     if is_public_oauth_callback_path(path) {
         return next.run(request).await;
     }
-    if request.method() == Method::POST && is_public_automation_webhook_path(path) {
-        return next.run(request).await;
+    if request.method() == Method::POST {
+        if let Some(public_path_token) =
+            super::webhook_rate_limit::public_automation_webhook_token(path)
+        {
+            match super::webhook_rate_limit::global().check(
+                public_path_token,
+                peer,
+                crate::now_ms(),
+            ) {
+                super::webhook_rate_limit::RateDecision::Allowed => {
+                    return next.run(request).await;
+                }
+                super::webhook_rate_limit::RateDecision::Limited { retry_after_secs } => {
+                    tandem_observability::record_webhook_intake_throttled("capability_network");
+                    tracing::warn!(
+                        target: "tandem_server::webhook_intake",
+                        retry_after_secs,
+                        "public automation webhook pre-auth rate limit exceeded"
+                    );
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [(header::RETRY_AFTER, retry_after_secs.to_string())],
+                        Json(json!({ "ok": false, "status": "throttled" })),
+                    )
+                        .into_response();
+                }
+            }
+        }
     }
     if request.method() == Method::POST && is_public_slack_events_path(path) {
         return next.run(request).await;
@@ -354,12 +380,9 @@ fn is_public_oauth_callback_path(path: &str) -> bool {
     )
 }
 
+#[cfg(test)]
 fn is_public_automation_webhook_path(path: &str) -> bool {
-    let trimmed = path
-        .strip_prefix("/api/engine")
-        .filter(|suffix| suffix.starts_with('/'))
-        .unwrap_or(path);
-    trimmed.starts_with("/webhooks/automations/")
+    super::webhook_rate_limit::public_automation_webhook_token(path).is_some()
 }
 
 fn is_public_web_ui_request(method: &Method, path: &str, prefix: &str) -> bool {

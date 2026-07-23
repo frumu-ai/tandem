@@ -27,10 +27,12 @@ use crate::stateful_runtime::{
 };
 use crate::util::time::now_ms;
 
+use super::automation_webhook_secret_store::{
+    parse_secret_material_file, serialize_secret_material_file,
+};
 use super::automation_webhook_store_files::{
-    parse_automation_webhook_deliveries_file, parse_automation_webhook_secret_material_file,
-    parse_automation_webhook_triggers_file, serialize_automation_webhook_deliveries_file,
-    serialize_automation_webhook_secret_material_file, serialize_automation_webhook_triggers_file,
+    parse_automation_webhook_deliveries_file, parse_automation_webhook_triggers_file,
+    serialize_automation_webhook_deliveries_file, serialize_automation_webhook_triggers_file,
 };
 use super::{
     automation_webhook_accepted_delivery, automation_webhook_delivery_correlation,
@@ -44,6 +46,7 @@ use super::{
 type HmacSha256 = Hmac<Sha256>;
 
 const AUTOMATION_WEBHOOK_SECRET_PROVIDER: &str = "tandem_automation_webhooks";
+pub(crate) const AUTOMATION_WEBHOOK_NOTION_SETUP_TTL_MS: u64 = 15 * 60 * 1000;
 pub(crate) const AUTOMATION_WEBHOOK_STATEFUL_WAIT_CLAIMANT: &str = "automation_webhook_router";
 pub(crate) const AUTOMATION_WEBHOOK_STATEFUL_WAIT_LEASE_MS: u64 = 30_000;
 
@@ -93,6 +96,7 @@ pub(crate) struct AutomationWebhookTriggerUpdateInput {
 pub(crate) struct AutomationWebhookCreateResult {
     pub trigger: AutomationWebhookTriggerRecord,
     pub secret: String,
+    pub notion_setup_nonce: Option<String>,
 }
 
 #[derive(Clone)]
@@ -158,10 +162,18 @@ fn new_public_path_token(existing: &HashMap<String, AutomationWebhookTriggerReco
     }
 }
 
-fn new_secret() -> String {
+pub(super) fn new_secret() -> String {
     format!(
         "whsec_{}{}{}",
         Uuid::new_v4().simple(),
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    )
+}
+
+pub(super) fn new_notion_setup_nonce() -> String {
+    format!(
+        "whsetup_{}{}",
         Uuid::new_v4().simple(),
         Uuid::new_v4().simple()
     )
@@ -506,14 +518,23 @@ impl AppState {
     }
 
     async fn load_automation_webhook_secret_material_locked(&self) -> anyhow::Result<()> {
-        let secrets = if self.automation_webhook_secret_material_path.exists() {
+        let parsed = if self.automation_webhook_secret_material_path.exists() {
             super::check_file_permissions(&self.automation_webhook_secret_material_path);
             let raw = fs::read_to_string(&self.automation_webhook_secret_material_path).await?;
-            parse_automation_webhook_secret_material_file(&raw)?
+            parse_secret_material_file(&raw)?
         } else {
-            HashMap::new()
+            super::automation_webhook_secret_store::ParsedSecretMaterial {
+                secrets: HashMap::new(),
+                migrated_from_plaintext: false,
+            }
         };
-        *self.automation_webhook_secret_material.write().await = secrets;
+        let migrated_from_plaintext = parsed.migrated_from_plaintext;
+        *self.automation_webhook_secret_material.write().await = parsed.secrets;
+        if migrated_from_plaintext {
+            self.persist_automation_webhook_secret_material_locked()
+                .await
+                .context("migrate plaintext webhook secret material to protected schema v2")?;
+        }
         Ok(())
     }
 
@@ -525,7 +546,17 @@ impl AppState {
     }
 
     pub(crate) async fn persist_automation_webhook_deliveries_locked(&self) -> anyhow::Result<()> {
-        let deliveries = self.automation_webhook_deliveries.read().await.clone();
+        let pre_auth_rejection_ids = self
+            .automation_webhook_pre_auth_rejection_delivery_ids()
+            .await;
+        let deliveries = self
+            .automation_webhook_deliveries
+            .read()
+            .await
+            .iter()
+            .filter(|(delivery_id, _)| !pre_auth_rejection_ids.contains(delivery_id.as_str()))
+            .map(|(key, delivery)| (key.clone(), delivery.clone()))
+            .collect();
         let payload = serialize_automation_webhook_deliveries_file(deliveries)?;
         ensure_parent_dir(&self.automation_webhook_deliveries_path).await?;
         super::write_state_file_atomically(&self.automation_webhook_deliveries_path, payload).await
@@ -559,7 +590,7 @@ impl AppState {
         &self,
     ) -> anyhow::Result<()> {
         let secrets = self.automation_webhook_secret_material.read().await.clone();
-        let payload = serialize_automation_webhook_secret_material_file(secrets)?;
+        let payload = serialize_secret_material_file(secrets)?;
         ensure_parent_dir(&self.automation_webhook_secret_material_path).await?;
         write_secret_material_file_atomically(
             &self.automation_webhook_secret_material_path,
@@ -611,17 +642,32 @@ impl AppState {
         let _guard = self.automation_webhook_persistence.lock().await;
         let now = now_ms();
         let trigger_id = format!("whtr_{}", Uuid::new_v4().simple());
+        let notion_setup_nonce = is_notion.then(new_notion_setup_nonce);
         let secret_version = 1;
         let secret = new_secret();
         let secret_ref = secret_ref_for_trigger(&input.tenant_context, &trigger_id, secret_version);
         secret_ref
             .validate_for_tenant(&input.tenant_context)
             .map_err(|error| anyhow::anyhow!("webhook secret ref tenant mismatch: {error:?}"))?;
-        let secret_digest = secret_digest(&secret, &input.tenant_context, &trigger_id);
+        let secret_digest_value = secret_digest(&secret, &input.tenant_context, &trigger_id);
         let public_path_token = {
             let triggers = self.automation_webhook_triggers.read().await;
             new_public_path_token(&triggers)
         };
+        let notion_verification =
+            notion_setup_nonce
+                .as_ref()
+                .map(|nonce| AutomationWebhookNotionVerification {
+                    setup_challenge_digest: Some(secret_digest(
+                        nonce,
+                        &input.tenant_context,
+                        &trigger_id,
+                    )),
+                    setup_challenge_expires_at_ms: now
+                        .checked_add(AUTOMATION_WEBHOOK_NOTION_SETUP_TTL_MS),
+                    setup_generation: 1,
+                    ..AutomationWebhookNotionVerification::default()
+                });
         let trigger = AutomationWebhookTriggerRecord {
             trigger_id: trigger_id.clone(),
             automation_id: input.automation_id,
@@ -644,7 +690,7 @@ impl AppState {
             signature_scheme: requested_scheme,
             secret: AutomationWebhookSecretMetadata {
                 secret_ref: secret_ref.clone(),
-                secret_digest,
+                secret_digest: secret_digest_value,
                 secret_version,
                 created_at_ms: now,
                 rotated_at_ms: None,
@@ -655,7 +701,7 @@ impl AppState {
             last_received_at_ms: None,
             last_accepted_at_ms: None,
             last_rejected_at_ms: None,
-            notion_verification: is_notion.then(AutomationWebhookNotionVerification::default),
+            notion_verification,
             linear_verification: is_linear.then(AutomationWebhookLinearVerification::default),
         };
         let material = AutomationWebhookSecretMaterialRecord {
@@ -712,7 +758,11 @@ impl AppState {
             return Err(error.context("failed to persist webhook trigger metadata"));
         }
 
-        Ok(AutomationWebhookCreateResult { trigger, secret })
+        Ok(AutomationWebhookCreateResult {
+            trigger,
+            secret,
+            notion_setup_nonce,
+        })
     }
 
     pub(crate) async fn rotate_automation_webhook_secret(

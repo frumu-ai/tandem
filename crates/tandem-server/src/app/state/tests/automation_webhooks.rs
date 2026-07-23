@@ -153,6 +153,12 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
     assert!(trigger_file.contains("secret_ref"));
     assert!(!trigger_file.contains(&created.secret));
 
+    let secret_file = std::fs::read_to_string(&state.automation_webhook_secret_material_path)
+        .expect("secret material state file");
+    assert!(secret_file.contains("\"schema_version\": 2"));
+    assert!(secret_file.contains(crate::encrypted_file_store::SCOPED_RECORD_PREFIX));
+    assert!(!secret_file.contains(&created.secret));
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1695,4 +1701,81 @@ async fn patching_provider_to_linear_forces_scheme_and_starts_lifecycle() {
         .as_ref()
         .expect("linear lifecycle started");
     assert!(!verification.secret_configured());
+}
+
+#[tokio::test]
+async fn legacy_webhook_secret_file_is_migrated_to_ciphertext_and_restarts() {
+    crate::encrypted_file_store::with_test_crypto_provider(
+        tandem_memory::MemoryCryptoProvider::local_key([0x51; 32]),
+        None,
+        async {
+            let state = ready_test_state().await;
+            let tenant_context = tenant("org-migration", "workspace-migration");
+            insert_test_automation(&state, "automation-secret-migration", &tenant_context).await;
+            let created = state
+                .create_automation_webhook_trigger(create_input(
+                    "automation-secret-migration",
+                    tenant_context.clone(),
+                ))
+                .await
+                .expect("create webhook trigger");
+
+            let legacy_secrets = state
+                .automation_webhook_secret_material
+                .read()
+                .await
+                .clone();
+            let legacy_payload = serde_json::json!({
+                "schema_version": 1,
+                "secrets": legacy_secrets,
+            })
+            .to_string();
+            assert!(legacy_payload.contains(&created.secret));
+            tokio::fs::write(
+                &state.automation_webhook_secret_material_path,
+                legacy_payload,
+            )
+            .await
+            .expect("write legacy plaintext fixture");
+            state
+                .automation_webhook_secret_material
+                .write()
+                .await
+                .clear();
+
+            state
+                .load_automation_webhook_records()
+                .await
+                .expect("load and migrate webhook records");
+            let migrated =
+                tokio::fs::read_to_string(&state.automation_webhook_secret_material_path)
+                    .await
+                    .expect("read migrated secret file");
+            assert!(migrated.contains("\"schema_version\": 2"));
+            assert!(migrated.contains(crate::encrypted_file_store::SCOPED_RECORD_PREFIX));
+            assert!(!migrated.contains(&created.secret));
+
+            let mut restarted = ready_test_state().await;
+            restarted.automation_webhook_triggers_path =
+                state.automation_webhook_triggers_path.clone();
+            restarted.automation_webhook_deliveries_path =
+                state.automation_webhook_deliveries_path.clone();
+            restarted.automation_webhook_secret_material_path =
+                state.automation_webhook_secret_material_path.clone();
+            restarted
+                .load_automation_webhook_records()
+                .await
+                .expect("restart loads migrated ciphertext");
+            let stored = restarted
+                .automation_webhook_secret_material
+                .read()
+                .await
+                .values()
+                .next()
+                .cloned()
+                .expect("migrated secret material");
+            assert_eq!(stored.secret, created.secret);
+        },
+    )
+    .await;
 }

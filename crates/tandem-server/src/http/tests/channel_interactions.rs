@@ -248,10 +248,15 @@ fn discord_keypair() -> (ed25519_dalek::SigningKey, String) {
 }
 
 fn discord_request(run_id: &str, signing_key: &ed25519_dalek::SigningKey) -> Request<Body> {
-    let timestamp = "1780663300";
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after Unix epoch")
+        .as_secs()
+        .to_string();
     let body = json!({
         "id": format!("ct05-discord-{run_id}"),
         "type": 3,
+        "application_id": "ct05-discord-app",
         "data": {
             "custom_id": format!("tdm:approve:{run_id}:external_action")
         },
@@ -260,12 +265,12 @@ fn discord_request(run_id: &str, signing_key: &ed25519_dalek::SigningKey) -> Req
         }
     })
     .to_string();
-    let signature = sign_discord(signing_key, timestamp, body.as_bytes());
+    let signature = sign_discord(signing_key, &timestamp, body.as_bytes());
     Request::builder()
         .method("POST")
         .uri("/channels/discord/interactions")
         .header("content-type", "application/json")
-        .header("x-signature-timestamp", timestamp)
+        .header("x-signature-timestamp", &timestamp)
         .header("x-signature-ed25519", signature)
         .body(Body::from(body))
         .expect("discord request")
@@ -446,6 +451,47 @@ async fn tenant_a_awaiting_run(state: &AppState) -> crate::AutomationV2RunRecord
         })
         .await
         .expect("mark tenant-a run awaiting approval")
+}
+
+#[tokio::test]
+async fn discord_fresh_signed_interaction_is_applied_once_and_replay_is_rejected() {
+    let state = test_state().await;
+    let (discord_signing_key, discord_public_key) = discord_keypair();
+    configure_bound_channels(&state, &discord_public_key).await;
+
+    let run = tenant_a_awaiting_run(&state).await;
+    let app = app_router(state.clone());
+
+    let first = app
+        .clone()
+        .oneshot(discord_request(&run.run_id, &discord_signing_key))
+        .await
+        .expect("fresh Discord interaction response");
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let decided = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run present after Discord decision");
+    assert!(
+        decided.checkpoint.awaiting_gate.is_none(),
+        "fresh signed interaction must decide the gate"
+    );
+
+    let replay = app
+        .oneshot(discord_request(&run.run_id, &discord_signing_key))
+        .await
+        .expect("replayed Discord interaction response");
+    assert_eq!(replay.status(), StatusCode::CONFLICT);
+
+    let after_replay = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run present after replay rejection");
+    assert!(
+        after_replay.checkpoint.awaiting_gate.is_none(),
+        "replay rejection must not reverse or repeat the original decision"
+    );
 }
 
 /// Seed a department org-unit in tenant A and make `actor_id` a member.

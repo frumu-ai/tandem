@@ -3891,6 +3891,15 @@ export interface AutomationWebhookTriggerSecretResponse extends AutomationWebhoo
   /** Notion provider-owned-secret flow: no secret is revealed at creation. */
   verification_pending?: boolean;
   verificationPending?: boolean;
+  /** One-time, short-lived Notion verification callback returned on create/reset. */
+  setup_callback_path?: string;
+  setupCallbackPath?: string;
+  setup_callback_url?: string;
+  setupCallbackUrl?: string;
+  setup_expires_at_ms?: number | null;
+  setupExpiresAtMs?: number | null;
+  setup_one_time?: boolean;
+  setupOneTime?: boolean;
 }
 
 /**
@@ -3904,6 +3913,9 @@ export interface AutomationWebhookVerificationTokenResponse {
   tokenOneTime?: boolean;
   trigger?: AutomationWebhookTriggerResponse["trigger"];
 }
+
+export type AutomationWebhookVerificationResetResponse =
+  AutomationWebhookTriggerSecretResponse;
 
 export interface AutomationWebhookProviderSecretInput {
   provider?: string;

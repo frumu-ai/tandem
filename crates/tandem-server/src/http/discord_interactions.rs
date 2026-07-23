@@ -17,11 +17,10 @@
 //!   here, so we either dispatch synchronously and return an UPDATE_MESSAGE
 //!   (`type = 7`) or return a deferred ack (`type = 6`) and PATCH the message
 //!   later via the interaction webhook URL.
-//! - Idempotent on retries: dedup by `interaction_id` (Discord retries on
-//!   network errors).
+//! - Reject retries durably by tenant, application, interaction ID, and body
+//!   digest before dispatching any side effect.
 
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -42,65 +41,11 @@ use crate::app::state::principals::channel_identity::{
 };
 use crate::AppState;
 
-const DEDUP_CAP: usize = 4096;
-const DEDUP_TTL_SECS: u64 = 300; // 5 minutes — Discord retries within minutes
+mod replay;
 
-static SEEN_INTERACTIONS: OnceLock<Mutex<DedupRing>> = OnceLock::new();
+use replay::{claim_discord_interaction, DiscordReplayClaimDecision};
 
-fn dedup_ring() -> &'static Mutex<DedupRing> {
-    SEEN_INTERACTIONS.get_or_init(|| Mutex::new(DedupRing::new()))
-}
-
-struct DedupEntry {
-    inserted_at_secs: u64,
-}
-
-struct DedupRing {
-    set: std::collections::HashMap<String, DedupEntry>,
-    order: std::collections::VecDeque<String>,
-}
-
-impl DedupRing {
-    fn new() -> Self {
-        Self {
-            set: std::collections::HashMap::with_capacity(DEDUP_CAP),
-            order: std::collections::VecDeque::with_capacity(DEDUP_CAP),
-        }
-    }
-
-    fn record_new(&mut self, key: &str) -> bool {
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        // Check if key exists and hasn't expired.
-        if let Some(entry) = self.set.get(key) {
-            if now_secs.saturating_sub(entry.inserted_at_secs) < DEDUP_TTL_SECS {
-                return false; // Duplicate within TTL window.
-            }
-            // Entry exists but expired; will be reinserted below.
-            self.set.remove(key);
-            // Note: order queue still has the old entry, but we'll skip it on next cleanup.
-        }
-
-        // Evict oldest entry if at capacity.
-        if self.order.len() >= DEDUP_CAP {
-            if let Some(oldest) = self.order.pop_front() {
-                self.set.remove(&oldest);
-            }
-        }
-
-        self.set.insert(
-            key.to_string(),
-            DedupEntry {
-                inserted_at_secs: now_secs,
-            },
-        );
-        self.order.push_back(key.to_string());
-        true
-    }
-}
+const DISCORD_SIGNATURE_TIMESTAMP_TOLERANCE_SECS: u64 = 5 * 60;
 
 /// Discord interaction handler. Wired at `POST /channels/discord/interactions`.
 pub(crate) async fn discord_interactions(
@@ -119,6 +64,17 @@ pub(crate) async fn discord_interactions(
     let timestamp = headers
         .get("x-signature-timestamp")
         .and_then(|v| v.to_str().ok());
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    if !discord_timestamp_is_fresh(timestamp, now_secs) {
+        tracing::warn!(
+            target: "tandem_server::discord_interactions",
+            "rejecting Discord interaction outside the signed timestamp window"
+        );
+        return reject_unauthorized("stale or invalid signature timestamp");
+    }
 
     if let Err(error) = verify_discord_signature(&body, signature, timestamp, &public_key) {
         tracing::warn!(
@@ -142,16 +98,59 @@ pub(crate) async fn discord_interactions(
         return Json(json!({ "type": 1 })).into_response();
     }
 
-    // Dedup by interaction_id (Discord retries on transient failures).
-    if let Some(interaction_id) = payload.get("id").and_then(Value::as_str) {
-        let mut guard = dedup_ring().lock().expect("dedup mutex poisoned");
-        if !guard.record_new(interaction_id) {
-            tracing::debug!(
+    let interaction_id = match bounded_discord_identifier(&payload, "id") {
+        Some(value) => value,
+        None => return reject_bad_request("payload missing a valid interaction id"),
+    };
+    let application_id = match bounded_discord_identifier(&payload, "application_id") {
+        Some(value) => value,
+        None => return reject_bad_request("payload missing a valid application id"),
+    };
+    let effective_config = state.config.get_effective_value().await;
+    let tenant_context = channel_bound_tenant(&effective_config, ChannelKind::Discord)
+        .map(|(org_id, workspace_id)| {
+            tandem_types::TenantContext::explicit_user_workspace(
+                org_id,
+                workspace_id,
+                None,
+                "discord",
+            )
+        })
+        .unwrap_or_else(tandem_types::TenantContext::local_implicit);
+    match claim_discord_interaction(
+        &state,
+        &tenant_context,
+        application_id,
+        interaction_id,
+        body.as_ref(),
+        now_secs.saturating_mul(1000),
+    )
+    .await
+    {
+        Ok(DiscordReplayClaimDecision::Claimed) => {}
+        Ok(DiscordReplayClaimDecision::Duplicate) => {
+            tracing::warn!(
                 target: "tandem_server::discord_interactions",
                 interaction_id,
-                "duplicate Discord interaction — already processed"
+                "rejecting duplicate Discord interaction"
             );
-            return Json(json!({ "type": 6 })).into_response();
+            return reject_conflict("duplicate interaction");
+        }
+        Ok(DiscordReplayClaimDecision::Conflict) => {
+            tracing::warn!(
+                target: "tandem_server::discord_interactions",
+                interaction_id,
+                "rejecting conflicting Discord interaction replay"
+            );
+            return reject_conflict("conflicting interaction replay");
+        }
+        Err(error) => {
+            tracing::error!(
+                target: "tandem_server::discord_interactions",
+                error = %error,
+                "Discord interaction replay claim failed closed"
+            );
+            return reject_service_unavailable();
         }
     }
 
@@ -548,10 +547,44 @@ async fn read_discord_public_key(state: &AppState) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn bounded_discord_identifier<'a>(payload: &'a Value, field: &str) -> Option<&'a str> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 256 && value.is_ascii())
+}
+
+fn discord_timestamp_is_fresh(timestamp: Option<&str>, now_secs: u64) -> bool {
+    timestamp
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|timestamp_secs| {
+            now_secs.abs_diff(timestamp_secs) <= DISCORD_SIGNATURE_TIMESTAMP_TOLERANCE_SECS
+        })
+}
+
 fn reject_unauthorized(reason: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(json!({ "error": "Unauthorized", "reason": reason })),
+    )
+        .into_response()
+}
+
+fn reject_conflict(reason: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({ "error": "Conflict", "reason": reason })),
+    )
+        .into_response()
+}
+
+fn reject_service_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": "ServiceUnavailable",
+            "reason": "replay protection unavailable",
+        })),
     )
         .into_response()
 }
@@ -594,22 +627,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dedup_ring_returns_false_on_repeat() {
-        let mut ring = DedupRing::new();
-        assert!(ring.record_new("interaction-1"));
-        assert!(!ring.record_new("interaction-1"));
-        assert!(ring.record_new("interaction-2"));
-    }
-
-    #[test]
-    fn dedup_ring_evicts_oldest_at_cap() {
-        let mut ring = DedupRing::new();
-        for i in 0..DEDUP_CAP {
-            ring.record_new(&format!("k{i}"));
-        }
-        assert!(!ring.record_new("k0"));
-        ring.record_new(&format!("k{DEDUP_CAP}"));
-        assert!(ring.record_new("k0_evicted_now"));
+    fn timestamp_freshness_accepts_only_the_five_minute_window() {
+        let now = 1_000;
+        assert!(discord_timestamp_is_fresh(Some("1000"), now));
+        assert!(discord_timestamp_is_fresh(Some("700"), now));
+        assert!(discord_timestamp_is_fresh(Some("1300"), now));
+        assert!(!discord_timestamp_is_fresh(Some("699"), now));
+        assert!(!discord_timestamp_is_fresh(Some("1301"), now));
+        assert!(!discord_timestamp_is_fresh(Some("not-a-time"), now));
+        assert!(!discord_timestamp_is_fresh(None, now));
     }
 
     /// Modal custom_id parsing handles the exact format `handle_modal_submit`

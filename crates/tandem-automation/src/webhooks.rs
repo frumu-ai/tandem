@@ -251,6 +251,14 @@ pub struct AutomationWebhookNotionVerification {
     pub token_revealed_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_challenge_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_challenge_expires_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_challenge_consumed_at_ms: Option<u64>,
+    #[serde(default)]
+    pub setup_generation: u64,
 }
 
 impl AutomationWebhookNotionVerification {

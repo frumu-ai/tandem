@@ -12,7 +12,9 @@ use serde_json::Value;
 use tandem_enterprise_contract::DataClass;
 use tandem_memory::envelope::{MemoryEnvelopeAuthority, MemoryEnvelopeMetadata, MemoryKeyScope};
 use tandem_memory::types::MemoryTenantScope;
-use tandem_memory::{MemoryCryptoProvider, MemoryDecryptPrincipal, MemoryDecryptPurpose};
+use tandem_memory::{
+    MemoryCryptoMode, MemoryCryptoProvider, MemoryDecryptPrincipal, MemoryDecryptPurpose,
+};
 use tokio::fs;
 
 mod integrity;
@@ -308,6 +310,37 @@ fn crypto() -> ProtectedFileCrypto {
     ProtectedFileCrypto::from_env()
 }
 
+fn required_crypto_for(
+    configured: ProtectedFileCrypto,
+    hosted_encryption_required: bool,
+) -> anyhow::Result<ProtectedFileCrypto> {
+    if !configured.provider.is_plaintext() {
+        return Ok(configured);
+    }
+    anyhow::ensure!(
+        !hosted_encryption_required,
+        "hosted encryption is required but the protected file-store provider resolved to plaintext"
+    );
+    let fallback = ProtectedFileCrypto {
+        provider: MemoryCryptoProvider::from_mode(MemoryCryptoMode::LocalEncrypted {
+            provider: "local-file".to_string(),
+        }),
+        principal_id: None,
+    };
+    anyhow::ensure!(
+        fallback.provider.is_encrypted_ready(),
+        "required local protected file-store encryption key is unavailable"
+    );
+    Ok(fallback)
+}
+
+fn required_crypto() -> anyhow::Result<ProtectedFileCrypto> {
+    required_crypto_for(
+        crypto(),
+        tandem_memory::envelope::hosted_memory_encryption_required(),
+    )
+}
+
 fn is_legacy_encrypted_payload(stored: &str) -> bool {
     stored.trim_start().starts_with(ENCRYPTED_PAYLOAD_PREFIX)
 }
@@ -333,6 +366,23 @@ pub(crate) fn decrypt_text(
     expected: &ProtectedRecordContext,
 ) -> anyhow::Result<String> {
     crypto().decrypt_record(stored.trim(), expected)
+}
+
+/// Seal security-sensitive state even when ordinary standalone memory storage
+/// is configured for plaintext. Hosted deployments still use their configured
+/// KMS provider and fail closed when it is unavailable.
+pub(crate) fn encrypt_text_required(
+    plaintext: &str,
+    context: &ProtectedRecordContext,
+) -> anyhow::Result<String> {
+    required_crypto()?.encrypt_record(plaintext, context)
+}
+
+pub(crate) fn decrypt_text_required(
+    stored: &str,
+    expected: &ProtectedRecordContext,
+) -> anyhow::Result<String> {
+    required_crypto()?.decrypt_record(stored.trim(), expected)
 }
 
 pub(crate) fn validate_hosted_crypto_ready(context: &ProtectedRecordContext) -> anyhow::Result<()> {
@@ -443,6 +493,18 @@ mod tests {
     const PROVIDER_ID: &str = "google_cloud_kms";
     const RUNTIME_PRINCIPAL: &str = "runtime-tandem";
     const KEK_ID: &str = "projects/test/locations/global/keyRings/tandem/cryptoKeys/governance";
+
+    #[test]
+    fn required_crypto_rejects_plaintext_when_hosted_encryption_is_required() {
+        let configured = ProtectedFileCrypto {
+            provider: MemoryCryptoProvider::plaintext(),
+            principal_id: None,
+        };
+        let error = required_crypto_for(configured, true)
+            .err()
+            .expect("hosted required encryption must fail closed");
+        assert!(error.to_string().contains("provider resolved to plaintext"));
+    }
 
     #[derive(Clone)]
     struct XorFixtureKms {

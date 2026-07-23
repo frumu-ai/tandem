@@ -301,6 +301,9 @@ impl AppState {
             automation_scheduler_stopping: Arc::new(AtomicBool::new(false)),
             automations_v2_persistence: Arc::new(tokio::sync::Mutex::new(())),
             automation_webhook_persistence: Arc::new(tokio::sync::Mutex::new(())),
+            automation_webhook_rejection_persistence: Arc::new(tokio::sync::Mutex::new(
+                Default::default(),
+            )),
             idempotency_persistence: Arc::new(tokio::sync::Mutex::new(())),
             workflow_plans: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_plan_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),

@@ -71,6 +71,15 @@ function callbackUrl(trigger: any) {
   );
 }
 
+function setupCallbackUrl(payload: any) {
+  return safeString(
+    payload?.setup_callback_url ||
+      payload?.setupCallbackUrl ||
+      payload?.setup_callback_path ||
+      payload?.setupCallbackPath
+  );
+}
+
 function triggerProvider(trigger: any) {
   return canonicalProvider(
     trigger?.provider_metadata?.canonical_provider ||
@@ -409,9 +418,22 @@ export function AutomationWebhookManager({
       const nextTrigger = payload?.trigger;
       const nextTriggerId = triggerId(nextTrigger);
       const secret = safeString(payload?.new_secret || payload?.newSecret);
-      const nextIsLinear = isLinearProvider(nextTrigger?.provider || createDraft.provider);
+      const nextProvider = canonicalProvider(nextTrigger?.provider || createDraft.provider);
+      const nextIsLinear = nextProvider === LINEAR_PROVIDER;
+      const nextIsNotion = nextProvider === "notion";
+      const notionSetupUrl = setupCallbackUrl(payload);
       if (nextTriggerId) setSelectedTriggerId(nextTriggerId);
-      if (secret && !nextIsLinear) setRevealedSecret({ triggerId: nextTriggerId, secret });
+      if (nextIsNotion && notionSetupUrl) {
+        setRevealedSecret({
+          triggerId: nextTriggerId,
+          secret: notionSetupUrl,
+          label: "Notion setup URL",
+          hint:
+            "Paste this one-time URL into Notion within 15 minutes. The ordinary callback URL cannot capture an unsigned verification token.",
+        });
+      } else if (secret && !nextIsLinear) {
+        setRevealedSecret({ triggerId: nextTriggerId, secret });
+      }
       setCreateDraft({
         name: "",
         provider: "generic",
@@ -426,7 +448,9 @@ export function AutomationWebhookManager({
         "ok",
         nextIsLinear
           ? "Linear webhook trigger created. Import the Linear signing secret before sending live deliveries."
-          : "Webhook trigger created."
+          : nextIsNotion
+            ? "Notion webhook trigger created. Copy the one-time setup URL now."
+            : "Webhook trigger created."
       );
       await invalidate();
     },
@@ -494,6 +518,41 @@ export function AutomationWebhookManager({
     onError: (error) => toast?.("err", error instanceof Error ? error.message : String(error)),
   });
 
+  const resetNotionVerificationMutation = useMutation({
+    mutationFn: async () =>
+      client.automationsV2.resetWebhookVerification(automationId, effectiveTriggerId),
+    onSuccess: async (payload: any) => {
+      const notionSetupUrl = setupCallbackUrl(payload);
+      if (notionSetupUrl) {
+        setRevealedSecret({
+          triggerId: effectiveTriggerId,
+          secret: notionSetupUrl,
+          label: "Notion setup URL",
+          hint:
+            "Paste this new one-time URL into Notion within 15 minutes. Any prior setup URL and verification token are no longer valid.",
+        });
+      }
+      toast?.("ok", "Notion verification reset. Copy the new one-time setup URL now.");
+      await invalidate();
+    },
+    onError: (error) => toast?.("err", error instanceof Error ? error.message : String(error)),
+  });
+
+  const resetNotionVerification = () => {
+    const status = notionVerification(selectedTrigger)?.status;
+    if (
+      status &&
+      status !== "awaiting_token" &&
+      typeof window !== "undefined" &&
+      !window.confirm(
+        "Reset Notion verification? This invalidates the current signing token and stops signed deliveries until the subscription is verified again."
+      )
+    ) {
+      return;
+    }
+    resetNotionVerificationMutation.mutate();
+  };
+
   const disableMutation = useMutation({
     mutationFn: async () =>
       client.automationsV2.disableWebhookTrigger(automationId, effectiveTriggerId),
@@ -548,6 +607,8 @@ export function AutomationWebhookManager({
   const selectedProviderIsLinear =
     !!selectedTrigger && triggerProvider(selectedTrigger) === LINEAR_PROVIDER;
   const selectedSignature = signatureScheme(selectedTrigger);
+  const selectedProviderIsNotion =
+    !!selectedTrigger && triggerProvider(selectedTrigger) === "notion";
   const selectedLinearSecretConfigured =
     selectedProviderIsLinear && linearSecretConfigured(selectedTrigger);
   const latestLinearBadSignature = selectedProviderIsLinear
@@ -870,7 +931,9 @@ export function AutomationWebhookManager({
               </div>
 
               <div className="grid gap-2 rounded-md border border-slate-800/70 bg-black/20 p-2">
-                <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Callback</div>
+                <div className="text-xs uppercase tracking-[0.16em] text-slate-500">
+                  {selectedProviderIsNotion ? "Signed event callback" : "Callback"}
+                </div>
                 <div className="flex min-w-0 items-center gap-2">
                   <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-slate-300">
                     {callbackUrl(selectedTrigger) || "No callback URL"}
@@ -904,21 +967,34 @@ export function AutomationWebhookManager({
                       </span>
                     </div>
                     <div className="text-xs text-slate-400">
-                      Paste the callback URL into your Notion connection's Webhooks tab. When Notion
-                      sends its verification token, reveal it here (once) and paste it back into
-                      Notion to activate the subscription.
+                      Use the one-time setup URL shown immediately after create or reset in Notion's
+                      Webhooks tab. It expires after 15 minutes. The signed event callback above does
+                      not accept an unsigned setup token.
                     </div>
-                    <button
-                      type="button"
-                      className="tcp-btn h-8 justify-self-start px-3 text-xs"
-                      disabled={!verification.tokenAvailable || revealTokenMutation.isPending}
-                      onClick={() => revealTokenMutation.mutate()}
-                    >
-                      <Icon name="key-round" />
-                      {verification.tokenAvailable
-                        ? "Reveal verification token"
-                        : "No token to reveal"}
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="tcp-btn h-8 px-3 text-xs"
+                        disabled={!verification.tokenAvailable || revealTokenMutation.isPending}
+                        onClick={() => revealTokenMutation.mutate()}
+                      >
+                        <Icon name="key-round" />
+                        {verification.tokenAvailable
+                          ? "Reveal verification token"
+                          : "No token to reveal"}
+                      </button>
+                      <button
+                        type="button"
+                        className="tcp-btn h-8 px-3 text-xs"
+                        disabled={resetNotionVerificationMutation.isPending}
+                        onClick={resetNotionVerification}
+                      >
+                        <Icon name="refresh-cw" />
+                        {resetNotionVerificationMutation.isPending
+                          ? "Resetting..."
+                          : "Issue new setup URL"}
+                      </button>
+                    </div>
                   </div>
                 );
               })()}
