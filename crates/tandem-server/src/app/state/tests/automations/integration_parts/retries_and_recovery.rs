@@ -685,13 +685,17 @@ async fn reload_automation_state_after_restart(source: &AppState) -> (AppState, 
         .await
         .expect("load persisted automations");
     reloaded
-        .load_automation_v2_runs()
-        .await
-        .expect("load persisted automation runs");
-    reloaded
         .load_automation_governance()
         .await
         .expect("load persisted automation governance");
+    reloaded
+        .bootstrap_automation_governance()
+        .await
+        .expect("bootstrap persisted automation governance");
+    reloaded
+        .load_automation_v2_runs()
+        .await
+        .expect("load persisted automation runs");
     let recovered = reloaded.recover_in_flight_runs().await;
     (reloaded, recovered)
 }
