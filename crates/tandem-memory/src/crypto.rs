@@ -501,14 +501,13 @@ fn load_or_create_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN]> {
         }
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            MemoryError::InvalidConfig(format!(
-                "failed to create local key directory `{}`: {error}",
-                parent.display()
-            ))
-        })?;
-    }
+    let parent = key_parent(path);
+    std::fs::create_dir_all(parent).map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "failed to create local key directory `{}`: {error}",
+            parent.display()
+        ))
+    })?;
 
     let key = random_bytes::<KEY_LEN>()?;
     match create_local_key_file(path) {
@@ -660,7 +659,7 @@ fn validate_windows_key_parent(path: &Path) -> std::io::Result<()> {
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     };
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = key_parent(path);
     let directory = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
@@ -794,7 +793,7 @@ fn decode_local_key(path: &Path, bytes: &[u8]) -> MemoryResult<[u8; KEY_LEN]> {
 
 #[cfg(unix)]
 fn sync_key_parent(path: &Path) -> MemoryResult<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = key_parent(path);
     let directory = std::fs::File::open(parent).map_err(|error| {
         MemoryError::InvalidConfig(format!(
             "failed to open local key directory `{}` for sync: {error}",
@@ -807,6 +806,12 @@ fn sync_key_parent(path: &Path) -> MemoryResult<()> {
             parent.display()
         ))
     })
+}
+
+fn key_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 #[cfg(not(unix))]
@@ -942,6 +947,11 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600, "key file must be 0600");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bare_relative_key_path_uses_current_directory_parent() {
+        assert_eq!(key_parent(Path::new("memory.key")), Path::new("."));
     }
 
     #[cfg(unix)]

@@ -389,7 +389,52 @@ fn read_secret_file(path: &Path) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn read_secret_file(path: &Path) -> anyhow::Result<Vec<u8>> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    let parent = path_parent_or_current(path);
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(parent)
+        .with_context(|| format!("open audit integrity key parent `{}`", parent.display()))?;
+    let parent_metadata = directory.metadata()?;
+    anyhow::ensure!(
+        parent_metadata.file_type().is_dir()
+            && parent_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+        "audit integrity key parent must be a non-reparse directory"
+    );
+    tandem_memory::windows_acl::validate_private_file_handle(
+        &directory,
+        "audit integrity key parent",
+    )?;
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .with_context(|| format!("open audit integrity key file `{}`", path.display()))?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.file_type().is_file()
+            && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+        "audit integrity key file must be a non-reparse regular file"
+    );
+    anyhow::ensure!(
+        metadata.len() <= 1024 * 1024,
+        "audit integrity key file is too large"
+    );
+    tandem_memory::windows_acl::validate_private_file_handle(&file, "audit integrity key file")?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn read_secret_file(path: &Path) -> anyhow::Result<Vec<u8>> {
     let metadata = std::fs::symlink_metadata(path)?;
     anyhow::ensure!(
@@ -401,6 +446,12 @@ fn read_secret_file(path: &Path) -> anyhow::Result<Vec<u8>> {
         "audit integrity key file is too large"
     );
     std::fs::read(path).map_err(Into::into)
+}
+
+fn path_parent_or_current(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -767,6 +818,39 @@ fn validate_windows_anchor_directory(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn canonical_configured_state_root() -> anyhow::Result<Option<PathBuf>> {
+    if let Some(root) = configured_path("TANDEM_STATE_DIR") {
+        anyhow::ensure!(root.is_absolute(), "TANDEM_STATE_DIR must be absolute");
+        return std::fs::canonicalize(&root)
+            .with_context(|| format!("canonicalize TANDEM_STATE_DIR `{}`", root.display()))
+            .map(Some);
+    }
+
+    let root = tandem_core::resolve_shared_paths()
+        .ok()
+        .map(|paths| paths.canonical_root)
+        .or_else(|| {
+            let data = crate::config::paths::default_state_dir();
+            data.parent().map(Path::to_path_buf)
+        });
+    match root {
+        Some(root) if root.exists() => std::fs::canonicalize(&root)
+            .with_context(|| format!("canonicalize Tandem shared state root `{}`", root.display()))
+            .map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn ensure_anchor_outside_state_roots(anchor: &Path, state_roots: &[PathBuf]) -> anyhow::Result<()> {
+    for root in state_roots {
+        anyhow::ensure!(
+            !anchor.starts_with(root) && !root.starts_with(anchor),
+            "external audit anchor directory must be outside the configured Tandem state tree"
+        );
+    }
+    Ok(())
+}
+
 fn resolved_anchor_path(scope: &str, identity: &str, state_path: &Path) -> anyhow::Result<PathBuf> {
     let anchor_dir =
         configured_anchor_dir().context("TANDEM_AUDIT_ANCHOR_DIR is not configured")?;
@@ -775,18 +859,20 @@ fn resolved_anchor_path(scope: &str, identity: &str, state_path: &Path) -> anyho
         "TANDEM_AUDIT_ANCHOR_DIR must be absolute"
     );
     let canonical_anchor = prepare_anchor_dir(&anchor_dir)?;
-    let state_parent = state_path.parent().unwrap_or_else(|| Path::new("."));
+    let state_parent = path_parent_or_current(state_path);
     let canonical_state = std::fs::canonicalize(state_parent).with_context(|| {
         format!(
             "canonicalize protected state directory `{}`",
             state_parent.display()
         )
     })?;
-    anyhow::ensure!(
-        !canonical_anchor.starts_with(&canonical_state)
-            && !canonical_state.starts_with(&canonical_anchor),
-        "external audit anchor directory must be outside the protected state directory tree"
-    );
+    let mut state_roots = vec![canonical_state];
+    if let Some(configured_root) = canonical_configured_state_root()? {
+        if !state_roots.contains(&configured_root) {
+            state_roots.push(configured_root);
+        }
+    }
+    ensure_anchor_outside_state_roots(&canonical_anchor, &state_roots)?;
     let mut hasher = Sha256::new();
     hasher.update(scope.as_bytes());
     hasher.update(b"\0");
@@ -1172,6 +1258,23 @@ mod tests {
         assert!(multiple_active
             .to_string()
             .contains("only active_key_id may have active status"));
+    }
+
+    #[test]
+    fn anchor_directory_is_compared_with_the_configured_state_root() {
+        let state_root = PathBuf::from("state-root");
+        let leaf_parent = state_root.join("data").join("audit");
+        let sibling_anchor = state_root.join("anchors");
+        assert!(ensure_anchor_outside_state_roots(
+            &sibling_anchor,
+            &[leaf_parent, state_root.clone()],
+        )
+        .is_err());
+        assert!(ensure_anchor_outside_state_roots(
+            &PathBuf::from("independent-anchors"),
+            &[state_root],
+        )
+        .is_ok());
     }
 
     #[cfg(unix)]

@@ -225,18 +225,24 @@ async fn read_protected_audit_records(
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
         {
-            crate::audit_integrity::ensure_external_anchor_absent(
-                "protected-audit-ledger",
-                &path.to_string_lossy(),
-                path,
-            )
-            .await
-            .context("reject missing protected audit ledger against external anchor")?;
+            ensure_missing_protected_audit_ledger_is_uninitialized(path).await?;
             return Err(error);
         }
         Err(error) => return Err(error),
     };
     parse_protected_audit_records(lines)
+}
+
+async fn ensure_missing_protected_audit_ledger_is_uninitialized(
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    crate::audit_integrity::ensure_external_anchor_absent(
+        "protected-audit-ledger",
+        &path.to_string_lossy(),
+        path,
+    )
+    .await
+    .context("reject missing protected audit ledger against its dedicated external anchor")
 }
 
 async fn read_last_protected_audit_record(
@@ -282,7 +288,11 @@ pub async fn try_load_protected_audit_events_for_tenant(
         .await
     {
         Ok(Some(lines)) => lines,
-        Ok(None) => return Ok(Vec::new()),
+        Ok(None) => {
+            ensure_missing_protected_audit_ledger_is_uninitialized(&state.protected_audit_path)
+                .await?;
+            return Ok(Vec::new());
+        }
         Err(error) => return Err(error).context("load protected audit ledger"),
     };
     let mut rows =
@@ -575,11 +585,11 @@ fn verify_protected_audit_records_with_keyring(
         1
     };
 
-    let mut sequenced_record_seen = false;
-    for record in records {
-        if record.seq > 0 {
-            sequenced_record_seen = true;
-        } else if sequenced_record_seen || record.integrity.is_some() {
+    let sequenced_ledger_exists = records
+        .iter()
+        .any(|record| record.seq > 0 || record.integrity.is_some());
+    if sequenced_ledger_exists {
+        if let Some(record) = records.iter().find(|record| record.seq == 0) {
             return invalid_audit_verification(
                 record_count,
                 0,
@@ -955,6 +965,16 @@ mod tests {
                 .valid
         );
 
+        let mut unsequenced_prefix = vec![audit_row(0, None)];
+        unsequenced_prefix.extend(rows.clone());
+        assert!(
+            !verify_protected_audit_records_with_keyring(
+                &unsequenced_prefix,
+                Ok(Some(rotated.clone())),
+            )
+            .valid
+        );
+
         let mut unsequenced_downgrade = rows;
         unsequenced_downgrade.push(audit_row(0, None));
         assert!(
@@ -984,6 +1004,16 @@ mod tests {
                 .await
                 .expect_err("missing anchored audit ledger must fail");
             assert!(format!("{error:#}").contains("previously keyed"));
+
+            let mut app_state = crate::test_support::test_state().await;
+            app_state.protected_audit_path = path.clone();
+            let tenant_error = try_load_protected_audit_events_for_tenant(
+                &app_state,
+                &TenantContext::local_implicit(),
+            )
+            .await
+            .expect_err("tenant loader must reject a missing dedicated audit anchor");
+            assert!(format!("{tenant_error:#}").contains("previously keyed"));
         })
         .await;
     }
