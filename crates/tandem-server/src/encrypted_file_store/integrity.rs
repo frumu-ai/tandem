@@ -1151,7 +1151,15 @@ pub(crate) async fn read_text_file(
     path: &Path,
     store: &ProtectedStoreContext,
 ) -> anyhow::Result<String> {
-    let stored = fs::read_to_string(path).await?;
+    let stored = match fs::read_to_string(path).await {
+        Ok(stored) => stored,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ensure_missing_store_is_uninitialized(path, store, "missing protected JSON document")
+                .await?;
+            return Err(error.into());
+        }
+        Err(error) => return Err(error.into()),
+    };
     let crypto = crypto();
     if stored.starts_with(AUTHENTICATED_COLLECTION_PREFIX) {
         let collection = crypto.decrypt_json_collection(&stored, store)?;
@@ -1174,7 +1182,28 @@ pub(crate) async fn read_jsonl_records_file(
     path: &Path,
     store: &ProtectedStoreContext,
 ) -> anyhow::Result<Vec<String>> {
-    Ok(decrypt_jsonl_state(&crypto(), path, store).await?.lines)
+    match decrypt_jsonl_state(&crypto(), path, store).await {
+        Ok(state) => Ok(state.lines),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            ensure_missing_store_is_uninitialized(path, store, "missing protected JSONL document")
+                .await?;
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn ensure_missing_store_is_uninitialized(
+    path: &Path,
+    store: &ProtectedStoreContext,
+    store_kind: &str,
+) -> anyhow::Result<()> {
+    ensure_legacy_store_not_anchored(path, store).await?;
+    ensure_integrity_sidecars_absent(path, store_kind).await
 }
 
 pub(crate) async fn append_jsonl_record_file(
@@ -1488,8 +1517,9 @@ mod tests {
         append_jsonl_record_file, crypto, durable_create_needs_parent_sync,
         encrypt_legacy_local_line, forget_cached_head_for_test, fs, initialized_state_path,
         inject_append_fault_for_test, inject_replace_fault_for_test, integrity_head_path,
-        read_jsonl_records_file, read_optional_file, read_text_file, write_json_records_file,
-        AppendFaultPoint, ProcessWriteLock, ReplaceFaultPoint,
+        protected_store_anchor_identity, read_jsonl_records_file, read_optional_file,
+        read_text_file, write_json_records_file, AppendFaultPoint, ProcessWriteLock,
+        ReplaceFaultPoint,
     };
     use crate::encrypted_file_store::{
         with_test_crypto_provider, ProtectedJsonRecord, ProtectedRecordContext,
@@ -1602,6 +1632,41 @@ mod tests {
         assert!(durable_create_needs_parent_sync(true, false));
         assert!(!durable_create_needs_parent_sync(true, true));
         assert!(!durable_create_needs_parent_sync(false, false));
+    }
+
+    #[tokio::test]
+    async fn missing_anchored_collections_and_jsonl_fail_closed() {
+        let state = tempfile::tempdir().expect("state directory");
+        let anchors = tempfile::tempdir().expect("anchor directory");
+        let collection_path = state.path().join("missing.json");
+        let jsonl_path = state.path().join("missing.jsonl");
+        let collection_store = store_context("missing-collection");
+        let jsonl_store = store_context("missing-jsonl");
+
+        crate::audit_integrity::with_test_anchor_dir(anchors.path().to_path_buf(), async {
+            for (path, store) in [
+                (&collection_path, &collection_store),
+                (&jsonl_path, &jsonl_store),
+            ] {
+                crate::audit_integrity::write_test_anchor_marker(
+                    "protected-store",
+                    &protected_store_anchor_identity(path, store),
+                    path,
+                )
+                .expect("write external anchor marker");
+            }
+
+            let collection_error = read_text_file(&collection_path, &collection_store)
+                .await
+                .expect_err("missing anchored collection must fail");
+            assert!(format!("{collection_error:#}").contains("previously keyed"));
+
+            let jsonl_error = read_jsonl_records_file(&jsonl_path, &jsonl_store)
+                .await
+                .expect_err("missing anchored JSONL must fail");
+            assert!(format!("{jsonl_error:#}").contains("previously keyed"));
+        })
+        .await;
     }
 
     #[tokio::test]

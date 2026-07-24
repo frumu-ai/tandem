@@ -213,11 +213,29 @@ fn parse_protected_audit_records(
 async fn read_protected_audit_records(
     path: &std::path::Path,
 ) -> anyhow::Result<Vec<ProtectedAuditEnvelope>> {
-    let lines = crate::encrypted_file_store::read_jsonl_records_file(
+    let lines = match crate::encrypted_file_store::read_jsonl_records_file(
         path,
         &crate::governance_store::GovernanceStoreFile::ProtectedAudit.storage_context(),
     )
-    .await?;
+    .await
+    {
+        Ok(lines) => lines,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            crate::audit_integrity::ensure_external_anchor_absent(
+                "protected-audit-ledger",
+                &path.to_string_lossy(),
+                path,
+            )
+            .await
+            .context("reject missing protected audit ledger against external anchor")?;
+            return Err(error);
+        }
+        Err(error) => return Err(error),
+    };
     parse_protected_audit_records(lines)
 }
 
@@ -946,6 +964,28 @@ mod tests {
             )
             .valid
         );
+    }
+
+    #[tokio::test]
+    async fn missing_anchored_audit_ledger_fails_closed() {
+        let state = tempfile::tempdir().expect("state directory");
+        let anchors = tempfile::tempdir().expect("anchor directory");
+        let path = state.path().join("missing-audit.jsonl");
+
+        crate::audit_integrity::with_test_anchor_dir(anchors.path().to_path_buf(), async {
+            crate::audit_integrity::write_test_anchor_marker(
+                "protected-audit-ledger",
+                &path.to_string_lossy(),
+                &path,
+            )
+            .expect("write audit anchor marker");
+
+            let error = read_protected_audit_records(&path)
+                .await
+                .expect_err("missing anchored audit ledger must fail");
+            assert!(format!("{error:#}").contains("previously keyed"));
+        })
+        .await;
     }
 
     #[test]

@@ -21,6 +21,11 @@ const KEY_PURPOSE: &str = "audit_integrity";
 const MAC_PREFIX: &str = "hmac-sha256:";
 const ANCHOR_VERSION: u32 = 1;
 
+#[cfg(test)]
+tokio::task_local! {
+    static TEST_ANCHOR_DIR: PathBuf;
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum KeyStatus {
@@ -142,10 +147,18 @@ pub(crate) fn production_posture() -> bool {
         || crate::config::env::hosted_control_plane_configured()
 }
 
+fn configured_anchor_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Ok(path) = TEST_ANCHOR_DIR.try_with(|path| path.clone()) {
+        return Some(path);
+    }
+    configured_path(ANCHOR_DIR_ENV)
+}
+
 pub(crate) fn integrity_authority() -> anyhow::Result<Option<AuditIntegrityKeyring>> {
     let production = production_posture();
     let keyring = load_keyring(production)?;
-    let anchor_dir = configured_path(ANCHOR_DIR_ENV);
+    let anchor_dir = configured_anchor_dir();
     match (keyring, anchor_dir) {
         (Some(keyring), Some(_)) => Ok(Some(keyring)),
         (None, None) if !production => Ok(None),
@@ -187,8 +200,8 @@ pub(crate) fn validate_configuration() -> anyhow::Result<()> {
     let authority = integrity_authority()?;
     if let Some(authority) = authority {
         authority.usable_key(authority.active_key_id(), true)?;
-        let anchor_dir = configured_path(ANCHOR_DIR_ENV)
-            .context("audit integrity anchor directory is missing")?;
+        let anchor_dir =
+            configured_anchor_dir().context("audit integrity anchor directory is missing")?;
         anyhow::ensure!(
             anchor_dir.is_absolute(),
             "TANDEM_AUDIT_ANCHOR_DIR must be an absolute path"
@@ -591,7 +604,7 @@ pub(crate) async fn verify_external_anchor(
         );
         return Ok(AnchorVerification::disabled());
     };
-    let Some(_) = configured_path(ANCHOR_DIR_ENV) else {
+    let Some(_) = configured_anchor_dir() else {
         anyhow::ensure!(
             !integrity_keyed,
             "keyed integrity data cannot be verified without TANDEM_AUDIT_ANCHOR_DIR"
@@ -638,7 +651,7 @@ pub(crate) async fn ensure_external_anchor_absent(
     identity: &str,
     state_path: &Path,
 ) -> anyhow::Result<()> {
-    let Some(_) = configured_path(ANCHOR_DIR_ENV) else {
+    let Some(_) = configured_anchor_dir() else {
         anyhow::ensure!(
             !production_posture(),
             "hosted/enterprise legacy integrity verification requires TANDEM_AUDIT_ANCHOR_DIR"
@@ -756,7 +769,7 @@ fn validate_windows_anchor_directory(path: &Path) -> anyhow::Result<()> {
 
 fn resolved_anchor_path(scope: &str, identity: &str, state_path: &Path) -> anyhow::Result<PathBuf> {
     let anchor_dir =
-        configured_path(ANCHOR_DIR_ENV).context("TANDEM_AUDIT_ANCHOR_DIR is not configured")?;
+        configured_anchor_dir().context("TANDEM_AUDIT_ANCHOR_DIR is not configured")?;
     anyhow::ensure!(
         anchor_dir.is_absolute(),
         "TANDEM_AUDIT_ANCHOR_DIR must be absolute"
@@ -884,6 +897,24 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
             Some(((high << 4) | low) as u8)
         })
         .collect()
+}
+
+#[cfg(test)]
+pub(crate) async fn with_test_anchor_dir<F, T>(anchor_dir: PathBuf, future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    TEST_ANCHOR_DIR.scope(anchor_dir, future).await
+}
+
+#[cfg(test)]
+pub(crate) fn write_test_anchor_marker(
+    scope: &str,
+    identity: &str,
+    state_path: &Path,
+) -> anyhow::Result<()> {
+    let path = resolved_anchor_path(scope, identity, state_path)?;
+    atomic_write_anchor(&path, b"test-anchor-marker")
 }
 
 #[cfg(test)]
