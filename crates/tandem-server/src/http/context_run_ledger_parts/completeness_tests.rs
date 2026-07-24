@@ -70,6 +70,7 @@
             seq: 0,
             prev_hash: None,
             record_hash: String::new(),
+            integrity: None,
         }
     }
 

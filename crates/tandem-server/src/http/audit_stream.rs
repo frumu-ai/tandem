@@ -306,9 +306,9 @@ fn fintech_protected_action_record(event: &EngineEvent) -> Option<Value> {
 /// GET /audit/ledger/manifest
 ///
 /// Returns the `AuditLedgerManifest` for the protected audit ledger: schema version,
-/// record count, last seq, ledger root hash, and generation timestamp. Callers can use
-/// this to verify that the ledger has not been truncated or tampered with since it was
-/// last exported.
+/// record count, legacy/keyed migration counts, rotation key IDs, ledger root,
+/// external-anchor verification, and generation timestamp. Callers can use this to
+/// detect rewriting, truncation, rollback, or key-status failures.
 pub(crate) async fn audit_ledger_manifest(
     State(state): State<AppState>,
     Extension(principal): Extension<RequestPrincipal>,
@@ -341,8 +341,9 @@ pub(crate) async fn audit_ledger_manifest(
 ///
 /// Produces a deterministic NDJSON bundle of protected audit events for the requesting
 /// tenant, followed by a `bundle_manifest` trailer record. The bundle is independently
-/// verifiable: each record carries `seq`, `prev_hash`, and `record_hash` fields that
-/// can be re-hashed to confirm chain integrity. Query params:
+/// verifiable: each record carries `seq`, `prev_hash`, `record_hash`, and optional
+/// HMAC key metadata. Schema-v3 records require the retained verification key; legacy
+/// schema-v2 records retain SHA-256 compatibility. Query params:
 ///
 /// - `since_ms` (optional): include only records with `created_at_ms >= since_ms`
 /// - `until_ms` (optional): include only records with `created_at_ms <= until_ms`
@@ -402,6 +403,21 @@ pub(crate) async fn audit_ledger_export(
         .collect();
 
     let record_count = filtered.len() as u64;
+    let keyed_record_count = filtered
+        .iter()
+        .filter(|event| event.integrity.is_some())
+        .count() as u64;
+    let legacy_record_count = filtered
+        .iter()
+        .filter(|event| event.seq > 0 && event.integrity.is_none())
+        .count() as u64;
+    let mut integrity_key_ids = filtered
+        .iter()
+        .filter_map(|event| event.integrity.as_ref().map(|value| value.key_id.clone()))
+        .collect::<Vec<_>>();
+    integrity_key_ids.sort();
+    integrity_key_ids.dedup();
+    let schema_version = if keyed_record_count > 0 { 3u32 } else { 2u32 };
     let last_seq = filtered.iter().map(|e| e.seq).max().unwrap_or(0);
     let root_hash = filtered
         .iter()
@@ -433,8 +449,11 @@ pub(crate) async fn audit_ledger_export(
     // Append bundle manifest trailer as the final NDJSON record.
     let trailer = json!({
         "type": "bundle_manifest",
-        "schema_version": 2u32,
+        "schema_version": schema_version,
         "record_count": record_count,
+        "legacy_record_count": legacy_record_count,
+        "keyed_record_count": keyed_record_count,
+        "integrity_key_ids": integrity_key_ids,
         "last_seq": last_seq,
         "root_hash": root_hash,
         "tenant_org_id": &tenant_context.org_id,

@@ -267,7 +267,7 @@ fn predicate_audit_hmac_key_for_posture(
     }
     if production_posture {
         anyhow::bail!(
-            "predicate-governed decisions require TANDEM_AUDIT_HMAC_KEY or TANDEM_AUDIT_HMAC_KEY_FILE in hosted/enterprise mode"
+            "predicate-governed decisions require TANDEM_AUDIT_HMAC_KEY, TANDEM_AUDIT_HMAC_KEY_FILE, or TANDEM_AUDIT_HMAC_KEYRING_FILE in hosted/enterprise mode"
         );
     }
     static LOCAL_EPHEMERAL_KEY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
@@ -277,16 +277,7 @@ fn predicate_audit_hmac_key_for_posture(
 }
 
 fn configured_predicate_audit_hmac_key() -> anyhow::Result<Option<Vec<u8>>> {
-    let value = match std::env::var("TANDEM_AUDIT_HMAC_KEY") {
-        Ok(value) if !value.trim().is_empty() => Some(value),
-        _ => match std::env::var("TANDEM_AUDIT_HMAC_KEY_FILE") {
-            Ok(path) if !path.trim().is_empty() => Some(std::fs::read_to_string(path.trim())?),
-            _ => None,
-        },
-    };
-    Ok(value
-        .map(|value| value.trim().as_bytes().to_vec())
-        .filter(|value| !value.is_empty()))
+    crate::audit_integrity::configured_active_key_material()
 }
 
 fn deployment_audit_hmac_key(

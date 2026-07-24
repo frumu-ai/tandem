@@ -12,6 +12,24 @@ hardens generic webhook workflow execution end to end, and removes an
 unintended CI enforcement gate and internal process language that shipped
 with 0.7.0.
 
+### Audit Integrity And Local-Key Hardening
+
+Hosted and enterprise protected audit ledgers and encrypted protected-store heads
+now use key-ID-bound HMAC-SHA256 and an independently stored authenticated head.
+Keyrings support explicit active, verify-only, and revoked states so rotations remain
+verifiable without silently accepting missing, wrong-purpose, duplicated, or revoked
+keys. Schema-v3 manifests expose keyed/legacy migration counts and verify the external
+anchor; public-hash recomputation, rollback, deletion, and head substitution fail
+closed. Local posture retains an explicit legacy migration path. Operator guidance
+covers retention, recovery, verification, alerting, and WORM export boundaries.
+
+Local memory-key creation now uses atomic create-new/no-follow semantics with mode
+0600 in the creation syscall. Existing Unix keys must be regular, single-link,
+effective-user-owned, exact-mode files with a supported size and format; unsafe
+permissions, links, ownership, malformed data, and concurrent races fail closed.
+Windows local-key use requires an explicit owner-only-DACL deployment attestation;
+hosted Windows deployments should use KMS.
+
 ### Multi-Channel Slack Connections
 
 `channels.slack.connections[]` turns the single-channel Slack config into a
@@ -259,8 +277,9 @@ truncation reasons, and deployment-scoped HMAC digests for the expression,
 selector, and permitted selected values. Raw request arguments, operands,
 selected values, paths, repository URLs, and email local parts are not copied
 into evidence, and low-cardinality values omit their digest. Hosted and
-enterprise deployments must configure `TANDEM_AUDIT_HMAC_KEY` or
-`TANDEM_AUDIT_HMAC_KEY_FILE`; predicate decisions and enterprise-authored
+enterprise deployments must configure `TANDEM_AUDIT_HMAC_KEY`,
+`TANDEM_AUDIT_HMAC_KEY_FILE`, or `TANDEM_AUDIT_HMAC_KEYRING_FILE`;
+predicate decisions and enterprise-authored
 exact-action approvals fail closed without that authority.
 
 ### Automation Wizard Reliability And Live Progress

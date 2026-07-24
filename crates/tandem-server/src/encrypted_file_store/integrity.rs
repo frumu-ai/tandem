@@ -47,6 +47,8 @@ struct AuthenticatedCollection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous_digest: Option<String>,
     records: Vec<AuthenticatedCollectionEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integrity_key_id: Option<String>,
     digest: String,
 }
 
@@ -57,6 +59,8 @@ struct CollectionForDigest<'a> {
     generation: u64,
     previous_digest: &'a Option<String>,
     records: &'a [AuthenticatedCollectionEntry],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    integrity_key_id: &'a Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +69,8 @@ struct AuthenticatedStoreHead {
     store_id: String,
     generation: u64,
     digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integrity_key_id: Option<String>,
 }
 
 /// Persistent local witness for the latest authenticated generation on disk.
@@ -80,6 +86,8 @@ struct AuthenticatedStoreState {
     store_id: String,
     generation: u64,
     digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integrity_key_id: Option<String>,
 }
 
 const INITIALIZED_STATE_KIND: &str = "tandem-protected-store-initialized";
@@ -96,6 +104,8 @@ struct AuthenticatedJsonlFrame {
     previous_digest: Option<String>,
     context: ProtectedRecordContext,
     stored_record: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integrity_key_id: Option<String>,
     digest: String,
 }
 
@@ -107,6 +117,8 @@ struct JsonlFrameForDigest<'a> {
     previous_digest: &'a Option<String>,
     context: &'a ProtectedRecordContext,
     stored_record: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    integrity_key_id: &'a Option<String>,
 }
 
 #[derive(Debug)]
@@ -114,6 +126,7 @@ struct DecryptedCollection {
     plaintext_json: String,
     generation: u64,
     digest: String,
+    integrity_key_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -121,6 +134,7 @@ struct DecryptedJsonl {
     lines: Vec<String>,
     generation: u64,
     digest: String,
+    integrity_key_id: Option<String>,
     authenticated: bool,
 }
 
@@ -166,15 +180,19 @@ impl ProtectedFileCrypto {
                 stored_record: self.encrypt_record(&plaintext, &record.context)?,
             });
         }
+        let authority = crate::audit_integrity::integrity_authority()?;
         let mut collection = AuthenticatedCollection {
             version: AUTHENTICATED_STORE_VERSION,
             store_id: store.store_id.clone(),
             generation,
             previous_digest,
             records: stored_records,
+            integrity_key_id: authority
+                .as_ref()
+                .map(|keyring| keyring.active_key_id().to_string()),
             digest: String::new(),
         };
-        collection.digest = collection_digest(&collection)?;
+        collection.digest = sign_collection_digest(&collection, authority.as_ref())?;
         let manifest =
             self.encrypt_record(&serde_json::to_string(&collection)?, &store.manifest)?;
         let head = AuthenticatedStoreHead {
@@ -182,6 +200,7 @@ impl ProtectedFileCrypto {
             store_id: store.store_id.clone(),
             generation,
             digest: collection.digest.clone(),
+            integrity_key_id: collection.integrity_key_id.clone(),
         };
         Ok((format!("{AUTHENTICATED_COLLECTION_PREFIX}{manifest}"), head))
     }
@@ -215,10 +234,8 @@ impl ProtectedFileCrypto {
                 || (collection.generation > 1 && collection.previous_digest.is_some()),
             "protected JSON collection generation linkage is invalid"
         );
-        anyhow::ensure!(
-            collection.digest == collection_digest(&collection)?,
-            "protected JSON collection digest mismatch"
-        );
+        verify_collection_digest(&collection)
+            .context("protected JSON collection digest mismatch")?;
 
         let mut values = BTreeMap::new();
         let mut previous_key: Option<&str> = None;
@@ -248,6 +265,7 @@ impl ProtectedFileCrypto {
             plaintext_json: serde_json::to_string_pretty(&values)?,
             generation: collection.generation,
             digest: collection.digest,
+            integrity_key_id: collection.integrity_key_id,
         })
     }
 
@@ -276,29 +294,100 @@ impl ProtectedFileCrypto {
     }
 }
 
-fn collection_digest(collection: &AuthenticatedCollection) -> anyhow::Result<String> {
-    digest_json(&CollectionForDigest {
+fn collection_digest_payload(collection: &AuthenticatedCollection) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&CollectionForDigest {
         version: collection.version,
         store_id: &collection.store_id,
         generation: collection.generation,
         previous_digest: &collection.previous_digest,
         records: &collection.records,
-    })
+        integrity_key_id: &collection.integrity_key_id,
+    })?)
 }
 
-fn jsonl_frame_digest(frame: &AuthenticatedJsonlFrame) -> anyhow::Result<String> {
-    digest_json(&JsonlFrameForDigest {
+fn jsonl_frame_digest_payload(frame: &AuthenticatedJsonlFrame) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&JsonlFrameForDigest {
         version: frame.version,
         store_id: &frame.store_id,
         sequence: frame.sequence,
         previous_digest: &frame.previous_digest,
         context: &frame.context,
         stored_record: &frame.stored_record,
-    })
+        integrity_key_id: &frame.integrity_key_id,
+    })?)
 }
 
-fn digest_json(value: &impl Serialize) -> anyhow::Result<String> {
-    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
+fn sign_collection_digest(
+    collection: &AuthenticatedCollection,
+    authority: Option<&crate::audit_integrity::AuditIntegrityKeyring>,
+) -> anyhow::Result<String> {
+    sign_integrity_digest(&collection_digest_payload(collection)?, authority)
+}
+
+fn verify_collection_digest(collection: &AuthenticatedCollection) -> anyhow::Result<()> {
+    verify_integrity_digest(
+        &collection_digest_payload(collection)?,
+        collection.integrity_key_id.as_deref(),
+        &collection.digest,
+    )
+}
+
+fn sign_jsonl_frame_digest(
+    frame: &AuthenticatedJsonlFrame,
+    authority: Option<&crate::audit_integrity::AuditIntegrityKeyring>,
+) -> anyhow::Result<String> {
+    sign_integrity_digest(&jsonl_frame_digest_payload(frame)?, authority)
+}
+
+fn verify_jsonl_frame_digest(frame: &AuthenticatedJsonlFrame) -> anyhow::Result<()> {
+    verify_integrity_digest(
+        &jsonl_frame_digest_payload(frame)?,
+        frame.integrity_key_id.as_deref(),
+        &frame.digest,
+    )
+}
+
+fn sign_integrity_digest(
+    payload: &[u8],
+    authority: Option<&crate::audit_integrity::AuditIntegrityKeyring>,
+) -> anyhow::Result<String> {
+    match authority {
+        Some(keyring) => keyring.sign_active(b"protected-store-digest", payload),
+        None => Ok(format!("{:x}", Sha256::digest(payload))),
+    }
+}
+
+fn verify_integrity_digest(
+    payload: &[u8],
+    key_id: Option<&str>,
+    expected: &str,
+) -> anyhow::Result<()> {
+    verify_integrity_digest_with_keyring(
+        payload,
+        key_id,
+        expected,
+        crate::audit_integrity::verification_keyring(),
+    )
+}
+
+fn verify_integrity_digest_with_keyring(
+    payload: &[u8],
+    key_id: Option<&str>,
+    expected: &str,
+    keyring: anyhow::Result<Option<crate::audit_integrity::AuditIntegrityKeyring>>,
+) -> anyhow::Result<()> {
+    match key_id {
+        Some(key_id) => keyring?
+            .context("protected store integrity keyring is missing")?
+            .verify(key_id, b"protected-store-digest", payload, expected),
+        None => {
+            anyhow::ensure!(
+                expected == format!("{:x}", Sha256::digest(payload)),
+                "legacy protected store SHA-256 digest mismatch"
+            );
+            Ok(())
+        }
+    }
 }
 
 fn integrity_head_path(path: &Path) -> PathBuf {
@@ -385,7 +474,8 @@ async fn validate_cached_head(path: &Path, head: &AuthenticatedStoreHead) -> any
         );
         if head.generation == previous.generation {
             anyhow::ensure!(
-                head.digest == previous.digest,
+                head.digest == previous.digest
+                    && head.integrity_key_id == previous.integrity_key_id,
                 "protected store replay detected at generation {}",
                 head.generation
             );
@@ -526,10 +616,44 @@ async fn read_committed_head(
     anyhow::ensure!(
         state.store_id == head.store_id
             && state.generation == head.generation
-            && state.digest == head.digest,
+            && state.digest == head.digest
+            && state.integrity_key_id == head.integrity_key_id,
         "protected store persistent initialized witness does not match its integrity head"
     );
+    crate::audit_integrity::verify_external_anchor(
+        "protected-store",
+        &protected_store_anchor_identity(path, store),
+        head.generation,
+        &head.digest,
+        head.integrity_key_id.is_some(),
+        path,
+    )
+    .await
+    .context("verify protected store external anchor")?;
     Ok(head)
+}
+
+fn protected_store_anchor_identity(path: &Path, store: &ProtectedStoreContext) -> String {
+    format!("{}:{}", store.store_id, path.to_string_lossy())
+}
+
+async fn write_protected_store_anchor(
+    path: &Path,
+    store: &ProtectedStoreContext,
+    head: &AuthenticatedStoreHead,
+) -> anyhow::Result<()> {
+    if head.integrity_key_id.is_some() {
+        crate::audit_integrity::write_external_anchor(
+            "protected-store",
+            &protected_store_anchor_identity(path, store),
+            head.generation,
+            &head.digest,
+            path,
+        )
+        .await
+        .context("anchor protected store outside the state directory")?;
+    }
+    Ok(())
 }
 
 fn encode_authenticated_head(
@@ -547,6 +671,7 @@ fn authenticated_state(head: &AuthenticatedStoreHead) -> AuthenticatedStoreState
         store_id: head.store_id.clone(),
         generation: head.generation,
         digest: head.digest.clone(),
+        integrity_key_id: head.integrity_key_id.clone(),
     }
 }
 
@@ -922,6 +1047,7 @@ async fn decrypt_jsonl_state(
             lines: Vec::new(),
             generation: 0,
             digest: String::new(),
+            integrity_key_id: None,
             authenticated: false,
         });
     }
@@ -940,12 +1066,15 @@ async fn decrypt_jsonl_state(
             lines,
             generation: 0,
             digest: String::new(),
+            integrity_key_id: None,
             authenticated: false,
         });
     }
 
     let mut lines = Vec::with_capacity(non_empty.len());
     let mut previous_digest: Option<String> = None;
+    let mut last_integrity_key_id: Option<String> = None;
+    let mut keyed_frame_seen = false;
     for (index, stored) in non_empty.into_iter().enumerate() {
         let encoded = stored
             .strip_prefix(AUTHENTICATED_JSONL_PREFIX)
@@ -965,11 +1094,21 @@ async fn decrypt_jsonl_state(
             "protected JSONL frame chain break at sequence {}",
             frame.sequence
         );
-        anyhow::ensure!(
-            frame.digest == jsonl_frame_digest(&frame)?,
-            "protected JSONL frame digest mismatch at sequence {}",
-            frame.sequence
-        );
+        if frame.integrity_key_id.is_some() {
+            keyed_frame_seen = true;
+        } else {
+            anyhow::ensure!(
+                !keyed_frame_seen,
+                "legacy protected JSONL frame appears after a keyed integrity segment"
+            );
+        }
+        verify_jsonl_frame_digest(&frame).with_context(|| {
+            format!(
+                "protected JSONL frame digest mismatch at sequence {}",
+                frame.sequence
+            )
+        })?;
+        last_integrity_key_id = frame.integrity_key_id.clone();
         let plaintext = crypto.decrypt_record(&frame.stored_record, &frame.context)?;
         previous_digest = Some(frame.digest);
         lines.push(plaintext);
@@ -978,7 +1117,9 @@ async fn decrypt_jsonl_state(
     let digest = previous_digest.unwrap_or_default();
     let head = read_committed_head(crypto, path, store).await?;
     anyhow::ensure!(
-        head.generation == generation && head.digest == digest,
+        head.generation == generation
+            && head.digest == digest
+            && head.integrity_key_id == last_integrity_key_id,
         "protected JSONL rollback, deletion, or replay detected"
     );
     validate_cached_head(path, &head).await?;
@@ -986,6 +1127,7 @@ async fn decrypt_jsonl_state(
         lines,
         generation,
         digest,
+        integrity_key_id: last_integrity_key_id,
         authenticated: true,
     })
 }
@@ -1000,7 +1142,9 @@ pub(crate) async fn read_text_file(
         let collection = crypto.decrypt_json_collection(&stored, store)?;
         let head = read_committed_head(&crypto, path, store).await?;
         anyhow::ensure!(
-            head.generation == collection.generation && head.digest == collection.digest,
+            head.generation == collection.generation
+                && head.digest == collection.digest
+                && head.integrity_key_id == collection.integrity_key_id,
             "protected JSON collection rollback, deletion, or replay detected"
         );
         validate_cached_head(path, &head).await?;
@@ -1064,6 +1208,7 @@ pub(crate) async fn append_jsonl_record_file(
                     lines: Vec::new(),
                     generation: 0,
                     digest: String::new(),
+                    integrity_key_id: None,
                     authenticated: true,
                 },
                 false,
@@ -1090,7 +1235,9 @@ pub(crate) async fn append_jsonl_record_file(
         store_id: store.store_id.clone(),
         generation: prior.generation,
         digest: prior.digest.clone(),
+        integrity_key_id: prior.integrity_key_id.clone(),
     });
+    let authority = crate::audit_integrity::integrity_authority()?;
     let mut frame = AuthenticatedJsonlFrame {
         version: AUTHENTICATED_STORE_VERSION,
         store_id: store.store_id.clone(),
@@ -1098,9 +1245,12 @@ pub(crate) async fn append_jsonl_record_file(
         previous_digest: (prior.generation > 0).then(|| prior.digest.clone()),
         context: context.clone(),
         stored_record: crypto.encrypt_record(plaintext, context)?,
+        integrity_key_id: authority
+            .as_ref()
+            .map(|keyring| keyring.active_key_id().to_string()),
         digest: String::new(),
     };
-    frame.digest = jsonl_frame_digest(&frame)?;
+    frame.digest = sign_jsonl_frame_digest(&frame, authority.as_ref())?;
     let outer = crypto.encrypt_record(&serde_json::to_string(&frame)?, &store.manifest)?;
     let stored_line = format!("{AUTHENTICATED_JSONL_PREFIX}{outer}\n");
     let head = AuthenticatedStoreHead {
@@ -1108,6 +1258,7 @@ pub(crate) async fn append_jsonl_record_file(
         store_id: store.store_id.clone(),
         generation: sequence,
         digest: frame.digest,
+        integrity_key_id: frame.integrity_key_id,
     };
     let state = authenticated_state(&head);
     let encoded_head = encode_authenticated_head(&crypto, &head, store)?;
@@ -1194,6 +1345,7 @@ pub(crate) async fn append_jsonl_record_file(
             ))),
         };
     }
+    write_protected_store_anchor(path, store, &head).await?;
     Ok(())
 }
 
@@ -1230,7 +1382,9 @@ pub(crate) async fn write_json_records_file(
                 let current = crypto.decrypt_json_collection(stored, store)?;
                 let head = read_committed_head(&crypto, path, store).await?;
                 anyhow::ensure!(
-                    current.generation == head.generation && current.digest == head.digest,
+                    current.generation == head.generation
+                        && current.digest == head.digest
+                        && current.integrity_key_id == head.integrity_key_id,
                     "protected JSON collection integrity head mismatch before write"
                 );
                 validate_cached_head(path, &head).await?;
@@ -1294,6 +1448,7 @@ pub(crate) async fn write_json_records_file(
             ))),
         };
     }
+    write_protected_store_anchor(path, store, &head).await?;
     Ok(())
 }
 
@@ -1354,6 +1509,71 @@ mod tests {
         let plaintext = read_text_file(path, store).await.expect("read collection");
         let value = serde_json::from_str::<serde_json::Value>(&plaintext).expect("collection JSON");
         assert_eq!(value["record"], expected);
+    }
+
+    #[test]
+    fn keyed_store_frames_reject_public_rewrites_and_verify_rotation() {
+        use sha2::Digest as _;
+
+        const OLD_KEY: &str = "old-store-integrity-secret-material-32-bytes";
+        const NEW_KEY: &str = "new-store-integrity-secret-material-32-bytes";
+        let old = crate::audit_integrity::test_keyring("old", OLD_KEY, &[]);
+        let rotated = crate::audit_integrity::test_keyring("new", NEW_KEY, &[("old", OLD_KEY)]);
+        let mut old_frame = super::AuthenticatedJsonlFrame {
+            version: super::AUTHENTICATED_STORE_VERSION,
+            store_id: "rotation-test".to_string(),
+            sequence: 1,
+            previous_digest: None,
+            context: record_context("rotation-old"),
+            stored_record: "sealed-record-old".to_string(),
+            integrity_key_id: Some("old".to_string()),
+            digest: String::new(),
+        };
+        old_frame.digest =
+            super::sign_jsonl_frame_digest(&old_frame, Some(&old)).expect("old digest");
+        super::verify_integrity_digest_with_keyring(
+            &super::jsonl_frame_digest_payload(&old_frame).expect("old payload"),
+            old_frame.integrity_key_id.as_deref(),
+            &old_frame.digest,
+            Ok(Some(rotated.clone())),
+        )
+        .expect("verify old segment after rotation");
+
+        let mut rewritten = old_frame.clone();
+        rewritten.stored_record = "attacker-rewritten-record".to_string();
+        rewritten.digest = format!(
+            "{:x}",
+            sha2::Sha256::digest(
+                super::jsonl_frame_digest_payload(&rewritten).expect("rewritten payload")
+            )
+        );
+        assert!(super::verify_integrity_digest_with_keyring(
+            &super::jsonl_frame_digest_payload(&rewritten).expect("rewritten payload"),
+            rewritten.integrity_key_id.as_deref(),
+            &rewritten.digest,
+            Ok(Some(rotated.clone())),
+        )
+        .is_err());
+
+        let mut new_frame = super::AuthenticatedJsonlFrame {
+            version: super::AUTHENTICATED_STORE_VERSION,
+            store_id: "rotation-test".to_string(),
+            sequence: 2,
+            previous_digest: Some(old_frame.digest),
+            context: record_context("rotation-new"),
+            stored_record: "sealed-record-new".to_string(),
+            integrity_key_id: Some("new".to_string()),
+            digest: String::new(),
+        };
+        new_frame.digest =
+            super::sign_jsonl_frame_digest(&new_frame, Some(&rotated)).expect("new digest");
+        super::verify_integrity_digest_with_keyring(
+            &super::jsonl_frame_digest_payload(&new_frame).expect("new payload"),
+            new_frame.integrity_key_id.as_deref(),
+            &new_frame.digest,
+            Ok(Some(rotated)),
+        )
+        .expect("verify new rotation segment");
     }
 
     #[test]

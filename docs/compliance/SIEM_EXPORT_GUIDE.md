@@ -21,28 +21,42 @@ Returns the verification manifest for the protected audit ledger as JSON.
 ```json
 {
   "ledger_path": "/var/tandem/audit/protected.ndjson",
-  "schema_version": 2,
+  "schema_version": 3,
   "record_count": 847,
   "last_seq": 847,
-  "root_hash": "a3f2...c91d",
+  "root_hash": "hmac-sha256:a3f2...c91d",
+  "legacy_record_count": 40,
+  "keyed_record_count": 807,
+  "integrity_key_ids": ["audit-2026-06", "audit-2026-07"],
+  "external_anchor": {
+    "configured": true,
+    "verified": true,
+    "key_id": "audit-2026-07",
+    "generation": 847,
+    "anchored_at_ms": 1718399999000
+  },
   "generated_at_ms": 1718400000000
 }
 ```
 
 **Fields:**
 
-| Field | Description |
-|-------|-------------|
-| `ledger_path` | Filesystem path to the protected audit ledger. |
-| `schema_version` | Always 2 for hash-chained ledgers. |
-| `record_count` | Number of parseable records in the file. |
-| `last_seq` | Highest `seq` value seen; gaps between this and `record_count` indicate pre-v2 records or corruption. |
-| `root_hash` | SHA-256 hash of the last hash-chained record. Verifiable by re-hashing the exported bundle. |
-| `generated_at_ms` | Epoch ms when this manifest was produced. |
+| Field                                        | Description                                                                                                           |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `ledger_path`                                | Filesystem path to the protected audit ledger.                                                                        |
+| `schema_version`                             | `3` when keyed audit-integrity segments are present; legacy-only hash chains report `2`.                              |
+| `record_count`                               | Number of parseable records in the file.                                                                              |
+| `last_seq`                                   | Highest `seq` value seen; gaps between this and `record_count` indicate pre-v2 records or corruption.                 |
+| `root_hash`                                  | HMAC-SHA256 of the last keyed record (or legacy SHA-256 before migration). Verification requires the retained key ID. |
+| `legacy_record_count` / `keyed_record_count` | Auditable migration progress for hashed records.                                                                      |
+| `integrity_key_ids`                          | Sorted key IDs referenced by retained keyed segments; key bytes are never exposed.                                    |
+| `external_anchor`                            | Whether the external root is configured and exactly verified, plus its key ID, generation, and timestamp.             |
+| `generated_at_ms`                            | Epoch ms when this manifest was produced.                                                                             |
 
-Use this endpoint to check ledger integrity before or after an export. Run it periodically
-(e.g. daily, or after each deployment) and store the manifest in an external audit log or
-immutable store so you can detect tampering after the fact.
+Use this endpoint to check ledger integrity before or after an export. Schema-v3 writes also
+advance `TANDEM_AUDIT_ANCHOR_DIR` after every keyed commit, and the endpoint fails if the
+external root does not exactly match. Continue exporting manifests and anchors to an immutable
+store for retention and independent incident evidence. See `docs/AUDIT_INTEGRITY.md`.
 
 ---
 
@@ -54,8 +68,8 @@ retention, and offline verification.
 
 **Query parameters:**
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
+| Parameter  | Type             | Description                                           |
+| ---------- | ---------------- | ----------------------------------------------------- |
 | `since_ms` | `u64` (optional) | Include only records with `created_at_ms ≥ since_ms`. |
 | `until_ms` | `u64` (optional) | Include only records with `created_at_ms ≤ until_ms`. |
 
@@ -66,23 +80,25 @@ Each line is a JSON object. The final line is always a `bundle_manifest` record.
 **Example bundle:**
 
 ```ndjson
-{"event_id":"a1b2...","event_type":"fintech.protected_action.approved","seq":1,"prev_hash":null,"record_hash":"7f3a...","created_at_ms":1718300000000,...}
-{"event_id":"c3d4...","event_type":"approval.decision.recorded","seq":2,"prev_hash":"7f3a...","record_hash":"9e1b...","created_at_ms":1718300001000,...}
-{"type":"bundle_manifest","schema_version":2,"record_count":2,"last_seq":2,"root_hash":"9e1b...","tenant_org_id":"acme","tenant_workspace_id":"prod","since_ms":null,"until_ms":null,"exported_at_ms":1718400000000}
+{"event_id":"a1b2...","event_type":"fintech.protected_action.approved","seq":1,"prev_hash":null,"record_hash":"hmac-sha256:7f3a...","integrity":{"algorithm":"hmac-sha256","key_id":"audit-2026-07","segment_start":true},"created_at_ms":1718300000000,...}
+{"event_id":"c3d4...","event_type":"approval.decision.recorded","seq":2,"prev_hash":"hmac-sha256:7f3a...","record_hash":"hmac-sha256:9e1b...","integrity":{"algorithm":"hmac-sha256","key_id":"audit-2026-07","segment_start":false},"created_at_ms":1718300001000,...}
+{"type":"bundle_manifest","schema_version":3,"record_count":2,"legacy_record_count":0,"keyed_record_count":2,"integrity_key_ids":["audit-2026-07"],"last_seq":2,"root_hash":"hmac-sha256:9e1b...","tenant_org_id":"acme","tenant_workspace_id":"prod","since_ms":null,"until_ms":null,"exported_at_ms":1718400000000}
 ```
 
 **Bundle manifest fields:**
 
-| Field | Description |
-|-------|-------------|
-| `type` | Always `"bundle_manifest"`. |
-| `schema_version` | Always `2`. |
-| `record_count` | Number of event records in this bundle (excludes manifest trailer). |
-| `last_seq` | Highest `seq` in the exported records. For partial time-range exports, this may be less than the global ledger's `last_seq`. |
-| `root_hash` | `record_hash` of the last hash-chained record in the bundle. |
-| `tenant_org_id` / `tenant_workspace_id` | Tenant scope of this export. |
-| `since_ms` / `until_ms` | Time range filters applied, or `null` if none. |
-| `exported_at_ms` | Epoch ms when this bundle was generated. |
+| Field                                        | Description                                                                                                                  |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `type`                                       | Always `"bundle_manifest"`.                                                                                                  |
+| `schema_version`                             | `3` when the bundle contains keyed segments; legacy-only bundles report `2`.                                                 |
+| `legacy_record_count` / `keyed_record_count` | Migration counts for records in this bundle.                                                                                 |
+| `integrity_key_ids`                          | Sorted key IDs required to verify keyed records in this bundle.                                                              |
+| `record_count`                               | Number of event records in this bundle (excludes manifest trailer).                                                          |
+| `last_seq`                                   | Highest `seq` in the exported records. For partial time-range exports, this may be less than the global ledger's `last_seq`. |
+| `root_hash`                                  | `record_hash` of the last hash-chained record in the bundle.                                                                 |
+| `tenant_org_id` / `tenant_workspace_id`      | Tenant scope of this export.                                                                                                 |
+| `since_ms` / `until_ms`                      | Time range filters applied, or `null` if none.                                                                               |
+| `exported_at_ms`                             | Epoch ms when this bundle was generated.                                                                                     |
 
 ---
 
@@ -95,17 +111,23 @@ re-verified offline:
 2. Sort records by `seq`.
 3. For each record (skipping records with an empty `record_hash`):
    a. Reconstruct the canonical JSON by serializing the record fields in the documented
-      field order, **excluding** `record_hash`.
-   b. Compute `SHA-256(canonical_json)` as a lowercase hex string.
-   c. Assert the computed hash equals the record's `record_hash`.
+   field order, **excluding** `record_hash`.
+   b. For a legacy record without `integrity`, compute lowercase `SHA-256(canonical_json)`.
+   Legacy records are permitted only before the first keyed segment.
+   c. For schema-v3, serialize `{"canonical": canonical_record, "integrity": integrity}`
+   and verify `record_hash` as HMAC-SHA256 with the retained `integrity.key_id`. Require
+   `integrity.algorithm == "hmac-sha256"` and an explicit `segment_start` whenever the
+   key ID changes. Missing, revoked, or wrong-purpose keys fail verification.
    d. Assert `prev_hash` equals the `record_hash` of the previous hashed record (or
-      `null` for the first hashed record in the chain).
+   `null` for the first hashed record in the chain).
 4. Assert `seq` increments by 1 from 1 to `last_seq` with no gaps.
 5. Assert the `root_hash` in the bundle manifest equals the `record_hash` of the last
    hashed record.
 
-A reference verifier is available via `GET /audit/ledger/manifest`, which runs the same
-checks server-side and reports any `violation` found.
+The online reference verifier is `GET /audit/ledger/manifest`. It performs constant-time
+HMAC verification with the configured keyring, validates segment transitions, and compares
+the final root to the authenticated external anchor. Offline schema-v3 verification requires
+a separately authorized copy of the retained verification keys; never include keys in exports.
 
 ### Canonical form for hashing
 
@@ -255,6 +277,7 @@ Many) storage. The Tandem server writes the ledger to the filesystem path config
 ### Customer-managed WORM equivalents
 
 Any WORM-capable storage system that:
+
 - Prevents deletion or modification of objects for the retention period
 - Produces audit logs of access and attempted modifications
 - Supports independent read access for verification
@@ -271,6 +294,7 @@ for any record, it returns `500 AUDIT_EXPORT_SERIALIZE_ERROR` rather than a part
 This prevents a truncated bundle from appearing valid.
 
 For scheduled exports:
+
 - Treat any non-200 response as a failure and alert.
 - Compare `record_count` in the bundle manifest to the last known `record_count` from
   `/audit/ledger/manifest` — a decrease indicates ledger corruption.
@@ -300,9 +324,14 @@ block alongside the run evidence:
     "status": "incomplete",
     "checked_at_ms": 1718400000000,
     "event_taxonomy": [
-      "approval_granted", "approval_denied", "approval_reworked",
-      "approval_cancelled", "protected_tool_call", "policy_decision",
-      "evidence_export", "incident_failure"
+      "approval_granted",
+      "approval_denied",
+      "approval_reworked",
+      "approval_cancelled",
+      "protected_tool_call",
+      "policy_decision",
+      "evidence_export",
+      "incident_failure"
     ],
     "counts": {
       "protected_actions_checked": 3,
@@ -329,11 +358,11 @@ block alongside the run evidence:
 
 ### Status values
 
-| `status` | Meaning |
-|----------|---------|
-| `complete` | Every protected action has matching policy, approval, tool-effect, and audit records. |
+| `status`                 | Meaning                                                                                                  |
+| ------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `complete`               | Every protected action has matching policy, approval, tool-effect, and audit records.                    |
 | `complete_with_warnings` | No hard gaps, but advisory findings exist (e.g. a legacy approval without recorded decider attribution). |
-| `incomplete` | At least one `error`-severity finding — do not rely on the packet as complete evidence until resolved. |
+| `incomplete`             | At least one `error`-severity finding — do not rely on the packet as complete evidence until resolved.   |
 
 ### Finding kinds
 
@@ -344,16 +373,16 @@ it). The runtime records a successful protected execution as a `PolicyDecisionEf
 protected audit event separately, so the checker resolves each succeeded tool-effect to its
 linked decision and verifies the full chain.
 
-| `kind` | Severity | Meaning |
-|--------|----------|---------|
-| `missing_policy_decision` | error | A protected tool call succeeded with no linked (or no present) policy decision. |
-| `missing_approval_evidence` | error | An executed protected action's decision has neither an approval id nor a recorded approve gate decision. |
-| `missing_protected_audit_event` | error | No protected audit event attests an executed protected action (matched by `audit_event_id`, or by the decision/approval id appearing in an event payload). |
-| `expired_approval` | error | A protected action executed after its approval expiry. |
-| `tenant_mismatch` | error | A policy decision or protected audit event carries a different tenant than the run. |
-| `sequence_gap` | error | The protected audit hash chain is broken or a sequence number is replayed between adjacent records. |
-| `missing_tool_effect_evidence` | warning | An approval-required decision has no linked tool-effect record (expected when a gate was reworked or cancelled before execution). |
-| `unattributed_approval` | warning | A gate decision has no recorded decider (legacy record predating attribution enforcement). |
+| `kind`                          | Severity | Meaning                                                                                                                                                    |
+| ------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `missing_policy_decision`       | error    | A protected tool call succeeded with no linked (or no present) policy decision.                                                                            |
+| `missing_approval_evidence`     | error    | An executed protected action's decision has neither an approval id nor a recorded approve gate decision.                                                   |
+| `missing_protected_audit_event` | error    | No protected audit event attests an executed protected action (matched by `audit_event_id`, or by the decision/approval id appearing in an event payload). |
+| `expired_approval`              | error    | A protected action executed after its approval expiry.                                                                                                     |
+| `tenant_mismatch`               | error    | A policy decision or protected audit event carries a different tenant than the run.                                                                        |
+| `sequence_gap`                  | error    | The protected audit hash chain is broken or a sequence number is replayed between adjacent records.                                                        |
+| `missing_tool_effect_evidence`  | warning  | An approval-required decision has no linked tool-effect record (expected when a gate was reworked or cancelled before execution).                          |
+| `unattributed_approval`         | warning  | A gate decision has no recorded decider (legacy record predating attribution enforcement).                                                                 |
 
 ### Audit-health event
 
@@ -372,10 +401,10 @@ so it can also be re-run offline against an exported bundle.
 
 The following are not yet implemented and are tracked as follow-up issues:
 
-| Gap | Issue |
-|-----|-------|
-| Server-side scheduled export to immutable storage (push model) | TAN-248 follow-up |
-| Automatic SIEM connector with retry / backpressure | TAN-248 follow-up |
-| Per-tenant configurable retention enforcement | TAN-249 |
-| Signed export bundles (HMAC / asymmetric) | TAN-247 follow-up (after KMS resolver) |
-| Streaming export for very large ledgers | TAN-248 follow-up |
+| Gap                                                            | Issue                                  |
+| -------------------------------------------------------------- | -------------------------------------- |
+| Server-side scheduled export to immutable storage (push model) | TAN-248 follow-up                      |
+| Automatic SIEM connector with retry / backpressure             | TAN-248 follow-up                      |
+| Per-tenant configurable retention enforcement                  | TAN-249                                |
+| Signed export bundles (HMAC / asymmetric)                      | TAN-247 follow-up (after KMS resolver) |
+| Streaming export for very large ledgers                        | TAN-248 follow-up                      |
