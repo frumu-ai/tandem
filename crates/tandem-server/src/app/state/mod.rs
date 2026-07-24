@@ -108,6 +108,8 @@ mod automation_webhook_idempotency;
 mod automation_webhook_inbox;
 mod automation_webhook_linear;
 mod automation_webhook_notion;
+mod automation_webhook_rejections;
+mod automation_webhook_secret_store;
 mod automation_webhook_stateful_wait_replay;
 mod automation_webhook_store;
 mod automation_webhook_store_files;
@@ -229,6 +231,9 @@ pub struct AppState {
     pub automation_scheduler_stopping: Arc<AtomicBool>,
     pub automations_v2_persistence: Arc<tokio::sync::Mutex<()>>,
     pub(crate) automation_webhook_persistence: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) automation_webhook_rejection_persistence: Arc<
+        tokio::sync::Mutex<automation_webhook_rejections::AutomationWebhookRejectionLedgerState>,
+    >,
     pub(crate) idempotency_persistence: Arc<tokio::sync::Mutex<()>>,
     pub workflow_plans: Arc<RwLock<std::collections::HashMap<String, WorkflowPlan>>>,
     pub workflow_plan_drafts:

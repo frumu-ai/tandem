@@ -1,19 +1,19 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-use axum::body::Bytes;
+use axum::body::{to_bytes, Bytes};
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::app::state::{
-    automation_webhook_body_digest, sanitize_automation_webhook_preview,
-    AutomationWebhookFeedbackLoopCandidate, AutomationWebhookNotionIntake,
-    AutomationWebhookRawEventCreateInput, AutomationWebhookSignatureHeaders,
-    AutomationWebhookVerificationDecision, AutomationWebhookVerificationError,
+    automation_webhook_body_digest, AutomationWebhookFeedbackLoopCandidate,
+    AutomationWebhookNotionIntake, AutomationWebhookRawEventCreateInput,
+    AutomationWebhookSignatureHeaders, AutomationWebhookVerificationDecision,
+    AutomationWebhookVerificationError,
 };
 use crate::automation_v2::types::{
     automation_webhook_provider_event_id_headers, AutomationWebhookSignatureScheme,
@@ -23,7 +23,9 @@ use crate::{
     AutomationWebhookRawEventRecord, AutomationWebhookTriggerRecord,
 };
 
-const AUTOMATION_WEBHOOK_MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
+const AUTOMATION_WEBHOOK_DEFAULT_MAX_PAYLOAD_BYTES: usize = 256 * 1024;
+const AUTOMATION_WEBHOOK_GITHUB_MAX_PAYLOAD_BYTES: usize = 512 * 1024;
+const AUTOMATION_WEBHOOK_UNKNOWN_MAX_PAYLOAD_BYTES: usize = 32 * 1024;
 const AUTOMATION_WEBHOOK_SIGNATURE_TOLERANCE_MS: u64 = 5 * 60 * 1000;
 const AUTOMATION_WEBHOOK_SIGNATURE_HEADER: &str = "x-tandem-webhook-signature";
 const AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER: &str = "x-tandem-signature";
@@ -45,24 +47,65 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             post(automation_webhook_intake),
         )
         .route(
+            "/webhooks/automations/{public_path_token}/{setup_nonce}",
+            post(automation_webhook_setup_intake),
+        )
+        .route(
             "/api/engine/webhooks/automations/{public_path_token}",
             post(automation_webhook_intake),
+        )
+        .route(
+            "/api/engine/webhooks/automations/{public_path_token}/{setup_nonce}",
+            post(automation_webhook_setup_intake),
         )
 }
 
 async fn automation_webhook_intake(
     State(state): State<AppState>,
     Path(public_path_token): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
+    request: Request<axum::body::Body>,
+) -> Response {
+    automation_webhook_intake_inner(state, public_path_token, None, request).await
+}
+
+async fn automation_webhook_setup_intake(
+    State(state): State<AppState>,
+    Path((public_path_token, setup_nonce)): Path<(String, String)>,
+    request: Request<axum::body::Body>,
+) -> Response {
+    automation_webhook_intake_inner(state, public_path_token, Some(setup_nonce), request).await
+}
+
+async fn automation_webhook_intake_inner(
+    state: AppState,
+    public_path_token: String,
+    setup_nonce: Option<String>,
+    request: Request<axum::body::Body>,
 ) -> Response {
     let received_at_ms = crate::now_ms();
-    if body.len() > AUTOMATION_WEBHOOK_MAX_PAYLOAD_BYTES {
+    let payload_limit = state
+        .get_automation_webhook_trigger_by_public_token(&public_path_token)
+        .await
+        .map(|trigger| match trigger.provider.as_str() {
+            "github" => AUTOMATION_WEBHOOK_GITHUB_MAX_PAYLOAD_BYTES,
+            _ => AUTOMATION_WEBHOOK_DEFAULT_MAX_PAYLOAD_BYTES,
+        })
+        .unwrap_or(AUTOMATION_WEBHOOK_UNKNOWN_MAX_PAYLOAD_BYTES);
+    let (parts, request_body) = request.into_parts();
+    let headers = parts.headers;
+    if content_length_exceeds(&headers, payload_limit) {
         return webhook_public_response(StatusCode::PAYLOAD_TOO_LARGE, "rejected");
     }
     if !is_json_content_type(&headers) {
         return webhook_public_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "rejected");
     }
+
+    let body = match to_bytes(request_body, payload_limit).await {
+        Ok(body) => body,
+        Err(_) => {
+            return webhook_public_response(StatusCode::PAYLOAD_TOO_LARGE, "rejected");
+        }
+    };
 
     // Notion subscription verification handshake: an unsigned POST carrying a
     // `verification_token` for a Notion-provider trigger. Capture the token as
@@ -72,6 +115,7 @@ async fn automation_webhook_intake(
     match state
         .handle_automation_webhook_notion_verification(
             &public_path_token,
+            setup_nonce.as_deref(),
             body.as_ref(),
             has_notion_signature,
             received_at_ms,
@@ -101,17 +145,13 @@ async fn automation_webhook_intake(
     {
         Ok(verified) => verified,
         Err(error) => {
-            let preview = preview_for_rejected_body(body.as_ref(), &body_digest);
             record_verification_rejection(
                 &state,
                 &public_path_token,
                 &error,
                 advisory_provider_event_id,
                 body_digest,
-                &headers,
-                body.as_ref(),
                 received_at_ms,
-                preview,
             )
             .await;
             return verification_error_response(&error);
@@ -197,6 +237,12 @@ fn is_json_content_type(headers: &HeaderMap) -> bool {
         .split(';')
         .next()
         .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
+}
+
+fn content_length_exceeds(headers: &HeaderMap, maximum: usize) -> bool {
+    header_str(headers, header::CONTENT_LENGTH.as_str())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|value| value > maximum)
 }
 
 fn signature_headers_from_request(headers: &HeaderMap) -> AutomationWebhookSignatureHeaders {
@@ -367,21 +413,6 @@ fn redacted_automation_webhook_headers(headers: &HeaderMap) -> Value {
     Value::Object(map)
 }
 
-fn preview_for_rejected_body(body: &[u8], body_digest: &str) -> Value {
-    serde_json::from_slice::<Value>(body)
-        .map(|value| sanitize_automation_webhook_preview(&value))
-        .unwrap_or_else(|_| json!({ "body_digest": body_digest }))
-}
-
-fn verification_error_allows_raw_payload_persistence(
-    error: &AutomationWebhookVerificationError,
-    trigger: &AutomationWebhookTriggerRecord,
-) -> bool {
-    matches!(error, AutomationWebhookVerificationError::ReplayDetected)
-        || (trigger.provider == "linear"
-            && matches!(error, AutomationWebhookVerificationError::BadSignature))
-}
-
 async fn record_raw_event_for_trigger(
     state: &AppState,
     trigger: &AutomationWebhookTriggerRecord,
@@ -406,38 +437,6 @@ async fn record_raw_event_for_trigger(
             payload: body.to_vec(),
             received_at_ms,
         })
-        .await
-}
-
-async fn record_raw_event_for_delivery(
-    state: &AppState,
-    trigger: &AutomationWebhookTriggerRecord,
-    delivery: &AutomationWebhookDeliveryRecord,
-    provider_event_id: Option<String>,
-    body_digest: String,
-    verification: Option<&AutomationWebhookVerificationDecision>,
-    feedback_loop_candidate: Option<&AutomationWebhookFeedbackLoopCandidate>,
-    headers: &HeaderMap,
-    body: &[u8],
-    received_at_ms: u64,
-) -> anyhow::Result<AutomationWebhookRawEventRecord> {
-    state
-        .record_automation_webhook_raw_event_with_delivery(
-            AutomationWebhookRawEventCreateInput {
-                trigger: trigger.clone(),
-                provider_event_id,
-                body_digest,
-                verification: verification.cloned(),
-                feedback_loop_candidate: feedback_loop_candidate.cloned(),
-                headers_digest: automation_webhook_headers_digest(headers),
-                headers_redacted: redacted_automation_webhook_headers(headers),
-                content_type: header_str(headers, header::CONTENT_TYPE.as_str())
-                    .map(str::to_string),
-                payload: body.to_vec(),
-                received_at_ms,
-            },
-            delivery,
-        )
         .await
 }
 
@@ -471,10 +470,7 @@ async fn record_verification_rejection(
     error: &AutomationWebhookVerificationError,
     provider_event_id: Option<String>,
     body_digest: String,
-    headers: &HeaderMap,
-    body: &[u8],
     received_at_ms: u64,
-    sanitized_preview: Value,
 ) {
     let Some((status, reason_code)) = verification_rejection_delivery(error) else {
         return;
@@ -489,44 +485,17 @@ async fn record_verification_rejection(
         &trigger,
         reason_code,
     ));
-    let persist_raw_event = verification_error_allows_raw_payload_persistence(error, &trigger);
-    if let Ok(delivery) = state
-        .record_automation_webhook_rejection(
+    state
+        .record_automation_webhook_pre_auth_rejection(
             &trigger,
-            provider_event_id.clone(),
-            body_digest.clone(),
+            provider_event_id,
+            body_digest,
             status,
             reason_code,
             received_at_ms,
-            sanitized_preview,
-            verification.clone(),
+            verification,
         )
-        .await
-    {
-        if persist_raw_event {
-            if let Err(error) = record_raw_event_for_delivery(
-                state,
-                &trigger,
-                &delivery,
-                provider_event_id,
-                body_digest,
-                verification.as_ref(),
-                None,
-                headers,
-                body,
-                received_at_ms,
-            )
-            .await
-            {
-                tracing::warn!(
-                    error = %error,
-                    trigger_id = %trigger.trigger_id,
-                    delivery_id = %delivery.delivery_id,
-                    "failed to persist rejected automation webhook raw event"
-                );
-            }
-        }
-    }
+        .await;
 }
 
 fn verification_rejection_delivery(

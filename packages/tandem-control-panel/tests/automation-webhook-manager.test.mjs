@@ -16,3 +16,12 @@ test("webhook creation warns that org units require matching enterprise scope", 
   assert.match(source, /Enterprise-scoped workflows only\./);
   assert.match(source, /Otherwise, webhook deliveries\s+will be rejected\./);
 });
+
+test("Notion onboarding uses a one-time setup URL and protected reset path", () => {
+  assert.match(source, /setup_callback_url/);
+  assert.match(source, /Notion setup URL/);
+  assert.match(source, /Signed event callback/);
+  assert.match(source, /resetWebhookVerification/);
+  assert.match(source, /Issue new setup URL/);
+  assert.match(source, /invalidates the current signing token/);
+});

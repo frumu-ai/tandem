@@ -2,6 +2,7 @@
 // Licensed under the Business Source License 1.1
 
 include!("automation_webhooks_preflight.rs");
+mod security;
 
 use super::*;
 use crate::app::state::{
@@ -1404,11 +1405,17 @@ async fn setup_notion_webhook(
     created
 }
 
-fn notion_verification_request(public_path_token: &str, token: &str) -> Request<Body> {
+fn notion_verification_request(
+    public_path_token: &str,
+    setup_nonce: &str,
+    token: &str,
+) -> Request<Body> {
     let body = json!({ "verification_token": token }).to_string();
     Request::builder()
         .method("POST")
-        .uri(format!("/webhooks/automations/{public_path_token}"))
+        .uri(format!(
+            "/webhooks/automations/{public_path_token}/{setup_nonce}"
+        ))
         .header("content-type", "application/json")
         .body(Body::from(body))
         .expect("request")
@@ -1441,6 +1448,7 @@ async fn notion_verification_token_is_captured_without_queueing_a_run() {
     let resp = app
         .oneshot(notion_verification_request(
             &created.trigger.public_path_token,
+            created.notion_setup_nonce.as_deref().expect("setup nonce"),
             "notion_tok_abc123",
         ))
         .await
@@ -1523,6 +1531,7 @@ async fn notion_signed_event_verifies_queues_once_and_dedupes() {
         .clone()
         .oneshot(notion_verification_request(
             &created.trigger.public_path_token,
+            created.notion_setup_nonce.as_deref().expect("setup nonce"),
             token,
         ))
         .await
@@ -1601,6 +1610,7 @@ async fn notion_event_with_wrong_token_signature_is_rejected() {
     app.clone()
         .oneshot(notion_verification_request(
             &created.trigger.public_path_token,
+            created.notion_setup_nonce.as_deref().expect("setup nonce"),
             "the_real_token",
         ))
         .await
@@ -1649,6 +1659,7 @@ async fn notion_second_verification_token_does_not_overwrite_first() {
     app.clone()
         .oneshot(notion_verification_request(
             &created.trigger.public_path_token,
+            created.notion_setup_nonce.as_deref().expect("setup nonce"),
             "first_token",
         ))
         .await
@@ -1657,6 +1668,7 @@ async fn notion_second_verification_token_does_not_overwrite_first() {
     let resp = app
         .oneshot(notion_verification_request(
             &created.trigger.public_path_token,
+            created.notion_setup_nonce.as_deref().expect("setup nonce"),
             "attacker_reset_token",
         ))
         .await
@@ -1920,8 +1932,12 @@ async fn linear_secret_import_enables_signed_events_and_dedupes() {
         .await;
     let rejected = deliveries
         .iter()
-        .find(|delivery| delivery.provider_event_id.as_deref() == Some("lin-delivery-3"))
+        .find(|delivery| {
+            delivery.status == AutomationWebhookDeliveryStatus::Rejected
+                && delivery.rejection_reason_code.as_deref() == Some("bad_signature")
+        })
         .expect("rejected delivery");
+    assert!(rejected.provider_event_id.is_none());
     assert_eq!(rejected.status, AutomationWebhookDeliveryStatus::Rejected);
     assert_eq!(
         rejected.rejection_reason_code.as_deref(),
@@ -1939,34 +1955,30 @@ async fn linear_secret_import_enables_signed_events_and_dedupes() {
             &created.trigger.trigger_id,
         )
         .await;
-    let rejected_event = raw_events
+    assert!(!raw_events
         .iter()
-        .find(|event| event.provider_event_id.as_deref() == Some("lin-delivery-3"))
-        .expect("rejected raw event");
-    assert_eq!(
-        rejected_event.status,
-        AutomationWebhookDeliveryStatus::Rejected
-    );
-    assert_eq!(
-        rejected_event.delivery_id.as_deref(),
-        Some(rejected.delivery_id.as_str())
-    );
-    assert_eq!(
-        rejected_event.rejection_reason_code.as_deref(),
-        Some("bad_signature")
-    );
-    assert_eq!(
-        rejected_event.verification_provider.as_deref(),
-        Some("linear")
-    );
-    assert_eq!(
-        rejected_event.verification_scheme,
-        Some(AutomationWebhookSignatureScheme::LinearHmacSha256)
-    );
-    let persisted_payload = state
-        .read_automation_webhook_raw_event_payload(&tenant_context, &rejected_event.event_id)
+        .any(|event| event.provider_event_id.as_deref() == Some("lin-delivery-3")));
+
+    let durable_deliveries = tokio::fs::read_to_string(&state.automation_webhook_deliveries_path)
         .await
-        .expect("raw payload read")
-        .expect("raw payload");
-    assert_eq!(persisted_payload, attacker_body);
+        .expect("durable delivery file");
+    assert!(!durable_deliveries.contains("lin-delivery-3"));
+    assert!(!durable_deliveries
+        .contains(std::str::from_utf8(attacker_body).expect("attacker body is UTF-8")));
+
+    let rejection_ledger = state
+        .automation_webhook_deliveries_path
+        .parent()
+        .expect("webhook state parent")
+        .join("automation_webhook_rejections.jsonl");
+    let telemetry = tokio::fs::read_to_string(rejection_ledger)
+        .await
+        .expect("bounded rejection telemetry");
+    assert!(!telemetry.contains("lin-delivery-3"));
+    assert!(telemetry.contains("provider_event_id_digest"));
+    assert!(telemetry.contains("bad_signature"));
+    assert!(
+        !telemetry.contains(std::str::from_utf8(attacker_body).expect("attacker body is UTF-8"))
+    );
+    assert!(!telemetry.contains("attacker_secret"));
 }

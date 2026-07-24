@@ -47,6 +47,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             post(reveal_webhook_verification_token),
         )
         .route(
+            "/automations/v2/{id}/webhook-triggers/{trigger_id}/reset-verification",
+            post(reset_webhook_verification),
+        )
+        .route(
             "/automations/v2/{id}/webhook-triggers/{trigger_id}/import-secret",
             post(import_webhook_provider_secret),
         )
@@ -517,8 +521,7 @@ fn callback_path(headers: &HeaderMap, trigger: &AutomationWebhookTriggerRecord) 
     )
 }
 
-fn callback_url(headers: &HeaderMap, trigger: &AutomationWebhookTriggerRecord) -> String {
-    let path = callback_path(headers, trigger);
+fn callback_url_from_path(headers: &HeaderMap, path: String) -> String {
     let host = header_string(headers, "x-forwarded-host").or_else(|| {
         headers
             .get(HOST)
@@ -530,6 +533,29 @@ fn callback_url(headers: &HeaderMap, trigger: &AutomationWebhookTriggerRecord) -
     };
     let scheme = header_string(headers, "x-forwarded-proto").unwrap_or_else(|| "http".to_string());
     format!("{}://{}{}", scheme, host, path)
+}
+
+fn callback_url(headers: &HeaderMap, trigger: &AutomationWebhookTriggerRecord) -> String {
+    callback_url_from_path(headers, callback_path(headers, trigger))
+}
+
+fn notion_setup_callback_path(
+    headers: &HeaderMap,
+    trigger: &AutomationWebhookTriggerRecord,
+    setup_nonce: &str,
+) -> String {
+    format!("{}/{}", callback_path(headers, trigger), setup_nonce)
+}
+
+fn notion_setup_callback_url(
+    headers: &HeaderMap,
+    trigger: &AutomationWebhookTriggerRecord,
+    setup_nonce: &str,
+) -> String {
+    callback_url_from_path(
+        headers,
+        notion_setup_callback_path(headers, trigger, setup_nonce),
+    )
 }
 
 fn delivery_status_key(status: &AutomationWebhookDeliveryStatus) -> &'static str {
@@ -994,8 +1020,29 @@ async fn create_webhook_trigger(
     // signing secret (imported by the operator), so we never reveal the
     // placeholder secret generated at creation — surfacing it would invite the
     // operator to paste a value the provider can never sign with.
-    if result.trigger.notion_verification.is_some() || result.trigger.linear_verification.is_some()
-    {
+    if let Some(verification) = result.trigger.notion_verification.as_ref() {
+        let Some(setup_nonce) = result.notion_setup_nonce.as_deref() else {
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "AUTOMATION_WEBHOOK_NOTION_SETUP_INVARIANT",
+                "Notion trigger creation did not produce a setup challenge",
+            ));
+        };
+        return Ok(Json(json!({
+            "trigger": trigger_value(&result.trigger, &[], &headers),
+            "secret_one_time": false,
+            "secretOneTime": false,
+            "verification_pending": true,
+            "verificationPending": true,
+            "setup_callback_path": notion_setup_callback_path(&headers, &result.trigger, setup_nonce),
+            "setupCallbackPath": notion_setup_callback_path(&headers, &result.trigger, setup_nonce),
+            "setup_callback_url": notion_setup_callback_url(&headers, &result.trigger, setup_nonce),
+            "setupCallbackUrl": notion_setup_callback_url(&headers, &result.trigger, setup_nonce),
+            "setup_expires_at_ms": verification.setup_challenge_expires_at_ms,
+            "setupExpiresAtMs": verification.setup_challenge_expires_at_ms,
+        })));
+    }
+    if result.trigger.linear_verification.is_some() {
         return Ok(Json(json!({
             "trigger": trigger_value(&result.trigger, &[], &headers),
             "secret_one_time": false,
@@ -1329,6 +1376,79 @@ async fn reveal_webhook_verification_token(
         "token_one_time": true,
         "tokenOneTime": true,
         "trigger": trigger.map(|trigger| trigger_value(&trigger, &deliveries, &headers)),
+    })))
+}
+
+/// Rotate any prior Notion token out of service and issue a fresh setup URL.
+/// The mutation is authenticated by the same automation/trigger authorization
+/// checks as create, rotate, and reveal, and the nonce itself is returned once.
+async fn reset_webhook_verification(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    headers: HeaderMap,
+    Path((id, trigger_id)): Path<(String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    let _automation = load_automation_for_mutation(
+        &state,
+        &tenant_context,
+        &request_principal,
+        verified,
+        &headers,
+        &id,
+        false,
+    )
+    .await?;
+    let _trigger =
+        load_trigger_for_mutation(&state, &tenant_context, verified, &id, &trigger_id).await?;
+    let actor = actor_id_for_records(&tenant_context, &request_principal, verified);
+    let reset = state
+        .reset_automation_webhook_notion_setup(&tenant_context, &id, &trigger_id, actor.clone())
+        .await
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "AUTOMATION_WEBHOOK_RESET_VERIFICATION_FAILED",
+                error.to_string(),
+            )
+        })?;
+    append_webhook_audit(
+        &state,
+        "automation.webhook_trigger.verification_reset",
+        &tenant_context,
+        audit_actor(&tenant_context, &request_principal, verified),
+        json!({
+            "automationID": id,
+            "triggerID": trigger_id,
+            "secretVersion": reset.trigger.secret.secret_version,
+            "setupGeneration": reset
+                .trigger
+                .notion_verification
+                .as_ref()
+                .map(|verification| verification.setup_generation),
+        }),
+    )
+    .await?;
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(&tenant_context, &trigger_id)
+        .await;
+    let expires_at_ms = reset
+        .trigger
+        .notion_verification
+        .as_ref()
+        .and_then(|verification| verification.setup_challenge_expires_at_ms);
+    Ok(Json(json!({
+        "trigger": trigger_value(&reset.trigger, &deliveries, &headers),
+        "setup_callback_path": notion_setup_callback_path(&headers, &reset.trigger, &reset.setup_nonce),
+        "setupCallbackPath": notion_setup_callback_path(&headers, &reset.trigger, &reset.setup_nonce),
+        "setup_callback_url": notion_setup_callback_url(&headers, &reset.trigger, &reset.setup_nonce),
+        "setupCallbackUrl": notion_setup_callback_url(&headers, &reset.trigger, &reset.setup_nonce),
+        "setup_expires_at_ms": expires_at_ms,
+        "setupExpiresAtMs": expires_at_ms,
+        "setup_one_time": true,
+        "setupOneTime": true,
     })))
 }
 

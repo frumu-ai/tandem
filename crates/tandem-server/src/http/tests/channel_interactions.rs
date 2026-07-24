@@ -248,10 +248,15 @@ fn discord_keypair() -> (ed25519_dalek::SigningKey, String) {
 }
 
 fn discord_request(run_id: &str, signing_key: &ed25519_dalek::SigningKey) -> Request<Body> {
-    let timestamp = "1780663300";
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after Unix epoch")
+        .as_secs()
+        .to_string();
     let body = json!({
         "id": format!("ct05-discord-{run_id}"),
         "type": 3,
+        "application_id": "ct05-discord-app",
         "data": {
             "custom_id": format!("tdm:approve:{run_id}:external_action")
         },
@@ -260,12 +265,12 @@ fn discord_request(run_id: &str, signing_key: &ed25519_dalek::SigningKey) -> Req
         }
     })
     .to_string();
-    let signature = sign_discord(signing_key, timestamp, body.as_bytes());
+    let signature = sign_discord(signing_key, &timestamp, body.as_bytes());
     Request::builder()
         .method("POST")
         .uri("/channels/discord/interactions")
         .header("content-type", "application/json")
-        .header("x-signature-timestamp", timestamp)
+        .header("x-signature-timestamp", &timestamp)
         .header("x-signature-ed25519", signature)
         .body(Body::from(body))
         .expect("discord request")
@@ -446,6 +451,90 @@ async fn tenant_a_awaiting_run(state: &AppState) -> crate::AutomationV2RunRecord
         })
         .await
         .expect("mark tenant-a run awaiting approval")
+}
+
+#[tokio::test]
+async fn discord_fresh_signed_interaction_is_applied_once_and_replay_is_acknowledged() {
+    let state = test_state().await;
+    let (discord_signing_key, discord_public_key) = discord_keypair();
+    configure_bound_channels(&state, &discord_public_key).await;
+
+    let run = tenant_a_awaiting_run(&state).await;
+    let app = app_router(state.clone());
+
+    let first = app
+        .clone()
+        .oneshot(discord_request(&run.run_id, &discord_signing_key))
+        .await
+        .expect("fresh Discord interaction response");
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let decided = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run present after Discord decision");
+    assert!(
+        decided.checkpoint.awaiting_gate.is_none(),
+        "fresh signed interaction must decide the gate"
+    );
+
+    let effective_config = state.config.get_effective_value().await;
+    let profile =
+        crate::app::state::channel_user_capabilities::channel_security_profile_from_config(
+            &effective_config,
+            "discord",
+        );
+    let rate_key = crate::app::rate_limit::ChannelRateLimitKey {
+        channel: "discord".to_string(),
+        user_id: DISCORD_USER.to_string(),
+    };
+    let capacity = crate::app::rate_limit::rate_limit_capacity(
+        crate::app::rate_limit::ChannelRateLimitKind::Decision,
+        profile,
+    );
+    let mut exhausted = false;
+    for _ in 0..capacity {
+        let decision = state
+            .channel_rate_limiter
+            .check(
+                &rate_key,
+                crate::app::rate_limit::ChannelRateLimitKind::Decision,
+                profile,
+            )
+            .await;
+        if !decision.allowed {
+            exhausted = true;
+            break;
+        }
+    }
+    assert!(
+        exhausted,
+        "test must exhaust the authorized Discord user's decision bucket"
+    );
+
+    let replay = app
+        .oneshot(discord_request(&run.run_id, &discord_signing_key))
+        .await
+        .expect("replayed Discord interaction response");
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replay_body = to_bytes(replay.into_body(), usize::MAX)
+        .await
+        .expect("replay acknowledgement body");
+    let replay_payload: Value = serde_json::from_slice(&replay_body).expect("replay JSON");
+    assert_eq!(replay_payload.get("type").and_then(Value::as_u64), Some(7));
+    assert!(replay_payload
+        .pointer("/data/content")
+        .and_then(Value::as_str)
+        .is_some_and(|content| content.contains("Already processed")));
+
+    let after_replay = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run present after replay rejection");
+    assert!(
+        after_replay.checkpoint.awaiting_gate.is_none(),
+        "replay acknowledgement must not reverse or repeat the original decision"
+    );
 }
 
 /// Seed a department org-unit in tenant A and make `actor_id` a member.

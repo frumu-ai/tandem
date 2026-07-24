@@ -301,6 +301,9 @@ impl AppState {
             automation_scheduler_stopping: Arc::new(AtomicBool::new(false)),
             automations_v2_persistence: Arc::new(tokio::sync::Mutex::new(())),
             automation_webhook_persistence: Arc::new(tokio::sync::Mutex::new(())),
+            automation_webhook_rejection_persistence: Arc::new(tokio::sync::Mutex::new(
+                Default::default(),
+            )),
             idempotency_persistence: Arc::new(tokio::sync::Mutex::new(())),
             workflow_plans: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_plan_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -827,7 +830,7 @@ impl AppState {
         let _ = self.load_automation_governance().await;
         let _ = self.bootstrap_automation_governance().await;
         let _ = self.load_automation_v2_runs().await;
-        let _ = self.load_automation_webhook_records().await;
+        self.load_automation_webhook_records().await?;
         let _ = self.load_idempotency_keys().await;
         let _ = self.load_optimization_campaigns().await;
         let _ = self.load_optimization_experiments().await;

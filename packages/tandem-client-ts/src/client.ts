@@ -201,6 +201,7 @@ import type {
   AutomationWebhookTriggerResponse,
   AutomationWebhookTriggerSecretResponse,
   AutomationWebhookTriggerUpdateInput,
+  AutomationWebhookVerificationResetResponse,
   AutomationWebhookVerificationTokenResponse,
   WorkflowPlan,
   WorkflowPlanConversation,
@@ -4191,6 +4192,21 @@ class AutomationsV2 {
   ): Promise<AutomationWebhookVerificationTokenResponse> {
     return this.req<AutomationWebhookVerificationTokenResponse>(
       `/automations/v2/${encodeURIComponent(id)}/webhook-triggers/${encodeURIComponent(triggerId)}/reveal-verification-token`,
+      { method: "POST", body: JSON.stringify({}) }
+    );
+  }
+
+  /**
+   * Invalidate any prior Notion verification token and return a fresh,
+   * short-lived setup callback exactly once. Active subscriptions must be
+   * re-verified after this operation.
+   */
+  async resetWebhookVerification(
+    id: string,
+    triggerId: string
+  ): Promise<AutomationWebhookVerificationResetResponse> {
+    return this.req<AutomationWebhookVerificationResetResponse>(
+      `/automations/v2/${encodeURIComponent(id)}/webhook-triggers/${encodeURIComponent(triggerId)}/reset-verification`,
       { method: "POST", body: JSON.stringify({}) }
     );
   }

@@ -30,6 +30,8 @@ pub struct ObservabilityMetricsSnapshot {
     pub gate_wait_ms_by_decision: BTreeMap<String, MetricSummary>,
     pub tool_call_decisions_total: BTreeMap<String, u64>,
     pub provider_errors_total: BTreeMap<String, u64>,
+    pub webhook_intake_throttled_total: BTreeMap<String, u64>,
+    pub webhook_rejection_telemetry_total: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Default)]
@@ -136,6 +138,40 @@ pub fn record_provider_error(provider_id: &str, error_code: &str) {
         .lock()
         .expect("observability metrics mutex poisoned");
     *state.snapshot.provider_errors_total.entry(key).or_default() += 1;
+}
+
+pub fn record_webhook_intake_throttled(scope: &str) {
+    let scope = safe_label(scope);
+    metrics::counter!(
+        "tandem_webhook_intake_throttled_total",
+        "scope" => scope.clone()
+    )
+    .increment(1);
+    let mut state = metrics_state()
+        .lock()
+        .expect("observability metrics mutex poisoned");
+    *state
+        .snapshot
+        .webhook_intake_throttled_total
+        .entry(scope)
+        .or_default() += 1;
+}
+
+pub fn record_webhook_rejection_telemetry(outcome: &str) {
+    let outcome = safe_label(outcome);
+    metrics::counter!(
+        "tandem_webhook_rejection_telemetry_total",
+        "outcome" => outcome.clone()
+    )
+    .increment(1);
+    let mut state = metrics_state()
+        .lock()
+        .expect("observability metrics mutex poisoned");
+    *state
+        .snapshot
+        .webhook_rejection_telemetry_total
+        .entry(outcome)
+        .or_default() += 1;
 }
 
 pub fn record_provider_oauth_refresh(outcome: &str) {
@@ -306,6 +342,22 @@ pub fn render_observability_metrics_prometheus() -> String {
                 ("provider_id", labels.provider_id.as_str()),
                 ("error_code", labels.error_code.as_str()),
             ],
+            count,
+        );
+    }
+    for (scope, count) in snapshot.webhook_intake_throttled_total {
+        render_metric_line(
+            &mut out,
+            "tandem_webhook_intake_throttled_total",
+            &[("scope", scope.as_str())],
+            count,
+        );
+    }
+    for (outcome, count) in snapshot.webhook_rejection_telemetry_total {
+        render_metric_line(
+            &mut out,
+            "tandem_webhook_rejection_telemetry_total",
+            &[("outcome", outcome.as_str())],
             count,
         );
     }
