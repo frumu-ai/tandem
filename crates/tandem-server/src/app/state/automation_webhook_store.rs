@@ -529,12 +529,19 @@ impl AppState {
             }
         };
         let migrated_from_plaintext = parsed.migrated_from_plaintext;
-        *self.automation_webhook_secret_material.write().await = parsed.secrets;
+        let secrets = parsed.secrets;
         if migrated_from_plaintext {
-            self.persist_automation_webhook_secret_material_locked()
-                .await
-                .context("migrate plaintext webhook secret material to protected schema v2")?;
+            let payload = serialize_secret_material_file(secrets.clone())
+                .context("protect legacy plaintext webhook secret material")?;
+            ensure_parent_dir(&self.automation_webhook_secret_material_path).await?;
+            write_secret_material_file_atomically(
+                &self.automation_webhook_secret_material_path,
+                &payload,
+            )
+            .await
+            .context("migrate plaintext webhook secret material to protected schema v2")?;
         }
+        *self.automation_webhook_secret_material.write().await = secrets;
         Ok(())
     }
 

@@ -179,7 +179,7 @@ pub(super) fn global() -> &'static WebhookRateLimiter {
     })
 }
 
-pub(super) fn public_automation_webhook_token(path: &str) -> Option<&str> {
+pub(super) fn public_automation_webhook_token(path: &str) -> Option<String> {
     let trimmed = path
         .strip_prefix("/api/engine")
         .filter(|suffix| suffix.starts_with('/'))
@@ -189,10 +189,13 @@ pub(super) fn public_automation_webhook_token(path: &str) -> Option<&str> {
         .split('/')
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>();
-    match parts.as_slice() {
-        ["webhooks", "automations", token] | ["webhooks", "automations", token, _] => Some(*token),
-        _ => None,
-    }
+    let token = match parts.as_slice() {
+        ["webhooks", "automations", token] | ["webhooks", "automations", token, _] => *token,
+        _ => return None,
+    };
+    let decoded = urlencoding::decode(token).ok()?.into_owned();
+    (!decoded.is_empty() && decoded.len() <= 256 && decoded.is_ascii() && !decoded.contains('/'))
+        .then_some(decoded)
 }
 
 #[cfg(test)]
@@ -220,14 +223,23 @@ mod tests {
     fn parses_only_exact_public_webhook_shapes() {
         assert_eq!(
             public_automation_webhook_token("/webhooks/automations/whpub-a"),
-            Some("whpub-a")
+            Some("whpub-a".to_string())
         );
         assert_eq!(
             public_automation_webhook_token("/api/engine/webhooks/automations/whpub-a/whsetup-a"),
-            Some("whpub-a")
+            Some("whpub-a".to_string())
+        );
+        assert_eq!(
+            public_automation_webhook_token("/webhooks/automations/%77hpub-a"),
+            Some("whpub-a".to_string()),
+            "percent-encoded aliases must share the canonical capability bucket"
         );
         assert_eq!(
             public_automation_webhook_token("/webhooks/automations/whpub-a/extra/path"),
+            None
+        );
+        assert_eq!(
+            public_automation_webhook_token("/webhooks/automations/%2Fetc"),
             None
         );
     }

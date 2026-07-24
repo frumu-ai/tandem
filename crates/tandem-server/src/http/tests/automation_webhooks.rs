@@ -1931,8 +1931,12 @@ async fn linear_secret_import_enables_signed_events_and_dedupes() {
         .await;
     let rejected = deliveries
         .iter()
-        .find(|delivery| delivery.provider_event_id.as_deref() == Some("lin-delivery-3"))
+        .find(|delivery| {
+            delivery.status == AutomationWebhookDeliveryStatus::Rejected
+                && delivery.rejection_reason_code.as_deref() == Some("bad_signature")
+        })
         .expect("rejected delivery");
+    assert!(rejected.provider_event_id.is_none());
     assert_eq!(rejected.status, AutomationWebhookDeliveryStatus::Rejected);
     assert_eq!(
         rejected.rejection_reason_code.as_deref(),
@@ -1969,7 +1973,8 @@ async fn linear_secret_import_enables_signed_events_and_dedupes() {
     let telemetry = tokio::fs::read_to_string(rejection_ledger)
         .await
         .expect("bounded rejection telemetry");
-    assert!(telemetry.contains("lin-delivery-3"));
+    assert!(!telemetry.contains("lin-delivery-3"));
+    assert!(telemetry.contains("provider_event_id_digest"));
     assert!(telemetry.contains("bad_signature"));
     assert!(
         !telemetry.contains(std::str::from_utf8(attacker_body).expect("attacker body is UTF-8"))

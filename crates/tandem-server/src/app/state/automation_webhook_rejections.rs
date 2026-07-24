@@ -42,6 +42,7 @@ pub(crate) struct AutomationWebhookRejectionLedgerState {
     bytes: u64,
     records: usize,
     recent_delivery_ids: VecDeque<String>,
+    next_compaction_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +53,7 @@ struct AutomationWebhookRejectionTelemetryRecord {
     provider: String,
     tenant_digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider_event_id: Option<String>,
+    provider_event_id_digest: Option<String>,
     body_digest: String,
     status: String,
     reason_code: String,
@@ -64,6 +65,7 @@ impl AutomationWebhookRejectionTelemetryRecord {
     fn from_delivery(
         trigger: &AutomationWebhookTriggerRecord,
         delivery: &AutomationWebhookDeliveryRecord,
+        provider_event_id_digest: Option<String>,
     ) -> Self {
         let tenant_bytes = serde_json::to_vec(&trigger.tenant_context).unwrap_or_default();
         Self {
@@ -72,10 +74,7 @@ impl AutomationWebhookRejectionTelemetryRecord {
             trigger_id: truncate(&trigger.trigger_id, 96),
             provider: truncate(&trigger.provider, 32),
             tenant_digest: hex_encode(&Sha256::digest(tenant_bytes)),
-            provider_event_id: delivery
-                .provider_event_id
-                .as_deref()
-                .map(|value| truncate(value, 256)),
+            provider_event_id_digest,
             body_digest: truncate(&delivery.body_digest, 128),
             status: truncate(&format!("{:?}", delivery.status).to_ascii_lowercase(), 32),
             reason_code: truncate(
@@ -99,6 +98,10 @@ fn truncate(value: &str, maximum_chars: usize) -> String {
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn provider_event_id_digest(value: &str) -> String {
+    hex_encode(&Sha256::digest(value.as_bytes()))
 }
 
 fn ledger_path(deliveries_path: &Path) -> PathBuf {
@@ -132,10 +135,10 @@ async fn write_ledger_atomically(path: &Path, payload: &[u8]) -> anyhow::Result<
     Ok(())
 }
 
-async fn compact_ledger(path: &Path, now_ms: u64) -> anyhow::Result<(u64, usize)> {
+async fn compact_ledger(path: &Path, now_ms: u64) -> anyhow::Result<(u64, usize, Option<u64>)> {
     let metadata = match fs::metadata(path).await {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0, None)),
         Err(error) => return Err(error.into()),
     };
     if metadata.len() > REJECTION_LEDGER_MAX_BYTES {
@@ -148,6 +151,7 @@ async fn compact_ledger(path: &Path, now_ms: u64) -> anyhow::Result<(u64, usize)
     let raw = fs::read(path).await?;
     let mut retained = VecDeque::<Vec<u8>>::new();
     let mut retained_bytes = 0usize;
+    let mut next_compaction_at_ms = None;
     for line in raw.split(|byte| *byte == b'\n') {
         if line.is_empty() || line.len() > REJECTION_LEDGER_MAX_LINE_BYTES {
             continue;
@@ -159,6 +163,11 @@ async fn compact_ledger(path: &Path, now_ms: u64) -> anyhow::Result<(u64, usize)
         if record.expires_at_ms <= now_ms {
             continue;
         }
+        next_compaction_at_ms = Some(
+            next_compaction_at_ms.map_or(record.expires_at_ms, |current: u64| {
+                current.min(record.expires_at_ms)
+            }),
+        );
         let line_bytes = line.len().saturating_add(1);
         retained.push_back(line.to_vec());
         retained_bytes = retained_bytes.saturating_add(line_bytes);
@@ -177,7 +186,7 @@ async fn compact_ledger(path: &Path, now_ms: u64) -> anyhow::Result<(u64, usize)
         payload.push(b'\n');
     }
     write_ledger_atomically(path, &payload).await?;
-    Ok((retained_bytes as u64, retained.len()))
+    Ok((retained_bytes as u64, retained.len(), next_compaction_at_ms))
 }
 
 async fn initialize_ledger(
@@ -188,9 +197,10 @@ async fn initialize_ledger(
     if state.initialized {
         return Ok(());
     }
-    let (bytes, records) = compact_ledger(path, now_ms).await?;
+    let (bytes, records, next_compaction_at_ms) = compact_ledger(path, now_ms).await?;
     state.bytes = bytes;
     state.records = records;
+    state.next_compaction_at_ms = next_compaction_at_ms;
     state.initialized = true;
     Ok(())
 }
@@ -214,6 +224,12 @@ async fn open_append_only(path: &Path) -> anyhow::Result<fs::File> {
     Ok(file)
 }
 
+fn ledger_compaction_due(state: &AutomationWebhookRejectionLedgerState, now_ms: u64) -> bool {
+    state
+        .next_compaction_at_ms
+        .is_some_and(|expires_at_ms| now_ms >= expires_at_ms)
+}
+
 impl AppState {
     pub(crate) async fn record_automation_webhook_pre_auth_rejection(
         &self,
@@ -225,9 +241,10 @@ impl AppState {
         received_at_ms: u64,
         verification: Option<AutomationWebhookVerificationDecision>,
     ) -> AutomationWebhookDeliveryRecord {
+        let provider_event_id_digest = provider_event_id.as_deref().map(provider_event_id_digest);
         let delivery = automation_webhook_rejection_delivery(
             trigger,
-            provider_event_id,
+            None,
             body_digest.clone(),
             status,
             reason_code,
@@ -237,7 +254,11 @@ impl AppState {
         );
 
         if let Err(error) = self
-            .append_automation_webhook_rejection_telemetry(trigger, &delivery)
+            .append_automation_webhook_rejection_telemetry(
+                trigger,
+                &delivery,
+                provider_event_id_digest,
+            )
             .await
         {
             tandem_observability::record_webhook_rejection_telemetry("io_error");
@@ -254,8 +275,13 @@ impl AppState {
         &self,
         trigger: &AutomationWebhookTriggerRecord,
         delivery: &AutomationWebhookDeliveryRecord,
+        provider_event_id_digest: Option<String>,
     ) -> anyhow::Result<()> {
-        let record = AutomationWebhookRejectionTelemetryRecord::from_delivery(trigger, delivery);
+        let record = AutomationWebhookRejectionTelemetryRecord::from_delivery(
+            trigger,
+            delivery,
+            provider_event_id_digest,
+        );
         let mut line = serde_json::to_vec(&record)?;
         line.push(b'\n');
         if line.len() > REJECTION_LEDGER_MAX_LINE_BYTES {
@@ -268,9 +294,13 @@ impl AppState {
         if ledger.records >= REJECTION_LEDGER_MAX_RECORDS
             || ledger.bytes.saturating_add(line.len() as u64) > REJECTION_LEDGER_MAX_BYTES
         {
-            let (bytes, records) = compact_ledger(&path, delivery.received_at_ms).await?;
-            ledger.bytes = bytes;
-            ledger.records = records;
+            if ledger_compaction_due(&ledger, delivery.received_at_ms) {
+                let (bytes, records, next_compaction_at_ms) =
+                    compact_ledger(&path, delivery.received_at_ms).await?;
+                ledger.bytes = bytes;
+                ledger.records = records;
+                ledger.next_compaction_at_ms = next_compaction_at_ms;
+            }
         }
         if ledger.records >= REJECTION_LEDGER_MAX_RECORDS
             || ledger.bytes.saturating_add(line.len() as u64) > REJECTION_LEDGER_MAX_BYTES
@@ -290,6 +320,13 @@ impl AppState {
         file.flush().await?;
         ledger.bytes = ledger.bytes.saturating_add(line.len() as u64);
         ledger.records = ledger.records.saturating_add(1);
+        ledger.next_compaction_at_ms = Some(
+            ledger
+                .next_compaction_at_ms
+                .map_or(record.expires_at_ms, |current| {
+                    current.min(record.expires_at_ms)
+                }),
+        );
         ledger
             .recent_delivery_ids
             .push_back(delivery.delivery_id.clone());
@@ -332,7 +369,7 @@ mod tests {
             trigger_id: "t1".to_string(),
             provider: "generic".to_string(),
             tenant_digest: "digest".to_string(),
-            provider_event_id: None,
+            provider_event_id_digest: None,
             body_digest: "body-digest".to_string(),
             status: "rejected".to_string(),
             reason_code: "bad_signature".to_string(),
@@ -345,5 +382,27 @@ mod tests {
         assert!(!object.contains_key("headers"));
         assert!(!object.contains_key("signature"));
         assert!(!object.contains_key("secret"));
+    }
+
+    #[test]
+    fn provider_event_ids_are_one_way_digests_before_retention() {
+        let raw = "attacker-controlled-provider-event-id";
+        let digest = provider_event_id_digest(raw);
+        assert_eq!(digest.len(), 64);
+        assert_ne!(digest, raw);
+        assert!(!digest.contains(raw));
+    }
+
+    #[test]
+    fn full_ledger_is_not_compacted_until_a_retained_record_expires() {
+        let ledger = AutomationWebhookRejectionLedgerState {
+            initialized: true,
+            bytes: REJECTION_LEDGER_MAX_BYTES,
+            records: REJECTION_LEDGER_MAX_RECORDS,
+            recent_delivery_ids: VecDeque::new(),
+            next_compaction_at_ms: Some(10_000),
+        };
+        assert!(!ledger_compaction_due(&ledger, 9_999));
+        assert!(ledger_compaction_due(&ledger, 10_000));
     }
 }

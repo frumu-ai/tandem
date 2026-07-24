@@ -22,7 +22,7 @@ use crate::AppState;
 
 const CLAIM_SCHEMA_VERSION: u32 = 1;
 const CLAIM_TTL_MS: u64 = 5 * 60 * 1000;
-const MAX_CLAIMS: usize = 10_000;
+const MAX_CLAIMS_PER_TENANT_APPLICATION: usize = 10_000;
 const MAX_RECORD_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,12 +51,33 @@ pub(super) async fn claim_discord_interaction(
     body: &[u8],
     now_ms: u64,
 ) -> anyhow::Result<DiscordReplayClaimDecision> {
+    claim_discord_interaction_with_limit(
+        state,
+        tenant_context,
+        application_id,
+        interaction_id,
+        body,
+        now_ms,
+        MAX_CLAIMS_PER_TENANT_APPLICATION,
+    )
+    .await
+}
+
+async fn claim_discord_interaction_with_limit(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    application_id: &str,
+    interaction_id: &str,
+    body: &[u8],
+    now_ms: u64,
+    max_claims: usize,
+) -> anyhow::Result<DiscordReplayClaimDecision> {
     validate_identifier(application_id, "application_id")?;
     validate_identifier(interaction_id, "interaction_id")?;
-    let root = claims_root(state);
-    let _lock = ClaimsDirectoryLock::acquire(&root).await?;
-    tokio::fs::create_dir_all(&root).await?;
-    let path = claim_path(&root, tenant_context, application_id, interaction_id);
+    let scope_root = claims_scope_root(state, tenant_context, application_id);
+    let _lock = ClaimsDirectoryLock::acquire(&scope_root).await?;
+    tokio::fs::create_dir_all(&scope_root).await?;
+    let path = claim_path(&scope_root, interaction_id);
     let digest = body_digest(body);
 
     if let Some(existing) = read_record(&path).await? {
@@ -82,9 +103,9 @@ pub(super) async fn claim_discord_interaction(
         return Ok(DiscordReplayClaimDecision::Claimed);
     }
 
-    let active_claims = prune_expired_and_count(&root, now_ms).await?;
-    if active_claims >= MAX_CLAIMS {
-        anyhow::bail!("Discord interaction replay claim quota exhausted");
+    let active_claims = prune_expired_and_count(&scope_root, now_ms).await?;
+    if active_claims >= max_claims {
+        anyhow::bail!("Discord interaction replay claim quota exhausted for tenant/application");
     }
     write_record(
         &path,
@@ -148,21 +169,24 @@ fn claims_root(state: &AppState) -> PathBuf {
         .join("discord_interaction_claims")
 }
 
-fn claim_path(
-    root: &Path,
+fn claims_scope_root(
+    state: &AppState,
     tenant_context: &TenantContext,
     application_id: &str,
-    interaction_id: &str,
 ) -> PathBuf {
     let deployment_id = tenant_context.deployment_id.as_deref().unwrap_or_default();
-    let digest = crate::sha256_hex(&[
+    let scope_digest = crate::sha256_hex(&[
         &tenant_context.org_id,
         &tenant_context.workspace_id,
         deployment_id,
         application_id,
-        interaction_id,
     ]);
-    root.join(format!("{digest}.json"))
+    claims_root(state).join(scope_digest)
+}
+
+fn claim_path(scope_root: &Path, interaction_id: &str) -> PathBuf {
+    let interaction_digest = crate::sha256_hex(&[interaction_id]);
+    scope_root.join(format!("{interaction_digest}.json"))
 }
 
 fn body_digest(body: &[u8]) -> String {
@@ -407,6 +431,67 @@ mod tests {
                 "same",
                 b"new-body",
                 1_000 + CLAIM_TTL_MS,
+            )
+            .await
+            .unwrap(),
+            DiscordReplayClaimDecision::Claimed
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_exhaustion_is_isolated_per_tenant_and_application() {
+        let state = crate::test_support::test_state().await;
+        let tenant_a = tenant("a");
+        let tenant_b = tenant("b");
+
+        assert_eq!(
+            claim_discord_interaction_with_limit(
+                &state,
+                &tenant_a,
+                "app-1",
+                "interaction-1",
+                b"one",
+                1_000,
+                1,
+            )
+            .await
+            .unwrap(),
+            DiscordReplayClaimDecision::Claimed
+        );
+        assert!(claim_discord_interaction_with_limit(
+            &state,
+            &tenant_a,
+            "app-1",
+            "interaction-2",
+            b"two",
+            1_000,
+            1,
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            claim_discord_interaction_with_limit(
+                &state,
+                &tenant_b,
+                "app-1",
+                "interaction-2",
+                b"two",
+                1_000,
+                1,
+            )
+            .await
+            .unwrap(),
+            DiscordReplayClaimDecision::Claimed
+        );
+        assert_eq!(
+            claim_discord_interaction_with_limit(
+                &state,
+                &tenant_a,
+                "app-2",
+                "interaction-2",
+                b"two",
+                1_000,
+                1,
             )
             .await
             .unwrap(),

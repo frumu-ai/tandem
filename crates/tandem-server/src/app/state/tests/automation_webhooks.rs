@@ -1779,3 +1779,76 @@ async fn legacy_webhook_secret_file_is_migrated_to_ciphertext_and_restarts() {
     )
     .await;
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn failed_legacy_secret_migration_does_not_install_plaintext_in_memory() {
+    struct EncryptionRequiredRestore(Option<std::ffi::OsString>);
+
+    impl Drop for EncryptionRequiredRestore {
+        fn drop(&mut self) {
+            if let Some(value) = self.0.take() {
+                std::env::set_var("TANDEM_MEMORY_ENCRYPTION_REQUIRED", value);
+            } else {
+                std::env::remove_var("TANDEM_MEMORY_ENCRYPTION_REQUIRED");
+            }
+        }
+    }
+
+    crate::encrypted_file_store::with_test_crypto_provider(
+        tandem_memory::MemoryCryptoProvider::local_key([0x52; 32]),
+        None,
+        async {
+            let state = ready_test_state().await;
+            let tenant_context = tenant("org-migration-failure", "workspace-migration");
+            insert_test_automation(&state, "automation-secret-failure", &tenant_context).await;
+            let created = state
+                .create_automation_webhook_trigger(create_input(
+                    "automation-secret-failure",
+                    tenant_context,
+                ))
+                .await
+                .expect("create webhook trigger");
+            let legacy_payload = serde_json::json!({
+                "schema_version": 1,
+                "secrets": state.automation_webhook_secret_material.read().await.clone(),
+            })
+            .to_string();
+            tokio::fs::write(
+                &state.automation_webhook_secret_material_path,
+                &legacy_payload,
+            )
+            .await
+            .expect("write legacy plaintext fixture");
+            state
+                .automation_webhook_secret_material
+                .write()
+                .await
+                .clear();
+
+            let previous = std::env::var_os("TANDEM_MEMORY_ENCRYPTION_REQUIRED");
+            let _restore = EncryptionRequiredRestore(previous);
+            std::env::set_var("TANDEM_MEMORY_ENCRYPTION_REQUIRED", "true");
+            let error = crate::encrypted_file_store::with_test_crypto_provider(
+                tandem_memory::MemoryCryptoProvider::plaintext(),
+                None,
+                state.load_automation_webhook_records(),
+            )
+            .await
+            .expect_err("required encryption must reject plaintext migration");
+            assert!(format!("{error:#}").contains("protect legacy plaintext"));
+            assert!(state
+                .automation_webhook_secret_material
+                .read()
+                .await
+                .is_empty());
+            let unchanged =
+                tokio::fs::read_to_string(&state.automation_webhook_secret_material_path)
+                    .await
+                    .expect("read unchanged legacy fixture");
+            assert_eq!(unchanged, legacy_payload);
+            assert!(unchanged.contains(&created.secret));
+        },
+    )
+    .await;
+}

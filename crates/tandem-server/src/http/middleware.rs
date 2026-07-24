@@ -64,7 +64,7 @@ pub(super) async fn auth_gate(
             super::webhook_rate_limit::public_automation_webhook_token(path)
         {
             match super::webhook_rate_limit::global().check(
-                public_path_token,
+                &public_path_token,
                 peer,
                 crate::now_ms(),
             ) {

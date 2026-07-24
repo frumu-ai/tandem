@@ -830,7 +830,7 @@ impl AppState {
         let _ = self.load_automation_governance().await;
         let _ = self.bootstrap_automation_governance().await;
         let _ = self.load_automation_v2_runs().await;
-        let _ = self.load_automation_webhook_records().await;
+        self.load_automation_webhook_records().await?;
         let _ = self.load_idempotency_keys().await;
         let _ = self.load_optimization_campaigns().await;
         let _ = self.load_optimization_experiments().await;

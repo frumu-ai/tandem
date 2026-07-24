@@ -106,59 +106,31 @@ pub(crate) async fn discord_interactions(
         Some(value) => value,
         None => return reject_bad_request("payload missing a valid application id"),
     };
-    let effective_config = state.config.get_effective_value().await;
-    let tenant_context = channel_bound_tenant(&effective_config, ChannelKind::Discord)
-        .map(|(org_id, workspace_id)| {
-            tandem_types::TenantContext::explicit_user_workspace(
-                org_id,
-                workspace_id,
-                None,
-                "discord",
-            )
-        })
-        .unwrap_or_else(tandem_types::TenantContext::local_implicit);
-    match claim_discord_interaction(
-        &state,
-        &tenant_context,
-        application_id,
-        interaction_id,
-        body.as_ref(),
-        now_secs.saturating_mul(1000),
-    )
-    .await
-    {
-        Ok(DiscordReplayClaimDecision::Claimed) => {}
-        Ok(DiscordReplayClaimDecision::Duplicate) => {
-            tracing::warn!(
-                target: "tandem_server::discord_interactions",
-                interaction_id,
-                "rejecting duplicate Discord interaction"
-            );
-            return reject_conflict("duplicate interaction");
-        }
-        Ok(DiscordReplayClaimDecision::Conflict) => {
-            tracing::warn!(
-                target: "tandem_server::discord_interactions",
-                interaction_id,
-                "rejecting conflicting Discord interaction replay"
-            );
-            return reject_conflict("conflicting interaction replay");
-        }
-        Err(error) => {
-            tracing::error!(
-                target: "tandem_server::discord_interactions",
-                error = %error,
-                "Discord interaction replay claim failed closed"
-            );
-            return reject_service_unavailable();
-        }
-    }
-
     match interaction_type {
         // 3: MESSAGE_COMPONENT — button clicks on action rows.
-        3 => handle_message_component(state, &payload).await,
+        3 => {
+            handle_message_component(
+                state,
+                &payload,
+                application_id,
+                interaction_id,
+                body.as_ref(),
+                now_secs.saturating_mul(1000),
+            )
+            .await
+        },
         // 5: MODAL_SUBMIT — rework reason was submitted.
-        5 => handle_modal_submit(state, &payload).await,
+        5 => {
+            handle_modal_submit(
+                state,
+                &payload,
+                application_id,
+                interaction_id,
+                body.as_ref(),
+                now_secs.saturating_mul(1000),
+            )
+            .await
+        },
         // 2: APPLICATION_COMMAND — slash commands. Future: /pending, /approve.
         2 => Json(json!({
             "type": 4,
@@ -176,7 +148,75 @@ pub(crate) async fn discord_interactions(
     }
 }
 
-async fn handle_message_component(state: AppState, payload: &Value) -> Response {
+fn discord_tenant_context(effective_config: &Value) -> tandem_types::TenantContext {
+    channel_bound_tenant(effective_config, ChannelKind::Discord)
+        .map(|(org_id, workspace_id)| {
+            tandem_types::TenantContext::explicit_user_workspace(
+                org_id,
+                workspace_id,
+                None,
+                "discord",
+            )
+        })
+        .unwrap_or_else(tandem_types::TenantContext::local_implicit)
+}
+
+async fn claim_authorized_discord_interaction(
+    state: &AppState,
+    tenant_context: &tandem_types::TenantContext,
+    application_id: &str,
+    interaction_id: &str,
+    body: &[u8],
+    now_ms: u64,
+) -> Result<(), Response> {
+    match claim_discord_interaction(
+        state,
+        tenant_context,
+        application_id,
+        interaction_id,
+        body,
+        now_ms,
+    )
+    .await
+    {
+        Ok(DiscordReplayClaimDecision::Claimed) => Ok(()),
+        Ok(DiscordReplayClaimDecision::Duplicate) => {
+            tracing::warn!(
+                target: "tandem_server::discord_interactions",
+                interaction_id,
+                "rejecting duplicate Discord interaction"
+            );
+            Err(reject_conflict("duplicate interaction"))
+        }
+        Ok(DiscordReplayClaimDecision::Conflict) => {
+            tracing::warn!(
+                target: "tandem_server::discord_interactions",
+                interaction_id,
+                "rejecting conflicting Discord interaction replay"
+            );
+            Err(reject_conflict("conflicting interaction replay"))
+        }
+        Err(error) => {
+            tracing::error!(
+                target: "tandem_server::discord_interactions",
+                error = %error,
+                tenant = %tenant_context.org_id,
+                application_id,
+                "Discord interaction replay claim failed closed"
+            );
+            Err(reject_service_unavailable())
+        }
+    }
+}
+
+async fn handle_message_component(
+    state: AppState,
+    payload: &Value,
+    application_id: &str,
+    interaction_id: &str,
+    body: &[u8],
+    now_ms: u64,
+) -> Response {
     let custom_id = match payload.pointer("/data/custom_id").and_then(Value::as_str) {
         Some(id) => id,
         None => return reject_bad_request("button payload missing data.custom_id"),
@@ -258,6 +298,19 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
     if !rate_decision.allowed {
         return reject_rate_limited(rate_decision.retry_after_secs);
     }
+    let tenant_context = discord_tenant_context(&effective_config);
+    if let Err(response) = claim_authorized_discord_interaction(
+        &state,
+        &tenant_context,
+        application_id,
+        interaction_id,
+        body,
+        now_ms,
+    )
+    .await
+    {
+        return response;
+    }
 
     match parsed.action.as_str() {
         "approve" | "cancel" => dispatch_decision(state, parsed, &user_id, None).await,
@@ -294,7 +347,14 @@ async fn handle_message_component(state: AppState, payload: &Value) -> Response 
     }
 }
 
-async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
+async fn handle_modal_submit(
+    state: AppState,
+    payload: &Value,
+    application_id: &str,
+    interaction_id: &str,
+    body: &[u8],
+    now_ms: u64,
+) -> Response {
     let custom_id = match payload.pointer("/data/custom_id").and_then(Value::as_str) {
         Some(id) => id,
         None => return reject_bad_request("modal payload missing data.custom_id"),
@@ -393,6 +453,19 @@ async fn handle_modal_submit(state: AppState, payload: &Value) -> Response {
         .await;
     if !rate_decision.allowed {
         return reject_rate_limited(rate_decision.retry_after_secs);
+    }
+    let tenant_context = discord_tenant_context(&effective_config);
+    if let Err(response) = claim_authorized_discord_interaction(
+        &state,
+        &tenant_context,
+        application_id,
+        interaction_id,
+        body,
+        now_ms,
+    )
+    .await
+    {
+        return response;
     }
 
     dispatch_decision(
