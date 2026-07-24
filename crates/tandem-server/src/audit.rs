@@ -225,7 +225,7 @@ async fn read_protected_audit_records(
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
         {
-            ensure_missing_protected_audit_ledger_is_uninitialized(path).await?;
+            ensure_protected_audit_ledger_is_uninitialized(path).await?;
             return Err(error);
         }
         Err(error) => return Err(error),
@@ -233,7 +233,7 @@ async fn read_protected_audit_records(
     parse_protected_audit_records(lines)
 }
 
-async fn ensure_missing_protected_audit_ledger_is_uninitialized(
+async fn ensure_protected_audit_ledger_is_uninitialized(
     path: &std::path::Path,
 ) -> anyhow::Result<()> {
     crate::audit_integrity::ensure_external_anchor_absent(
@@ -289,8 +289,7 @@ pub async fn try_load_protected_audit_events_for_tenant(
     {
         Ok(Some(lines)) => lines,
         Ok(None) => {
-            ensure_missing_protected_audit_ledger_is_uninitialized(&state.protected_audit_path)
-                .await?;
+            ensure_protected_audit_ledger_is_uninitialized(&state.protected_audit_path).await?;
             return Ok(Vec::new());
         }
         Err(error) => return Err(error).context("load protected audit ledger"),
@@ -754,6 +753,7 @@ async fn verify_protected_audit_anchor(
     records: &[ProtectedAuditEnvelope],
 ) -> anyhow::Result<Option<crate::audit_integrity::AnchorVerification>> {
     let Some(last) = records.iter().rfind(|record| record.seq > 0) else {
+        ensure_protected_audit_ledger_is_uninitialized(path).await?;
         return Ok(None);
     };
     crate::audit_integrity::verify_external_anchor(
@@ -999,6 +999,11 @@ mod tests {
                 &path,
             )
             .expect("write audit anchor marker");
+
+            let unsequenced_error = verify_protected_audit_anchor(&path, &[audit_row(0, None)])
+                .await
+                .expect_err("unsequenced-only ledger must reject a dedicated anchor");
+            assert!(format!("{unsequenced_error:#}").contains("previously keyed"));
 
             let error = read_protected_audit_records(&path)
                 .await
