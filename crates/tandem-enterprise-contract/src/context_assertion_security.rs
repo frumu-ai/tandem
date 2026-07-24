@@ -4,7 +4,9 @@
 
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -30,6 +32,10 @@ pub const DEFAULT_CONTEXT_ASSERTION_REPLAY_MAX_NAMESPACE_ENTRIES: usize = 10_000
 const REPLAY_DATABASE_INITIALIZATION_WAIT: Duration = Duration::from_millis(500);
 #[cfg(not(test))]
 const REPLAY_DATABASE_INITIALIZATION_WAIT: Duration = Duration::from_secs(5);
+const REPLAY_METADATA_SCHEMA: &str = "CREATE TABLE replay_metadata (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), version INTEGER NOT NULL)";
+const REPLAY_ENTRIES_SCHEMA: &str = "CREATE TABLE replay_entries (replay_key TEXT PRIMARY KEY CHECK (length(replay_key) = 64), namespace_hash TEXT NOT NULL CHECK (length(namespace_hash) = 64), fingerprint_hex TEXT NOT NULL CHECK (length(fingerprint_hex) = 64), expires_at_ms INTEGER NOT NULL CHECK (expires_at_ms >= 0))";
+const REPLAY_NAMESPACE_INDEX_SCHEMA: &str =
+    "CREATE INDEX replay_entries_namespace_idx ON replay_entries(namespace_hash)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextAssertionError {
@@ -661,9 +667,9 @@ impl ContextAssertionReplayStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(replay_database_error)?;
         transaction
-            .execute_batch(
-                "CREATE TABLE replay_metadata (\n                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n                    version INTEGER NOT NULL\n                 );\n                 CREATE TABLE replay_entries (\n                    replay_key TEXT PRIMARY KEY CHECK (length(replay_key) = 64),\n                    namespace_hash TEXT NOT NULL CHECK (length(namespace_hash) = 64),\n                    fingerprint_hex TEXT NOT NULL CHECK (length(fingerprint_hex) = 64),\n                    expires_at_ms INTEGER NOT NULL CHECK (expires_at_ms >= 0)\n                 );\n                 CREATE INDEX replay_entries_namespace_idx\n                    ON replay_entries(namespace_hash);",
-            )
+            .execute_batch(REPLAY_METADATA_SCHEMA)
+            .and_then(|_| transaction.execute_batch(REPLAY_ENTRIES_SCHEMA))
+            .and_then(|_| transaction.execute_batch(REPLAY_NAMESPACE_INDEX_SCHEMA))
             .map_err(replay_database_error)?;
         transaction
             .execute(
@@ -671,7 +677,7 @@ impl ContextAssertionReplayStore {
                 [replay_state_version()],
             )
             .map_err(replay_database_error)?;
-        transaction.commit().map_err(replay_database_error)
+        commit_replay_transaction(transaction, path, *identity)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -694,6 +700,7 @@ impl ContextAssertionReplayStore {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(replay_database_error)?;
+        validate_replay_file_identity(path, identity)?;
         validate_replay_database(&transaction, self.max_entries, self.max_namespace_entries)?;
         transaction
             .execute(
@@ -712,13 +719,13 @@ impl ContextAssertionReplayStore {
         if let Some(existing_fingerprint) = existing {
             return match mode {
                 ContextAssertionReplayMode::Bound if existing_fingerprint == fingerprint_hex => {
-                    transaction.commit().map_err(replay_database_error)
+                    commit_replay_transaction(transaction, path, identity)
                 }
                 ContextAssertionReplayMode::Bound | ContextAssertionReplayMode::OneShot => {
                     Err(ContextAssertionError::Replayed)
                 }
                 ContextAssertionReplayMode::Off => {
-                    transaction.commit().map_err(replay_database_error)
+                    commit_replay_transaction(transaction, path, identity)
                 }
             };
         }
@@ -743,7 +750,7 @@ impl ContextAssertionReplayStore {
                 params![replay_key, namespace_hash, fingerprint_hex, expires_at_ms],
             )
             .map_err(replay_database_error)?;
-        transaction.commit().map_err(replay_database_error)
+        commit_replay_transaction(transaction, path, identity)
     }
 }
 
@@ -823,7 +830,7 @@ fn secure_create_new_file(path: &Path) -> std::io::Result<File> {
 fn wait_for_initialized_replay_file(path: &Path) -> Result<(), ContextAssertionError> {
     let deadline = Instant::now() + REPLAY_DATABASE_INITIALIZATION_WAIT;
     loop {
-        let file = secure_open_existing_file(path)?;
+        let file = secure_open_existing_readonly_file(path)?;
         if file
             .metadata()
             .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?
@@ -839,9 +846,9 @@ fn wait_for_initialized_replay_file(path: &Path) -> Result<(), ContextAssertionE
     }
 }
 
-fn secure_open_existing_file(path: &Path) -> Result<File, ContextAssertionError> {
+fn secure_open_existing_readonly_file(path: &Path) -> Result<File, ContextAssertionError> {
     let mut options = OpenOptions::new();
-    options.read(true).write(true);
+    options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -857,7 +864,7 @@ fn secure_open_existing_file(path: &Path) -> Result<File, ContextAssertionError>
 pub(crate) fn read_owner_only_regular_text_file(
     path: &Path,
 ) -> Result<String, ContextAssertionError> {
-    let mut file = secure_open_existing_file(path)?;
+    let mut file = secure_open_existing_readonly_file(path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)
         .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
@@ -919,6 +926,20 @@ fn validate_replay_file_identity(
     }
 }
 
+fn commit_replay_transaction(
+    transaction: Transaction<'_>,
+    path: &Path,
+    identity: ReplayFileIdentity,
+) -> Result<(), ContextAssertionError> {
+    // Validate while the write transaction is active, then again after the
+    // durable commit. A path swap in either window makes the request fail
+    // closed instead of returning success for a record committed to an
+    // unlinked database inode.
+    validate_replay_file_identity(path, identity)?;
+    transaction.commit().map_err(replay_database_error)?;
+    validate_replay_file_identity(path, identity)
+}
+
 fn open_replay_database(
     path: &Path,
     identity: ReplayFileIdentity,
@@ -943,6 +964,7 @@ fn validate_replay_database(
     max_entries: usize,
     max_namespace_entries: usize,
 ) -> Result<(), ContextAssertionError> {
+    validate_replay_schema(connection)?;
     let version: i64 = connection
         .query_row(
             "SELECT version FROM replay_metadata WHERE singleton = 1",
@@ -981,6 +1003,51 @@ fn validate_replay_database(
         return Err(ContextAssertionError::ReplayBackendUnavailable);
     }
     Ok(())
+}
+
+fn validate_replay_schema(connection: &Connection) -> Result<(), ContextAssertionError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT type, name, tbl_name, sql\n             FROM sqlite_master\n             WHERE name NOT LIKE 'sqlite_%'\n             ORDER BY type, name",
+        )
+        .map_err(replay_database_error)?;
+    let objects = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(replay_database_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(replay_database_error)?;
+    let expected = vec![
+        (
+            "index".to_string(),
+            "replay_entries_namespace_idx".to_string(),
+            "replay_entries".to_string(),
+            REPLAY_NAMESPACE_INDEX_SCHEMA.to_string(),
+        ),
+        (
+            "table".to_string(),
+            "replay_entries".to_string(),
+            "replay_entries".to_string(),
+            REPLAY_ENTRIES_SCHEMA.to_string(),
+        ),
+        (
+            "table".to_string(),
+            "replay_metadata".to_string(),
+            "replay_metadata".to_string(),
+            REPLAY_METADATA_SCHEMA.to_string(),
+        ),
+    ];
+    if objects == expected {
+        Ok(())
+    } else {
+        Err(ContextAssertionError::ReplayBackendUnavailable)
+    }
 }
 
 fn usize_to_i64(value: usize) -> i64 {

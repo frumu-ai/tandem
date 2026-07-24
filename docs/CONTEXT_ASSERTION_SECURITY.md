@@ -42,7 +42,7 @@ If no key is configured in hosted/enterprise mode, all assertion-bearing
 requests are rejected (`context_assertion_key_not_configured`).
 On Unix, hosted runtime and ACA keyring files plus configured replay database files must be
 regular, non-symlink files owned by the runtime user with no group/world permissions
-(`0600` or stricter).
+(`0600` or stricter). Read-only `0400` keyring secret mounts are supported; the replay database itself must remain writable.
 
 At verifier initialization and reload, the runtime logs only the SHA-256 keyring
 fingerprint, key count, replay mode, and maximum lifetime. Public key bytes are
@@ -98,6 +98,8 @@ of an `assertion_id`. Replays are rejected with reason
 
 Operational notes:
 
+- SQLite is the first supported durable on-disk replay format. Existing non-SQLite
+  content fails closed; no released Tandem version wrote a predecessor durable format.
 - Hosted startup creates or opens an owner-only SQLite replay database. Immediate
   transactions and rollback journaling provide cross-process serialization and crash
   atomicity; backend unavailability, corruption, replacement, or capacity exhaustion

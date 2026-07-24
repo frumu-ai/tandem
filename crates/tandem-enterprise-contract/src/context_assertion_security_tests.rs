@@ -206,6 +206,12 @@ fn owner_only_text_reader_rejects_permissive_files_and_symlinks() {
         read_owner_only_regular_text_file(&path),
         Ok("keyring".to_string())
     );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400))
+        .expect("read-only permissions");
+    assert_eq!(
+        read_owner_only_regular_text_file(&path),
+        Ok("keyring".to_string())
+    );
     let linked = temp.path().join("aca-keyring-link.json");
     symlink(&path, &linked).expect("symlink");
     assert_eq!(
@@ -396,6 +402,40 @@ fn persistent_replay_database_rejects_structural_quota_overflow() {
     );
 }
 
+#[test]
+fn persistent_replay_database_rejects_substituted_schema_objects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("substituted-schema.sqlite");
+    let store = ContextAssertionReplayStore::persistent(&path).expect("store");
+    drop(store);
+
+    let connection = Connection::open(&path).expect("open database");
+    connection
+        .execute_batch(
+            "DROP INDEX replay_entries_namespace_idx;
+             DROP TABLE replay_entries;
+             CREATE TABLE replay_entries_backing (
+                replay_key TEXT,
+                namespace_hash TEXT,
+                fingerprint_hex TEXT,
+                expires_at_ms INTEGER
+             );
+             CREATE VIEW replay_entries AS
+                SELECT replay_key, namespace_hash, fingerprint_hex, expires_at_ms
+                FROM replay_entries_backing;
+             CREATE TRIGGER replay_entries_insert
+                INSTEAD OF INSERT ON replay_entries
+                BEGIN SELECT 1; END;",
+        )
+        .expect("substitute replay schema");
+    drop(connection);
+
+    assert!(matches!(
+        ContextAssertionReplayStore::persistent(&path),
+        Err(ContextAssertionError::ReplayBackendUnavailable)
+    ));
+}
+
 #[cfg(unix)]
 #[test]
 fn running_replay_store_rejects_database_path_replacement() {
@@ -411,6 +451,31 @@ fn running_replay_store_rejects_database_path_replacement() {
     let record = replay_record("replacement", 42, "issuer-a", "aud-a", NOW_MS + 60_000);
     assert_eq!(
         store.check_and_record(ContextAssertionReplayMode::OneShot, &record, NOW_MS),
+        Err(ContextAssertionError::ReplayBackendUnavailable)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn replay_transaction_revalidates_path_before_commit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("commit-race.sqlite");
+    let displaced = temp.path().join("commit-race-displaced.sqlite");
+    let store = ContextAssertionReplayStore::persistent(&path).expect("store");
+    drop(store);
+    let identity = replay_file_identity(&path).expect("identity");
+    let mut connection = open_replay_database(&path, identity).expect("database");
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .expect("transaction");
+
+    std::fs::rename(&path, &displaced).expect("displace database");
+    std::fs::write(&path, "replacement").expect("replacement");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("permissions");
+    assert_eq!(
+        commit_replay_transaction(transaction, &path, identity),
         Err(ContextAssertionError::ReplayBackendUnavailable)
     );
 }
