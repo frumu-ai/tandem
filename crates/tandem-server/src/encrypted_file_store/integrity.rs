@@ -339,18 +339,6 @@ fn sign_jsonl_frame_digest(
     sign_integrity_digest(&jsonl_frame_digest_payload(frame)?, authority)
 }
 
-fn verify_jsonl_frame_digest_with_keyring(
-    frame: &AuthenticatedJsonlFrame,
-    keyring: &anyhow::Result<Option<crate::audit_integrity::AuditIntegrityKeyring>>,
-) -> anyhow::Result<()> {
-    verify_integrity_digest_with_keyring_snapshot(
-        &jsonl_frame_digest_payload(frame)?,
-        frame.integrity_key_id.as_deref(),
-        &frame.digest,
-        keyring,
-    )
-}
-
 fn sign_integrity_digest(
     payload: &[u8],
     authority: Option<&crate::audit_integrity::AuditIntegrityKeyring>,
@@ -1134,14 +1122,18 @@ async fn decrypt_jsonl_state(
                 "legacy protected JSONL frame appears after a keyed integrity segment"
             );
         }
-        verify_jsonl_frame_digest_with_keyring(&frame, &verification_keyring).with_context(
-            || {
-                format!(
-                    "protected JSONL frame digest mismatch at sequence {}",
-                    frame.sequence
-                )
-            },
-        )?;
+        verify_integrity_digest_with_keyring_snapshot(
+            &jsonl_frame_digest_payload(&frame)?,
+            frame.integrity_key_id.as_deref(),
+            &frame.digest,
+            &verification_keyring,
+        )
+        .with_context(|| {
+            format!(
+                "protected JSONL frame digest mismatch at sequence {}",
+                frame.sequence
+            )
+        })?;
         last_integrity_key_id = frame.integrity_key_id.clone();
         let plaintext = crypto.decrypt_record(&frame.stored_record, &frame.context)?;
         previous_digest = Some(frame.digest);
