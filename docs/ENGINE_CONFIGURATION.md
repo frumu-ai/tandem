@@ -16,14 +16,16 @@ This page is generated from the engine config registry used by `tandem-engine co
 | `TANDEM_API_TOKEN`                            | `unset`               | Explicit HTTP transport bearer token. Secret value is never printed by config check.                                |
 | `TANDEM_API_TOKEN_FILE`                       | `unset`               | File containing the HTTP transport bearer token. Required in hosted/enterprise mode unless --api-token is supplied. |
 | `TANDEM_UNSAFE_NO_API_TOKEN`                  | `false`               | Local loopback development only; rejected in hosted/enterprise mode.                                                |
-| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS`        | `unset`               | JSON or kid=base64 Ed25519 context assertion verifier keyring. Required in hosted/enterprise mode.                  |
-| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE`   | `unset`               | File containing the context assertion verifier keyring.                                                             |
-| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY`         | `unset`               | Legacy single Ed25519 verifier public key.                                                                          |
-| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE`    | `unset`               | File containing the legacy single verifier public key.                                                              |
+| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS`        | `unset`               | JSON Ed25519 verifier keyring with explicit purpose and status metadata. Required in hosted/enterprise mode.        |
+| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE`   | `unset`               | Secure metadata-keyring file; hosted Unix deployments require owner-only permissions.                               |
+| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY`         | `unset`               | Legacy single verifier key for local migration only; rejected in hosted/enterprise mode.                            |
+| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE`    | `unset`               | Legacy single verifier key file for local migration only; rejected in hosted/enterprise mode.                       |
 | `TANDEM_CONTEXT_ASSERTION_ISSUER`             | `tandem-web`          | Expected context assertion issuer.                                                                                  |
 | `TANDEM_CONTEXT_ASSERTION_AUDIENCE`           | `tandem-runtime`      | Expected context assertion audience.                                                                                |
-| `TANDEM_CONTEXT_ASSERTION_REPLAY_MODE`        | `audit`               | Replay handling mode for verified context assertions.                                                               |
+| `TANDEM_CONTEXT_ASSERTION_REPLAY_MODE`        | `bound`               | Replay handling: bound, one_shot, or off. Off is rejected in hosted/enterprise mode.                                |
+| `TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE`  | `unset`               | Shared durable transactional SQLite replay database. Required and opened before bind in hosted/enterprise mode; Unix files require owner-only permissions and reject symlinks.                        |
 | `TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS` | `10000`               | Allowed future clock skew for assertions; valid range 10000..=60000.                                                |
+| `TANDEM_CONTEXT_ASSERTION_MAX_LIFETIME_MS`    | `900000`              | Maximum assertion lifetime; valid range 1..=3600000 and enforced with checked arithmetic.                           |
 | `TANDEM_HOSTED_CONTROL_PLANE_URL`             | `unset`               | Hosted control-plane URL; enables enterprise-scoped memory policy.                                                  |
 | `TANDEM_ENTERPRISE_CONTROL_PLANE_URL`         | `unset`               | Enterprise control-plane URL alias.                                                                                 |
 | `TANDEM_CROSS_TENANT_GRANT_SIGNING_KEY`       | `unset`               | Secret signing key for cross-tenant grants.                                                                         |
@@ -50,7 +52,9 @@ This page is generated from the engine config registry used by `tandem-engine co
 
 `tandem-engine config check` validates these startup invariants before the server binds:
 
-- Hosted or enterprise auth mode requires a context assertion verifier keyring.
+- Hosted or enterprise auth mode requires a metadata-bearing context assertion verifier keyring; legacy single-key mode is rejected.
+- Hosted or enterprise auth mode requires `TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE` and rejects replay mode `off`.
+- Assertion lifetime is bounded to a 15-minute default and one-hour hard ceiling.
 - Hosted or enterprise auth mode requires an explicit transport token from `TANDEM_API_TOKEN`, `TANDEM_API_TOKEN_FILE`, or `--api-token`.
 - Hosted or enterprise auth mode rejects `TANDEM_UNSAFE_NO_API_TOKEN`.
 - Malformed verifier key material, invalid booleans, invalid modes, and out-of-range numeric settings fail fast.

@@ -32,9 +32,15 @@ Current repository behavior is narrower:
 
 - The shared contract implements purpose- and scope-bound Ed25519 verifier
   keyrings, active/retired/revoked status, validity windows, and fail-closed key
-  lookup.
-- Runtime context-assertion public keys are loaded from environment variables or
-  files.
+  lookup. Runtime and ACA context assertions route through the same verifier.
+- Hosted assertion state is loaded before bind into an immutable snapshot.
+  Legacy metadata-free keys are rejected; Unix keyring files must be owned by
+  the runtime user and `0600` or stricter.
+- Rotation is explicit through permission-checked `POST /admin/reload-config`.
+  A complete next keyring and replay backend are validated before one atomic
+  snapshot swap. Invalid reloads retain the last-known-good generation.
+- Protected reload audit records previous/current SHA-256 keyring fingerprints,
+  change status, key count, replay mode, and lifetime policy without key bytes.
 - The enterprise cross-tenant grant issuance route currently loads its private
   Ed25519 signing key from an environment variable or file. That compatibility
   path is not KMS custody and must not be presented as the target hosted design.
@@ -98,6 +104,9 @@ publish keyrings, reload all verifiers, cut over signers, or attest completion.
 2. **Publish** the new public key into the keyring as a second `active` entry
    with a fresh `kid` and a `not_before_ms` at/after the cutover. Keep the old
    entry `active` during the overlap window so both verify.
+   Publish the complete file atomically with owner-only permissions, then call
+   `POST /admin/reload-config` and verify the protected old/new fingerprint
+   event before signer cutover.
 3. **Cut over** signing in the control plane to the new `kid`.
 4. **Retire** the old entry (set `status: "retired"`) once no valid tokens can
    still bear the old `kid` (i.e. after the old key's tokens have all expired).

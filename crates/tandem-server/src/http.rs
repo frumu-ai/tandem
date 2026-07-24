@@ -495,6 +495,12 @@ pub async fn serve_with_route_extensions(
 ) -> anyhow::Result<()> {
     state.set_http_listener_bound_loopback_only(false);
     state.set_host_operations_loopback_only(addr.ip().is_loopback());
+    let runtime_auth_mode = crate::config::env::resolve_runtime_auth_mode();
+    state
+        .reload_context_assertion_security(runtime_auth_mode)
+        .map_err(|error| {
+            anyhow::anyhow!("context assertion security startup validation failed: {error}")
+        })?;
     let memory_context_policy = apply_strict_tenant_enforcement_defaults()?;
     if memory_context_policy.strict_required {
         if let Some(runtime) = state.runtime.get() {

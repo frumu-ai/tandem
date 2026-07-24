@@ -8,11 +8,12 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 mod metrics;
 pub use metrics::{
-    observability_metrics_snapshot, record_engine_event_metrics, record_gate_wait_ms,
-    record_provider_error, record_provider_oauth_refresh, record_run_duration_ms,
-    record_scheduler_clock_regression_ms, record_scheduler_tick_latency_ms,
-    record_tool_call_decision, record_webhook_intake_throttled, record_webhook_rejection_telemetry,
-    render_observability_metrics_prometheus, MetricSummary, ObservabilityMetricsSnapshot,
+    observability_metrics_snapshot, record_context_assertion_rejection,
+    record_engine_event_metrics, record_gate_wait_ms, record_provider_error,
+    record_provider_oauth_refresh, record_run_duration_ms, record_scheduler_clock_regression_ms,
+    record_scheduler_tick_latency_ms, record_tool_call_decision, record_webhook_intake_throttled,
+    record_webhook_rejection_telemetry, render_observability_metrics_prometheus, MetricSummary,
+    ObservabilityMetricsSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -507,6 +508,7 @@ mod tests {
         );
         record_webhook_intake_throttled("capability network");
         record_webhook_rejection_telemetry("quota exhausted");
+        record_context_assertion_rejection("context_assertion_lifetime_exceeded");
 
         let rendered = render_observability_metrics_prometheus();
         assert!(rendered.contains("tandem_scheduler_tick_latency_ms_count 1"));
@@ -526,6 +528,9 @@ mod tests {
             .contains("tandem_webhook_intake_throttled_total{scope=\"capability_network\"} 1"));
         assert!(rendered
             .contains("tandem_webhook_rejection_telemetry_total{outcome=\"quota_exhausted\"} 1"));
+        assert!(rendered.contains(
+            "tandem_context_assertion_rejections_total{reason=\"context_assertion_lifetime_exceeded\"} 1"
+        ));
         assert!(rendered.contains("tandem_provider_oauth_refresh_total{outcome=\"succeeded\"} 1"));
         assert!(rendered.contains("tandem_provider_oauth_refresh_total{outcome=\"failed\"} 1"));
         assert!(
