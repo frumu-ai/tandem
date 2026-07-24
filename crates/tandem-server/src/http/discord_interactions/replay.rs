@@ -32,6 +32,36 @@ pub(super) enum DiscordReplayClaimDecision {
     Conflict,
 }
 
+pub(super) enum DiscordReplayClaimPreparation {
+    Pending(PendingDiscordReplayClaim),
+    Duplicate,
+    Conflict,
+}
+
+pub(super) struct PendingDiscordReplayClaim {
+    _lock: ClaimsDirectoryLock,
+    scope_root: PathBuf,
+    path: PathBuf,
+    record: DiscordReplayClaimRecord,
+    replace_existing: bool,
+    max_claims: usize,
+}
+
+impl PendingDiscordReplayClaim {
+    pub(super) async fn commit(self) -> anyhow::Result<()> {
+        if !self.replace_existing {
+            let active_claims =
+                prune_expired_and_count(&self.scope_root, self.record.claimed_at_ms).await?;
+            if active_claims >= self.max_claims {
+                anyhow::bail!(
+                    "Discord interaction replay claim quota exhausted for tenant/application"
+                );
+            }
+        }
+        write_record(&self.path, &self.record).await
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DiscordReplayClaimRecord {
     schema_version: u32,
@@ -63,6 +93,26 @@ pub(super) async fn claim_discord_interaction(
     .await
 }
 
+pub(super) async fn prepare_discord_interaction(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    application_id: &str,
+    interaction_id: &str,
+    body: &[u8],
+    now_ms: u64,
+) -> anyhow::Result<DiscordReplayClaimPreparation> {
+    prepare_discord_interaction_with_limit(
+        state,
+        tenant_context,
+        application_id,
+        interaction_id,
+        body,
+        now_ms,
+        MAX_CLAIMS_PER_TENANT_APPLICATION,
+    )
+    .await
+}
+
 async fn claim_discord_interaction_with_limit(
     state: &AppState,
     tenant_context: &TenantContext,
@@ -72,10 +122,39 @@ async fn claim_discord_interaction_with_limit(
     now_ms: u64,
     max_claims: usize,
 ) -> anyhow::Result<DiscordReplayClaimDecision> {
+    match prepare_discord_interaction_with_limit(
+        state,
+        tenant_context,
+        application_id,
+        interaction_id,
+        body,
+        now_ms,
+        max_claims,
+    )
+    .await?
+    {
+        DiscordReplayClaimPreparation::Pending(pending) => {
+            pending.commit().await?;
+            Ok(DiscordReplayClaimDecision::Claimed)
+        }
+        DiscordReplayClaimPreparation::Duplicate => Ok(DiscordReplayClaimDecision::Duplicate),
+        DiscordReplayClaimPreparation::Conflict => Ok(DiscordReplayClaimDecision::Conflict),
+    }
+}
+
+async fn prepare_discord_interaction_with_limit(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    application_id: &str,
+    interaction_id: &str,
+    body: &[u8],
+    now_ms: u64,
+    max_claims: usize,
+) -> anyhow::Result<DiscordReplayClaimPreparation> {
     validate_identifier(application_id, "application_id")?;
     validate_identifier(interaction_id, "interaction_id")?;
     let scope_root = claims_scope_root(state, tenant_context, application_id);
-    let _lock = ClaimsDirectoryLock::acquire(&scope_root).await?;
+    let lock = ClaimsDirectoryLock::acquire(&scope_root).await?;
     tokio::fs::create_dir_all(&scope_root).await?;
     let path = claim_path(&scope_root, interaction_id);
     let digest = body_digest(body);
@@ -84,43 +163,46 @@ async fn claim_discord_interaction_with_limit(
         validate_record_identity(&existing, tenant_context, application_id, interaction_id)?;
         if existing.expires_at_ms > now_ms {
             return Ok(if existing.body_digest == digest {
-                DiscordReplayClaimDecision::Duplicate
+                DiscordReplayClaimPreparation::Duplicate
             } else {
-                DiscordReplayClaimDecision::Conflict
+                DiscordReplayClaimPreparation::Conflict
             });
         }
-        write_record(
-            &path,
-            &new_record(
+        return Ok(DiscordReplayClaimPreparation::Pending(
+            PendingDiscordReplayClaim {
+                _lock: lock,
+                scope_root,
+                path,
+                record: new_record(
+                    tenant_context,
+                    application_id,
+                    interaction_id,
+                    digest,
+                    now_ms,
+                ),
+                replace_existing: true,
+                max_claims,
+            },
+        ));
+    }
+
+    Ok(DiscordReplayClaimPreparation::Pending(
+        PendingDiscordReplayClaim {
+            _lock: lock,
+            scope_root,
+            path,
+            record: new_record(
                 tenant_context,
                 application_id,
                 interaction_id,
                 digest,
                 now_ms,
             ),
-        )
-        .await?;
-        return Ok(DiscordReplayClaimDecision::Claimed);
-    }
-
-    let active_claims = prune_expired_and_count(&scope_root, now_ms).await?;
-    if active_claims >= max_claims {
-        anyhow::bail!("Discord interaction replay claim quota exhausted for tenant/application");
-    }
-    write_record(
-        &path,
-        &new_record(
-            tenant_context,
-            application_id,
-            interaction_id,
-            digest,
-            now_ms,
-        ),
-    )
-    .await?;
-    Ok(DiscordReplayClaimDecision::Claimed)
+            replace_existing: false,
+            max_claims,
+        },
+    ))
 }
-
 fn new_record(
     tenant_context: &TenantContext,
     application_id: &str,
@@ -405,6 +487,41 @@ mod tests {
                 .filter(|decision| **decision == DiscordReplayClaimDecision::Duplicate)
                 .count(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_preparation_does_not_create_a_claim() {
+        let state = crate::test_support::test_state().await;
+        let scope = tenant("acme");
+        let preparation = prepare_discord_interaction(
+            &state,
+            &scope,
+            "app-rate-denied",
+            "interaction-rate-denied",
+            b"body",
+            1_000,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            preparation,
+            DiscordReplayClaimPreparation::Pending(_)
+        ));
+        drop(preparation);
+
+        assert_eq!(
+            claim_discord_interaction(
+                &state,
+                &scope,
+                "app-rate-denied",
+                "interaction-rate-denied",
+                b"body",
+                1_001,
+            )
+            .await
+            .unwrap(),
+            DiscordReplayClaimDecision::Claimed
         );
     }
 

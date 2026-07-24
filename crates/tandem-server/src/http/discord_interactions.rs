@@ -43,7 +43,7 @@ use crate::AppState;
 
 mod replay;
 
-use replay::{claim_discord_interaction, DiscordReplayClaimDecision};
+use replay::{prepare_discord_interaction, DiscordReplayClaimPreparation};
 
 const DISCORD_SIGNATURE_TIMESTAMP_TOLERANCE_SECS: u64 = 5 * 60;
 
@@ -161,15 +161,17 @@ fn discord_tenant_context(effective_config: &Value) -> tandem_types::TenantConte
         .unwrap_or_else(tandem_types::TenantContext::local_implicit)
 }
 
-async fn claim_authorized_discord_interaction(
+async fn claim_rate_limited_authorized_discord_interaction(
     state: &AppState,
     tenant_context: &tandem_types::TenantContext,
     application_id: &str,
     interaction_id: &str,
     body: &[u8],
     now_ms: u64,
+    rate_key: &ChannelRateLimitKey,
+    profile: tandem_channels::config::ChannelSecurityProfile,
 ) -> Result<(), Response> {
-    match claim_discord_interaction(
+    let pending = match prepare_discord_interaction(
         state,
         tenant_context,
         application_id,
@@ -179,22 +181,22 @@ async fn claim_authorized_discord_interaction(
     )
     .await
     {
-        Ok(DiscordReplayClaimDecision::Claimed) => Ok(()),
-        Ok(DiscordReplayClaimDecision::Duplicate) => {
+        Ok(DiscordReplayClaimPreparation::Pending(pending)) => pending,
+        Ok(DiscordReplayClaimPreparation::Duplicate) => {
             tracing::warn!(
                 target: "tandem_server::discord_interactions",
                 interaction_id,
                 "acknowledging duplicate Discord interaction without redispatch"
             );
-            Err(duplicate_discord_acknowledgement())
+            return Err(duplicate_discord_acknowledgement());
         }
-        Ok(DiscordReplayClaimDecision::Conflict) => {
+        Ok(DiscordReplayClaimPreparation::Conflict) => {
             tracing::warn!(
                 target: "tandem_server::discord_interactions",
                 interaction_id,
                 "rejecting conflicting Discord interaction replay"
             );
-            Err(reject_conflict("conflicting interaction replay"))
+            return Err(reject_conflict("conflicting interaction replay"));
         }
         Err(error) => {
             tracing::error!(
@@ -204,11 +206,29 @@ async fn claim_authorized_discord_interaction(
                 application_id,
                 "Discord interaction replay claim failed closed"
             );
-            Err(reject_service_unavailable())
+            return Err(reject_service_unavailable());
         }
-    }
-}
+    };
 
+    let rate_decision = state
+        .channel_rate_limiter
+        .check(rate_key, ChannelRateLimitKind::Decision, profile)
+        .await;
+    if !rate_decision.allowed {
+        return Err(reject_rate_limited(rate_decision.retry_after_secs));
+    }
+    if let Err(error) = pending.commit().await {
+        tracing::error!(
+            target: "tandem_server::discord_interactions",
+            error = %error,
+            tenant = %tenant_context.org_id,
+            application_id,
+            "Discord interaction replay claim failed closed"
+        );
+        return Err(reject_service_unavailable());
+    }
+    Ok(())
+}
 fn duplicate_discord_acknowledgement() -> Response {
     Json(json!({
         "type": 7,
@@ -303,21 +323,16 @@ async fn handle_message_component(
         channel: ChannelKind::Discord.as_str().to_string(),
         user_id: user_id.clone(),
     };
-    let rate_decision = state
-        .channel_rate_limiter
-        .check(&rate_key, ChannelRateLimitKind::Decision, profile)
-        .await;
-    if !rate_decision.allowed {
-        return reject_rate_limited(rate_decision.retry_after_secs);
-    }
     let tenant_context = discord_tenant_context(&effective_config);
-    if let Err(response) = claim_authorized_discord_interaction(
+    if let Err(response) = claim_rate_limited_authorized_discord_interaction(
         &state,
         &tenant_context,
         application_id,
         interaction_id,
         body,
         now_ms,
+        &rate_key,
+        profile,
     )
     .await
     {
@@ -459,21 +474,16 @@ async fn handle_modal_submit(
         channel: ChannelKind::Discord.as_str().to_string(),
         user_id: user_id.clone(),
     };
-    let rate_decision = state
-        .channel_rate_limiter
-        .check(&rate_key, ChannelRateLimitKind::Decision, profile)
-        .await;
-    if !rate_decision.allowed {
-        return reject_rate_limited(rate_decision.retry_after_secs);
-    }
     let tenant_context = discord_tenant_context(&effective_config);
-    if let Err(response) = claim_authorized_discord_interaction(
+    if let Err(response) = claim_rate_limited_authorized_discord_interaction(
         &state,
         &tenant_context,
         application_id,
         interaction_id,
         body,
         now_ms,
+        &rate_key,
+        profile,
     )
     .await
     {

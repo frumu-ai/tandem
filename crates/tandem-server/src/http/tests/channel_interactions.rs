@@ -478,6 +478,40 @@ async fn discord_fresh_signed_interaction_is_applied_once_and_replay_is_acknowle
         "fresh signed interaction must decide the gate"
     );
 
+    let effective_config = state.config.get_effective_value().await;
+    let profile =
+        crate::app::state::channel_user_capabilities::channel_security_profile_from_config(
+            &effective_config,
+            "discord",
+        );
+    let rate_key = crate::app::rate_limit::ChannelRateLimitKey {
+        channel: "discord".to_string(),
+        user_id: DISCORD_USER.to_string(),
+    };
+    let capacity = crate::app::rate_limit::rate_limit_capacity(
+        crate::app::rate_limit::ChannelRateLimitKind::Decision,
+        profile,
+    );
+    let mut exhausted = false;
+    for _ in 0..capacity {
+        let decision = state
+            .channel_rate_limiter
+            .check(
+                &rate_key,
+                crate::app::rate_limit::ChannelRateLimitKind::Decision,
+                profile,
+            )
+            .await;
+        if !decision.allowed {
+            exhausted = true;
+            break;
+        }
+    }
+    assert!(
+        exhausted,
+        "test must exhaust the authorized Discord user's decision bucket"
+    );
+
     let replay = app
         .oneshot(discord_request(&run.run_id, &discord_signing_key))
         .await
