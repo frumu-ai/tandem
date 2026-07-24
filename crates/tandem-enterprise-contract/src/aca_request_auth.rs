@@ -23,10 +23,10 @@ use sha2::{Digest, Sha256};
 use crate::TenantContextAssertionClaims;
 
 use crate::{
-    ContextAssertionError, ContextAssertionPolicy, ContextAssertionReplayMode,
-    ContextAssertionReplayStore, ContextAssertionVerifier, VerifiedTenantContext, VerifierKeyring,
-    DEFAULT_CONTEXT_ASSERTION_ISSUER, DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
-    DEFAULT_CONTEXT_ASSERTION_MAX_LIFETIME_MS,
+    parse_context_assertion_metadata_keyring, ContextAssertionError, ContextAssertionPolicy,
+    ContextAssertionReplayMode, ContextAssertionReplayStore, ContextAssertionVerifier,
+    VerifiedTenantContext, VerifierKeyring, DEFAULT_CONTEXT_ASSERTION_ISSUER,
+    DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS, DEFAULT_CONTEXT_ASSERTION_MAX_LIFETIME_MS,
 };
 
 const MAX_ALLOWED_FUTURE_SKEW_MS: u64 = 60_000;
@@ -221,8 +221,8 @@ impl AcaContextAssertionVerifier {
     /// - `ACA_CONTEXT_ASSERTION_REPLAY_STORE_FILE` — shared durable replay ledger.
     pub fn from_env() -> Result<Self, AcaContextError> {
         let keyring_json = read_aca_keyring_from_env()?;
-        let keyring = VerifierKeyring::from_json(&keyring_json)
-            .map_err(|_| AcaContextError::KeyNotConfigured)?;
+        let keyring =
+            parse_context_assertion_metadata_keyring(&keyring_json).map_err(map_shared_error)?;
         if keyring.is_empty() {
             return Err(AcaContextError::KeyNotConfigured);
         }
@@ -438,12 +438,10 @@ fn read_aca_keyring_from_env() -> Result<String, AcaContextError> {
     if let Ok(path) = std::env::var("ACA_CONTEXT_ASSERTION_KEYRING_FILE") {
         let path = path.trim().to_string();
         if !path.is_empty() {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                let raw = contents.trim().to_string();
-                if !raw.is_empty() {
-                    return Ok(raw);
-                }
-            }
+            return crate::context_assertion_security::read_owner_only_regular_text_file(
+                std::path::Path::new(&path),
+            )
+            .map_err(|_| AcaContextError::KeyNotConfigured);
         }
     }
     Err(AcaContextError::KeyNotConfigured)

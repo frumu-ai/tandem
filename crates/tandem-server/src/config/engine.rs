@@ -867,7 +867,7 @@ const CONFIG_VARS: &[ConfigVar] = &[
     ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_ISSUER", default: "tandem-web", notes: "Expected context assertion issuer." },
     ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_AUDIENCE", default: "tandem-runtime", notes: "Expected context assertion audience." },
     ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_REPLAY_MODE", default: "bound", notes: "Replay handling: bound, one_shot, or off. Off is rejected in hosted/enterprise mode." },
-    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE", default: "unset", notes: "Shared durable replay-state file. Required and opened before bind in hosted/enterprise mode; Unix state and lock files require owner-only permissions and reject symlinks." },
+    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE", default: "unset", notes: "Shared durable transactional SQLite replay database. Required and opened before bind in hosted/enterprise mode; Unix files require owner-only permissions and reject symlinks." },
     ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS", default: "10000", notes: "Allowed future clock skew for assertions; valid range 10000..=60000." },
     ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_MAX_LIFETIME_MS", default: "900000", notes: "Maximum assertion lifetime; valid range 1..=3600000 and enforced with checked arithmetic." },
     ConfigVar { name: "TANDEM_HOSTED_CONTROL_PLANE_URL", default: "unset", notes: "Hosted control-plane URL; enables enterprise-scoped memory policy." },

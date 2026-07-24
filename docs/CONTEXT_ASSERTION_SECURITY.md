@@ -36,12 +36,12 @@ files.
 | `TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS` | Maximum accepted future `issued_at_ms` skew. Default `10000`; valid range `10000..=60000`. |
 | `TANDEM_CONTEXT_ASSERTION_MAX_LIFETIME_MS` | Maximum `expires_at_ms - issued_at_ms`. Default 15 minutes (`900000`); valid range `1..=3600000` (one-hour hard ceiling). |
 | `TANDEM_CONTEXT_ASSERTION_REPLAY_MODE` | `bound` (default), `one_shot`, or `off`. Hosted/enterprise startup rejects `off`. |
-| `TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE` | Shared durable replay ledger. Required and opened before bind in hosted/enterprise mode. All replicas must point at the same supported shared-filesystem path. |
+| `TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE` | Shared durable transactional SQLite replay ledger. Required and opened before bind in hosted/enterprise mode. All replicas must point at the same supported shared-filesystem path. |
 
 If no key is configured in hosted/enterprise mode, all assertion-bearing
 requests are rejected (`context_assertion_key_not_configured`).
-On Unix, hosted keyring files and configured replay-state/lock files must be regular,
-non-symlink files owned by the runtime user with no group/world permissions
+On Unix, hosted runtime and ACA keyring files plus configured replay database files must be
+regular, non-symlink files owned by the runtime user with no group/world permissions
 (`0600` or stricter).
 
 At verifier initialization and reload, the runtime logs only the SHA-256 keyring
@@ -98,10 +98,11 @@ of an `assertion_id`. Replays are rejected with reason
 
 Operational notes:
 
-- Hosted startup creates/opens both the replay state and its cross-process lock
-  file. Backend unavailability, corruption, or capacity exhaustion fails closed.
-- Every replica must use the same replay-store path on storage that provides
-  cross-process advisory locks. A per-pod local path does not satisfy the
+- Hosted startup creates or opens an owner-only SQLite replay database. Immediate
+  transactions and rollback journaling provide cross-process serialization and crash
+  atomicity; backend unavailability, corruption, replacement, or capacity exhaustion
+  fails closed.
+- Every replica must use the same replay-store path on storage that provides reliable SQLite cross-process file locking. A per-pod local path does not satisfy the
   multi-replica guarantee.
 - Entries are retained until assertion expiry plus a 60-second grace window.
   Storage is bounded to 100,000 live entries globally and 10,000 per
@@ -148,5 +149,6 @@ before the server binds. Rotation uses the permission-checked existing
 ACA uses the same verifier with `ACA_CONTEXT_ASSERTION_ISSUER`,
 `ACA_CONTEXT_ASSERTION_AUDIENCE`, `ACA_CONTEXT_ASSERTION_MAX_LIFETIME_MS`,
 `ACA_CONTEXT_ASSERTION_REPLAY_MODE`, and a required shared
-`ACA_CONTEXT_ASSERTION_REPLAY_STORE_FILE` (or Tandem replay-store fallback). ACA rejects
-replay mode `off`.
+`ACA_CONTEXT_ASSERTION_REPLAY_STORE_FILE` (or Tandem replay-store fallback). ACA
+rejects replay mode `off`, requires explicit key purpose/status metadata, and applies
+the same owner-only regular-file/no-symlink checks to file-backed keyrings.

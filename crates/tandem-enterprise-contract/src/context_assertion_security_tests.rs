@@ -64,11 +64,14 @@ fn verifier(entries: impl IntoIterator<Item = VerifierKeyEntry>) -> ContextAsser
 }
 
 fn sign(key: &SigningKey, kid: &str, claims: &TenantContextAssertionClaims) -> String {
+    sign_raw_claims(key, kid, &serde_json::to_vec(claims).expect("claims"))
+}
+
+fn sign_raw_claims(key: &SigningKey, kid: &str, claims: &[u8]) -> String {
     let header = TenantContextAssertionHeader::ed25519(kid);
     let encoded_header = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(serde_json::to_vec(&header).expect("header"));
-    let encoded_claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(claims).expect("claims"));
+    let encoded_claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims);
     let signing_input = format!("{encoded_header}.{encoded_claims}");
     let signature = key.sign(signing_input.as_bytes());
     format!(
@@ -147,6 +150,67 @@ fn signature_is_verified_before_untrusted_claim_semantics() {
     assert_eq!(
         verifier.verify_at(&sign(&attacker, "key-a", &invalid), NOW_MS),
         Err(ContextAssertionError::BadSignature)
+    );
+    assert_eq!(
+        verifier.verify_at(&sign_raw_claims(&attacker, "key-a", b"{"), NOW_MS),
+        Err(ContextAssertionError::BadSignature)
+    );
+    assert_eq!(
+        verifier.verify_at(&sign_raw_claims(&trusted, "key-a", b"{"), NOW_MS),
+        Err(ContextAssertionError::MalformedAssertion)
+    );
+}
+
+#[test]
+fn hosted_metadata_keyring_requires_explicit_purpose_and_status() {
+    let key = signing_key(30);
+    let public_key =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes());
+    let missing_status = serde_json::json!({
+        "key-a": {
+            "purpose": "context_assertion",
+            "public_key": public_key
+        }
+    })
+    .to_string();
+    assert_eq!(
+        parse_context_assertion_metadata_keyring(&missing_status),
+        Err(ContextAssertionError::InvalidPolicy)
+    );
+    let complete = serde_json::json!({
+        "key-a": {
+            "purpose": "context_assertion",
+            "publicKey": public_key,
+            "status": "active"
+        }
+    })
+    .to_string();
+    assert!(parse_context_assertion_metadata_keyring(&complete).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn owner_only_text_reader_rejects_permissive_files_and_symlinks() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("aca-keyring.json");
+    std::fs::write(&path, "keyring").expect("keyring");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("permissions");
+    assert_eq!(
+        read_owner_only_regular_text_file(&path),
+        Err(ContextAssertionError::ReplayBackendUnavailable)
+    );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("permissions");
+    assert_eq!(
+        read_owner_only_regular_text_file(&path),
+        Ok("keyring".to_string())
+    );
+    let linked = temp.path().join("aca-keyring-link.json");
+    symlink(&path, &linked).expect("symlink");
+    assert_eq!(
+        read_owner_only_regular_text_file(&linked),
+        Err(ContextAssertionError::ReplayBackendUnavailable)
     );
 }
 
@@ -309,6 +373,63 @@ fn persistent_replay_store_rejects_permissive_files_and_symlinks() {
     ));
 }
 
+#[test]
+fn persistent_replay_database_rejects_structural_quota_overflow() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("quota.sqlite");
+    let store = ContextAssertionReplayStore::persistent(&path).expect("store");
+    for (id, fingerprint) in [("one", 40), ("two", 41)] {
+        store
+            .check_and_record(
+                ContextAssertionReplayMode::OneShot,
+                &replay_record(id, fingerprint, "issuer-a", "aud-a", NOW_MS + 60_000),
+                NOW_MS,
+            )
+            .expect("seed replay row");
+    }
+    let limited = ContextAssertionReplayStore::persistent(&path)
+        .expect("reopen")
+        .with_limits(10, 1);
+    assert_eq!(
+        limited.readiness_check(),
+        Err(ContextAssertionError::ReplayBackendUnavailable)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn running_replay_store_rejects_database_path_replacement() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("replaced.sqlite");
+    let displaced = temp.path().join("displaced.sqlite");
+    let store = ContextAssertionReplayStore::persistent(&path).expect("store");
+    std::fs::rename(&path, &displaced).expect("displace database");
+    std::fs::write(&path, "replacement").expect("replacement");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("permissions");
+    let record = replay_record("replacement", 42, "issuer-a", "aud-a", NOW_MS + 60_000);
+    assert_eq!(
+        store.check_and_record(ContextAssertionReplayMode::OneShot, &record, NOW_MS),
+        Err(ContextAssertionError::ReplayBackendUnavailable)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_empty_replay_database_fails_closed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("empty.sqlite");
+    std::fs::write(&path, "").expect("empty database");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("permissions");
+    assert!(matches!(
+        ContextAssertionReplayStore::persistent(&path),
+        Err(ContextAssertionError::ReplayBackendUnavailable)
+    ));
+}
+
 #[cfg(unix)]
 #[test]
 fn running_replay_store_fails_closed_and_releases_lock_after_state_unlink() {
@@ -340,7 +461,8 @@ fn replay_backend_corruption_and_unavailable_paths_fail_closed_without_plaintext
     store
         .check_and_record(ContextAssertionReplayMode::OneShot, &record, NOW_MS)
         .expect("record");
-    let raw = std::fs::read_to_string(&path).expect("state");
+    let raw = std::fs::read(&path).expect("state");
+    let raw = String::from_utf8_lossy(&raw);
     assert!(!raw.contains("sensitive-assertion-id"));
     assert!(!raw.contains("private-issuer"));
     assert!(!raw.contains("private-audience"));

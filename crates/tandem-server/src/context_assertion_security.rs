@@ -11,11 +11,11 @@ use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use tandem_enterprise_contract::{
-    ContextAssertionError, ContextAssertionPolicy, ContextAssertionReplayMode,
-    ContextAssertionReplayStore, ContextAssertionVerifier, KeyStatus, SigningKeyPurpose,
-    VerifiedTenantContext, VerifierKeyEntry, VerifierKeyring, DEFAULT_CONTEXT_ASSERTION_ISSUER,
-    DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS, DEFAULT_CONTEXT_ASSERTION_MAX_LIFETIME_MS,
-    HARD_CONTEXT_ASSERTION_MAX_LIFETIME_MS,
+    parse_context_assertion_metadata_keyring, ContextAssertionError, ContextAssertionPolicy,
+    ContextAssertionReplayMode, ContextAssertionReplayStore, ContextAssertionVerifier, KeyStatus,
+    SigningKeyPurpose, VerifiedTenantContext, VerifierKeyEntry, VerifierKeyring,
+    DEFAULT_CONTEXT_ASSERTION_ISSUER, DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
+    DEFAULT_CONTEXT_ASSERTION_MAX_LIFETIME_MS, HARD_CONTEXT_ASSERTION_MAX_LIFETIME_MS,
 };
 use tandem_types::RuntimeAuthMode;
 
@@ -258,12 +258,12 @@ fn parse_runtime_keyring(raw: &str, require_metadata: bool) -> Result<VerifierKe
     if trimmed.is_empty() {
         return Err("context assertion keyring is empty".into());
     }
+    if require_metadata {
+        return parse_context_assertion_metadata_keyring(trimmed).map_err(|error| {
+            format!("invalid hosted context assertion metadata keyring: {error}")
+        });
+    }
     if !trimmed.starts_with('{') {
-        if require_metadata {
-            return Err(
-                "hosted/enterprise context assertion keyring must use JSON metadata entries".into(),
-            );
-        }
         return parse_local_delimited_keyring(trimmed);
     }
     let entries = serde_json::from_str::<BTreeMap<String, Value>>(trimmed)

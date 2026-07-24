@@ -4,18 +4,19 @@
 
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier};
-use fs2::FileExt;
-use serde::{Deserialize, Serialize};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::{
     KeyUsageContext, KeyringDenial, ResourceKind, ResourceRef, SigningKeyPurpose,
-    TenantContextAssertionClaims, TenantContextAssertionHeader, TenantSource, VerifierKeyring,
+    TenantContextAssertionClaims, TenantContextAssertionHeader, TenantSource, VerifierKeyEntry,
+    VerifierKeyring,
 };
 
 pub const DEFAULT_CONTEXT_ASSERTION_ISSUER: &str = "tandem-web";
@@ -25,6 +26,10 @@ pub const HARD_CONTEXT_ASSERTION_MAX_LIFETIME_MS: u64 = 60 * 60 * 1_000;
 pub const DEFAULT_CONTEXT_ASSERTION_REPLAY_GRACE_MS: u64 = 60_000;
 pub const DEFAULT_CONTEXT_ASSERTION_REPLAY_MAX_ENTRIES: usize = 100_000;
 pub const DEFAULT_CONTEXT_ASSERTION_REPLAY_MAX_NAMESPACE_ENTRIES: usize = 10_000;
+#[cfg(test)]
+const REPLAY_DATABASE_INITIALIZATION_WAIT: Duration = Duration::from_millis(500);
+#[cfg(not(test))]
+const REPLAY_DATABASE_INITIALIZATION_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextAssertionError {
@@ -114,6 +119,67 @@ impl ContextAssertionPolicy {
     }
 }
 
+pub fn parse_context_assertion_metadata_keyring(
+    raw: &str,
+) -> Result<VerifierKeyring, ContextAssertionError> {
+    let entries = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(raw.trim())
+        .map_err(|_| ContextAssertionError::InvalidPolicy)?;
+    if entries.is_empty() {
+        return Err(ContextAssertionError::KeyNotConfigured);
+    }
+    let mut keyring = VerifierKeyring::new();
+    for (kid, value) in entries {
+        let kid = kid.trim().to_string();
+        if kid.is_empty() {
+            return Err(ContextAssertionError::InvalidPolicy);
+        }
+        let serde_json::Value::Object(mut object) = value else {
+            return Err(ContextAssertionError::InvalidPolicy);
+        };
+        normalize_keyring_alias(&mut object, "publicKey", "public_key");
+        normalize_keyring_alias(&mut object, "organizationId", "organization_id");
+        normalize_keyring_alias(&mut object, "orgId", "organization_id");
+        normalize_keyring_alias(&mut object, "deploymentId", "deployment_id");
+        normalize_keyring_alias(&mut object, "allowedAudiences", "allowed_audiences");
+        normalize_keyring_alias(
+            &mut object,
+            "allowedResourceScopePrefixes",
+            "allowed_resource_scope_prefixes",
+        );
+        normalize_keyring_alias(&mut object, "notBeforeMs", "not_before_ms");
+        normalize_keyring_alias(&mut object, "notAfterMs", "not_after_ms");
+        if !object.contains_key("public_key")
+            || !object.contains_key("purpose")
+            || !object.contains_key("status")
+        {
+            return Err(ContextAssertionError::InvalidPolicy);
+        }
+        let mut entry: VerifierKeyEntry = serde_json::from_value(serde_json::Value::Object(object))
+            .map_err(|_| ContextAssertionError::InvalidPolicy)?;
+        entry.kid = kid;
+        if entry.purpose != SigningKeyPurpose::ContextAssertion {
+            return Err(ContextAssertionError::InvalidPolicy);
+        }
+        entry
+            .verifying_key()
+            .map_err(ContextAssertionError::KeyringDenied)?;
+        keyring.insert(entry);
+    }
+    Ok(keyring)
+}
+
+fn normalize_keyring_alias(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    alias: &str,
+    canonical: &str,
+) {
+    if !object.contains_key(canonical) {
+        if let Some(value) = object.remove(alias) {
+            object.insert(canonical.to_string(), value);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedContextAssertion {
     pub claims: TenantContextAssertionClaims,
@@ -190,9 +256,6 @@ impl ContextAssertionVerifier {
         {
             return Err(ContextAssertionError::MalformedHeader);
         }
-        let claims: TenantContextAssertionClaims = serde_json::from_slice(&claims_bytes)
-            .map_err(|_| ContextAssertionError::MalformedAssertion)?;
-
         let key = self
             .keyring
             .get(&header.kid)
@@ -208,6 +271,8 @@ impl ContextAssertionVerifier {
                 &Signature::from_bytes(&signature_bytes),
             )
             .map_err(|_| ContextAssertionError::BadSignature)?;
+        let claims: TenantContextAssertionClaims = serde_json::from_slice(&claims_bytes)
+            .map_err(|_| ContextAssertionError::MalformedAssertion)?;
         self.validate_claims(&claims, now_ms)?;
         let usage = key_usage_for_claims(&claims);
         key.authorize(SigningKeyPurpose::ContextAssertion, &usage, now_ms)
@@ -427,29 +492,37 @@ impl ContextAssertionReplayMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct ReplayEntry {
     namespace_hash: String,
     fingerprint_hex: String,
     expires_at_ms: u64,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default)]
 struct ReplayState {
-    #[serde(default = "replay_state_version")]
-    version: u32,
-    #[serde(default)]
     entries: BTreeMap<String, ReplayEntry>,
 }
 
-fn replay_state_version() -> u32 {
+fn replay_state_version() -> i64 {
     1
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReplayFileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
 }
 
 #[derive(Debug)]
 enum ReplayBackend {
     Memory(Mutex<ReplayState>),
-    File { state: File, lock: File },
+    Sqlite {
+        path: PathBuf,
+        identity: ReplayFileIdentity,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -463,10 +536,7 @@ pub struct ContextAssertionReplayStore {
 impl ContextAssertionReplayStore {
     pub fn in_memory() -> Self {
         Self {
-            backend: Arc::new(ReplayBackend::Memory(Mutex::new(ReplayState {
-                version: replay_state_version(),
-                entries: BTreeMap::new(),
-            }))),
+            backend: Arc::new(ReplayBackend::Memory(Mutex::new(ReplayState::default()))),
             max_entries: DEFAULT_CONTEXT_ASSERTION_REPLAY_MAX_ENTRIES,
             max_namespace_entries: DEFAULT_CONTEXT_ASSERTION_REPLAY_MAX_NAMESPACE_ENTRIES,
             retention_grace_ms: DEFAULT_CONTEXT_ASSERTION_REPLAY_GRACE_MS,
@@ -474,25 +544,41 @@ impl ContextAssertionReplayStore {
     }
 
     pub fn persistent(path: impl Into<PathBuf>) -> Result<Self, ContextAssertionError> {
-        let state_path = path.into();
-        let parent = state_path
+        let path = path.into();
+        let parent = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .ok_or(ContextAssertionError::ReplayBackendUnavailable)?;
         if !parent.is_dir() {
             return Err(ContextAssertionError::ReplayBackendUnavailable);
         }
-        let state = open_secure_file(&state_path, true)?;
-        let lock_path = PathBuf::from(format!("{}.lock", state_path.display()));
-        let lock = open_secure_file(&lock_path, true)?;
+        let (created, identity) = prepare_replay_database_file(&path)?;
         let store = Self {
-            backend: Arc::new(ReplayBackend::File { state, lock }),
+            backend: Arc::new(ReplayBackend::Sqlite { path, identity }),
             max_entries: DEFAULT_CONTEXT_ASSERTION_REPLAY_MAX_ENTRIES,
             max_namespace_entries: DEFAULT_CONTEXT_ASSERTION_REPLAY_MAX_NAMESPACE_ENTRIES,
             retention_grace_ms: DEFAULT_CONTEXT_ASSERTION_REPLAY_GRACE_MS,
         };
-        store.readiness_check()?;
+        if created {
+            store.initialize_database()?;
+            store.readiness_check()?;
+        } else {
+            store.wait_for_database_readiness()?;
+        }
         Ok(store)
+    }
+
+    fn wait_for_database_readiness(&self) -> Result<(), ContextAssertionError> {
+        let deadline = Instant::now() + REPLAY_DATABASE_INITIALIZATION_WAIT;
+        loop {
+            match self.readiness_check() {
+                Ok(()) => return Ok(()),
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     pub fn with_limits(mut self, max_entries: usize, max_namespace_entries: usize) -> Self {
@@ -502,7 +588,24 @@ impl ContextAssertionReplayStore {
     }
 
     pub fn readiness_check(&self) -> Result<(), ContextAssertionError> {
-        self.with_state(|_| Ok(((), false)))
+        match self.backend.as_ref() {
+            ReplayBackend::Memory(state) => {
+                let _state = state
+                    .lock()
+                    .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
+                Ok(())
+            }
+            ReplayBackend::Sqlite { path, identity } => {
+                let connection = open_replay_database(path, *identity)?;
+                let quick_check: String = connection
+                    .query_row("PRAGMA quick_check", [], |row| row.get(0))
+                    .map_err(replay_database_error)?;
+                if quick_check != "ok" {
+                    return Err(ContextAssertionError::ReplayBackendUnavailable);
+                }
+                validate_replay_database(&connection, self.max_entries, self.max_namespace_entries)
+            }
+        }
     }
 
     pub fn check_and_record(
@@ -518,80 +621,374 @@ impl ContextAssertionReplayStore {
         let replay_key = replay_key(&claims.issuer, &claims.audience, &claims.assertion_id);
         let namespace_hash = replay_namespace_key(&claims.issuer, &claims.audience);
         let fingerprint_hex = hex(&verified.fingerprint);
-        self.with_state(|state| {
-            let entries_before_prune = state.entries.len();
-            state.entries.retain(|_, entry| {
-                entry.expires_at_ms.saturating_add(self.retention_grace_ms) > now_ms
-            });
-            let pruned = state.entries.len() != entries_before_prune;
-            if let Some(entry) = state.entries.get(&replay_key) {
-                return match mode {
-                    ContextAssertionReplayMode::Bound
-                        if entry.fingerprint_hex == fingerprint_hex =>
-                    {
-                        Ok(((), pruned))
-                    }
-                    ContextAssertionReplayMode::Bound | ContextAssertionReplayMode::OneShot => {
-                        Err(ContextAssertionError::Replayed)
-                    }
-                    ContextAssertionReplayMode::Off => Ok(((), pruned)),
-                };
-            }
-            let namespace_count = state
-                .entries
-                .values()
-                .filter(|entry| entry.namespace_hash == namespace_hash)
-                .count();
-            if state.entries.len() >= self.max_entries
-                || namespace_count >= self.max_namespace_entries
-            {
-                return Err(ContextAssertionError::ReplayCapacityExceeded);
-            }
-            state.entries.insert(
-                replay_key,
-                ReplayEntry {
-                    namespace_hash,
-                    fingerprint_hex,
-                    expires_at_ms: claims.expires_at_ms,
-                },
-            );
-            Ok(((), true))
-        })
-    }
-
-    fn with_state<T>(
-        &self,
-        operation: impl FnOnce(&mut ReplayState) -> Result<(T, bool), ContextAssertionError>,
-    ) -> Result<T, ContextAssertionError> {
         match self.backend.as_ref() {
             ReplayBackend::Memory(state) => {
                 let mut state = state
                     .lock()
                     .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
-                operation(&mut state).map(|(value, _)| value)
+                check_memory_replay(
+                    &mut state,
+                    mode,
+                    replay_key,
+                    namespace_hash,
+                    fingerprint_hex,
+                    claims.expires_at_ms,
+                    now_ms,
+                    self.retention_grace_ms,
+                    self.max_entries,
+                    self.max_namespace_entries,
+                )
             }
-            ReplayBackend::File { state, lock } => {
-                lock.lock_exclusive()
-                    .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
-                let result = (|| {
-                    ensure_replay_file_linked(state)?;
-                    let mut replay_state = read_replay_state(state)?;
-                    let result = operation(&mut replay_state);
-                    if let Ok((_, true)) = &result {
-                        write_replay_state(state, &replay_state)?;
-                    }
-                    result
-                })();
-                let unlock = FileExt::unlock(lock)
-                    .map_err(|_| ContextAssertionError::ReplayBackendUnavailable);
-                match (result, unlock) {
-                    (Err(error), _) => Err(error),
-                    (Ok(_), Err(error)) => Err(error),
-                    (Ok((value, _)), Ok(())) => Ok(value),
-                }
-            }
+            ReplayBackend::Sqlite { path, identity } => self.check_sqlite_replay(
+                path,
+                *identity,
+                mode,
+                &replay_key,
+                &namespace_hash,
+                &fingerprint_hex,
+                claims.expires_at_ms,
+                now_ms,
+            ),
         }
     }
+
+    fn initialize_database(&self) -> Result<(), ContextAssertionError> {
+        let ReplayBackend::Sqlite { path, identity } = self.backend.as_ref() else {
+            return Ok(());
+        };
+        let mut connection = open_replay_database(path, *identity)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(replay_database_error)?;
+        transaction
+            .execute_batch(
+                "CREATE TABLE replay_metadata (\n                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n                    version INTEGER NOT NULL\n                 );\n                 CREATE TABLE replay_entries (\n                    replay_key TEXT PRIMARY KEY CHECK (length(replay_key) = 64),\n                    namespace_hash TEXT NOT NULL CHECK (length(namespace_hash) = 64),\n                    fingerprint_hex TEXT NOT NULL CHECK (length(fingerprint_hex) = 64),\n                    expires_at_ms INTEGER NOT NULL CHECK (expires_at_ms >= 0)\n                 );\n                 CREATE INDEX replay_entries_namespace_idx\n                    ON replay_entries(namespace_hash);",
+            )
+            .map_err(replay_database_error)?;
+        transaction
+            .execute(
+                "INSERT INTO replay_metadata(singleton, version) VALUES (1, ?1)",
+                [replay_state_version()],
+            )
+            .map_err(replay_database_error)?;
+        transaction.commit().map_err(replay_database_error)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_sqlite_replay(
+        &self,
+        path: &Path,
+        identity: ReplayFileIdentity,
+        mode: ContextAssertionReplayMode,
+        replay_key: &str,
+        namespace_hash: &str,
+        fingerprint_hex: &str,
+        expires_at_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), ContextAssertionError> {
+        let expires_at_ms = i64::try_from(expires_at_ms)
+            .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
+        let cleanup_cutoff =
+            i64::try_from(now_ms.saturating_sub(self.retention_grace_ms)).unwrap_or(i64::MAX);
+        let mut connection = open_replay_database(path, identity)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(replay_database_error)?;
+        validate_replay_database(&transaction, self.max_entries, self.max_namespace_entries)?;
+        transaction
+            .execute(
+                "DELETE FROM replay_entries WHERE expires_at_ms <= ?1",
+                [cleanup_cutoff],
+            )
+            .map_err(replay_database_error)?;
+        let existing = transaction
+            .query_row(
+                "SELECT fingerprint_hex FROM replay_entries WHERE replay_key = ?1",
+                [replay_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(replay_database_error)?;
+        if let Some(existing_fingerprint) = existing {
+            return match mode {
+                ContextAssertionReplayMode::Bound if existing_fingerprint == fingerprint_hex => {
+                    transaction.commit().map_err(replay_database_error)
+                }
+                ContextAssertionReplayMode::Bound | ContextAssertionReplayMode::OneShot => {
+                    Err(ContextAssertionError::Replayed)
+                }
+                ContextAssertionReplayMode::Off => {
+                    transaction.commit().map_err(replay_database_error)
+                }
+            };
+        }
+        let total: i64 = transaction
+            .query_row("SELECT COUNT(*) FROM replay_entries", [], |row| row.get(0))
+            .map_err(replay_database_error)?;
+        let namespace_total: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM replay_entries WHERE namespace_hash = ?1",
+                [namespace_hash],
+                |row| row.get(0),
+            )
+            .map_err(replay_database_error)?;
+        if total >= usize_to_i64(self.max_entries)
+            || namespace_total >= usize_to_i64(self.max_namespace_entries)
+        {
+            return Err(ContextAssertionError::ReplayCapacityExceeded);
+        }
+        transaction
+            .execute(
+                "INSERT INTO replay_entries(\n                    replay_key, namespace_hash, fingerprint_hex, expires_at_ms\n                 ) VALUES (?1, ?2, ?3, ?4)",
+                params![replay_key, namespace_hash, fingerprint_hex, expires_at_ms],
+            )
+            .map_err(replay_database_error)?;
+        transaction.commit().map_err(replay_database_error)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_memory_replay(
+    state: &mut ReplayState,
+    mode: ContextAssertionReplayMode,
+    replay_key: String,
+    namespace_hash: String,
+    fingerprint_hex: String,
+    expires_at_ms: u64,
+    now_ms: u64,
+    retention_grace_ms: u64,
+    max_entries: usize,
+    max_namespace_entries: usize,
+) -> Result<(), ContextAssertionError> {
+    state
+        .entries
+        .retain(|_, entry| entry.expires_at_ms.saturating_add(retention_grace_ms) > now_ms);
+    if let Some(entry) = state.entries.get(&replay_key) {
+        return match mode {
+            ContextAssertionReplayMode::Bound if entry.fingerprint_hex == fingerprint_hex => Ok(()),
+            ContextAssertionReplayMode::Bound | ContextAssertionReplayMode::OneShot => {
+                Err(ContextAssertionError::Replayed)
+            }
+            ContextAssertionReplayMode::Off => Ok(()),
+        };
+    }
+    let namespace_count = state
+        .entries
+        .values()
+        .filter(|entry| entry.namespace_hash == namespace_hash)
+        .count();
+    if state.entries.len() >= max_entries || namespace_count >= max_namespace_entries {
+        return Err(ContextAssertionError::ReplayCapacityExceeded);
+    }
+    state.entries.insert(
+        replay_key,
+        ReplayEntry {
+            namespace_hash,
+            fingerprint_hex,
+            expires_at_ms,
+        },
+    );
+    Ok(())
+}
+
+fn prepare_replay_database_file(
+    path: &Path,
+) -> Result<(bool, ReplayFileIdentity), ContextAssertionError> {
+    match secure_create_new_file(path) {
+        Ok(file) => {
+            drop(file);
+            Ok((true, replay_file_identity(path)?))
+        }
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            wait_for_initialized_replay_file(path)?;
+            Ok((false, replay_file_identity(path)?))
+        }
+        Err(_) => Err(ContextAssertionError::ReplayBackendUnavailable),
+    }
+}
+
+fn secure_create_new_file(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    options.open(path)
+}
+
+fn wait_for_initialized_replay_file(path: &Path) -> Result<(), ContextAssertionError> {
+    let deadline = Instant::now() + REPLAY_DATABASE_INITIALIZATION_WAIT;
+    loop {
+        let file = secure_open_existing_file(path)?;
+        if file
+            .metadata()
+            .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?
+            .len()
+            > 0
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(ContextAssertionError::ReplayBackendUnavailable);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn secure_open_existing_file(path: &Path) -> Result<File, ContextAssertionError> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
+    validate_secure_file(&file)?;
+    Ok(file)
+}
+
+pub(crate) fn read_owner_only_regular_text_file(
+    path: &Path,
+) -> Result<String, ContextAssertionError> {
+    let mut file = secure_open_existing_file(path)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
+    let contents = contents.trim().to_string();
+    if contents.is_empty() {
+        return Err(ContextAssertionError::ReplayBackendUnavailable);
+    }
+    Ok(contents)
+}
+
+fn validate_secure_file(file: &File) -> Result<(), ContextAssertionError> {
+    let metadata = file
+        .metadata()
+        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
+    if !metadata.file_type().is_file() {
+        return Err(ContextAssertionError::ReplayBackendUnavailable);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let mode = metadata.permissions().mode() & 0o777;
+        if metadata.uid() != rustix::process::geteuid().as_raw() || mode & 0o077 != 0 {
+            return Err(ContextAssertionError::ReplayBackendUnavailable);
+        }
+    }
+    Ok(())
+}
+
+fn replay_file_identity(path: &Path) -> Result<ReplayFileIdentity, ContextAssertionError> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(ContextAssertionError::ReplayBackendUnavailable);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let mode = metadata.permissions().mode() & 0o777;
+        if metadata.uid() != rustix::process::geteuid().as_raw() || mode & 0o077 != 0 {
+            return Err(ContextAssertionError::ReplayBackendUnavailable);
+        }
+        Ok(ReplayFileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    Ok(ReplayFileIdentity {})
+}
+
+fn validate_replay_file_identity(
+    path: &Path,
+    expected: ReplayFileIdentity,
+) -> Result<(), ContextAssertionError> {
+    if replay_file_identity(path)? == expected {
+        Ok(())
+    } else {
+        Err(ContextAssertionError::ReplayBackendUnavailable)
+    }
+}
+
+fn open_replay_database(
+    path: &Path,
+    identity: ReplayFileIdentity,
+) -> Result<Connection, ContextAssertionError> {
+    validate_replay_file_identity(path, identity)?;
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let connection = Connection::open_with_flags(path, flags).map_err(replay_database_error)?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(replay_database_error)?;
+    connection
+        .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")
+        .map_err(replay_database_error)?;
+    validate_replay_file_identity(path, identity)?;
+    Ok(connection)
+}
+
+fn validate_replay_database(
+    connection: &Connection,
+    max_entries: usize,
+    max_namespace_entries: usize,
+) -> Result<(), ContextAssertionError> {
+    let version: i64 = connection
+        .query_row(
+            "SELECT version FROM replay_metadata WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(replay_database_error)?;
+    if version != replay_state_version() {
+        return Err(ContextAssertionError::ReplayBackendUnavailable);
+    }
+    let metadata_rows: i64 = connection
+        .query_row("SELECT COUNT(*) FROM replay_metadata", [], |row| row.get(0))
+        .map_err(replay_database_error)?;
+    let invalid_entries: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM replay_entries\n             WHERE length(replay_key) != 64\n                OR length(namespace_hash) != 64\n                OR length(fingerprint_hex) != 64\n                OR expires_at_ms < 0",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(replay_database_error)?;
+    let total: i64 = connection
+        .query_row("SELECT COUNT(*) FROM replay_entries", [], |row| row.get(0))
+        .map_err(replay_database_error)?;
+    let max_namespace_total: i64 = connection
+        .query_row(
+            "SELECT COALESCE(MAX(namespace_total), 0)\n             FROM (\n                SELECT COUNT(*) AS namespace_total\n                FROM replay_entries\n                GROUP BY namespace_hash\n             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(replay_database_error)?;
+    if metadata_rows != 1
+        || invalid_entries != 0
+        || total > usize_to_i64(max_entries)
+        || max_namespace_total > usize_to_i64(max_namespace_entries)
+    {
+        return Err(ContextAssertionError::ReplayBackendUnavailable);
+    }
+    Ok(())
+}
+
+fn usize_to_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn replay_database_error(_: rusqlite::Error) -> ContextAssertionError {
+    ContextAssertionError::ReplayBackendUnavailable
 }
 
 fn replay_key(issuer: &str, audience: &str, assertion_id: &str) -> String {
@@ -620,89 +1017,6 @@ fn hex(bytes: &[u8; 32]) -> String {
         output.push(DIGITS[(byte & 0x0f) as usize] as char);
     }
     output
-}
-
-fn ensure_replay_file_linked(file: &File) -> Result<(), ContextAssertionError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if file
-            .metadata()
-            .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?
-            .nlink()
-            == 0
-        {
-            return Err(ContextAssertionError::ReplayBackendUnavailable);
-        }
-    }
-    Ok(())
-}
-
-fn read_replay_state(file: &File) -> Result<ReplayState, ContextAssertionError> {
-    let mut file = file;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
-    let mut raw = String::new();
-    file.read_to_string(&mut raw)
-        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
-    if raw.trim().is_empty() {
-        return Ok(ReplayState {
-            version: replay_state_version(),
-            entries: BTreeMap::new(),
-        });
-    }
-    let state: ReplayState =
-        serde_json::from_str(&raw).map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
-    if state.version != replay_state_version() {
-        return Err(ContextAssertionError::ReplayBackendUnavailable);
-    }
-    Ok(state)
-}
-
-fn write_replay_state(file: &File, state: &ReplayState) -> Result<(), ContextAssertionError> {
-    let encoded =
-        serde_json::to_vec(state).map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
-    let mut file = file;
-    file.set_len(0)
-        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
-    file.write_all(&encoded)
-        .and_then(|_| file.sync_all())
-        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)
-}
-
-fn open_secure_file(path: &Path, create: bool) -> Result<File, ContextAssertionError> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true);
-    if create {
-        options.create(true);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options
-            .mode(0o600)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
-    }
-    let file = options
-        .open(path)
-        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| ContextAssertionError::ReplayBackendUnavailable)?;
-    if !metadata.file_type().is_file() {
-        return Err(ContextAssertionError::ReplayBackendUnavailable);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let mode = metadata.permissions().mode() & 0o777;
-        if metadata.uid() != rustix::process::geteuid().as_raw() || mode & 0o077 != 0 {
-            return Err(ContextAssertionError::ReplayBackendUnavailable);
-        }
-    }
-    Ok(file)
 }
 
 #[cfg(test)]
