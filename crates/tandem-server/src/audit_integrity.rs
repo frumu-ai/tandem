@@ -24,6 +24,8 @@ const ANCHOR_VERSION: u32 = 1;
 #[cfg(test)]
 tokio::task_local! {
     static TEST_ANCHOR_DIR: PathBuf;
+    static TEST_KEYRING: Option<AuditIntegrityKeyring>;
+    static TEST_STATE_ROOT: Option<PathBuf>;
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -206,12 +208,19 @@ pub(crate) fn validate_configuration() -> anyhow::Result<()> {
             anchor_dir.is_absolute(),
             "TANDEM_AUDIT_ANCHOR_DIR must be an absolute path"
         );
-        prepare_anchor_dir(&anchor_dir)?;
+        let canonical_anchor = prepare_anchor_dir(&anchor_dir)?;
+        if let Some(state_root) = canonical_configured_state_root()? {
+            ensure_anchor_outside_state_roots(&canonical_anchor, &[state_root])?;
+        }
     }
     Ok(())
 }
 
 fn load_keyring(production: bool) -> anyhow::Result<Option<AuditIntegrityKeyring>> {
+    #[cfg(test)]
+    if let Ok(keyring) = TEST_KEYRING.try_with(Clone::clone) {
+        return Ok(keyring);
+    }
     let keyring_path = configured_path(KEYRING_FILE_ENV);
     let direct = std::env::var(KEY_ENV)
         .ok()
@@ -819,6 +828,10 @@ fn validate_windows_anchor_directory(path: &Path) -> anyhow::Result<()> {
 }
 
 fn canonical_configured_state_root() -> anyhow::Result<Option<PathBuf>> {
+    #[cfg(test)]
+    if let Ok(root) = TEST_STATE_ROOT.try_with(Clone::clone) {
+        return Ok(root);
+    }
     if let Some(root) = configured_path("TANDEM_STATE_DIR") {
         anyhow::ensure!(root.is_absolute(), "TANDEM_STATE_DIR must be absolute");
         return std::fs::canonicalize(&root)
@@ -991,6 +1004,22 @@ where
     F: std::future::Future<Output = T>,
 {
     TEST_ANCHOR_DIR.scope(anchor_dir, future).await
+}
+
+#[cfg(test)]
+pub(crate) async fn with_test_keyring<F, T>(keyring: Option<AuditIntegrityKeyring>, future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    TEST_KEYRING.scope(keyring, future).await
+}
+
+#[cfg(test)]
+async fn with_test_state_root<F, T>(state_root: Option<PathBuf>, future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    TEST_STATE_ROOT.scope(state_root, future).await
 }
 
 #[cfg(test)]
@@ -1275,6 +1304,28 @@ mod tests {
             &[state_root],
         )
         .is_ok());
+    }
+
+    #[tokio::test]
+    async fn startup_rejects_anchor_nested_under_configured_state_root() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let state_root = root.path().join("state");
+        std::fs::create_dir(&state_root).expect("state directory");
+        let anchor_dir = state_root.join("anchors");
+        let authority = test_keyring("active", "startup-audit-integrity-secret-32-bytes", &[]);
+
+        with_test_keyring(
+            Some(authority),
+            with_test_anchor_dir(
+                anchor_dir,
+                with_test_state_root(Some(state_root), async {
+                    let error = validate_configuration()
+                        .expect_err("nested external anchor must fail startup validation");
+                    assert!(error.to_string().contains("outside"));
+                }),
+            ),
+        )
+        .await;
     }
 
     #[cfg(unix)]

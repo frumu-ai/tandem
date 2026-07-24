@@ -20,6 +20,9 @@ use super::{
     AUTHENTICATED_STORE_VERSION, SCOPED_COLLECTION_PREFIX,
 };
 
+mod migration;
+use migration::encrypt_legacy_local_line;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScopedEncryptedCollection {
     version: u32,
@@ -1027,26 +1030,6 @@ async fn restore_failed_collection_write(
     rollback
 }
 
-fn encrypt_legacy_local_line(
-    crypto: &ProtectedFileCrypto,
-    plaintext: &str,
-    context: &ProtectedRecordContext,
-) -> anyhow::Result<String> {
-    anyhow::ensure!(
-        !crypto.provider.is_plaintext() && !crypto.provider.is_hosted(),
-        "legacy local line encryption requires a local-key provider"
-    );
-    Ok(crypto
-        .provider
-        .encrypt_field_scoped(
-            plaintext,
-            &context.key_scope,
-            &context.policy_decision_id,
-            &context.audit_id,
-        )?
-        .0)
-}
-
 async fn decrypt_jsonl_state(
     crypto: &ProtectedFileCrypto,
     path: &Path,
@@ -1275,7 +1258,20 @@ pub(crate) async fn append_jsonl_record_file(
         }
         Err(error) => return Err(error.into()),
     };
+    let authority = crate::audit_integrity::integrity_authority()?;
     if !prior.authenticated && prior.generation == 0 && !prior.lines.is_empty() {
+        if let Some(authority) = authority.as_ref() {
+            return migration::migrate_legacy_jsonl_and_append(
+                &crypto,
+                path,
+                &prior.lines,
+                plaintext,
+                context,
+                store,
+                authority,
+            )
+            .await;
+        }
         let stored = encrypt_legacy_local_line(&crypto, plaintext, context)?;
         return append_jsonl_without_integrity(
             path,
@@ -1295,7 +1291,6 @@ pub(crate) async fn append_jsonl_record_file(
         digest: prior.digest.clone(),
         integrity_key_id: prior.integrity_key_id.clone(),
     });
-    let authority = crate::audit_integrity::integrity_authority()?;
     let mut frame = AuthenticatedJsonlFrame {
         version: AUTHENTICATED_STORE_VERSION,
         store_id: store.store_id.clone(),
@@ -1537,7 +1532,7 @@ mod tests {
         ProtectedStoreContext,
     };
 
-    fn record_context(record_id: &str) -> ProtectedRecordContext {
+    pub(super) fn record_context(record_id: &str) -> ProtectedRecordContext {
         let tenant = MemoryTenantScope {
             org_id: "fault-test-org".to_string(),
             workspace_id: "fault-test-workspace".to_string(),
@@ -1552,7 +1547,7 @@ mod tests {
         ProtectedRecordContext::new(scope, "fault-test-policy", record_id)
     }
 
-    fn store_context(store_id: &str) -> ProtectedStoreContext {
+    pub(super) fn store_context(store_id: &str) -> ProtectedStoreContext {
         ProtectedStoreContext::new(
             store_id,
             record_context(&format!("{store_id}-manifest")),
