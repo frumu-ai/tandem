@@ -5,13 +5,13 @@ use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::automation_v2::types::{
-    normalize_automation_webhook_provider, AutomationWebhookSignatureScheme,
-    AutomationWebhookTriggerRecord,
+    normalize_automation_webhook_provider, AutomationWebhookNotionVerificationStatus,
+    AutomationWebhookSignatureScheme, AutomationWebhookTriggerRecord,
 };
 
 use super::{
-    automation_webhook_body_digest, secret_material_key, tenant_context_matches, AppState,
-    VerifiedAutomationWebhookRequest,
+    automation_webhook_body_digest, secret_digest, secret_material_key, tenant_context_matches,
+    AppState, VerifiedAutomationWebhookRequest,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -33,8 +33,8 @@ pub(crate) enum AutomationWebhookVerificationError {
     StaleTimestamp,
     BadSignature,
     MissingSecretMaterial,
-    /// The trigger's scheme verifies against a provider-owned secret (Linear's
-    /// signing secret) that the operator has not imported yet — fail closed.
+    /// The trigger's scheme verifies against provider-owned secret material
+    /// that has not reached its committed lifecycle state — fail closed.
     ProviderSecretNotImported,
     ReplayDetected,
     UnsignedDevModeDisabled,
@@ -112,6 +112,22 @@ impl AppState {
         {
             return Err(AutomationWebhookVerificationError::ProviderSecretNotImported);
         }
+        if matches!(
+            trigger.signature_scheme,
+            AutomationWebhookSignatureScheme::NotionHmacSha256
+        ) && !trigger
+            .notion_verification
+            .as_ref()
+            .is_some_and(|verification| {
+                matches!(
+                    verification.status,
+                    AutomationWebhookNotionVerificationStatus::TokenReceived
+                        | AutomationWebhookNotionVerificationStatus::Active
+                )
+            })
+        {
+            return Err(AutomationWebhookVerificationError::ProviderSecretNotImported);
+        }
         let material = self
             .automation_webhook_secret_material
             .read()
@@ -122,6 +138,14 @@ impl AppState {
         if !tenant_context_matches(&material.tenant_context, &trigger.tenant_context)
             || material.trigger_id != trigger.trigger_id
         {
+            return Err(AutomationWebhookVerificationError::MissingSecretMaterial);
+        }
+        let committed_digest = secret_digest(
+            &material.secret,
+            &trigger.tenant_context,
+            &trigger.trigger_id,
+        );
+        if !crate::constant_time_str_eq(&committed_digest, &trigger.secret.secret_digest) {
             return Err(AutomationWebhookVerificationError::MissingSecretMaterial);
         }
 

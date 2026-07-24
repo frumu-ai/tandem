@@ -181,6 +181,7 @@ async fn drain_webhook_inbox(state: &AppState) {
     assert_eq!(report.failed, 0);
 }
 
+#[tokio::test]
 async fn public_automation_webhook_accepts_signed_request_without_transport_auth() {
     let state = test_state().await;
     state.set_api_token(Some("tk_test".to_string())).await;

@@ -339,3 +339,63 @@ async fn notion_setup_nonce_is_consumed_once_under_concurrency() {
     assert!(verification.setup_challenge_digest.is_none());
     assert!(verification.setup_challenge_consumed_at_ms.is_some());
 }
+
+#[tokio::test]
+async fn notion_verifier_rejects_uncommitted_or_lifecycle_inconsistent_material() {
+    let state = test_state().await;
+    let tenant_context = tenant("org-notion-rollback", "workspace-notion-rollback");
+    let created = setup_notion_webhook(&state, "automation-notion-rollback", &tenant_context).await;
+    let uncommitted_token = "notion_uncommitted_rollback_token";
+    let material_key = crate::app::state::secret_material_key(&created.trigger.secret.secret_ref);
+    state
+        .automation_webhook_secret_material
+        .write()
+        .await
+        .get_mut(&material_key)
+        .expect("Notion secret material")
+        .secret = uncommitted_token.to_string();
+
+    let body = br#"{"type":"page.created"}"#;
+    let signature = notion_automation_webhook_signature_header(uncommitted_token, body);
+    let headers = crate::app::state::AutomationWebhookSignatureHeaders::default()
+        .with_notion_signature(Some(&signature));
+    let awaiting_error = state
+        .verify_automation_webhook_request_with_headers(
+            &created.trigger.public_path_token,
+            headers.clone(),
+            body,
+            Some("notion-rollback-awaiting".to_string()),
+            crate::now_ms(),
+            300_000,
+        )
+        .await
+        .expect_err("awaiting lifecycle must reject signed events");
+    assert_eq!(
+        awaiting_error,
+        crate::app::state::AutomationWebhookVerificationError::ProviderSecretNotImported
+    );
+
+    state
+        .automation_webhook_triggers
+        .write()
+        .await
+        .get_mut(&created.trigger.trigger_id)
+        .and_then(|trigger| trigger.notion_verification.as_mut())
+        .expect("Notion verification state")
+        .status = AutomationWebhookNotionVerificationStatus::TokenReceived;
+    let digest_error = state
+        .verify_automation_webhook_request_with_headers(
+            &created.trigger.public_path_token,
+            headers,
+            body,
+            Some("notion-rollback-digest".to_string()),
+            crate::now_ms(),
+            300_000,
+        )
+        .await
+        .expect_err("uncommitted material digest must reject signed events");
+    assert_eq!(
+        digest_error,
+        crate::app::state::AutomationWebhookVerificationError::MissingSecretMaterial
+    );
+}

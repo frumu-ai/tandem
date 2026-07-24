@@ -79,7 +79,7 @@ impl WebhookRateLimiter {
         );
         let network_retry = check_window(
             &mut windows,
-            format!("net:{capability}:{network}"),
+            format!("net:{network}"),
             self.limits.network,
             now_ms,
             self.window_ms,
@@ -212,10 +212,17 @@ mod tests {
             limiter.check("whpub-a", peer, 2),
             RateDecision::Limited { .. }
         ));
+        assert!(
+            matches!(
+                limiter.check("whpub-b", peer, 2),
+                RateDecision::Limited { .. }
+            ),
+            "token rotation must not reset the source-network bucket"
+        );
         assert_eq!(
-            limiter.check("whpub-b", peer, 2),
+            limiter.check("whpub-b", Some("198.51.100.4:443".parse().unwrap()), 2,),
             RateDecision::Allowed,
-            "a distinct capability has an independent network bucket"
+            "a distinct coarse network has an independent bucket"
         );
     }
 

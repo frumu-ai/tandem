@@ -184,9 +184,9 @@ async fn claim_authorized_discord_interaction(
             tracing::warn!(
                 target: "tandem_server::discord_interactions",
                 interaction_id,
-                "rejecting duplicate Discord interaction"
+                "acknowledging duplicate Discord interaction without redispatch"
             );
-            Err(reject_conflict("duplicate interaction"))
+            Err(duplicate_discord_acknowledgement())
         }
         Ok(DiscordReplayClaimDecision::Conflict) => {
             tracing::warn!(
@@ -207,6 +207,18 @@ async fn claim_authorized_discord_interaction(
             Err(reject_service_unavailable())
         }
     }
+}
+
+fn duplicate_discord_acknowledgement() -> Response {
+    Json(json!({
+        "type": 7,
+        "data": {
+            "content": "Already processed — refresh to see the latest state.",
+            "embeds": [],
+            "components": [],
+        }
+    }))
+    .into_response()
 }
 
 async fn handle_message_component(
