@@ -813,7 +813,10 @@ fn compare_numeric_fallback(left: &str, right: &str) -> Ordering {
 }
 
 fn normalize_version_label(version: &str) -> &str {
-    version.trim_start_matches(['v', 'V'])
+    version
+        .strip_prefix("engine-v")
+        .or_else(|| version.strip_prefix("engine-V"))
+        .unwrap_or_else(|| version.trim_start_matches(['v', 'V']))
 }
 
 fn get_release_cache_path(app: &AppHandle) -> Option<PathBuf> {
@@ -1101,6 +1104,16 @@ mod tests {
     fn version_comparison_treats_v_prefix_as_equal() {
         assert!(!is_version_newer("v1.1.58", "1.1.58"));
         assert_eq!(compare_versions("v1.1.58", "1.1.58"), Ordering::Equal);
+    }
+
+    #[test]
+    fn version_comparison_treats_engine_tag_prefix_as_equal() {
+        assert!(!is_version_newer("engine-v1.1.58", "1.1.58"));
+        assert_eq!(
+            compare_versions("engine-v1.1.58", "v1.1.58"),
+            Ordering::Equal
+        );
+        assert!(is_version_newer("engine-v1.1.59", "1.1.58"));
     }
 
     #[test]

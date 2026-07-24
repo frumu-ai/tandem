@@ -228,6 +228,25 @@ pub fn verify_artifact_manifest_with_keys(
         .map_err(|_| ArtifactIntegrityError::InvalidSignatureEncoding)?;
 
     let mut invalid_trust_key = false;
+    // Revocation wins when the same underlying public key appears in more than
+    // one trust record. Check revoked material before accepting any active
+    // record so a stale duplicate cannot bypass an emergency revocation.
+    for key in trusted_keys
+        .iter()
+        .filter(|key| key.status == ArtifactTrustKeyStatus::Revoked)
+    {
+        let public_key = match PublicKey::from_base64(key.public_key_base64) {
+            Ok(key) => key,
+            Err(_) => {
+                invalid_trust_key = true;
+                continue;
+            }
+        };
+        if public_key.verify(manifest_bytes, &signature, false).is_ok() {
+            return Err(ArtifactIntegrityError::RevokedSigningKey);
+        }
+    }
+
     for key in trusted_keys
         .iter()
         .filter(|key| key.status == ArtifactTrustKeyStatus::Active)
@@ -245,22 +264,6 @@ pub fn verify_artifact_manifest_with_keys(
                 manifest,
                 signing_key_id: key.key_id.to_string(),
             });
-        }
-    }
-
-    for key in trusted_keys
-        .iter()
-        .filter(|key| key.status == ArtifactTrustKeyStatus::Revoked)
-    {
-        let public_key = match PublicKey::from_base64(key.public_key_base64) {
-            Ok(key) => key,
-            Err(_) => {
-                invalid_trust_key = true;
-                continue;
-            }
-        };
-        if public_key.verify(manifest_bytes, &signature, false).is_ok() {
-            return Err(ArtifactIntegrityError::RevokedSigningKey);
         }
     }
 
@@ -659,6 +662,30 @@ mod tests {
     fn rejects_signature_from_revoked_key() {
         assert_eq!(
             verify_test_manifest(&manifest(), ArtifactTrustKeyStatus::Revoked).unwrap_err(),
+            ArtifactIntegrityError::RevokedSigningKey
+        );
+    }
+
+    #[test]
+    fn revoked_key_takes_precedence_over_duplicate_active_record() {
+        let manifest = manifest();
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let (public_key, signature) = test_signature(&bytes, 7);
+        let keys = [
+            ArtifactTrustKey {
+                key_id: "active-copy",
+                public_key_base64: &public_key,
+                status: ArtifactTrustKeyStatus::Active,
+            },
+            ArtifactTrustKey {
+                key_id: "revoked-copy",
+                public_key_base64: &public_key,
+                status: ArtifactTrustKeyStatus::Revoked,
+            },
+        ];
+        assert_eq!(
+            verify_artifact_manifest_with_keys(&bytes, signature.as_bytes(), expectation(), &keys,)
+                .unwrap_err(),
             ArtifactIntegrityError::RevokedSigningKey
         );
     }

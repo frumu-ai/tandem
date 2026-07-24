@@ -158,6 +158,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
+          draft: true
           files: |
             ${{ matrix.artifact }}.zip
             tandem-tui-*.zip
@@ -168,6 +169,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
+          draft: true
           files: |
             ${{ matrix.artifact }}.tar.gz
             tandem-tui-*.tar.gz
@@ -178,6 +180,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
+          draft: true
           files: ${{ matrix.enterprise_artifact }}.tar.gz
 
   sign-runtime-manifest:
@@ -219,7 +222,8 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          VERSION="${RELEASE_TAG#v}"
+          VERSION="${RELEASE_TAG#engine-v}"
+          VERSION="${VERSION#v}"
           SOURCE_COMMIT="$(git rev-parse HEAD)"
           GENERATED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           node scripts/generate-artifact-manifest.mjs \
@@ -290,3 +294,20 @@ jobs:
             release-artifacts/tandem-artifacts-v1.json \
             release-artifacts/tandem-artifacts-v1.json.minisig \
             release-artifacts/*.sbom.spdx.json
+
+  publish-release:
+    name: Publish Signed Engine Release
+    needs: sign-runtime-manifest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - name: Publish signed engine release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_TAG" --draft=false

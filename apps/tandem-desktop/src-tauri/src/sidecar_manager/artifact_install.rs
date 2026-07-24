@@ -105,9 +105,7 @@ where
     F: Fn(u64, u64),
 {
     let expected_release = release.tag_name.as_str();
-    let expected_version = expected_release
-        .strip_prefix(['v', 'V'])
-        .unwrap_or(expected_release);
+    let expected_version = super::normalize_version_label(expected_release);
     let manifest_asset = exact_release_asset(release, ARTIFACT_MANIFEST_FILENAME)?;
     let signature_asset = exact_release_asset(release, ARTIFACT_MANIFEST_SIGNATURE_FILENAME)?;
     let manifest_bytes =
@@ -447,7 +445,16 @@ pub(super) fn activate_verified_engine(
                 return Err(sidecar_error("artifact_install_target_rejected"));
             }
             rename_with_retry(install_path, &backup, "artifact_install_backup_failed")?;
-            sync_parent(parent)?;
+            if let Err(sync_error) = sync_parent(parent) {
+                rename_with_retry(&backup, install_path, "artifact_install_rollback_failed")?;
+                if let Err(rollback_sync_error) = sync_parent(parent) {
+                    tracing::warn!(
+                        error = ?rollback_sync_error,
+                        "Runtime artifact backup rollback directory sync failed"
+                    );
+                }
+                return Err(sync_error);
+            }
             true
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
@@ -472,12 +479,26 @@ pub(super) fn activate_verified_engine(
         .as_deref()
         .is_ok_and(|reported| version_matches(reported, &prepared.expected_version))
     {
-        std::fs::remove_file(install_path)
-            .map_err(|_| sidecar_error("artifact_install_rejected_remove_failed"))?;
-        if had_existing {
-            rename_with_retry(&backup, install_path, "artifact_install_rollback_failed")?;
+        let cleanup_error = std::fs::remove_file(install_path).err();
+        let rollback_error = had_existing
+            .then(|| rename_with_retry(&backup, install_path, "artifact_install_rollback_failed"))
+            .and_then(Result::err);
+        let sync_error = sync_parent(parent).err();
+        if let Some(cleanup_error) = cleanup_error {
+            tracing::warn!(
+                error = ?cleanup_error,
+                rollback_error = ?rollback_error,
+                sync_error = ?sync_error,
+                "Rejected runtime artifact cleanup failed after rollback was attempted"
+            );
+            return Err(sidecar_error("artifact_install_rejected_remove_failed"));
         }
-        sync_parent(parent)?;
+        if let Some(rollback_error) = rollback_error {
+            return Err(rollback_error);
+        }
+        if let Some(sync_error) = sync_error {
+            return Err(sync_error);
+        }
         return Err(sidecar_error("artifact_install_version_probe_failed"));
     }
 

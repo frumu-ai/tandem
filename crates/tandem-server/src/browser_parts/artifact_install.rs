@@ -489,7 +489,20 @@ fn activate_browser_binary(
                 &backup,
                 "browser_install_backup_failed",
             )?;
-            sync_browser_install_parent(parent)?;
+            if let Err(sync_error) = sync_browser_install_parent(parent) {
+                rename_browser_with_retry(
+                    &backup,
+                    install_path,
+                    "browser_install_rollback_failed",
+                )?;
+                if let Err(rollback_sync_error) = sync_browser_install_parent(parent) {
+                    tracing::warn!(
+                        error = ?rollback_sync_error,
+                        "Browser artifact backup rollback directory sync failed"
+                    );
+                }
+                return Err(sync_error);
+            }
             true
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
@@ -519,16 +532,32 @@ fn activate_browser_binary(
         .as_deref()
         .is_ok_and(|reported| browser_version_matches(reported, expected_version))
     {
-        std::fs::remove_file(install_path)
-            .context("browser_install_rejected_remove_failed")?;
-        if had_existing {
-            rename_browser_with_retry(
-                &backup,
-                install_path,
-                "browser_install_rollback_failed",
-            )?;
+        let cleanup_error = std::fs::remove_file(install_path).err();
+        let rollback_error = had_existing
+            .then(|| {
+                rename_browser_with_retry(
+                    &backup,
+                    install_path,
+                    "browser_install_rollback_failed",
+                )
+            })
+            .and_then(Result::err);
+        let sync_error = sync_browser_install_parent(parent).err();
+        if let Some(cleanup_error) = cleanup_error {
+            tracing::warn!(
+                error = ?cleanup_error,
+                rollback_error = ?rollback_error,
+                sync_error = ?sync_error,
+                "Rejected browser artifact cleanup failed after rollback was attempted"
+            );
+            anyhow::bail!("browser_install_rejected_remove_failed");
         }
-        sync_browser_install_parent(parent)?;
+        if let Some(rollback_error) = rollback_error {
+            return Err(rollback_error);
+        }
+        if let Some(sync_error) = sync_error {
+            return Err(sync_error);
+        }
         anyhow::bail!("browser_install_version_probe_failed");
     }
 
