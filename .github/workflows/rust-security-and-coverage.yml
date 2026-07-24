@@ -31,16 +31,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@cargo-audit
+        uses: taiki-e/install-action@724a716c48615d544d33401a24b782e907dc5881 # cargo-audit
 
       - name: Run cargo audit
         continue-on-error: ${{ github.event_name == 'pull_request' }}
@@ -57,18 +57,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       # Pinned: the @cargo-deny ref installs latest, and 0.20 broke CI by
       # moving `check --config` to the root command. Bump deliberately.
       - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2
         with:
           tool: cargo-deny@0.20.2
 
@@ -91,7 +91,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Free runner disk space
         run: |
@@ -102,18 +102,18 @@ jobs:
           df -h /
 
       - name: Install Rust with llvm-tools
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: llvm-tools-preview
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@10ddf82bb4948219b68187f154decde56c89ee88 # nextest
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@75a348306ce8f67c0b06fc62c32a8546140ba955 # cargo-llvm-cov
 
       - name: Run governance coverage
         run: |
@@ -137,7 +137,7 @@ jobs:
           cat target/coverage/rust-coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: governance-coverage
           path: |

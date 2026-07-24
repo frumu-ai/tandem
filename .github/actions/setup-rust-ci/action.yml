@@ -22,13 +22,13 @@ runs:
   using: composite
   steps:
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       with:
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
     - name: Install sccache
-      uses: mozilla-actions/sccache-action@v0.0.10
+      uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
 
     - name: Enable shared compiler cache
       shell: bash
@@ -37,7 +37,7 @@ runs:
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
     - name: Restore Cargo profile cache
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       with:
         shared-key: ${{ runner.os }}-${{ inputs.cache-profile }}
         workspaces: ${{ inputs.workspaces }}

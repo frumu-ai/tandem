@@ -2,5 +2,6 @@
 // Licensed under the Business Source License 1.1
 
 include!("browser_parts/part01.rs");
+include!("browser_parts/artifact_install.rs");
 include!("browser_parts/part02.rs");
 include!("browser_parts/part03.rs");

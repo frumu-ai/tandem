@@ -11,11 +11,13 @@ on:
         required: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-engine:
     name: ${{ matrix.artifact }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -48,20 +50,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref_name }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: |
             . -> target
@@ -151,8 +155,9 @@ jobs:
 
       - name: Upload release zip asset
         if: matrix.archive == 'zip'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: |
             ${{ matrix.artifact }}.zip
             tandem-tui-*.zip
@@ -160,8 +165,9 @@ jobs:
 
       - name: Upload release tarball asset
         if: matrix.archive == 'tar.gz'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: |
             ${{ matrix.artifact }}.tar.gz
             tandem-tui-*.tar.gz
@@ -169,6 +175,118 @@ jobs:
 
       - name: Upload enterprise engine tarball asset
         if: ${{ matrix.enterprise_artifact }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: ${{ matrix.enterprise_artifact }}.tar.gz
+
+  sign-runtime-manifest:
+    name: Sign Runtime Artifact Manifest
+    needs: build-engine
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          ref: ${{ inputs.release_tag || github.ref_name }}
+
+      - name: Download runtime assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir release-artifacts
+          gh release download "$RELEASE_TAG" \
+            --dir release-artifacts \
+            --pattern 'tandem-engine-*.zip' \
+            --pattern 'tandem-engine-*.tar.gz' \
+            --pattern 'tandem-tui-*.zip' \
+            --pattern 'tandem-tui-*.tar.gz' \
+            --pattern 'tandem-browser-*.zip' \
+            --pattern 'tandem-browser-*.tar.gz'
+
+      - name: Generate deterministic manifest and SPDX SBOMs
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          GENERATED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          node scripts/generate-artifact-manifest.mjs \
+            --assets-dir release-artifacts \
+            --output-dir release-artifacts \
+            --release "$RELEASE_TAG" \
+            --version "$VERSION" \
+            --repository "$SOURCE_REPOSITORY" \
+            --commit "$SOURCE_COMMIT" \
+            --workflow .github/workflows/engine-release.yml \
+            --run-id "$RUN_ID" \
+            --generated-at "$GENERATED_AT"
+
+      - name: Setup pnpm for locked signing CLI
+        uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
+        with:
+          version: 9
+
+      - name: Setup Node.js for locked signing CLI
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/tandem-desktop/pnpm-lock.yaml
+
+      - name: Install locked signing and verification tools
+        run: |
+          pnpm -C apps/tandem-desktop install --frozen-lockfile
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      - name: Sign runtime manifest
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          pnpm -C apps/tandem-desktop exec tauri signer sign \
+            -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            release-artifacts/tandem-artifacts-v1.json
+          base64 --decode \
+            release-artifacts/tandem-artifacts-v1.json.sig \
+            > release-artifacts/tandem-artifacts-v1.json.minisig
+          test -s release-artifacts/tandem-artifacts-v1.json.minisig
+          jq -r .plugins.updater.pubkey \
+            apps/tandem-desktop/src-tauri/tauri.conf.json \
+            | base64 --decode > "$RUNNER_TEMP/tandem-artifact-public.key"
+          minisign -Vm release-artifacts/tandem-artifacts-v1.json \
+            -x release-artifacts/tandem-artifacts-v1.json.minisig \
+            -p "$RUNNER_TEMP/tandem-artifact-public.key"
+
+      - name: Attest runtime artifact provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: |
+            release-artifacts/tandem-*.zip
+            release-artifacts/tandem-*.tar.gz
+
+      - name: Upload signed manifest and SBOMs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" --clobber \
+            release-artifacts/tandem-artifacts-v1.json \
+            release-artifacts/tandem-artifacts-v1.json.minisig \
+            release-artifacts/*.sbom.spdx.json

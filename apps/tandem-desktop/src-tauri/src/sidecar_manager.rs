@@ -1,11 +1,12 @@
 // Sidecar binary management - version tracking, downloads, updates
+mod artifact_install;
+
 use crate::error::{Result, TandemError};
 use chrono::Utc;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tandem_core::resolve_shared_paths;
@@ -711,16 +712,21 @@ fn release_ineligible_reason(release: &GitHubRelease, include_prerelease: bool) 
 }
 
 fn missing_required_assets(release: &GitHubRelease) -> Vec<&'static str> {
-    let required_asset = get_asset_name();
-    if release
-        .assets
-        .iter()
-        .any(|asset| asset_name_matches_current_target(&asset.name))
-    {
-        Vec::new()
-    } else {
-        vec![required_asset]
-    }
+    [
+        get_asset_name(),
+        tandem_enterprise_contract::ARTIFACT_MANIFEST_FILENAME,
+        tandem_enterprise_contract::ARTIFACT_MANIFEST_SIGNATURE_FILENAME,
+    ]
+    .into_iter()
+    .filter(|required| {
+        release
+            .assets
+            .iter()
+            .filter(|asset| asset.name == *required)
+            .count()
+            != 1
+    })
+    .collect()
 }
 
 fn is_tag_skipped(tag: &str) -> bool {
@@ -810,37 +816,6 @@ fn normalize_version_label(version: &str) -> &str {
     version.trim_start_matches(['v', 'V'])
 }
 
-fn asset_name_matches_current_target(asset_name: &str) -> bool {
-    if !asset_name.starts_with("tandem-engine-") {
-        return false;
-    }
-
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    {
-        return asset_name.contains("windows") && asset_name.contains("x64");
-    }
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    {
-        return asset_name.contains("darwin") && asset_name.contains("x64");
-    }
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        return asset_name.contains("darwin") && asset_name.contains("arm64");
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    {
-        asset_name.contains("linux") && asset_name.contains("x64")
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    {
-        return asset_name.contains("linux") && asset_name.contains("arm64");
-    }
-}
-
 fn get_release_cache_path(app: &AppHandle) -> Option<PathBuf> {
     shared_app_data_dir(app).map(|dir| dir.join(RELEASE_CACHE_FILE))
 }
@@ -873,7 +848,7 @@ fn save_release_cache(app: &AppHandle, cache: &ReleaseCache) {
     }
 }
 
-/// Download the sidecar binary
+/// Download, authenticate, and atomically activate the sidecar binary.
 pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     let emit_state = |state: &str, error: Option<&str>| {
         let _ = app.emit(
@@ -903,320 +878,94 @@ pub async fn download_sidecar(app: AppHandle) -> Result<()> {
     };
 
     emit_state("downloading", None);
+    let outcome: Result<()> = async {
+        let client = artifact_install::release_client()?;
+        let releases = fetch_releases(&app, &client, true).await?;
+        let selected = select_release_for_download(&releases)?;
+        log_release_selection("sidecar_download", &selected);
 
-    let client = reqwest::Client::new();
-    let releases = fetch_releases(&app, &client, true).await.inspect_err(|e| {
-        let error_msg = e.to_string();
-        emit_state("error", Some(&error_msg));
-    })?;
-    let selected = select_release_for_download(&releases).inspect_err(|e| {
-        let error_msg = e.to_string();
-        emit_state("error", Some(&error_msg));
-    })?;
-    log_release_selection("sidecar_download", &selected);
+        let release = selected.release;
+        let version = release.tag_name.clone();
+        let app_data_dir = shared_app_data_dir(&app)
+            .ok_or_else(|| TandemError::Sidecar("Failed to get app data dir".to_string()))?;
+        let binaries_dir = app_data_dir.join("binaries");
+        let binary_path = binaries_dir.join(get_binary_name());
+        let start_time = std::time::Instant::now();
 
-    let release = selected.release;
-    let asset_name = get_asset_name();
-    let asset = release
-        .assets
-        .iter()
-        .find(|asset| asset.name == asset_name)
-        .or_else(|| {
-            release
-                .assets
-                .iter()
-                .find(|asset| asset_name_matches_current_target(&asset.name))
-        })
-        .ok_or_else(|| {
-            let err = format!(
-                "Selected release {} is missing compatible headless asset for this platform",
-                release.tag_name
-            );
-            emit_state("error", Some(&err));
-            TandemError::Sidecar(err)
-        })?;
+        emit_state("verifying", None);
+        let prepared = artifact_install::prepare_verified_engine(
+            &client,
+            release,
+            get_asset_name(),
+            &binaries_dir,
+            |downloaded, total| {
+                let elapsed = start_time.elapsed().as_secs_f64();
+                let speed = if elapsed > 0.0 {
+                    format_speed(downloaded as f64 / elapsed)
+                } else {
+                    String::new()
+                };
+                emit_progress(downloaded, total, &speed);
+            },
+        )
+        .await?;
 
-    let version = release.tag_name.clone();
-    let download_url = asset.browser_download_url.clone();
-    let total_size = asset.size;
+        emit_state("installing", None);
+        emit_progress(
+            prepared.downloaded_bytes(),
+            prepared.downloaded_bytes(),
+            "Installing...",
+        );
 
-    tracing::info!(
-        "Downloading tandem-engine {} from {}",
-        version,
-        download_url
-    );
-
-    // Download to AppData (writable), not resources (read-only)
-    let app_data_dir = shared_app_data_dir(&app)
-        .ok_or_else(|| TandemError::Sidecar("Failed to get app data dir".to_string()))?;
-
-    let binaries_dir = app_data_dir.join("binaries");
-    fs::create_dir_all(&binaries_dir).map_err(|e| {
-        emit_state("error", Some(&e.to_string()));
-        TandemError::Sidecar(format!("Failed to create binaries dir: {}", e))
-    })?;
-
-    let binary_name = get_binary_name();
-    let binary_path = binaries_dir.join(binary_name);
-
-    // Download the archive
-    let archive_path = binary_path.with_extension("download");
-    let mut response = client
-        .get(&download_url)
-        .header("User-Agent", "Tandem-App")
-        .send()
-        .await
-        .map_err(|e| {
-            emit_state("error", Some(&e.to_string()));
-            TandemError::Sidecar(format!("Failed to start download: {}", e))
-        })?;
-
-    let mut file = fs::File::create(&archive_path).map_err(|e| {
-        emit_state("error", Some(&e.to_string()));
-        TandemError::Sidecar(format!("Failed to create file: {}", e))
-    })?;
-
-    let mut downloaded: u64 = 0;
-    let start_time = std::time::Instant::now();
-
-    while let Some(chunk) = response.chunk().await.map_err(|e| {
-        emit_state("error", Some(&e.to_string()));
-        TandemError::Sidecar(format!("Download error: {}", e))
-    })? {
-        file.write_all(&chunk).map_err(|e| {
-            emit_state("error", Some(&e.to_string()));
-            TandemError::Sidecar(format!("Write error: {}", e))
-        })?;
-
-        downloaded += chunk.len() as u64;
-
-        // Calculate speed
-        let elapsed = start_time.elapsed().as_secs_f64();
-        let speed = if elapsed > 0.0 {
-            let bytes_per_sec = downloaded as f64 / elapsed;
-            format_speed(bytes_per_sec)
-        } else {
-            String::new()
-        };
-
-        emit_progress(downloaded, total_size, &speed);
-    }
-
-    drop(file);
-
-    // Extract the archive
-    emit_state("extracting", None);
-    emit_progress(downloaded, total_size, "Extracting...");
-
-    let binaries_dir = binary_path.parent().unwrap();
-    extract_archive(&archive_path, binaries_dir, asset_name)?;
-
-    // Rename extracted binary to expected name
-    emit_state("installing", None);
-
-    let extracted_name = if cfg!(windows) {
-        "tandem-engine.exe"
-    } else {
-        "tandem-engine"
-    };
-    let extracted_path = binaries_dir.join(extracted_name);
-
-    if extracted_path.exists() && extracted_path != binary_path {
-        // Stop the sidecar before attempting to replace the binary
         if let Some(state) = app.try_state::<crate::state::AppState>() {
-            tracing::info!("Stopping sidecar before binary update");
+            tracing::info!("Stopping sidecar before verified binary activation");
             let _ = state.sidecar.stop().await;
 
-            // On Windows, aggressively kill any remaining processes
             #[cfg(windows)]
             {
+                use std::os::windows::process::CommandExt;
                 use std::process::Command as StdCommand;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-                tracing::info!(
-                    "Running taskkill to ensure all tandem-engine processes are terminated"
-                );
-
-                // Kill any tandem-engine.exe processes by name
-                let mut cmd = StdCommand::new("taskkill");
-                cmd.args(["/F", "/IM", "tandem-engine.exe"]);
-
-                // Hide console window on Windows
-                #[cfg(target_os = "windows")]
-                {
-                    use std::os::windows::process::CommandExt;
-                    const CREATE_NO_WINDOW: u32 = 0x08000000;
-                    cmd.creation_flags(CREATE_NO_WINDOW);
+                let mut by_name = StdCommand::new("taskkill");
+                by_name
+                    .args(["/F", "/IM", "tandem-engine.exe"])
+                    .creation_flags(CREATE_NO_WINDOW);
+                if let Err(error) = by_name.output() {
+                    tracing::warn!("Failed to stop tandem-engine by name: {}", error);
                 }
 
-                let result = cmd.output();
-
-                match result {
-                    Ok(output) => {
-                        tracing::info!(
-                            "taskkill /IM result: {}",
-                            String::from_utf8_lossy(&output.stdout)
-                        );
-                    }
-                    Err(e) => tracing::warn!("Failed to run taskkill /IM: {}", e),
-                }
-
-                // Also try killing any process with the executable name in its path
-                let mut cmd2 = StdCommand::new("taskkill");
-                cmd2.args(["/F", "/FI", "IMAGENAME eq tandem-engine*"]);
-
-                // Hide console window on Windows
-                #[cfg(target_os = "windows")]
-                {
-                    use std::os::windows::process::CommandExt;
-                    const CREATE_NO_WINDOW: u32 = 0x08000000;
-                    cmd2.creation_flags(CREATE_NO_WINDOW);
-                }
-
-                let result2 = cmd2.output();
-
-                match result2 {
-                    Ok(output) => {
-                        tracing::info!(
-                            "taskkill /FI result: {}",
-                            String::from_utf8_lossy(&output.stdout)
-                        );
-                    }
-                    Err(e) => tracing::warn!("Failed to run taskkill /FI: {}", e),
+                let mut by_filter = StdCommand::new("taskkill");
+                by_filter
+                    .args(["/F", "/FI", "IMAGENAME eq tandem-engine*"])
+                    .creation_flags(CREATE_NO_WINDOW);
+                if let Err(error) = by_filter.output() {
+                    tracing::warn!("Failed to stop tandem-engine by filter: {}", error);
                 }
             }
 
-            // Give extra time for Windows to release file locks
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         }
 
-        if binary_path.exists() {
-            // Try to remove the old binary, retry a few times on Windows
-            let mut retries = 5;
-            let mut last_error = None;
+        let installed_path = binary_path.clone();
+        tokio::task::spawn_blocking(move || {
+            artifact_install::activate_verified_engine(prepared, &installed_path)
+        })
+        .await
+        .map_err(|_| TandemError::Sidecar("artifact_activation_task_failed".to_string()))??;
 
-            while retries > 0 {
-                match fs::remove_file(&binary_path) {
-                    Ok(_) => {
-                        last_error = None;
-                        break;
-                    }
-                    Err(e) => {
-                        last_error = Some(e);
-                        retries -= 1;
-                        if retries > 0 {
-                            tracing::debug!("Retry removing old binary, {} attempts left", retries);
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                        }
-                    }
-                }
-            }
-
-            if let Some(e) = last_error {
-                tracing::warn!(
-                    "Failed to remove old binary: {}. Attempting rename anyway.",
-                    e
-                );
-            }
-        }
-
-        // Try rename with retry logic
-        let mut retries = 5;
-        let mut last_error = None;
-
-        while retries > 0 {
-            match fs::rename(&extracted_path, &binary_path) {
-                Ok(_) => {
-                    last_error = None;
-                    break;
-                }
-                Err(e) => {
-                    last_error = Some(e);
-                    retries -= 1;
-                    if retries > 0 {
-                        tracing::debug!("Retry renaming binary, {} attempts left", retries);
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                    }
-                }
-            }
-        }
-
-        if let Some(e) = last_error {
-            emit_state("error", Some(&e.to_string()));
-            return Err(TandemError::Sidecar(format!(
-                "Failed to rename binary after 5 attempts. The process may still be running. Please close Tandem completely and try again: {}",
-                e
-            )));
-        }
+        save_installed_version(&app, &version)?;
+        emit_state("complete", None);
+        tracing::info!("tandem-engine {} installed successfully", version);
+        Ok(())
     }
+    .await;
 
-    // Set executable permissions on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&binary_path)
-            .map_err(|e| TandemError::Sidecar(format!("Failed to get permissions: {}", e)))?
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&binary_path, perms)
-            .map_err(|e| TandemError::Sidecar(format!("Failed to set permissions: {}", e)))?;
+    if let Err(error) = &outcome {
+        tracing::error!(error = %error, "Verified tandem-engine update failed");
+        emit_state("error", Some(&error.to_string()));
     }
-
-    // Clean up archive
-    fs::remove_file(&archive_path).ok();
-
-    // Save version
-    save_installed_version(&app, &version)?;
-
-    emit_state("complete", None);
-
-    tracing::info!("tandem-engine {} installed successfully", version);
-
-    Ok(())
-}
-
-fn extract_archive(
-    archive_path: &PathBuf,
-    dest_dir: &std::path::Path,
-    asset_name: &str,
-) -> Result<()> {
-    if asset_name.ends_with(".zip") {
-        // Extract zip
-        let file = fs::File::open(archive_path)
-            .map_err(|e| TandemError::Sidecar(format!("Failed to open archive: {}", e)))?;
-        let mut archive = zip::ZipArchive::new(file)
-            .map_err(|e| TandemError::Sidecar(format!("Failed to read zip: {}", e)))?;
-
-        for i in 0..archive.len() {
-            let mut file = archive
-                .by_index(i)
-                .map_err(|e| TandemError::Sidecar(format!("Failed to read zip entry: {}", e)))?;
-
-            let outpath = dest_dir.join(file.mangled_name());
-
-            if file.is_dir() {
-                fs::create_dir_all(&outpath).ok();
-            } else {
-                if let Some(p) = outpath.parent() {
-                    fs::create_dir_all(p).ok();
-                }
-                let mut outfile = fs::File::create(&outpath)
-                    .map_err(|e| TandemError::Sidecar(format!("Failed to create file: {}", e)))?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| TandemError::Sidecar(format!("Failed to extract file: {}", e)))?;
-            }
-        }
-    } else if asset_name.ends_with(".tar.gz") {
-        // Extract tar.gz
-        let file = fs::File::open(archive_path)
-            .map_err(|e| TandemError::Sidecar(format!("Failed to open archive: {}", e)))?;
-        let gz = flate2::read::GzDecoder::new(file);
-        let mut archive = tar::Archive::new(gz);
-        archive
-            .unpack(dest_dir)
-            .map_err(|e| TandemError::Sidecar(format!("Failed to extract tar.gz: {}", e)))?;
-    }
-
-    Ok(())
+    outcome
 }
 
 fn format_speed(bytes_per_sec: f64) -> String {
@@ -1250,7 +999,11 @@ mod tests {
     }
 
     fn current_platform_assets() -> Vec<&'static str> {
-        vec![get_asset_name()]
+        vec![
+            get_asset_name(),
+            tandem_enterprise_contract::ARTIFACT_MANIFEST_FILENAME,
+            tandem_enterprise_contract::ARTIFACT_MANIFEST_SIGNATURE_FILENAME,
+        ]
     }
 
     #[test]

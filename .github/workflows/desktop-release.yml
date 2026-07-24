@@ -9,14 +9,13 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: desktop-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 env:
-  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
   # Safety toggle: macOS signing/notarization is disabled by default to avoid breaking builds.
   # To enable, set a GitHub Actions repository variable: MACOS_SIGNING_ENABLED=true
   MACOS_SIGNING_ENABLED: ${{ vars.MACOS_SIGNING_ENABLED }}
@@ -29,13 +28,13 @@ jobs:
       release_id: ${{ steps.release.outputs.release_id }}
       release_body: ${{ steps.release-body.outputs.release_body }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: refs/tags/${{ inputs.tag }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
@@ -54,7 +53,7 @@ jobs:
 
       - name: Find GitHub release
         id: release
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const tag = '${{ inputs.tag }}';
@@ -68,6 +67,8 @@ jobs:
   build-desktop:
     name: Build Desktop (${{ matrix.platform }})
     needs: resolve-release
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -87,25 +88,25 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: refs/tags/${{ inputs.tag }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
         with:
           version: 9
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: pnpm
           cache-dependency-path: apps/tandem-desktop/pnpm-lock.yaml
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -122,7 +123,7 @@ jobs:
             build-essential
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: |
             . -> target
@@ -181,10 +182,10 @@ jobs:
 
       - name: Build and upload (macOS, unsigned)
         if: ${{ matrix.platform == 'macos-latest' && env.MACOS_SIGNING_ENABLED != 'true' }}
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/tandem-desktop
@@ -197,10 +198,10 @@ jobs:
 
       - name: Build and upload (macOS, signed/notarized)
         if: ${{ matrix.platform == 'macos-latest' && env.MACOS_SIGNING_ENABLED == 'true' }}
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -273,10 +274,10 @@ jobs:
 
       - name: Build and upload (non-macOS)
         if: ${{ matrix.platform != 'macos-latest' }}
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/tandem-desktop

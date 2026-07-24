@@ -7,23 +7,24 @@ on:
       - "*.*.*"
 
 permissions:
-  actions: write
-  contents: write
+  contents: read
 
 jobs:
   sync-versions:
     name: Sync Versions From Tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tag_updated: ${{ steps.sync.outputs.tag_updated }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
@@ -179,17 +180,19 @@ jobs:
     name: Create Release
     needs: sync-versions
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}
       release_body: ${{ steps.release-body.outputs.release_body }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: refs/tags/${{ github.ref_name }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
@@ -208,7 +211,7 @@ jobs:
 
       - name: Create Release
         id: create-release
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const fs = require('fs');
@@ -262,14 +265,16 @@ jobs:
             standalone_archive: zip
 
     runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: refs/tags/${{ github.ref_name }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -280,7 +285,7 @@ jobs:
           sudo apt-get install -y pkg-config build-essential
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: . -> target
 
@@ -344,7 +349,7 @@ jobs:
           fi
 
       - name: Upload standalone runtime assets to release
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
           ENGINE_ASSET: ${{ matrix.engine_asset }}
@@ -400,13 +405,127 @@ jobs:
               });
             }
 
-  publish-release:
-    name: Publish Release
+  sign-runtime-manifest:
+    name: Sign Runtime Artifact Manifest
     needs: [create-release, build-release]
     runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          ref: refs/tags/${{ github.ref_name }}
+
+      - name: Download draft runtime assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir release-artifacts
+          gh release download "$RELEASE_TAG" \
+            --dir release-artifacts \
+            --pattern 'tandem-engine-*.zip' \
+            --pattern 'tandem-engine-*.tar.gz' \
+            --pattern 'tandem-tui-*.zip' \
+            --pattern 'tandem-tui-*.tar.gz' \
+            --pattern 'tandem-browser-*.zip' \
+            --pattern 'tandem-browser-*.tar.gz'
+
+      - name: Generate deterministic manifest and SPDX SBOMs
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          GENERATED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          node scripts/generate-artifact-manifest.mjs \
+            --assets-dir release-artifacts \
+            --output-dir release-artifacts \
+            --release "$RELEASE_TAG" \
+            --version "$VERSION" \
+            --repository "$SOURCE_REPOSITORY" \
+            --commit "$SOURCE_COMMIT" \
+            --workflow .github/workflows/release.yml \
+            --run-id "$RUN_ID" \
+            --generated-at "$GENERATED_AT"
+
+      - name: Setup pnpm for locked signing CLI
+        uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
+        with:
+          version: 9
+
+      - name: Setup Node.js for locked signing CLI
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/tandem-desktop/pnpm-lock.yaml
+
+      - name: Install locked signing and verification tools
+        run: |
+          pnpm -C apps/tandem-desktop install --frozen-lockfile
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      - name: Sign runtime manifest
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          pnpm -C apps/tandem-desktop exec tauri signer sign \
+            -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            release-artifacts/tandem-artifacts-v1.json
+          base64 --decode \
+            release-artifacts/tandem-artifacts-v1.json.sig \
+            > release-artifacts/tandem-artifacts-v1.json.minisig
+          test -s release-artifacts/tandem-artifacts-v1.json.minisig
+          jq -r .plugins.updater.pubkey \
+            apps/tandem-desktop/src-tauri/tauri.conf.json \
+            | base64 --decode > "$RUNNER_TEMP/tandem-artifact-public.key"
+          minisign -Vm release-artifacts/tandem-artifacts-v1.json \
+            -x release-artifacts/tandem-artifacts-v1.json.minisig \
+            -p "$RUNNER_TEMP/tandem-artifact-public.key"
+
+      - name: Attest runtime artifact provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: |
+            release-artifacts/tandem-*.zip
+            release-artifacts/tandem-*.tar.gz
+
+      - name: Upload signed manifest and SBOMs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" --clobber \
+            release-artifacts/tandem-artifacts-v1.json \
+            release-artifacts/tandem-artifacts-v1.json.minisig \
+            release-artifacts/*.sbom.spdx.json
+
+  publish-release:
+    name: Publish Release
+    needs: [create-release, sign-runtime-manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Publish release
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
@@ -437,7 +556,7 @@ jobs:
 
       - name: Post release to Discord
         if: ${{ steps.discord_webhook.outputs.configured == 'true' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
           DISCORD_WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
@@ -488,9 +607,12 @@ jobs:
     name: Trigger Registry Publish
     needs: [publish-release]
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
     steps:
       - name: Dispatch publish-registries workflow
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           DISABLE_NPM_ENTERPRISE_PUBLISH: ${{ vars.DISABLE_NPM_ENTERPRISE_PUBLISH }}

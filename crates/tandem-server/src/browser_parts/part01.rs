@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
@@ -23,6 +24,12 @@ use tandem_browser::{
     BrowserWaitParams, BROWSER_PROTOCOL_VERSION,
 };
 use tandem_core::{resolve_shared_paths, BrowserConfig};
+use tandem_enterprise_contract::{
+    current_artifact_architecture, current_artifact_platform, verify_artifact_manifest,
+    ArtifactDigestVerifier, ArtifactKind, ArtifactManifestEntry, ArtifactManifestExpectation,
+    ARTIFACT_MANIFEST_FILENAME, ARTIFACT_MANIFEST_SIGNATURE_FILENAME,
+    MAX_ARTIFACT_MANIFEST_BYTES, MAX_ARTIFACT_SIGNATURE_BYTES,
+};
 use tandem_tools::{Tool, ToolRegistry};
 use tandem_types::{ToolResult, ToolSchema};
 use tokio::fs;
@@ -39,6 +46,13 @@ const SNAPSHOT_SCREENSHOT_LABEL: &str = "browser snapshot";
 const RELEASE_REPO: &str = "frumu-ai/tandem";
 const RELEASES_URL_ENV: &str = "TANDEM_BROWSER_RELEASES_URL";
 const BROWSER_INSTALL_USER_AGENT: &str = "tandem-browser-installer";
+const BROWSER_RELEASE_WORKFLOWS: &[&str] = &[
+    ".github/workflows/release.yml",
+    ".github/workflows/engine-release.yml",
+];
+const MAX_BROWSER_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_BROWSER_BINARY_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_RELEASE_METADATA_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug)]
 struct BrowserSidecarClient {
