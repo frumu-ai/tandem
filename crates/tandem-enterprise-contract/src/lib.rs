@@ -1,5 +1,6 @@
 pub mod aca_request_auth;
 pub mod approval_receipt;
+pub mod artifact_integrity;
 pub mod authority;
 pub mod authorization_hook;
 pub mod context_assertion_security;
@@ -16,6 +17,7 @@ pub mod verifier_keyring;
 
 pub use aca_request_auth::*;
 pub use approval_receipt::*;
+pub use artifact_integrity::*;
 pub use authorization_hook::*;
 pub use context_assertion_security::*;
 pub use cross_tenant::*;

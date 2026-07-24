@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "30 4 * * *"
 
+permissions:
+  contents: read
+
 jobs:
   generated-variation-nightly:
     name: Generated Variation Nightly
@@ -12,10 +15,10 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Build tandem-server workflow test binary
         shell: bash

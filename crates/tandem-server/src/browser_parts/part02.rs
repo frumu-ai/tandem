@@ -180,92 +180,10 @@ pub async fn install_browser_sidecar<F>(
     config: &BrowserConfig,
     authorize_write: F,
 ) -> anyhow::Result<BrowserSidecarInstallResult>
-where F: Fn() -> anyhow::Result<()> + Send + Sync {
-    let version = env!("CARGO_PKG_VERSION").to_string();
-    let release = fetch_release_for_version(&version).await?;
-    let asset_name = browser_release_asset_name()?;
-    let asset = release
-        .assets
-        .iter()
-        .find(|candidate| candidate.name == asset_name)
-        .ok_or_else(|| {
-            anyhow!(
-                "release_missing_asset: `{}` not found in {}",
-                asset_name,
-                release.tag_name
-            )
-        })?;
-    let install_path = sidecar_install_path(config)?;
-    let parent = install_path
-        .parent()
-        .ok_or_else(|| anyhow!("invalid install path `{}`", install_path.display()))?;
-    let archive_bytes = download_release_asset(asset).await?;
-    let downloaded_bytes = archive_bytes.len() as u64;
-    authorize_write()?;
-    fs::create_dir_all(parent)
-        .await
-        .with_context(|| format!("failed to create `{}`", parent.display()))?;
-    authorize_write()?;
-    let install_path_for_unpack = install_path.clone();
-    let asset_name_for_unpack = asset.name.clone();
-    let unpacked = tokio::task::spawn_blocking(move || {
-        unpack_sidecar_archive(
-            &asset_name_for_unpack,
-            &archive_bytes,
-            &install_path_for_unpack,
-        )
-    })
-    .await
-    .context("browser sidecar install task failed")??;
-
-    let status = evaluate_browser_status(config.clone());
-    Ok(BrowserSidecarInstallResult {
-        version,
-        asset_name: asset.name.clone(),
-        installed_path: unpacked.to_string_lossy().to_string(),
-        downloaded_bytes: asset.size.max(downloaded_bytes),
-        status,
-    })
-}
-
-async fn fetch_release_for_version(version: &str) -> anyhow::Result<GitHubRelease> {
-    let base = std::env::var(RELEASES_URL_ENV)
-        .unwrap_or_else(|_| format!("https://api.github.com/repos/{RELEASE_REPO}/releases/tags"));
-    let url = format!("{}/v{}", base.trim_end_matches('/'), version);
-    let response = reqwest::Client::new()
-        .get(&url)
-        .header(reqwest::header::USER_AGENT, BROWSER_INSTALL_USER_AGENT)
-        .send()
-        .await
-        .with_context(|| format!("failed to fetch release metadata from `{url}`"))?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        anyhow::bail!("release_lookup_failed: {} {}", status, body.trim());
-    }
-    serde_json::from_str::<GitHubRelease>(&body).context("invalid release metadata payload")
-}
-
-async fn download_release_asset(asset: &GitHubAsset) -> anyhow::Result<Vec<u8>> {
-    let response = reqwest::Client::new()
-        .get(&asset.browser_download_url)
-        .header(reqwest::header::USER_AGENT, BROWSER_INSTALL_USER_AGENT)
-        .send()
-        .await
-        .with_context(|| format!("failed to download `{}`", asset.browser_download_url))?;
-    let status = response.status();
-    if !status.is_success() {
-        anyhow::bail!(
-            "asset_download_failed: {} {}",
-            status,
-            asset.browser_download_url
-        );
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .context("failed to read asset bytes")?;
-    Ok(bytes.to_vec())
+where
+    F: Fn() -> anyhow::Result<()> + Send + Sync,
+{
+    install_verified_browser_sidecar(config, authorize_write).await
 }
 
 fn sidecar_install_path(config: &BrowserConfig) -> anyhow::Result<PathBuf> {
@@ -325,71 +243,6 @@ fn sidecar_binary_name() -> &'static str {
     {
         "tandem-browser"
     }
-}
-
-fn unpack_sidecar_archive(
-    asset_name: &str,
-    archive_bytes: &[u8],
-    install_path: &Path,
-) -> anyhow::Result<PathBuf> {
-    if asset_name.ends_with(".zip") {
-        let cursor = std::io::Cursor::new(archive_bytes);
-        let mut archive = zip::ZipArchive::new(cursor).context("invalid zip archive")?;
-        let binary_present = archive
-            .file_names()
-            .any(|name| name == sidecar_binary_name());
-        let mut file = if binary_present {
-            archive
-                .by_name(sidecar_binary_name())
-                .context("browser binary missing from zip archive")?
-        } else {
-            archive
-                .by_index(0)
-                .context("browser binary missing from zip archive")?
-        };
-        let mut output = std::fs::File::create(install_path)
-            .with_context(|| format!("failed to create `{}`", install_path.display()))?;
-        std::io::copy(&mut file, &mut output).context("failed to unpack zip asset")?;
-    } else if asset_name.ends_with(".tar.gz") {
-        let cursor = std::io::Cursor::new(archive_bytes);
-        let decoder = GzDecoder::new(cursor);
-        let mut archive = tar::Archive::new(decoder);
-        let mut found = false;
-        for entry in archive.entries().context("invalid tar archive")? {
-            let mut entry = entry.context("invalid tar entry")?;
-            let path = entry.path().context("invalid tar entry path")?;
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name == sidecar_binary_name())
-            {
-                entry
-                    .unpack(install_path)
-                    .with_context(|| format!("failed to unpack `{}`", install_path.display()))?;
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            anyhow::bail!("browser binary missing from tar archive");
-        }
-    } else {
-        anyhow::bail!("unsupported archive format `{asset_name}`");
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut perms = std::fs::metadata(install_path)
-            .with_context(|| format!("failed to read `{}` metadata", install_path.display()))?
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(install_path, perms)
-            .with_context(|| format!("failed to chmod `{}`", install_path.display()))?;
-    }
-
-    Ok(install_path.to_path_buf())
 }
 
 fn parse_tool_context(args: &Value) -> BrowserToolContext {

@@ -12,6 +12,9 @@ on:
       - "packages/tandem-control-panel/**"
       - "docs/ACME_SLACK_DEMO_HARNESS.md"
 
+permissions:
+  contents: read
+
 jobs:
   acme-slack-governance:
     name: Five-profile production-path proof
@@ -19,13 +22,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           shared-key: acme-slack-governance
 
@@ -64,7 +67,7 @@ jobs:
 
       - name: Upload proof reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: acme-slack-governance-proof
           path: ${{ runner.temp }}/acme-proof/*.json

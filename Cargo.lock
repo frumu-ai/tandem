@@ -8120,9 +8120,11 @@ name = "tandem-enterprise-contract"
 version = "0.7.1"
 dependencies = [
  "base64 0.22.1",
+ "blake2",
  "chrono",
  "ed25519-dalek",
  "http 1.4.0",
+ "minisign-verify",
  "rusqlite",
  "rustix 1.1.4",
  "serde",
