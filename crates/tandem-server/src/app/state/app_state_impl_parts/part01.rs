@@ -256,6 +256,7 @@ impl AppState {
             in_process_mode: Arc::new(AtomicBool::new(in_process)),
             api_token: Arc::new(RwLock::new(None)),
             transport_tokens: Arc::new(RwLock::new(Vec::new())),
+            context_assertion_security: Arc::new(std::sync::RwLock::new(None)),
             engine_leases: Arc::new(RwLock::new(std::collections::HashMap::new())),
             managed_worktrees: Arc::new(RwLock::new(std::collections::HashMap::new())),
             run_registry: RunRegistry::new(),

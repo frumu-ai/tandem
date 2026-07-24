@@ -15,16 +15,20 @@
 //! configuration; omitting the env-var defaults to local, which is the
 //! backwards-compatible behavior.
 
+#[cfg(test)]
 use base64::Engine as _;
-use ed25519_dalek::{Signature, Verifier};
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use crate::TenantContextAssertionClaims;
+
 use crate::{
-    KeyUsageContext, SigningKeyPurpose, TenantContextAssertionClaims, TenantContextAssertionHeader,
-    VerifierKeyring,
+    parse_context_assertion_metadata_keyring, ContextAssertionError, ContextAssertionPolicy,
+    ContextAssertionReplayMode, ContextAssertionReplayStore, ContextAssertionVerifier,
+    VerifiedTenantContext, VerifierKeyring, DEFAULT_CONTEXT_ASSERTION_ISSUER,
+    DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS, DEFAULT_CONTEXT_ASSERTION_MAX_LIFETIME_MS,
 };
 
-const DEFAULT_MAX_FUTURE_SKEW_MS: u64 = 10_000;
 const MAX_ALLOWED_FUTURE_SKEW_MS: u64 = 60_000;
 const DEFAULT_AUDIENCE: &str = "tandem-aca";
 
@@ -86,6 +90,12 @@ pub enum AcaContextError {
     /// The key was found but the keyring denied it (wrong purpose, org,
     /// deployment, audience restriction, status, or validity window).
     KeyringDenied(crate::KeyringDenial),
+    BadIssuer,
+    InvalidClaims,
+    LifetimeExceeded,
+    Replayed,
+    ReplayBackendUnavailable,
+    InvalidPolicy,
 }
 
 impl AcaContextError {
@@ -100,6 +110,12 @@ impl AcaContextError {
             Self::KeyNotConfigured => "aca_context_key_not_configured",
             Self::UnknownKey => "aca_context_unknown_key",
             Self::KeyringDenied(_) => "aca_context_keyring_denied",
+            Self::BadIssuer => "aca_context_bad_issuer",
+            Self::InvalidClaims => "aca_context_invalid_claims",
+            Self::LifetimeExceeded => "aca_context_lifetime_exceeded",
+            Self::Replayed => "aca_context_replayed",
+            Self::ReplayBackendUnavailable => "aca_context_replay_backend_unavailable",
+            Self::InvalidPolicy => "aca_context_invalid_policy",
         }
     }
 }
@@ -146,27 +162,50 @@ impl std::error::Error for AcaTransportError {}
 ///
 /// 1. Parse JWS structure (header.claims.signature).
 /// 2. Validate header (`alg=EdDSA`, `typ=tandem-tenant-context+jws`, non-empty `kid`).
-/// 3. Resolve the `kid` through the keyring — purpose=`ContextAssertion`,
-///    audience=configured expected audience; any scoping mismatch is rejected.
-/// 4. Verify the Ed25519 signature.
-/// 5. Deserialise the claims.
-/// 6. Validate the `audience` claim against the expected audience.
-/// 7. Validate the timing (not expired, not future-dated beyond skew).
+/// 3. Locate `kid` and decode its Ed25519 public key.
+/// 4. Verify the signature before consuming untrusted claim semantics.
+/// 5. Validate version, issuer/audience, explicit tenant/deployment, actor chain,
+///    resource consistency, bounded lifetime, expiry, and future skew.
+/// 6. Authorize key purpose, status, validity, audience, org, deployment, and scope.
+/// 7. Atomically enforce the configured shared replay policy.
+/// 8. Return only the canonical [`VerifiedTenantContext`] projection.
 #[derive(Debug, Clone)]
 pub struct AcaContextAssertionVerifier {
-    keyring: VerifierKeyring,
-    expected_audience: String,
-    max_future_skew_ms: u64,
+    verifier: ContextAssertionVerifier,
+    replay_store: ContextAssertionReplayStore,
+    replay_mode: ContextAssertionReplayMode,
 }
 
 impl AcaContextAssertionVerifier {
     /// Build directly from a keyring and audience (for tests and explicit wiring).
     pub fn new(keyring: VerifierKeyring, audience: impl Into<String>) -> Self {
+        let policy = ContextAssertionPolicy::new(
+            DEFAULT_CONTEXT_ASSERTION_ISSUER,
+            audience,
+            DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
+            DEFAULT_CONTEXT_ASSERTION_MAX_LIFETIME_MS,
+        )
+        .expect("default ACA assertion policy is valid");
         Self {
-            keyring,
-            expected_audience: audience.into(),
-            max_future_skew_ms: DEFAULT_MAX_FUTURE_SKEW_MS,
+            verifier: ContextAssertionVerifier::new_allow_empty(keyring, policy),
+            replay_store: ContextAssertionReplayStore::in_memory(),
+            replay_mode: ContextAssertionReplayMode::Bound,
         }
+    }
+
+    pub fn new_with_policy(
+        keyring: VerifierKeyring,
+        policy: ContextAssertionPolicy,
+        replay_store: ContextAssertionReplayStore,
+        replay_mode: ContextAssertionReplayMode,
+    ) -> Result<Self, AcaContextError> {
+        let verifier = ContextAssertionVerifier::new(keyring, policy).map_err(map_shared_error)?;
+        replay_store.readiness_check().map_err(map_shared_error)?;
+        Ok(Self {
+            verifier,
+            replay_store,
+            replay_mode,
+        })
     }
 
     /// Load from environment variables:
@@ -175,112 +214,127 @@ impl AcaContextAssertionVerifier {
     ///   JSON keyring in the distribution form from `ENTERPRISE_KEY_ROTATION.md`.
     /// - `ACA_CONTEXT_ASSERTION_AUDIENCE` — expected `audience` claim (default: `"tandem-aca"`).
     /// - `ACA_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS` — clock skew tolerance in ms
-    ///   (default 10 000, clamped to 60 000).
+    ///   (default 10 000, maximum 60 000).
+    /// - `ACA_CONTEXT_ASSERTION_MAX_LIFETIME_MS` — maximum validity window
+    ///   (default 15 minutes, hard ceiling 1 hour).
+    /// - `ACA_CONTEXT_ASSERTION_REPLAY_MODE` — `bound` (default) or `one_shot`; `off` is rejected.
+    /// - `ACA_CONTEXT_ASSERTION_REPLAY_STORE_FILE` — shared durable replay ledger.
     pub fn from_env() -> Result<Self, AcaContextError> {
         let keyring_json = read_aca_keyring_from_env()?;
-        let keyring = VerifierKeyring::from_json(&keyring_json)
-            .map_err(|_| AcaContextError::KeyNotConfigured)?;
+        let keyring =
+            parse_context_assertion_metadata_keyring(&keyring_json).map_err(map_shared_error)?;
         if keyring.is_empty() {
             return Err(AcaContextError::KeyNotConfigured);
         }
-        let expected_audience = std::env::var("ACA_CONTEXT_ASSERTION_AUDIENCE")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
+        let expected_issuer = nonempty_env("ACA_CONTEXT_ASSERTION_ISSUER")
+            .unwrap_or_else(|| DEFAULT_CONTEXT_ASSERTION_ISSUER.to_string());
+        let expected_audience = nonempty_env("ACA_CONTEXT_ASSERTION_AUDIENCE")
             .unwrap_or_else(|| DEFAULT_AUDIENCE.to_string());
-        let max_future_skew_ms = std::env::var("ACA_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(DEFAULT_MAX_FUTURE_SKEW_MS)
-            .clamp(DEFAULT_MAX_FUTURE_SKEW_MS, MAX_ALLOWED_FUTURE_SKEW_MS);
-        Ok(Self {
-            keyring,
+        let max_future_skew_ms = strict_u64_env(
+            "ACA_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS",
+            DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
+            MAX_ALLOWED_FUTURE_SKEW_MS,
+        )?;
+        let max_lifetime_ms = strict_u64_env(
+            "ACA_CONTEXT_ASSERTION_MAX_LIFETIME_MS",
+            DEFAULT_CONTEXT_ASSERTION_MAX_LIFETIME_MS,
+            crate::HARD_CONTEXT_ASSERTION_MAX_LIFETIME_MS,
+        )?;
+        let replay_mode = ContextAssertionReplayMode::parse(
+            nonempty_env("ACA_CONTEXT_ASSERTION_REPLAY_MODE")
+                .as_deref()
+                .unwrap_or("bound"),
+        )
+        .map_err(map_shared_error)?;
+        if replay_mode == ContextAssertionReplayMode::Off {
+            return Err(AcaContextError::InvalidPolicy);
+        }
+        let replay_path = nonempty_env("ACA_CONTEXT_ASSERTION_REPLAY_STORE_FILE")
+            .or_else(|| nonempty_env("TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE"))
+            .ok_or(AcaContextError::ReplayBackendUnavailable)?;
+        let replay_store =
+            ContextAssertionReplayStore::persistent(replay_path).map_err(map_shared_error)?;
+        let policy = ContextAssertionPolicy::new(
+            expected_issuer,
             expected_audience,
             max_future_skew_ms,
-        })
+            max_lifetime_ms,
+        )
+        .map_err(map_shared_error)?;
+        Self::new_with_policy(keyring, policy, replay_store, replay_mode)
     }
 
-    /// Verify `assertion` against the current wall-clock time.
-    pub fn verify(&self, assertion: &str) -> Result<TenantContextAssertionClaims, AcaContextError> {
-        self.verify_at(assertion, current_unix_ms())
+    /// Verify against wall-clock time and atomically enforce replay policy.
+    pub fn verify(&self, assertion: &str) -> Result<VerifiedTenantContext, AcaContextError> {
+        let now_ms = current_unix_ms();
+        let verified = self
+            .verifier
+            .verify_at(assertion, now_ms)
+            .map_err(map_shared_error)?;
+        self.replay_store
+            .check_and_record(self.replay_mode, &verified, now_ms)
+            .map_err(map_shared_error)?;
+        Ok(VerifiedTenantContext::from(verified.claims).with_assertion_key_id(verified.key_id))
     }
 
-    /// Verify `assertion` at an explicit `now_ms`. Use this in tests to avoid
-    /// wall-clock dependency.
+    /// Verify at an explicit time, including replay retention boundaries.
     pub fn verify_at(
         &self,
         assertion: &str,
         now_ms: u64,
-    ) -> Result<TenantContextAssertionClaims, AcaContextError> {
-        let assertion = assertion.trim();
-        let mut parts = assertion.split('.');
-        let encoded_header = parts
-            .next()
-            .filter(|p| !p.is_empty())
-            .ok_or(AcaContextError::MalformedAssertion)?;
-        let encoded_claims = parts
-            .next()
-            .filter(|p| !p.is_empty())
-            .ok_or(AcaContextError::MalformedAssertion)?;
-        let encoded_signature = parts
-            .next()
-            .filter(|p| !p.is_empty())
-            .ok_or(AcaContextError::MalformedAssertion)?;
-        if parts.next().is_some() {
-            return Err(AcaContextError::MalformedAssertion);
-        }
-
-        let header_bytes =
-            decode_base64url(encoded_header).ok_or(AcaContextError::MalformedAssertion)?;
-        let claims_bytes =
-            decode_base64url(encoded_claims).ok_or(AcaContextError::MalformedAssertion)?;
-        let signature_bytes: [u8; 64] = decode_base64url(encoded_signature)
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or(AcaContextError::MalformedAssertion)?;
-
-        let header: TenantContextAssertionHeader =
-            serde_json::from_slice(&header_bytes).map_err(|_| AcaContextError::MalformedHeader)?;
-        if header.alg != "EdDSA"
-            || header.typ != "tandem-tenant-context+jws"
-            || header.kid.is_empty()
-        {
-            return Err(AcaContextError::MalformedHeader);
-        }
-
-        let usage = KeyUsageContext::new().with_audience(self.expected_audience.clone());
-        let verifying_key = self
-            .keyring
-            .resolve_verifying_key(
-                &header.kid,
-                SigningKeyPurpose::ContextAssertion,
-                &usage,
-                now_ms,
-            )
-            .map_err(|denial| match denial {
-                crate::KeyringDenial::UnknownKid => AcaContextError::UnknownKey,
-                other => AcaContextError::KeyringDenied(other),
-            })?;
-
-        let signing_input = format!("{encoded_header}.{encoded_claims}");
-        let signature = Signature::from_bytes(&signature_bytes);
-        verifying_key
-            .verify(signing_input.as_bytes(), &signature)
-            .map_err(|_| AcaContextError::BadSignature)?;
-
-        let claims: TenantContextAssertionClaims = serde_json::from_slice(&claims_bytes)
-            .map_err(|_| AcaContextError::MalformedAssertion)?;
-
-        if claims.audience != self.expected_audience {
-            return Err(AcaContextError::BadAudience);
-        }
-
-        if claims.is_expired_at(now_ms) || claims.issued_at_ms > now_ms + self.max_future_skew_ms {
-            return Err(AcaContextError::Expired);
-        }
-
-        Ok(claims)
+    ) -> Result<VerifiedTenantContext, AcaContextError> {
+        let verified = self
+            .verifier
+            .verify_at(assertion, now_ms)
+            .map_err(map_shared_error)?;
+        self.replay_store
+            .check_and_record(self.replay_mode, &verified, now_ms)
+            .map_err(map_shared_error)?;
+        Ok(VerifiedTenantContext::from(verified.claims).with_assertion_key_id(verified.key_id))
     }
+}
+
+fn map_shared_error(error: ContextAssertionError) -> AcaContextError {
+    match error {
+        ContextAssertionError::MalformedAssertion | ContextAssertionError::UnsupportedVersion => {
+            AcaContextError::MalformedAssertion
+        }
+        ContextAssertionError::MalformedHeader => AcaContextError::MalformedHeader,
+        ContextAssertionError::BadSignature => AcaContextError::BadSignature,
+        ContextAssertionError::BadIssuer => AcaContextError::BadIssuer,
+        ContextAssertionError::BadAudience => AcaContextError::BadAudience,
+        ContextAssertionError::InvalidIdentity => AcaContextError::InvalidClaims,
+        ContextAssertionError::Expired
+        | ContextAssertionError::NotYetValid
+        | ContextAssertionError::TimeOverflow => AcaContextError::Expired,
+        ContextAssertionError::LifetimeExceeded => AcaContextError::LifetimeExceeded,
+        ContextAssertionError::KeyNotConfigured => AcaContextError::KeyNotConfigured,
+        ContextAssertionError::UnknownKey => AcaContextError::UnknownKey,
+        ContextAssertionError::KeyringDenied(denial) => AcaContextError::KeyringDenied(denial),
+        ContextAssertionError::Replayed => AcaContextError::Replayed,
+        ContextAssertionError::ReplayBackendUnavailable
+        | ContextAssertionError::ReplayCapacityExceeded => {
+            AcaContextError::ReplayBackendUnavailable
+        }
+        ContextAssertionError::InvalidPolicy => AcaContextError::InvalidPolicy,
+    }
+}
+
+fn nonempty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn strict_u64_env(name: &str, default: u64, maximum: u64) -> Result<u64, AcaContextError> {
+    let Some(raw) = nonempty_env(name) else {
+        return Ok(default);
+    };
+    raw.parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0 && *value <= maximum)
+        .ok_or(AcaContextError::InvalidPolicy)
 }
 
 /// Combined verifier for ACA requests: transport token + optional context assertion.
@@ -351,11 +405,12 @@ impl AcaRequestVerifier {
     /// - `Local` mode: returns `Ok(None)` regardless of whether an assertion
     ///   is present (backward-compatible bypass).
     /// - `Hosted` mode: `assertion` must be `Some` non-empty string that passes
-    ///   full keyring-based verification. Returns `Ok(Some(claims))` on success.
+    ///   full keyring-based verification. Only the canonical verified tenant
+    ///   projection is returned on success.
     pub fn verify_context_assertion(
         &self,
         assertion: Option<&str>,
-    ) -> Result<Option<TenantContextAssertionClaims>, AcaContextError> {
+    ) -> Result<Option<VerifiedTenantContext>, AcaContextError> {
         match self.mode {
             AcaAuthMode::Local => Ok(None),
             AcaAuthMode::Hosted => {
@@ -383,12 +438,10 @@ fn read_aca_keyring_from_env() -> Result<String, AcaContextError> {
     if let Ok(path) = std::env::var("ACA_CONTEXT_ASSERTION_KEYRING_FILE") {
         let path = path.trim().to_string();
         if !path.is_empty() {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                let raw = contents.trim().to_string();
-                if !raw.is_empty() {
-                    return Ok(raw);
-                }
-            }
+            return crate::context_assertion_security::read_owner_only_regular_text_file(
+                std::path::Path::new(&path),
+            )
+            .map_err(|_| AcaContextError::KeyNotConfigured);
         }
     }
     Err(AcaContextError::KeyNotConfigured)
@@ -415,6 +468,7 @@ fn read_aca_api_token_from_env() -> Option<String> {
     None
 }
 
+#[cfg(test)]
 fn decode_base64url(raw: &str) -> Option<Vec<u8>> {
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(raw)
@@ -443,7 +497,8 @@ fn current_unix_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::{
-        AuthorityChain, HumanActor, KeyStatus, RequestPrincipal, TenantContext, VerifierKeyEntry,
+        AuthorityChain, HumanActor, KeyStatus, RequestPrincipal, SigningKeyPurpose, TenantContext,
+        TenantContextAssertionHeader, VerifierKeyEntry,
     };
     use ed25519_dalek::SigningKey;
 
@@ -590,8 +645,10 @@ mod tests {
         let claims = verifier
             .verify_context_assertion(Some(&assertion))
             .expect("should verify")
-            .expect("claims present in hosted mode");
+            .expect("verified context present in hosted mode");
         assert_eq!(claims.audience, DEFAULT_AUDIENCE);
+        assert_eq!(claims.tenant_context.org_id, "org-a");
+        assert_eq!(claims.assertion_key_id.as_deref(), Some("aca-key-1"));
     }
 
     // ── Hosted mode: expired assertion ────────────────────────────────────────
@@ -697,6 +754,74 @@ mod tests {
         assert_eq!(err, AcaContextError::BadAudience);
     }
 
+    #[test]
+    fn hosted_mode_rejects_identity_issuer_version_and_lifetime_drift() {
+        let signing_key = test_signing_key();
+        let verifier = test_verifier(&signing_key);
+
+        let mut actor_mismatch = test_claims(1_000, 9_000);
+        actor_mismatch.tenant_context.actor_id = Some("other-user".to_string());
+        assert_eq!(
+            verifier.verify_at(
+                &sign_assertion(&signing_key, "aca-key-1", &actor_mismatch),
+                5_000,
+            ),
+            Err(AcaContextError::InvalidClaims)
+        );
+
+        let mut wrong_issuer = test_claims(1_000, 9_000);
+        wrong_issuer.issuer = "untrusted-issuer".to_string();
+        assert_eq!(
+            verifier.verify_at(
+                &sign_assertion(&signing_key, "aca-key-1", &wrong_issuer),
+                5_000,
+            ),
+            Err(AcaContextError::BadIssuer)
+        );
+
+        let mut wrong_version = test_claims(1_000, 9_000);
+        wrong_version.version = "v2".to_string();
+        assert_eq!(
+            verifier.verify_at(
+                &sign_assertion(&signing_key, "aca-key-1", &wrong_version),
+                5_000,
+            ),
+            Err(AcaContextError::MalformedAssertion)
+        );
+
+        let overlong = test_claims(1_000, 1_000 + DEFAULT_CONTEXT_ASSERTION_MAX_LIFETIME_MS + 1);
+        assert_eq!(
+            verifier.verify_at(&sign_assertion(&signing_key, "aca-key-1", &overlong), 5_000,),
+            Err(AcaContextError::LifetimeExceeded)
+        );
+    }
+
+    #[test]
+    fn hosted_mode_one_shot_replay_is_rejected() {
+        let signing_key = test_signing_key();
+        let verifier = AcaContextAssertionVerifier::new_with_policy(
+            test_keyring(&signing_key),
+            ContextAssertionPolicy::new(
+                DEFAULT_CONTEXT_ASSERTION_ISSUER,
+                DEFAULT_AUDIENCE,
+                DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
+                DEFAULT_CONTEXT_ASSERTION_MAX_LIFETIME_MS,
+            )
+            .expect("policy"),
+            ContextAssertionReplayStore::in_memory(),
+            ContextAssertionReplayMode::OneShot,
+        )
+        .expect("verifier");
+        let assertion = sign_assertion(&signing_key, "aca-key-1", &test_claims(1_000, 9_000));
+        verifier
+            .verify_at(&assertion, 5_000)
+            .expect("first presentation");
+        assert_eq!(
+            verifier.verify_at(&assertion, 5_000),
+            Err(AcaContextError::Replayed)
+        );
+    }
+
     // ── Hosted mode: missing assertion ────────────────────────────────────────
 
     #[test]
@@ -721,6 +846,15 @@ mod tests {
             .verify_context_assertion(Some("header.claims.sig"))
             .expect_err("hosted mode without key must fail closed");
         assert_eq!(err, AcaContextError::KeyNotConfigured);
+    }
+
+    #[test]
+    fn direct_empty_keyring_constructor_fails_closed_without_panicking() {
+        let verifier = AcaContextAssertionVerifier::new(VerifierKeyring::new(), DEFAULT_AUDIENCE);
+        assert_eq!(
+            verifier.verify_at("malformed", 5_000),
+            Err(AcaContextError::KeyNotConfigured)
+        );
     }
 
     // ── Keyring: key status checks ────────────────────────────────────────────

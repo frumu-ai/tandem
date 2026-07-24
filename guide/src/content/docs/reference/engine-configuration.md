@@ -9,7 +9,9 @@ Run `tandem-engine config check` before self-hosted or enterprise deployments to
 
 ## Security Invariants
 
-- Hosted or enterprise auth mode requires a context assertion verifier keyring.
+- Hosted or enterprise auth mode requires a metadata-bearing context assertion verifier keyring; legacy single-key mode is rejected.
+- Hosted or enterprise auth mode requires `TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE` and rejects replay mode `off`.
+- Assertion lifetime is bounded to a 15-minute default and one-hour hard ceiling.
 - Hosted or enterprise auth mode requires an explicit transport token from `TANDEM_API_TOKEN`, `TANDEM_API_TOKEN_FILE`, or `--api-token`.
 - Hosted or enterprise auth mode rejects `TANDEM_UNSAFE_NO_API_TOKEN`.
 - Malformed verifier key material, invalid booleans, invalid modes, and out-of-range numeric settings fail fast.

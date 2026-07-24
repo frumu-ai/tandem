@@ -163,6 +163,11 @@ pub struct AppState {
     pub in_process_mode: Arc<AtomicBool>,
     pub api_token: Arc<RwLock<Option<String>>>,
     pub transport_tokens: Arc<RwLock<Vec<TransportTokenRecord>>>,
+    pub(crate) context_assertion_security: Arc<
+        std::sync::RwLock<
+            Option<Arc<crate::context_assertion_security::RuntimeContextAssertionSecurity>>,
+        >,
+    >,
     pub engine_leases: Arc<RwLock<std::collections::HashMap<String, EngineLease>>>,
     pub managed_worktrees: Arc<RwLock<std::collections::HashMap<String, ManagedWorktreeRecord>>>,
     pub run_registry: RunRegistry,
