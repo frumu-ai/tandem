@@ -106,6 +106,9 @@ Operational notes:
   fails closed.
 - Every replica must use the same replay-store path on storage that provides reliable SQLite cross-process file locking. A per-pod local path does not satisfy the
   multi-replica guarantee.
+- The runtime OS account is part of the trust boundary. Do not run untrusted
+  same-UID processes beside the runtime; they can replace runtime-owned files after
+  any completed check or request.
 - Entries are retained until assertion expiry plus a 60-second grace window.
   Storage is bounded to 100,000 live entries globally and 10,000 per
   issuer/audience namespace.

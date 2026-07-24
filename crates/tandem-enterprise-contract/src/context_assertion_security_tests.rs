@@ -436,6 +436,31 @@ fn persistent_replay_database_rejects_substituted_schema_objects() {
     ));
 }
 
+#[test]
+fn persistent_replay_database_rejects_sqlite_prefixed_trigger() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("sqlite-prefixed-trigger.sqlite");
+    let store = ContextAssertionReplayStore::persistent(&path).expect("store");
+    drop(store);
+
+    let connection = Connection::open(&path).expect("open database");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER sqliteevil
+             AFTER INSERT ON replay_entries
+             BEGIN
+                DELETE FROM replay_entries WHERE replay_key = NEW.replay_key;
+             END;",
+        )
+        .expect("create replay-deleting trigger");
+    drop(connection);
+
+    assert!(matches!(
+        ContextAssertionReplayStore::persistent(&path),
+        Err(ContextAssertionError::ReplayBackendUnavailable)
+    ));
+}
+
 #[cfg(unix)]
 #[test]
 fn running_replay_store_rejects_database_path_replacement() {

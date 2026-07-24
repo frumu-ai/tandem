@@ -935,6 +935,9 @@ fn commit_replay_transaction(
     // durable commit. A path swap in either window makes the request fail
     // closed instead of returning success for a record committed to an
     // unlinked database inode.
+    // A malicious same-UID process is inside the runtime trust boundary; it can
+    // replace this path after any function or request returns. Operators must not
+    // co-locate untrusted workloads under the runtime account.
     validate_replay_file_identity(path, identity)?;
     transaction.commit().map_err(replay_database_error)?;
     validate_replay_file_identity(path, identity)
@@ -1008,7 +1011,7 @@ fn validate_replay_database(
 fn validate_replay_schema(connection: &Connection) -> Result<(), ContextAssertionError> {
     let mut statement = connection
         .prepare(
-            "SELECT type, name, tbl_name, sql\n             FROM sqlite_master\n             WHERE name NOT LIKE 'sqlite_%'\n             ORDER BY type, name",
+            "SELECT type, name, tbl_name, sql\n             FROM sqlite_master\n             WHERE name NOT GLOB 'sqlite_*'\n             ORDER BY type, name",
         )
         .map_err(replay_database_error)?;
     let objects = statement
