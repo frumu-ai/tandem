@@ -44,7 +44,13 @@ tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_j
 libc = "0.2"
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tandem-types = { path = "../tandem-types", version = "0.7.1" }

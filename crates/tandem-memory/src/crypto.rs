@@ -40,8 +40,6 @@ use crate::types::{MemoryError, MemoryResult};
 /// envelope, version 1).
 pub(crate) const CIPHERTEXT_PREFIX: &str = "tce1:";
 const LOCAL_KEY_FILE_ENV: &str = "TANDEM_MEMORY_LOCAL_KEY_FILE";
-#[cfg(windows)]
-const LOCAL_KEY_WINDOWS_ACL_ATTESTED_ENV: &str = "TANDEM_MEMORY_LOCAL_KEY_WINDOWS_ACL_VERIFIED";
 const NONCE_LEN: usize = 12;
 pub(crate) const KEY_LEN: usize = 32;
 
@@ -607,7 +605,7 @@ fn open_existing_local_key(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
 
-    require_windows_acl_attestation()?;
+    validate_windows_key_parent(path)?;
     std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
@@ -619,7 +617,7 @@ fn create_local_key_file(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
 
-    require_windows_acl_attestation()?;
+    validate_windows_key_parent(path)?;
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -633,15 +631,9 @@ fn validate_open_local_key_file(path: &Path, file: &std::fs::File) -> MemoryResu
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
-    require_windows_acl_attestation().map_err(|error| {
-        MemoryError::InvalidConfig(format!(
-            "local memory key ACL validation failed for `{}`: {error}",
-            path.display()
-        ))
-    })?;
     let metadata = file.metadata().map_err(|error| {
         MemoryError::InvalidConfig(format!(
-            "failed to inspect local memory key file `{}`: {error}",
+            "failed to inspect local memory key file {}: {error}",
             path.display()
         ))
     })?;
@@ -649,34 +641,40 @@ fn validate_open_local_key_file(path: &Path, file: &std::fs::File) -> MemoryResu
         || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     {
         return Err(MemoryError::InvalidConfig(format!(
-            "local memory key file `{}` must be a non-reparse regular file",
+            "local memory key file {} must be a non-reparse regular file",
             path.display()
         )));
     }
-    Ok(())
+    crate::windows_acl::validate_private_file_handle(file, "local memory key").map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "local memory key ACL validation failed for {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 #[cfg(windows)]
-fn require_windows_acl_attestation() -> std::io::Result<()> {
-    let attested = std::env::var(LOCAL_KEY_WINDOWS_ACL_ATTESTED_ENV)
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false);
-    if attested {
-        Ok(())
-    } else {
-        Err(std::io::Error::new(
+fn validate_windows_key_parent(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(parent)?;
+    let metadata = directory.metadata()?;
+    if !metadata.file_type().is_dir()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            format!(
-                "{LOCAL_KEY_WINDOWS_ACL_ATTESTED_ENV}=true is required after an operator provisions an owner-only Windows ACL"
-            ),
-        ))
+            "local memory key parent must be a non-reparse directory",
+        ));
     }
+    crate::windows_acl::validate_private_file_handle(&directory, "local memory key parent")
 }
 
 #[cfg(not(any(unix, windows)))]

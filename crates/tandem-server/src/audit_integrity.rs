@@ -482,7 +482,43 @@ fn read_anchor_file(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn read_anchor_file(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    validate_windows_anchor_directory(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("open external audit anchor at {}", path.display()))
+        }
+    };
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.file_type().is_file()
+            && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+        "external audit anchor must be a non-reparse regular file"
+    );
+    anyhow::ensure!(
+        metadata.len() <= 64 * 1024,
+        "external audit anchor is too large"
+    );
+    tandem_memory::windows_acl::validate_private_file_handle(&file, "external audit anchor")?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn read_anchor_file(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -683,12 +719,39 @@ fn prepare_anchor_dir(anchor_dir: &Path) -> anyhow::Result<PathBuf> {
             "external audit anchor directory must have mode 0700"
         );
     }
+    #[cfg(windows)]
+    validate_windows_anchor_directory(anchor_dir)?;
     std::fs::canonicalize(anchor_dir).with_context(|| {
         format!(
             "canonicalize external audit anchor directory at {}",
             anchor_dir.display()
         )
     })
+}
+
+#[cfg(windows)]
+fn validate_windows_anchor_directory(path: &Path) -> anyhow::Result<()> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .with_context(|| format!("open external audit anchor directory at {}", path.display()))?;
+    let metadata = directory.metadata()?;
+    anyhow::ensure!(
+        metadata.file_type().is_dir()
+            && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+        "external audit anchor directory must be a non-reparse directory"
+    );
+    tandem_memory::windows_acl::validate_private_file_handle(
+        &directory,
+        "external audit anchor directory",
+    )?;
+    Ok(())
 }
 
 fn resolved_anchor_path(scope: &str, identity: &str, state_path: &Path) -> anyhow::Result<PathBuf> {
@@ -757,7 +820,11 @@ fn replace_anchor_file(source: &Path, destination: &Path) -> std::io::Result<()>
 fn atomic_write_anchor(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
+    #[cfg(windows)]
+    use std::os::windows::fs::OpenOptionsExt;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    #[cfg(windows)]
+    validate_windows_anchor_directory(parent)?;
     let temporary = parent.join(format!(".anchor-{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| {
         let mut options = std::fs::OpenOptions::new();
@@ -766,7 +833,14 @@ fn atomic_write_anchor(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         options
             .mode(0o600)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        #[cfg(windows)]
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
         let mut file = options.open(&temporary)?;
+        #[cfg(windows)]
+        tandem_memory::windows_acl::validate_private_file_handle(
+            &file,
+            "external audit anchor temporary file",
+        )?;
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);

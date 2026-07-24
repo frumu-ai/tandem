@@ -889,7 +889,6 @@ const CONFIG_VARS: &[ConfigVar] = &[
     ConfigVar { name: "TANDEM_AUDIT_HMAC_KEY_ID", default: "primary", notes: "Stable identifier for the single active audit-integrity key." },
     ConfigVar { name: "TANDEM_AUDIT_HMAC_KEYRING_FILE", default: "unset", notes: "Owner-only JSON keyring with active, verify-only, and revoked audit-integrity keys for rotation." },
     ConfigVar { name: "TANDEM_AUDIT_ANCHOR_DIR", default: "unset", notes: "Absolute external directory for authenticated audit/store heads; required outside the state tree in hosted/enterprise mode." },
-    ConfigVar { name: "TANDEM_MEMORY_LOCAL_KEY_WINDOWS_ACL_VERIFIED", default: "false", notes: "Explicit Windows-only attestation that the local memory key path has an owner-only DACL; local-key mode otherwise fails closed." },
     ConfigVar { name: "TANDEM_RUN_STALE_MS", default: "120000", notes: "Run staleness threshold; valid range 30000..=600000." },
     ConfigVar { name: "TANDEM_TOKEN_COST_PER_1K_USD", default: "0.0", notes: "Non-negative token cost used for estimates." },
     ConfigVar { name: "TANDEM_AUTOMATION_STRICT_RESEARCH_QUALITY", default: "true", notes: "Enable strict automation research quality checks." },

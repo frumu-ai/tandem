@@ -84,9 +84,13 @@ external directory using create-new temporary files, file sync, atomic replaceme
 (Windows uses replace-existing/write-through semantics), and parent-directory sync on
 Unix. The Unix directory must be a real effective-user-owned
 `0700` directory; anchor reads require regular, single-link, effective-user-owned
-`0600` files and reject links, oversized content, or permission drift. Reads require
-the external generation and digest to
-match the local committed head exactly. Missing anchors, an older local generation,
+`0600` files and reject links, oversized content, or permission drift. On Windows, the
+directory, existing anchor, and create-new temporary anchor are opened with reparse-point
+protection and validated from their opened-handle security descriptors. The owner must
+match the process identity, and all granting DACL entries, including inherited entries,
+must target that owner, LocalSystem, or built-in Administrators. Null DACLs, unprivileged
+grants, and unsupported granting ACE forms fail closed. Reads require the external
+generation and digest to match the local committed head exactly. Missing anchors, an older local generation,
 a substituted digest, or an invalid anchor MAC fail closed.
 
 Protect and replicate the anchor directory independently of the Tandem state volume.

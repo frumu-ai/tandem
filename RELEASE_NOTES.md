@@ -27,8 +27,10 @@ Local memory-key creation now uses atomic create-new/no-follow semantics with mo
 0600 in the creation syscall. Existing Unix keys must be regular, single-link,
 effective-user-owned, exact-mode files with a supported size and format; unsafe
 permissions, links, ownership, malformed data, and concurrent races fail closed.
-Windows local-key use requires an explicit owner-only-DACL deployment attestation;
-hosted Windows deployments should use KMS.
+Windows validates opened key-parent and key-file handles as non-reparse objects owned
+by the process identity, with granting DACL entries restricted to that owner, LocalSystem,
+or built-in Administrators. External audit-anchor directories and files enforce the same
+opened-handle DACL boundary. Hosted Windows deployments should still prefer KMS.
 
 ### Multi-Channel Slack Connections
 
