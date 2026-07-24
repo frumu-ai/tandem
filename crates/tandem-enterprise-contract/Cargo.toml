@@ -10,7 +10,14 @@ edition = "2021"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 ed25519-dalek = "2"
+fs2 = "0.4"
 http = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs", "process"] }
+
+[dev-dependencies]
+tempfile = "3"

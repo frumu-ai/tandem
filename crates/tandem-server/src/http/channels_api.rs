@@ -1579,6 +1579,35 @@ pub(super) async fn admin_reload_config(
     grant
         .revalidate(&state, &effect)
         .map_err(crate::http::host_authority::host_authorization_status)?;
+    let auth_mode = crate::config::env::resolve_runtime_auth_mode();
+    let assertion_reload = state
+        .reload_context_assertion_security(auth_mode)
+        .map_err(|error| {
+            tracing::warn!(
+                target: "tandem_server::context_assertion",
+                %error,
+                "rejected context assertion verifier reload; retaining last-known-good snapshot"
+            );
+            StatusCode::BAD_REQUEST
+        })?;
+    crate::audit::append_protected_audit_event(
+        &state,
+        "context_assertion.verifier_reloaded",
+        &tenant,
+        verified.as_deref().and_then(|context| context.tenant_context.actor_id.clone()),
+        json!({
+            "enabled": assertion_reload.current.is_some(),
+            "previous_keyring_fingerprint": assertion_reload.previous.as_ref().map(|snapshot| snapshot.keyring_fingerprint()),
+            "current_keyring_fingerprint": assertion_reload.current.as_ref().map(|snapshot| snapshot.keyring_fingerprint()),
+            "keyring_changed": assertion_reload.previous.as_ref().map(|snapshot| snapshot.keyring_fingerprint())
+                != assertion_reload.current.as_ref().map(|snapshot| snapshot.keyring_fingerprint()),
+            "key_count": assertion_reload.current.as_ref().map(|snapshot| snapshot.key_count()),
+            "replay_mode": assertion_reload.current.as_ref().map(|snapshot| format!("{:?}", snapshot.replay_mode())),
+            "max_lifetime_ms": assertion_reload.current.as_ref().map(|snapshot| snapshot.max_lifetime_ms()),
+        }),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     state
         .providers
         .reload(state.config.get().await.into())

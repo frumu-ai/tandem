@@ -32,6 +32,7 @@ pub struct ObservabilityMetricsSnapshot {
     pub provider_errors_total: BTreeMap<String, u64>,
     pub webhook_intake_throttled_total: BTreeMap<String, u64>,
     pub webhook_rejection_telemetry_total: BTreeMap<String, u64>,
+    pub context_assertion_rejections_total: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Default)]
@@ -171,6 +172,23 @@ pub fn record_webhook_rejection_telemetry(outcome: &str) {
         .snapshot
         .webhook_rejection_telemetry_total
         .entry(outcome)
+        .or_default() += 1;
+}
+
+pub fn record_context_assertion_rejection(reason: &str) {
+    let reason = safe_label(reason);
+    metrics::counter!(
+        "tandem_context_assertion_rejections_total",
+        "reason" => reason.clone()
+    )
+    .increment(1);
+    let mut state = metrics_state()
+        .lock()
+        .expect("observability metrics mutex poisoned");
+    *state
+        .snapshot
+        .context_assertion_rejections_total
+        .entry(reason)
         .or_default() += 1;
 }
 
@@ -358,6 +376,14 @@ pub fn render_observability_metrics_prometheus() -> String {
             &mut out,
             "tandem_webhook_rejection_telemetry_total",
             &[("outcome", outcome.as_str())],
+            count,
+        );
+    }
+    for (reason, count) in snapshot.context_assertion_rejections_total {
+        render_metric_line(
+            &mut out,
+            "tandem_context_assertion_rejections_total",
+            &[("reason", reason.as_str())],
             count,
         );
     }

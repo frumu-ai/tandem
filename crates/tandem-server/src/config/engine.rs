@@ -18,6 +18,9 @@ const EXECUTE_NODE_TIMEOUT_MAX_MS: u64 = 3_600_000;
 const CONTEXT_ASSERTION_FUTURE_SKEW_DEFAULT_MS: u64 = 10_000;
 const CONTEXT_ASSERTION_FUTURE_SKEW_MIN_MS: u64 = 10_000;
 const CONTEXT_ASSERTION_FUTURE_SKEW_MAX_MS: u64 = 60_000;
+const CONTEXT_ASSERTION_LIFETIME_DEFAULT_MS: u64 = 15 * 60 * 1_000;
+const CONTEXT_ASSERTION_LIFETIME_MIN_MS: u64 = 1;
+const CONTEXT_ASSERTION_LIFETIME_MAX_MS: u64 = 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EngineConfigOptions {
@@ -37,6 +40,9 @@ pub struct EngineConfig {
     pub scheduler_max_concurrent_runs: usize,
     pub scheduler_shutdown_timeout_secs: u64,
     pub context_assertion_max_future_skew_ms: u64,
+    pub context_assertion_max_lifetime_ms: u64,
+    pub context_assertion_replay_mode: &'static str,
+    pub context_assertion_replay_store_configured: bool,
     pub context_assertion_verifier_configured: bool,
     pub hosted_control_plane_configured: bool,
     pub cross_tenant_grant_signing_key_configured: bool,
@@ -57,7 +63,10 @@ impl EngineConfigReport {
         let mut errors = Vec::new();
         let mut warnings = unknown_tandem_env_warnings();
         let runtime_auth_mode = parse_runtime_auth_mode(&mut errors);
-        validate_context_assertion_public_keys(&mut errors);
+        let hosted_control_plane_configured = super::env::hosted_control_plane_configured();
+        let hosted_or_enterprise = runtime_auth_mode != RuntimeAuthMode::LocalSingleTenant
+            || hosted_control_plane_configured;
+        validate_context_assertion_public_keys(hosted_or_enterprise, &mut warnings, &mut errors);
         let unsafe_no_api_token = options.unsafe_no_api_token
             || parse_bool_env("TANDEM_UNSAFE_NO_API_TOKEN", false, &mut errors);
         let transport_token_configured = options.cli_transport_token_configured
@@ -114,9 +123,22 @@ impl EngineConfigReport {
                 )),
                 &mut errors,
             ),
+            context_assertion_max_lifetime_ms: parse_u64_env(
+                "TANDEM_CONTEXT_ASSERTION_MAX_LIFETIME_MS",
+                CONTEXT_ASSERTION_LIFETIME_DEFAULT_MS,
+                Some((
+                    CONTEXT_ASSERTION_LIFETIME_MIN_MS,
+                    CONTEXT_ASSERTION_LIFETIME_MAX_MS,
+                )),
+                &mut errors,
+            ),
+            context_assertion_replay_mode: parse_context_assertion_replay_mode(&mut errors),
+            context_assertion_replay_store_configured: env_value_present(
+                "TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE",
+            ),
             context_assertion_verifier_configured:
                 super::env::context_assertion_verifier_configured(),
-            hosted_control_plane_configured: super::env::hosted_control_plane_configured(),
+            hosted_control_plane_configured,
             cross_tenant_grant_signing_key_configured:
                 super::env::cross_tenant_grant_signing_key_configured(),
             audit_hmac_key_configured: super::env::audit_hmac_key_configured(),
@@ -215,7 +237,9 @@ pub fn config_reference_markdown() -> String {
     }
     out.push_str(
         "\n`tandem-engine config check` validates these startup invariants before the server binds:\n\n\
-- Hosted or enterprise auth mode requires a context assertion verifier keyring.\n\
+- Hosted or enterprise auth mode requires a metadata-bearing context assertion verifier keyring; legacy single-key mode is rejected.\n\
+- Hosted or enterprise auth mode requires `TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE` and rejects replay mode `off`.\n\
+- Assertion lifetime is bounded to a 15-minute default and one-hour hard ceiling.\n\
 - Hosted or enterprise auth mode requires an explicit transport token from `TANDEM_API_TOKEN`, `TANDEM_API_TOKEN_FILE`, or `--api-token`.\n\
 - Hosted or enterprise auth mode rejects `TANDEM_UNSAFE_NO_API_TOKEN`.\n\
 - Malformed verifier key material, invalid booleans, invalid modes, and out-of-range numeric settings fail fast.\n\
@@ -228,9 +252,33 @@ Predicate-governed decisions and enterprise-authored exact-action approvals addi
 fn validate_security_invariants(config: &EngineConfig, errors: &mut Vec<String>) {
     let hosted_or_enterprise = config.runtime_auth_mode != RuntimeAuthMode::LocalSingleTenant
         || config.hosted_control_plane_configured;
-    if hosted_or_enterprise && !config.context_assertion_verifier_configured {
+    if hosted_or_enterprise
+        && !(env_value_present("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS")
+            || env_value_present("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE"))
+    {
         errors.push(
             "TANDEM_RUNTIME_AUTH_MODE hosted/enterprise requires TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS or *_FILE"
+                .to_string(),
+        );
+    }
+    if hosted_or_enterprise
+        && (env_value_present("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY")
+            || env_value_present("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE"))
+    {
+        errors.push(
+            "legacy TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY or *_FILE is local migration compatibility only and is rejected in hosted/enterprise mode"
+                .to_string(),
+        );
+    }
+    if hosted_or_enterprise && !config.context_assertion_replay_store_configured {
+        errors.push(
+            "hosted/enterprise runtime requires TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE"
+                .to_string(),
+        );
+    }
+    if hosted_or_enterprise && config.context_assertion_replay_mode == "off" {
+        errors.push(
+            "hosted/enterprise runtime cannot disable context assertion replay protection"
                 .to_string(),
         );
     }
@@ -261,6 +309,23 @@ fn parse_runtime_auth_mode(errors: &mut Vec<String>) -> RuntimeAuthMode {
             }
         },
         _ => RuntimeAuthMode::LocalSingleTenant,
+    }
+}
+fn parse_context_assertion_replay_mode(errors: &mut Vec<String>) -> &'static str {
+    match std::env::var("TANDEM_CONTEXT_ASSERTION_REPLAY_MODE") {
+        Ok(value) if !value.trim().is_empty() => match value.trim().to_ascii_lowercase().as_str() {
+            "bound" => "bound",
+            "one_shot" | "one-shot" | "oneshot" => "one_shot",
+            "off" => "off",
+            _ => {
+                errors.push(format!(
+                        "TANDEM_CONTEXT_ASSERTION_REPLAY_MODE has invalid value `{}`; expected bound, one_shot, or off",
+                        value.trim()
+                    ));
+                "bound"
+            }
+        },
+        _ => "bound",
     }
 }
 
@@ -504,13 +569,22 @@ fn api_token_file_configured(errors: &mut Vec<String>) -> bool {
     }
 }
 
-fn validate_context_assertion_public_keys(errors: &mut Vec<String>) {
+fn validate_context_assertion_public_keys(
+    require_metadata: bool,
+    warnings: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
     if let Some(raw_keys) = read_env_or_file(
         "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
         "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE",
         errors,
     ) {
-        validate_keyring(&raw_keys, "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS", errors);
+        validate_keyring(
+            &raw_keys,
+            "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+            require_metadata,
+            errors,
+        );
     }
     if let Some(raw_key) = read_env_or_file(
         "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY",
@@ -518,6 +592,12 @@ fn validate_context_assertion_public_keys(errors: &mut Vec<String>) {
         errors,
     ) {
         validate_public_key(&raw_key, "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY", errors);
+        if !require_metadata {
+            warnings.push(
+                "legacy TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY is migration compatibility only; use the metadata-bearing TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS keyring"
+                    .to_string(),
+            );
+        }
     }
 }
 
@@ -556,9 +636,9 @@ fn read_env_or_file(
     }
 }
 
-fn validate_keyring(raw: &str, source: &str, errors: &mut Vec<String>) {
+fn validate_keyring(raw: &str, source: &str, require_metadata: bool, errors: &mut Vec<String>) {
     let trimmed = raw.trim();
-    if trimmed.starts_with('{') {
+    if trimmed.starts_with("{") {
         match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(trimmed) {
             Ok(entries) if entries.is_empty() => errors.push(format!("{source} must not be empty")),
             Ok(entries) => {
@@ -567,14 +647,36 @@ fn validate_keyring(raw: &str, source: &str, errors: &mut Vec<String>) {
                         errors.push(format!("{source} contains an empty key id"));
                         continue;
                     }
-                    let raw_key = match value {
-                        serde_json::Value::String(value) => Some(value),
-                        serde_json::Value::Object(mut object) => object
-                            .remove("public_key")
-                            .or_else(|| object.remove("publicKey"))
-                            .and_then(|value| value.as_str().map(ToString::to_string)),
-                        _ => None,
+                    let (raw_key, purpose, status) = match value {
+                        serde_json::Value::String(value) => (Some(value), None, None),
+                        serde_json::Value::Object(object) => (
+                            object
+                                .get("public_key")
+                                .or_else(|| object.get("publicKey"))
+                                .and_then(|value| value.as_str().map(ToString::to_string)),
+                            object
+                                .get("purpose")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            object
+                                .get("status")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                        ),
+                        _ => (None, None, None),
                     };
+                    if require_metadata {
+                        if purpose.as_deref() != Some("context_assertion") {
+                            errors.push(format!(
+                                "{source} entry `{kid}` must declare purpose=context_assertion"
+                            ));
+                        }
+                        if !matches!(status.as_deref(), Some("active" | "retired" | "revoked")) {
+                            errors.push(format!(
+                                "{source} entry `{kid}` must declare status=active, retired, or revoked"
+                            ));
+                        }
+                    }
                     match raw_key {
                         Some(raw_key) => validate_public_key(&raw_key, source, errors),
                         None => {
@@ -588,6 +690,11 @@ fn validate_keyring(raw: &str, source: &str, errors: &mut Vec<String>) {
         return;
     }
 
+    if require_metadata {
+        errors.push(format!(
+            "{source} must be a JSON keyring with explicit purpose and status metadata in hosted/enterprise mode"
+        ));
+    }
     let mut saw_entry = false;
     for entry in trimmed.split([',', '\n', ';']) {
         let entry = entry.trim();
@@ -595,7 +702,7 @@ fn validate_keyring(raw: &str, source: &str, errors: &mut Vec<String>) {
             continue;
         }
         saw_entry = true;
-        let Some((kid, raw_key)) = entry.split_once('=').or_else(|| entry.split_once(':')) else {
+        let Some((kid, raw_key)) = entry.split_once("=").or_else(|| entry.split_once(":")) else {
             errors.push(format!(
                 "{source} entry `{entry}` must be kid=base64_public_key"
             ));
@@ -753,14 +860,16 @@ const CONFIG_VARS: &[ConfigVar] = &[
     ConfigVar { name: "TANDEM_API_TOKEN", default: "unset", notes: "Explicit HTTP transport bearer token. Secret value is never printed by config check." },
     ConfigVar { name: "TANDEM_API_TOKEN_FILE", default: "unset", notes: "File containing the HTTP transport bearer token. Required in hosted/enterprise mode unless --api-token is supplied." },
     ConfigVar { name: "TANDEM_UNSAFE_NO_API_TOKEN", default: "false", notes: "Local loopback development only; rejected in hosted/enterprise mode." },
-    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS", default: "unset", notes: "JSON or kid=base64 Ed25519 context assertion verifier keyring. Required in hosted/enterprise mode." },
-    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE", default: "unset", notes: "File containing the context assertion verifier keyring." },
-    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY", default: "unset", notes: "Legacy single Ed25519 verifier public key." },
-    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE", default: "unset", notes: "File containing the legacy single verifier public key." },
+    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS", default: "unset", notes: "JSON Ed25519 verifier keyring with explicit purpose and status metadata. Required in hosted/enterprise mode." },
+    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE", default: "unset", notes: "Secure file containing the metadata-bearing verifier keyring; hosted Unix deployments require owner-only permissions." },
+    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY", default: "unset", notes: "Legacy single Ed25519 verifier public key for local migration compatibility only; rejected in hosted/enterprise mode." },
+    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE", default: "unset", notes: "Legacy single verifier key file for local migration compatibility only; rejected in hosted/enterprise mode." },
     ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_ISSUER", default: "tandem-web", notes: "Expected context assertion issuer." },
     ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_AUDIENCE", default: "tandem-runtime", notes: "Expected context assertion audience." },
-    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_REPLAY_MODE", default: "audit", notes: "Replay handling mode for verified context assertions." },
+    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_REPLAY_MODE", default: "bound", notes: "Replay handling: bound, one_shot, or off. Off is rejected in hosted/enterprise mode." },
+    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE", default: "unset", notes: "Shared durable replay-state file. Required and opened before bind in hosted/enterprise mode; Unix state and lock files require owner-only permissions and reject symlinks." },
     ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS", default: "10000", notes: "Allowed future clock skew for assertions; valid range 10000..=60000." },
+    ConfigVar { name: "TANDEM_CONTEXT_ASSERTION_MAX_LIFETIME_MS", default: "900000", notes: "Maximum assertion lifetime; valid range 1..=3600000 and enforced with checked arithmetic." },
     ConfigVar { name: "TANDEM_HOSTED_CONTROL_PLANE_URL", default: "unset", notes: "Hosted control-plane URL; enables enterprise-scoped memory policy." },
     ConfigVar { name: "TANDEM_ENTERPRISE_CONTROL_PLANE_URL", default: "unset", notes: "Enterprise control-plane URL alias." },
     ConfigVar { name: "TANDEM_CROSS_TENANT_GRANT_SIGNING_KEY", default: "unset", notes: "Secret signing key for cross-tenant grants." },
@@ -794,6 +903,7 @@ mod tests {
     use serial_test::serial;
 
     const VALID_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const VALID_METADATA_KEYRING: &str = r#"{"main":{"public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","purpose":"context_assertion","status":"active"}}"#;
 
     #[test]
     #[serial]
@@ -823,7 +933,7 @@ mod tests {
                 ("TANDEM_RUNTIME_AUTH_MODE", Some("enterprise_required")),
                 (
                     "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
-                    Some("main=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+                    Some(VALID_METADATA_KEYRING),
                 ),
                 ("TANDEM_API_TOKEN", None),
                 ("TANDEM_API_TOKEN_FILE", None),
@@ -846,7 +956,11 @@ mod tests {
                 ("TANDEM_RUNTIME_AUTH_MODE", Some("enterprise_required")),
                 (
                     "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
-                    Some("main=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+                    Some(VALID_METADATA_KEYRING),
+                ),
+                (
+                    "TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE",
+                    Some("target/test-context-assertion-replay.json"),
                 ),
                 ("TANDEM_API_TOKEN", Some("secret")),
             ],
@@ -859,13 +973,143 @@ mod tests {
 
     #[test]
     #[serial]
-    fn hosted_mode_rejects_unsafe_no_api_token_from_env() {
+    fn hosted_mode_rejects_keyrings_without_required_metadata() {
         with_env(
             &[
                 ("TANDEM_RUNTIME_AUTH_MODE", Some("enterprise_required")),
                 (
                     "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
                     Some("main=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+                ),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE", None),
+                (
+                    "TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE",
+                    Some("target/test-context-assertion-replay.json"),
+                ),
+                ("TANDEM_API_TOKEN", Some("secret")),
+            ],
+            || {
+                let report = EngineConfigReport::from_env(EngineConfigOptions::default());
+                assert!(report.errors.iter().any(|error| {
+                    error.contains(
+                        "must be a JSON keyring with explicit purpose and status metadata",
+                    )
+                }));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn local_legacy_context_assertion_key_emits_migration_warning() {
+        with_env(
+            &[
+                ("TANDEM_RUNTIME_AUTH_MODE", Some("local_single_tenant")),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS", None),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE", None),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY", Some(VALID_KEY)),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE", None),
+            ],
+            || {
+                let report = EngineConfigReport::from_env(EngineConfigOptions::default());
+                assert!(report.errors.is_empty(), "{:?}", report.errors);
+                assert!(report.warnings.iter().any(|warning| {
+                    warning.contains("legacy TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY")
+                }));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn hosted_mode_requires_durable_context_assertion_replay_store() {
+        with_env(
+            &[
+                ("TANDEM_RUNTIME_AUTH_MODE", Some("enterprise_required")),
+                (
+                    "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+                    Some(VALID_METADATA_KEYRING),
+                ),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE", None),
+                ("TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE", None),
+                ("TANDEM_API_TOKEN", Some("secret")),
+            ],
+            || {
+                let report = EngineConfigReport::from_env(EngineConfigOptions::default());
+                assert!(report.errors.iter().any(|error| {
+                    error.contains("requires TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE")
+                }));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn hosted_mode_rejects_legacy_context_assertion_key() {
+        with_env(
+            &[
+                ("TANDEM_RUNTIME_AUTH_MODE", Some("hosted_single_tenant")),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS", None),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE", None),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY", Some(VALID_KEY)),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY_FILE", None),
+                (
+                    "TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE",
+                    Some("target/test-context-assertion-replay.json"),
+                ),
+                ("TANDEM_API_TOKEN", Some("secret")),
+            ],
+            || {
+                let report = EngineConfigReport::from_env(EngineConfigOptions::default());
+                assert!(report
+                    .errors
+                    .iter()
+                    .any(|error| { error.contains("legacy TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY") }));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn hosted_mode_rejects_invalid_assertion_lifetime_and_disabled_replay() {
+        with_env(
+            &[
+                ("TANDEM_RUNTIME_AUTH_MODE", Some("enterprise_required")),
+                (
+                    "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+                    Some(VALID_METADATA_KEYRING),
+                ),
+                ("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE", None),
+                (
+                    "TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE",
+                    Some("target/test-context-assertion-replay.json"),
+                ),
+                ("TANDEM_CONTEXT_ASSERTION_REPLAY_MODE", Some("off")),
+                ("TANDEM_CONTEXT_ASSERTION_MAX_LIFETIME_MS", Some("3600001")),
+                ("TANDEM_API_TOKEN", Some("secret")),
+            ],
+            || {
+                let report = EngineConfigReport::from_env(EngineConfigOptions::default());
+                assert!(report
+                    .errors
+                    .iter()
+                    .any(|error| { error.contains("TANDEM_CONTEXT_ASSERTION_MAX_LIFETIME_MS") }));
+                assert!(report.errors.iter().any(|error| {
+                    error.contains("cannot disable context assertion replay protection")
+                }));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn hosted_mode_rejects_unsafe_no_api_token_from_env() {
+        with_env(
+            &[
+                ("TANDEM_RUNTIME_AUTH_MODE", Some("enterprise_required")),
+                (
+                    "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+                    Some(VALID_METADATA_KEYRING),
                 ),
                 ("TANDEM_API_TOKEN", Some("secret")),
                 ("TANDEM_UNSAFE_NO_API_TOKEN", Some("1")),
@@ -888,7 +1132,7 @@ mod tests {
                 ("TANDEM_RUNTIME_AUTH_MODE", Some("enterprise_required")),
                 (
                     "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
-                    Some("main=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+                    Some(VALID_METADATA_KEYRING),
                 ),
                 ("TANDEM_API_TOKEN", None),
                 (

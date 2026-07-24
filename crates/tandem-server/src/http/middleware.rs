@@ -9,27 +9,33 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 
 use base64::Engine;
+#[cfg(test)]
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use tandem_types::{
     AccessPermission, DataBoundary, DataClass, GrantSource, HeaderTenantContextResolver,
     NoopRequestAuthorizationHook, OrganizationUnitAccessGrant, OrganizationUnitMembership,
-    PrincipalRef, RequestAuthorizationHook, RequestPrincipal, ResourceKind, ResourceRef,
-    ResourceScope, RuntimeAuthMode, ScopedGrant, SigningKeyPurpose, TenantContext,
-    TenantContextAssertionClaims, TenantContextAssertionHeader, TenantContextResolver,
-    TenantSource, VerifiedTenantContext,
+    PrincipalRef, RequestAuthorizationHook, RequestPrincipal, ResourceScope, RuntimeAuthMode,
+    ScopedGrant, TenantContext, TenantContextAssertionClaims, TenantContextAssertionHeader,
+    TenantContextResolver, TenantSource, VerifiedTenantContext,
 };
+#[cfg(test)]
+use tandem_types::{ResourceKind, ResourceRef, SigningKeyPurpose};
 
 use crate::{AppState, StartupStatus};
 
 use super::{ErrorCode, ErrorEnvelope};
 use crate::memory::policy_status::resolve_memory_context_runtime_auth_mode;
 
+#[cfg(test)]
 const DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS: u64 = 10_000;
+#[cfg(test)]
 const MAX_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS: u64 = 60_000;
 
 pub(super) async fn auth_gate(
@@ -166,10 +172,12 @@ async fn attach_enterprise_request_context_for_mode(
     mode: RuntimeAuthMode,
 ) -> Result<bool, String> {
     let headers = request.headers();
-    let resolved = match resolve_enterprise_request_context_for_mode_with_denial(
+    let assertion_security = state.context_assertion_security_snapshot().ok();
+    let resolved = match resolve_enterprise_request_context_for_mode_with_cached_security(
         headers,
         mode,
         state.trust_test_tenant_headers.load(Ordering::Relaxed),
+        assertion_security.as_deref(),
     ) {
         Ok(context) => context,
         Err(denial) => {
@@ -670,6 +678,7 @@ async fn append_authorization_denial_audit_event(
     .map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 fn resolve_enterprise_request_context_for_mode(
     headers: &HeaderMap,
     mode: RuntimeAuthMode,
@@ -678,6 +687,7 @@ fn resolve_enterprise_request_context_for_mode(
         .map_err(|denial| denial.reason)
 }
 
+#[cfg(test)]
 fn resolve_enterprise_request_context_for_mode_with_denial(
     headers: &HeaderMap,
     mode: RuntimeAuthMode,
@@ -711,6 +721,74 @@ fn resolve_enterprise_request_context_for_mode_with_denial(
                 verified_tenant_context,
             ))
         }
+    }
+}
+
+fn resolve_enterprise_request_context_for_mode_with_cached_security(
+    headers: &HeaderMap,
+    mode: RuntimeAuthMode,
+    trust_test_tenant_headers: bool,
+    assertion_security: Option<&crate::context_assertion_security::RuntimeContextAssertionSecurity>,
+) -> Result<ResolvedEnterpriseRequestContext, TenantContextIngressDenial> {
+    match mode {
+        RuntimeAuthMode::LocalSingleTenant => Ok(resolve_local_enterprise_request_context(
+            headers,
+            trust_test_tenant_headers,
+        )),
+        RuntimeAuthMode::HostedSingleTenant | RuntimeAuthMode::EnterpriseRequired => {
+            if has_raw_tenant_context_headers(headers) {
+                return Err(TenantContextIngressDenial::untrusted(
+                    TenantContextIngressError::UnsignedTenantHeaders,
+                ));
+            }
+            let assertion = first_tandem_context_assertion(headers).ok_or_else(|| {
+                TenantContextIngressDenial::untrusted(
+                    TenantContextIngressError::MissingVerifiedContext,
+                )
+            })?;
+            let verifier = assertion_security.ok_or_else(|| {
+                TenantContextIngressDenial::from_assertion(
+                    TenantContextIngressError::ContextAssertionKeyNotConfigured,
+                    &assertion,
+                )
+            })?;
+            let verified_tenant_context = verifier.verify(&assertion).map_err(|error| {
+                TenantContextIngressDenial::from_assertion(
+                    map_shared_context_assertion_error(error),
+                    &assertion,
+                )
+            })?;
+            Ok(ResolvedEnterpriseRequestContext::verified(
+                verified_tenant_context,
+            ))
+        }
+    }
+}
+
+fn map_shared_context_assertion_error(
+    error: tandem_enterprise_contract::ContextAssertionError,
+) -> TenantContextIngressError {
+    use tandem_enterprise_contract::ContextAssertionError as Shared;
+    match error {
+        Shared::KeyNotConfigured | Shared::ReplayBackendUnavailable => {
+            TenantContextIngressError::ContextAssertionKeyNotConfigured
+        }
+        Shared::MalformedAssertion
+        | Shared::MalformedHeader
+        | Shared::UnsupportedVersion
+        | Shared::InvalidIdentity
+        | Shared::InvalidPolicy => TenantContextIngressError::ContextAssertionMalformed,
+        Shared::Expired | Shared::NotYetValid | Shared::LifetimeExceeded | Shared::TimeOverflow => {
+            TenantContextIngressError::ContextAssertionExpired
+        }
+        Shared::Replayed | Shared::ReplayCapacityExceeded => {
+            TenantContextIngressError::ContextAssertionReplayed
+        }
+        Shared::BadSignature
+        | Shared::BadIssuer
+        | Shared::BadAudience
+        | Shared::UnknownKey
+        | Shared::KeyringDenied(_) => TenantContextIngressError::ContextAssertionUntrusted,
     }
 }
 
@@ -812,6 +890,7 @@ fn first_header(headers: &HeaderMap, names: &[&str]) -> Option<String> {
     None
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TenantContextAssertionVerifier {
     public_keys_by_id: BTreeMap<String, ContextAssertionPublicKey>,
@@ -821,11 +900,13 @@ struct TenantContextAssertionVerifier {
     max_future_skew_ms: u64,
 }
 
+#[cfg(test)]
 struct SignedTenantContextAssertion {
     claims: TenantContextAssertionClaims,
     key_id: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ContextAssertionPublicKey {
     public_key: [u8; 32],
@@ -839,6 +920,7 @@ struct ContextAssertionPublicKey {
     status: Option<String>,
 }
 
+#[cfg(test)]
 impl ContextAssertionPublicKey {
     fn legacy(public_key: [u8; 32]) -> Self {
         Self {
@@ -855,6 +937,7 @@ impl ContextAssertionPublicKey {
     }
 }
 
+#[cfg(test)]
 fn context_assertion_keyring_summary(
     verifier: &TenantContextAssertionVerifier,
 ) -> Vec<serde_json::Value> {
@@ -888,6 +971,7 @@ fn context_assertion_keyring_summary(
     rows
 }
 
+#[cfg(test)]
 fn log_context_assertion_keyring_summary_once(verifier: &TenantContextAssertionVerifier) {
     static LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let _ = LOGGED.get_or_init(|| {
@@ -901,6 +985,7 @@ fn log_context_assertion_keyring_summary_once(verifier: &TenantContextAssertionV
     });
 }
 
+#[cfg(test)]
 impl TenantContextAssertionVerifier {
     fn from_env() -> Result<Self, TenantContextIngressError> {
         let public_keys_by_id = read_context_public_keyring_from_env()?;
@@ -1089,6 +1174,7 @@ impl TenantContextAssertionVerifier {
 /// - `one_shot`: an `assertion_id` is accepted exactly once. Requires the
 ///   issuing control plane to mint a fresh assertion per request.
 /// - `off`: no replay tracking (unsafe; migration escape hatch only).
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssertionReplayMode {
     Bound,
@@ -1096,6 +1182,7 @@ enum AssertionReplayMode {
     Off,
 }
 
+#[cfg(test)]
 fn resolve_assertion_replay_mode() -> AssertionReplayMode {
     match std::env::var("TANDEM_CONTEXT_ASSERTION_REPLAY_MODE")
         .ok()
@@ -1108,24 +1195,29 @@ fn resolve_assertion_replay_mode() -> AssertionReplayMode {
     }
 }
 
+#[cfg(test)]
 struct AssertionReplayEntry {
     fingerprint: [u8; 32],
     expires_at_ms: u64,
 }
 
+#[cfg(test)]
 struct AssertionReplayGuard {
     entries: std::sync::Mutex<std::collections::HashMap<String, AssertionReplayEntry>>,
 }
 
 /// Sweep expired entries once the map grows past this size, bounding memory
 /// without a background task.
+#[cfg(test)]
 const ASSERTION_REPLAY_SWEEP_THRESHOLD: usize = 1024;
 
 /// Entries are retained slightly past assertion expiry so a clock-skewed
 /// replay near the expiry boundary still hits the cache instead of slipping
 /// through between sweep and expiry validation.
+#[cfg(test)]
 const ASSERTION_REPLAY_RETENTION_GRACE_MS: u64 = 60_000;
 
+#[cfg(test)]
 impl AssertionReplayGuard {
     fn new() -> Self {
         Self {
@@ -1209,12 +1301,14 @@ impl AssertionReplayGuard {
     }
 }
 
+#[cfg(test)]
 fn assertion_fingerprint(assertion: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(assertion.trim().as_bytes());
     hasher.finalize().into()
 }
 
+#[cfg(test)]
 fn enforce_context_assertion_replay_policy(
     assertion: &str,
     verified: &VerifiedTenantContext,
@@ -1239,6 +1333,7 @@ fn enforce_context_assertion_replay_policy(
     result
 }
 
+#[cfg(test)]
 fn resolve_context_assertion_max_future_skew_ms() -> u64 {
     std::env::var("TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS")
         .ok()
@@ -1251,6 +1346,7 @@ fn resolve_context_assertion_max_future_skew_ms() -> u64 {
         )
 }
 
+#[cfg(test)]
 fn read_context_public_keyring_from_env(
 ) -> Result<BTreeMap<String, ContextAssertionPublicKey>, TenantContextIngressError> {
     let Some(raw_keys) = std::env::var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS")
@@ -1274,6 +1370,7 @@ fn read_context_public_keyring_from_env(
         .ok_or(TenantContextIngressError::ContextAssertionKeyNotConfigured)
 }
 
+#[cfg(test)]
 fn read_legacy_context_public_key_from_env(
 ) -> Result<Option<ContextAssertionPublicKey>, TenantContextIngressError> {
     let Some(raw_key) = std::env::var("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY")
@@ -1299,6 +1396,7 @@ fn read_legacy_context_public_key_from_env(
         .ok_or(TenantContextIngressError::ContextAssertionKeyNotConfigured)
 }
 
+#[cfg(test)]
 fn parse_context_public_keyring(raw: &str) -> Option<BTreeMap<String, ContextAssertionPublicKey>> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1321,6 +1419,7 @@ fn parse_context_public_keyring(raw: &str) -> Option<BTreeMap<String, ContextAss
     parse_context_public_keyring_entries(entries)
 }
 
+#[cfg(test)]
 fn parse_context_public_keyring_entries(
     entries: BTreeMap<String, String>,
 ) -> Option<BTreeMap<String, ContextAssertionPublicKey>> {
@@ -1338,6 +1437,7 @@ fn parse_context_public_keyring_entries(
     Some(decoded)
 }
 
+#[cfg(test)]
 fn parse_context_public_keyring_json_entries(
     entries: BTreeMap<String, serde_json::Value>,
 ) -> Option<BTreeMap<String, ContextAssertionPublicKey>> {
@@ -1393,6 +1493,7 @@ fn parse_context_public_keyring_json_entries(
     Some(decoded)
 }
 
+#[cfg(test)]
 fn optional_string_field(
     object: &mut serde_json::Map<String, serde_json::Value>,
     field: &str,
@@ -1410,6 +1511,7 @@ fn optional_string_field(
     })
 }
 
+#[cfg(test)]
 fn optional_u64_field(
     object: &mut serde_json::Map<String, serde_json::Value>,
     field: &str,
@@ -1417,6 +1519,7 @@ fn optional_u64_field(
     object.remove(field).and_then(|value| value.as_u64())
 }
 
+#[cfg(test)]
 fn string_vec_field(
     object: &mut serde_json::Map<String, serde_json::Value>,
     field: &str,
@@ -1447,6 +1550,7 @@ fn string_vec_field(
     }
 }
 
+#[cfg(test)]
 fn validate_context_assertion_header(
     header: &TenantContextAssertionHeader,
 ) -> Result<(), TenantContextIngressError> {
@@ -1456,6 +1560,7 @@ fn validate_context_assertion_header(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_context_assertion_key_metadata(
     key: &ContextAssertionPublicKey,
     claims: &TenantContextAssertionClaims,
@@ -1518,6 +1623,7 @@ fn validate_context_assertion_key_metadata(
     Ok(())
 }
 
+#[cfg(test)]
 fn context_assertion_scope_allowed(
     allowed_prefixes: &[String],
     actual_prefixes: &[String],
@@ -1535,6 +1641,7 @@ fn context_assertion_scope_allowed(
     })
 }
 
+#[cfg(test)]
 fn context_assertion_scope_prefixes(claims: &TenantContextAssertionClaims) -> Vec<String> {
     let mut prefixes = vec![
         format!("org/{}", claims.tenant_context.org_id),
@@ -1560,6 +1667,7 @@ fn context_assertion_scope_prefixes(claims: &TenantContextAssertionClaims) -> Ve
     prefixes
 }
 
+#[cfg(test)]
 fn push_resource_ref_prefixes(prefixes: &mut Vec<String>, resource: &ResourceRef) {
     prefixes.push(format!("org/{}", resource.organization_id));
     prefixes.push(format!(
@@ -1604,6 +1712,7 @@ fn push_resource_ref_prefixes(prefixes: &mut Vec<String>, resource: &ResourceRef
     }
 }
 
+#[cfg(test)]
 fn resource_kind_scope_label(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::Organization => "organization",
@@ -1639,6 +1748,7 @@ fn resource_kind_scope_label(kind: ResourceKind) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn decode_context_public_key(raw: &str) -> Option<[u8; 32]> {
     decode_base64url(raw.trim())
         .or_else(|| {
@@ -1656,6 +1766,7 @@ fn decode_base64url(raw: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
+#[cfg(test)]
 fn current_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

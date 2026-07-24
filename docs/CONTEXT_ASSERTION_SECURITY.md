@@ -9,37 +9,46 @@ assertion (JWS, `header.claims.signature`) on one of:
 - `x-tandem-context-jws`
 - `x-tandem-tenant-context-jws`
 
-Verification is fail-closed and implemented in
-`crates/tandem-server/src/http/middleware.rs`
-(`TenantContextAssertionVerifier`):
+Verification is fail-closed in the shared
+`tandem-enterprise-contract::context_assertion_security` module. Runtime and
+ACA both use that verifier; the runtime publishes one immutable snapshot at
+startup and request processing never rereads environment variables or keyring
+files.
 
 1. Ed25519 signature over `header.claims`, key selected by `kid`.
-2. Claims validation: version `v1`, issuer/audience match, expiry and
-   issued-at skew, non-empty `assertion_id`/actor/org/workspace, explicit
-   tenant source with deployment scope, actor consistency across
+2. Claims validation: version `v1`, issuer/audience match, expiry, issued-at
+   skew, maximum lifetime, non-empty `assertion_id`/actor/org/workspace,
+   explicit tenant source with deployment scope, and actor consistency across
    `tenant_context`, `human_actor`, and `authority_chain.initiated_by`.
 3. Key metadata validation: key status, purpose, lifetime window, allowed
    audiences, organization/deployment restrictions, resource scope prefixes.
-4. Replay policy (below).
+4. Atomic shared replay policy (below).
+5. Canonical `VerifiedTenantContext` projection returned to consumers.
 
 ## Key configuration
 
 | Variable | Meaning |
 | --- | --- |
-| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS` / `..._FILE` | JSON keyset keyed by `kid`, each entry carrying the public key plus optional `purpose`, `organization_id`, `deployment_id`, `allowed_audiences`, `allowed_resource_scope_prefixes`, `not_before_ms`, `not_after_ms`, `status`. |
-| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY` / `..._FILE` | Legacy single key (no `kid` binding). Prefer the keyset. |
+| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS` / `..._FILE` | JSON keyset keyed by `kid`. Hosted/enterprise entries require explicit `purpose` and `status`; org, deployment, audience, resource, and validity metadata are enforced when present. |
+| `TANDEM_CONTEXT_ASSERTION_PUBLIC_KEY` / `..._FILE` | Legacy metadata-free single key. Local migration compatibility only; hosted/enterprise startup rejects it. |
 | `TANDEM_CONTEXT_ASSERTION_ISSUER` | Expected `issuer` claim. Default `tandem-web`. |
 | `TANDEM_CONTEXT_ASSERTION_AUDIENCE` | Expected `audience` claim. Default `tandem-runtime`. |
-| `TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS` | Maximum accepted future `issued_at_ms` skew. Default `10000`; values are clamped to `10000..60000`. |
+| `TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS` | Maximum accepted future `issued_at_ms` skew. Default `10000`; valid range `10000..=60000`. |
+| `TANDEM_CONTEXT_ASSERTION_MAX_LIFETIME_MS` | Maximum `expires_at_ms - issued_at_ms`. Default 15 minutes (`900000`); valid range `1..=3600000` (one-hour hard ceiling). |
+| `TANDEM_CONTEXT_ASSERTION_REPLAY_MODE` | `bound` (default), `one_shot`, or `off`. Hosted/enterprise startup rejects `off`. |
+| `TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE` | Shared durable replay ledger. Required and opened before bind in hosted/enterprise mode. All replicas must point at the same supported shared-filesystem path. |
 
 If no key is configured in hosted/enterprise mode, all assertion-bearing
 requests are rejected (`context_assertion_key_not_configured`).
+On Unix, hosted keyring files and configured replay-state/lock files must be regular,
+non-symlink files owned by the runtime user with no group/world permissions
+(`0600` or stricter).
 
-At verifier initialization, the runtime logs a safe summary of configured keys:
-`kid`, status, purpose, lifetime, and tenant/deployment constraints. Public key
-bytes are never logged. Verified assertions retain the selected `kid` as
-assertion metadata so downstream strict projections and audit evidence can show
-which configured verifier key accepted the request.
+At verifier initialization and reload, the runtime logs only the SHA-256 keyring
+fingerprint, key count, replay mode, and maximum lifetime. Public key bytes are
+never logged. Verified assertions retain the selected `kid` as assertion metadata
+so downstream strict projections and audit evidence can show which configured
+verifier key accepted the request.
 
 Example keyset:
 
@@ -89,28 +98,55 @@ of an `assertion_id`. Replays are rejected with reason
 
 Operational notes:
 
-- The replay cache is in-process. Multi-replica deployments behind a load
-  balancer should pin clients per replica or front assertions with a shared
-  verifier until a shared cache backend exists.
-- Entries are retained until assertion expiry plus a 60s grace window and are
-  swept opportunistically once the cache exceeds 1024 entries; memory use is
-  bounded by the number of live assertions.
-- Replay rejections are logged with `assertion_id`, `org_id`, and the active
-  mode, and are written to protected audit as `context_assertion.rejected`
-  when the runtime can attribute them.
+- Hosted startup creates/opens both the replay state and its cross-process lock
+  file. Backend unavailability, corruption, or capacity exhaustion fails closed.
+- Every replica must use the same replay-store path on storage that provides
+  cross-process advisory locks. A per-pod local path does not satisfy the
+  multi-replica guarantee.
+- Entries are retained until assertion expiry plus a 60-second grace window.
+  Storage is bounded to 100,000 live entries globally and 10,000 per
+  issuer/audience namespace.
+- Durable keys are SHA-256 hashes of length-delimited issuer, audience, and
+  assertion ID. Stored namespace and assertion identifiers are hashed; exact
+  assertion fingerprints are stored, never assertion or token bytes.
+- Rejections increment `tandem_context_assertion_rejections_total{reason=...}`.
+  Lifetime/overflow anomalies also emit a warning without assertion bytes.
 
 ## Choosing assertion lifetimes
 
-Because `bound` mode allows identical-bytes reuse, the assertion expiry is
-the effective replay window for a fully captured request (an attacker who can
-read the assertion header can read the transport token too). Issuers should
-keep `expires_at_ms - issued_at_ms` short — minutes, not hours — and rotate
-`assertion_id` on every re-issue. Issuers must never re-sign new claims under
-an existing `assertion_id`; in `bound` mode the runtime will reject the
-refreshed assertion as a substitution.
+Because `bound` mode allows identical-bytes reuse, the assertion expiry is the
+effective replay window for a fully captured request. Issuers should keep
+`expires_at_ms - issued_at_ms` within the 15-minute default and rotate
+`assertion_id` on every re-issue. The verifier rejects any configured maximum
+above one hour and uses checked arithmetic for lifetime and skew calculations.
+Issuers must never re-sign new claims under an existing `assertion_id`; in
+`bound` mode the runtime rejects the refreshed assertion as a substitution.
 
 The runtime allows only a small future-issued window for clock drift. Keep
 control-plane and runtime clocks synchronized with NTP. If an environment
 needs a wider window during migration, `TANDEM_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS`
 can temporarily raise it up to 60 seconds, but hosted deployments should use
 the 10 second default.
+
+## Explicit reload and rotation
+
+Startup loads and validates the complete keyring, policy, and replay backend
+before the server binds. Rotation uses the permission-checked existing
+`POST /admin/reload-config` operation:
+
+1. Replace the keyring file atomically with a complete `0600` file.
+2. Call the admin reload endpoint through the normal host-effect authorization
+   boundary.
+3. The runtime parses and validates the complete next generation, verifies
+   replay readiness, then swaps one `Arc` snapshot under a write lock.
+4. Invalid or partial replacement returns `400` and leaves the last-known-good
+   generation live.
+5. A protected `context_assertion.verifier_reloaded` event records previous and
+   current SHA-256 keyring fingerprints, whether they changed, key count,
+   replay mode, and lifetime policy. No key bytes are logged.
+
+ACA uses the same verifier with `ACA_CONTEXT_ASSERTION_ISSUER`,
+`ACA_CONTEXT_ASSERTION_AUDIENCE`, `ACA_CONTEXT_ASSERTION_MAX_LIFETIME_MS`,
+`ACA_CONTEXT_ASSERTION_REPLAY_MODE`, and a required shared
+`ACA_CONTEXT_ASSERTION_REPLAY_STORE_FILE` (or Tandem replay-store fallback). ACA rejects
+replay mode `off`.
