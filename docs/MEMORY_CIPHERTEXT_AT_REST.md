@@ -35,10 +35,12 @@ logged.
 
 The standard library does not expose portable Windows DACL ownership validation. Tandem
 therefore fails closed in local-key mode on Windows unless an operator first provisions
-the key parent/file with an owner-only DACL, rejects reparse-point use in that path, and
-sets `TANDEM_MEMORY_LOCAL_KEY_WINDOWS_ACL_VERIFIED=true` as an explicit deployment
-attestation. Creation still uses create-new semantics and existing paths must be regular
-files. Hosted Windows deployments should use hosted KMS rather than this attestation.
+the key parent/file with an owner-only DACL and sets
+`TANDEM_MEMORY_LOCAL_KEY_WINDOWS_ACL_VERIFIED=true` as an explicit deployment
+attestation. Tandem opens the key leaf with reparse-point protection and validates the
+opened handle as a non-reparse regular file; the operator must also keep reparse points
+out of the attested parent path. Creation still uses create-new semantics. Hosted Windows
+deployments should use hosted KMS rather than this attestation.
 Other non-Unix/non-Windows targets do not support local key files.
 
 There is no automatic local-key rotation: replacing the key makes existing ciphertext

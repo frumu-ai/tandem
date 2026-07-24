@@ -563,10 +563,7 @@ pub(crate) async fn verify_external_anchor(
         return Ok(AnchorVerification::disabled());
     };
     let anchor_path = resolved_anchor_path(scope, identity, state_path)?;
-    let path_for_read = anchor_path.clone();
-    let bytes = tokio::task::spawn_blocking(move || read_anchor_file(&path_for_read))
-        .await
-        .context("join external audit anchor read")??;
+    let bytes = read_external_anchor_bytes(&anchor_path).await?;
     let Some(bytes) = bytes else {
         anyhow::ensure!(!integrity_keyed, "external integrity anchor is missing");
         return Ok(AnchorVerification::missing());
@@ -591,6 +588,37 @@ pub(crate) async fn verify_external_anchor(
         generation: Some(anchor.generation),
         anchored_at_ms: Some(anchor.anchored_at_ms),
     })
+}
+
+async fn read_external_anchor_bytes(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    let path_for_read = path.to_path_buf();
+    tokio::task::spawn_blocking(move || read_anchor_file(&path_for_read))
+        .await
+        .context("join external audit anchor read")?
+}
+
+pub(crate) async fn ensure_external_anchor_absent(
+    scope: &str,
+    identity: &str,
+    state_path: &Path,
+) -> anyhow::Result<()> {
+    let Some(_) = configured_path(ANCHOR_DIR_ENV) else {
+        anyhow::ensure!(
+            !production_posture(),
+            "hosted/enterprise legacy integrity verification requires TANDEM_AUDIT_ANCHOR_DIR"
+        );
+        return Ok(());
+    };
+    let anchor_path = resolved_anchor_path(scope, identity, state_path)?;
+    ensure_anchor_path_absent(&anchor_path).await
+}
+
+async fn ensure_anchor_path_absent(path: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        read_external_anchor_bytes(path).await?.is_none(),
+        "external integrity anchor proves this store was previously keyed; refusing legacy replacement"
+    );
+    Ok(())
 }
 
 fn validate_anchor_target(
@@ -690,6 +718,42 @@ fn resolved_anchor_path(scope: &str, identity: &str, state_path: &Path) -> anyho
     Ok(canonical_anchor.join(format!("{}.anchor.json", hex_bytes(&hasher.finalize()))))
 }
 
+#[cfg(windows)]
+fn replace_anchor_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_anchor_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}
+
 fn atomic_write_anchor(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
@@ -706,7 +770,7 @@ fn atomic_write_anchor(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&temporary, path)?;
+        replace_anchor_file(&temporary, path)?;
         #[cfg(unix)]
         std::fs::File::open(parent)?.sync_all()?;
         anyhow::Ok(())
@@ -1052,5 +1116,19 @@ mod tests {
         let directory_symlink = root.path().join("anchor-directory-symlink");
         symlink(&canonical, &directory_symlink).expect("create directory symlink");
         assert!(prepare_anchor_dir(&directory_symlink).is_err());
+    }
+
+    #[tokio::test]
+    async fn anchor_replacement_advances_and_blocks_legacy_state() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let path = root.path().join("replaceable.anchor.json");
+        atomic_write_anchor(&path, b"first-head").expect("write first anchor");
+        assert!(ensure_anchor_path_absent(&path).await.is_err());
+
+        atomic_write_anchor(&path, b"second-head").expect("replace anchor");
+        assert_eq!(
+            read_anchor_file(&path).expect("read replaced anchor"),
+            Some(b"second-head".to_vec())
+        );
     }
 }

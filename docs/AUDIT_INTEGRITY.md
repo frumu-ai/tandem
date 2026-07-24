@@ -80,8 +80,9 @@ migration before approving release.
 ## External anchors and rollback response
 
 Every keyed audit/store commit writes an authenticated JSON anchor to the configured
-external directory using create-new temporary files, file sync, atomic rename, and
-parent-directory sync on Unix. The Unix directory must be a real effective-user-owned
+external directory using create-new temporary files, file sync, atomic replacement
+(Windows uses replace-existing/write-through semantics), and parent-directory sync on
+Unix. The Unix directory must be a real effective-user-owned
 `0700` directory; anchor reads require regular, single-link, effective-user-owned
 `0600` files and reject links, oversized content, or permission drift. Reads require
 the external generation and digest to

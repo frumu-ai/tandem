@@ -604,22 +604,35 @@ fn validate_unix_key_metadata(
 
 #[cfg(windows)]
 fn open_existing_local_key(path: &Path) -> std::io::Result<std::fs::File> {
-    reject_non_regular_key_path(path)?;
-    std::fs::OpenOptions::new().read(true).open(path)
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+    require_windows_acl_attestation()?;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
 }
 
 #[cfg(windows)]
 fn create_local_key_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
     require_windows_acl_attestation()?;
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
 }
 
 #[cfg(windows)]
 fn validate_open_local_key_file(path: &Path, file: &std::fs::File) -> MemoryResult<()> {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
     require_windows_acl_attestation().map_err(|error| {
         MemoryError::InvalidConfig(format!(
             "local memory key ACL validation failed for `{}`: {error}",
@@ -632,23 +645,13 @@ fn validate_open_local_key_file(path: &Path, file: &std::fs::File) -> MemoryResu
             path.display()
         ))
     })?;
-    if !metadata.file_type().is_file() {
+    if !metadata.file_type().is_file()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
         return Err(MemoryError::InvalidConfig(format!(
-            "local memory key file `{}` must be a regular file",
+            "local memory key file `{}` must be a non-reparse regular file",
             path.display()
         )));
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn reject_non_regular_key_path(path: &Path) -> std::io::Result<()> {
-    let metadata = std::fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "local memory key path is not a regular file",
-        ));
     }
     Ok(())
 }

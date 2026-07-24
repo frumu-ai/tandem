@@ -637,6 +637,19 @@ fn protected_store_anchor_identity(path: &Path, store: &ProtectedStoreContext) -
     format!("{}:{}", store.store_id, path.to_string_lossy())
 }
 
+async fn ensure_legacy_store_not_anchored(
+    path: &Path,
+    store: &ProtectedStoreContext,
+) -> anyhow::Result<()> {
+    crate::audit_integrity::ensure_external_anchor_absent(
+        "protected-store",
+        &protected_store_anchor_identity(path, store),
+        path,
+    )
+    .await
+    .context("reject legacy protected-store replacement against external anchor")
+}
+
 async fn write_protected_store_anchor(
     path: &Path,
     store: &ProtectedStoreContext,
@@ -1042,6 +1055,7 @@ async fn decrypt_jsonl_state(
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
     if non_empty.is_empty() {
+        ensure_legacy_store_not_anchored(path, store).await?;
         ensure_integrity_sidecars_absent(path, "empty protected JSONL store").await?;
         return Ok(DecryptedJsonl {
             lines: Vec::new(),
@@ -1053,6 +1067,7 @@ async fn decrypt_jsonl_state(
     }
 
     if !non_empty[0].starts_with(AUTHENTICATED_JSONL_PREFIX) {
+        ensure_legacy_store_not_anchored(path, store).await?;
         anyhow::ensure!(
             !crypto.provider.is_hosted(),
             "hosted protected JSONL legacy rows lack authenticated expected authorities"
@@ -1150,6 +1165,7 @@ pub(crate) async fn read_text_file(
         validate_cached_head(path, &head).await?;
         return Ok(collection.plaintext_json);
     }
+    ensure_legacy_store_not_anchored(path, store).await?;
     ensure_integrity_sidecars_absent(path, "legacy protected JSON document").await?;
     crypto.decrypt_legacy_json_document(&stored)
 }
@@ -1176,6 +1192,7 @@ pub(crate) async fn append_jsonl_record_file(
     let crypto = crypto();
     let _process_guard = ProcessWriteLock::acquire(path).await?;
     if crypto.provider.is_plaintext() {
+        ensure_legacy_store_not_anchored(path, store).await?;
         ensure_integrity_sidecars_absent(path, "plaintext protected JSONL append").await?;
         let (existed_before, previous_len) = match fs::metadata(path).await {
             Ok(metadata) => (true, metadata.len()),
@@ -1199,6 +1216,7 @@ pub(crate) async fn append_jsonl_record_file(
             metadata.len(),
         ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ensure_legacy_store_not_anchored(path, store).await?;
             anyhow::ensure!(
                 previous_head.is_none() && previous_state.is_none(),
                 "protected JSONL data is missing from an initialized store"
@@ -1362,6 +1380,7 @@ pub(crate) async fn write_json_records_file(
     let crypto = crypto();
     let _process_guard = ProcessWriteLock::acquire(path).await?;
     if crypto.provider.is_plaintext() {
+        ensure_legacy_store_not_anchored(path, store).await?;
         ensure_integrity_sidecars_absent(path, "plaintext protected JSON write").await?;
         return atomic_replace(
             path,
@@ -1390,6 +1409,7 @@ pub(crate) async fn write_json_records_file(
                 validate_cached_head(path, &head).await?;
                 (current.generation.saturating_add(1), Some(current.digest))
             } else {
+                ensure_legacy_store_not_anchored(path, store).await?;
                 anyhow::ensure!(
                     old_head.is_none() && old_state.is_none(),
                     "legacy protected JSON document conflicts with integrity state"
@@ -1399,6 +1419,7 @@ pub(crate) async fn write_json_records_file(
             }
         }
         None => {
+            ensure_legacy_store_not_anchored(path, store).await?;
             anyhow::ensure!(
                 old_head.is_none() && old_state.is_none(),
                 "protected JSON collection data is missing from an initialized store"
