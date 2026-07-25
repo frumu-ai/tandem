@@ -40,7 +40,7 @@ fn verified_channel_actor(
     }
 }
 
-fn channel_tenant_request(
+pub(super) fn channel_tenant_request(
     method: &str,
     uri: &str,
     org_id: &str,

@@ -87,6 +87,28 @@ test("reports computed incident-monitor suffixes instead of silently omitting th
   assert.match(result.unsupported[0], /dynamic incident-monitor suffix/);
 });
 
+test("only exempts the canonical incident-monitor dynamic helper registration", () => {
+  const source = `
+    fn route_prefixed(
+      router: Router<AppState>,
+      prefix: &str,
+      suffix: &str,
+      method_router: MethodRouter<AppState>,
+    ) -> Router<AppState> {
+      let path = format!("{prefix}{suffix}");
+      router.route(&path, method_router)
+    }
+
+    fn unrelated(router: Router<AppState>, path: &str) -> Router<AppState> {
+      router.route(&path, get(handler))
+    }
+  `;
+  const result = extractRoutesFromRust(source, "routes_incident_monitor.rs");
+  assert.equal(result.routes.length, 0);
+  assert.equal(result.unsupported.length, 1);
+  assert.match(result.unsupported[0], /dynamic route path &path/);
+});
+
 test("rejects a wildcard OAuth callback bind even when the constant name is unchanged", () => {
   assert.throws(
     () =>
@@ -102,6 +124,18 @@ test("rejects a wildcard OAuth callback bind even when the constant name is unch
   );
 });
 
+test("rejects invalid loopback socket octets and ports", () => {
+  for (const address of ["127.999.0.1:1455", "127.0.0.1:99999", "127.0.0.1:0"]) {
+    assert.throws(
+      () =>
+        assertLoopbackCallbackAddress(
+          `const OPENAI_CODEX_LOCAL_CALLBACK_ADDR: &str = "${address}";`,
+        ),
+      /not statically loopback-only/,
+    );
+  }
+});
+
 test("classifies effective config mutation and protected audit policies", () => {
   const config = classifyRoute({
     listener: "engine_api",
@@ -114,6 +148,7 @@ test("classifies effective config mutation and protected audit policies", () => 
   for (const path of [
     "/audit/protected",
     "/audit/stream",
+    "/audit/data-boundary/monitoring",
     "/audit/ledger/manifest",
     "/audit/ledger/export",
   ]) {
@@ -124,6 +159,30 @@ test("classifies effective config mutation and protected audit policies", () => 
       "api_token_or_control_panel_admin_source_and_tenant_scope",
     );
   }
+});
+
+test("does not overstate administrative authorization on authenticated reads", () => {
+  for (const path of [
+    "/config/providers",
+    "/enterprise/status",
+    "/global/config",
+    "/global/storage/files",
+    "/global/workspace",
+  ]) {
+    for (const method of ["GET", "HEAD"]) {
+      const policy = classifyRoute({ listener: "engine_api", method, path });
+      assert.equal(policy.policy_origin, "tenant.authenticated");
+      assert.equal(policy.authorization_policy, "verified_tenant_context");
+      assert.equal(policy.capability, null);
+    }
+  }
+
+  const mutation = classifyRoute({
+    listener: "engine_api",
+    method: "PATCH",
+    path: "/global/config",
+  });
+  assert.equal(mutation.policy_origin, "admin.deployment");
 });
 
 test("rejects a stale committed inventory", () => {

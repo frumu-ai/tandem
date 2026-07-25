@@ -27,6 +27,7 @@ impl ResolvedPublicHttpsTarget {
 
     pub fn client(&self, timeout: Duration) -> anyhow::Result<Client> {
         let mut builder = Client::builder()
+            .no_proxy()
             .redirect(RedirectPolicy::none())
             .timeout(timeout);
         if let Some(host) = self.dns_override_host.as_deref() {

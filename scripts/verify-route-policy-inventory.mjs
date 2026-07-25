@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import { isIP } from "node:net";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,13 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const inventoryPath = path.join(repoRoot, "docs", "SECURITY_ROUTE_POLICY_INVENTORY.json");
 const methodNames = ["delete", "get", "head", "options", "patch", "post", "put", "trace"];
+const runtimeAuthenticatedReadPaths = new Set([
+  "/config/providers",
+  "/enterprise/status",
+  "/global/config",
+  "/global/storage/files",
+  "/global/workspace",
+]);
 
 function lineNumber(source, index) {
   return source.slice(0, index).split("\n").length;
@@ -167,6 +175,18 @@ function callsNamed(source, token) {
   return calls;
 }
 
+function callIsInsideNamedFunction(source, callIndex, functionName) {
+  const matches = [...source.matchAll(new RegExp(`\\bfn\\s+${functionName}\\s*\\(`, "g"))];
+  if (matches.length !== 1) return false;
+  const signatureOpen = source.indexOf("(", matches[0].index);
+  const signatureClose = matchingDelimiter(source, signatureOpen);
+  if (signatureClose === -1) return false;
+  const bodyOpen = source.indexOf("{", signatureClose + 1);
+  if (bodyOpen === -1) return false;
+  const bodyClose = matchingDelimiter(source, bodyOpen, "{", "}");
+  return bodyClose !== -1 && callIndex > bodyOpen && callIndex < bodyClose;
+}
+
 export function extractRoutesFromRust(source, sourcePath = "fixture.rs") {
   const production = productionSource(source);
   const routes = [];
@@ -175,7 +195,12 @@ export function extractRoutesFromRust(source, sourcePath = "fixture.rs") {
     const args = splitTopLevelArguments(call.body);
     const routePath = args.length >= 2 ? rustStringLiteral(args[0]) : null;
     if (!routePath) {
-      if (/routes_incident_monitor\.rs$/.test(sourcePath) && args[0]?.trim() === "&path") continue;
+      const isCanonicalIncidentHelperRegistration =
+        /routes_incident_monitor\.rs$/.test(sourcePath) &&
+        args[0]?.trim() === "&path" &&
+        args[1]?.trim() === "method_router" &&
+        callIsInsideNamedFunction(production, call.index, "route_prefixed");
+      if (isCanonicalIncidentHelperRegistration) continue;
       unsupported.push(`${sourcePath}:${lineNumber(production, call.index)} dynamic route path ${args[0] ?? "<missing>"}`);
       continue;
     }
@@ -302,11 +327,17 @@ export function assertLoopbackCallbackAddress(source) {
     /const\s+OPENAI_CODEX_LOCAL_CALLBACK_ADDR\s*:\s*&str\s*=\s*"([^"]+)"\s*;/.exec(
       source,
     );
-  if (!match || !/^127(?:\.\d{1,3}){3}:\d+$/.test(match[1])) {
-    throw new Error("OpenAI Codex OAuth callback address is not statically loopback-only");
-  }
-  const [host] = match[1].split(":");
-  if (Number(host.split(".")[0]) !== 127) {
+  const socket = match ? /^([^:]+):(\d+)$/.exec(match[1]) : null;
+  const host = socket?.[1] ?? "";
+  const port = Number(socket?.[2]);
+  if (
+    !socket ||
+    isIP(host) !== 4 ||
+    Number(host.split(".")[0]) !== 127 ||
+    !Number.isSafeInteger(port) ||
+    port < 1 ||
+    port > 65_535
+  ) {
     throw new Error("OpenAI Codex OAuth callback address is not statically loopback-only");
   }
 }
@@ -375,7 +406,7 @@ export function classifyRoute(route) {
   }
   if (
     (method === "GET" || method === "HEAD") &&
-    /^\/audit\/(?:protected|stream|ledger\/(?:manifest|export))$/.test(routePath)
+    /^\/audit\/(?:protected|stream|data-boundary\/monitoring|ledger\/(?:manifest|export))$/.test(routePath)
   ) {
     return {
       ingress_policy: "runtime_auth_gate",
@@ -432,6 +463,19 @@ export function classifyRoute(route) {
       capability: "incident.report.ingest",
       resolver: "incident_intake_key_or_context",
       policy_origin: "public.incident_intake",
+    };
+  }
+
+  if (
+    (method === "GET" || method === "HEAD") &&
+    runtimeAuthenticatedReadPaths.has(routePath)
+  ) {
+    return {
+      ingress_policy: "runtime_auth_gate",
+      authorization_policy: "verified_tenant_context",
+      capability: null,
+      resolver: "verified_tenant_context",
+      policy_origin: "tenant.authenticated",
     };
   }
 

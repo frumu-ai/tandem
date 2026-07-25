@@ -26,8 +26,9 @@ address. Keep generated transport authentication enabled. Do not expose the
 engine port through a public listener, shared reverse proxy, tunnel, container
 port publication, or multi-tenant service.
 
-The following postures remain blocked until the focused security retest records
-a release decision:
+The following postures remain blocked until the final shared/hosted release
+decision records an allow decision after the focused retest and the assurance,
+dependency, and deployment gates all pass:
 
 - remotely reachable engine API;
 - shared or multi-tenant engine process;
