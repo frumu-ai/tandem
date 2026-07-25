@@ -1,8 +1,23 @@
 # Security containment advisory (2026 audit)
 
-This advisory applies while the security-audit remediation project is open. It
-describes a temporary deployment boundary, not a statement that all audit
-findings are resolved.
+This advisory applies while the security-audit remediation project is open. All
+confirmed finding implementations have merged, but the cross-cutting inventory,
+dynamic retest, assurance scan, and final release decision remain open. This is
+a temporary deployment boundary, not a final release decision.
+
+## Deployment scope recorded for this audit
+
+No enterprise or shared Tandem server has been deployed. The audit therefore
+does not identify a running customer, enterprise, or shared-engine instance that
+was exposed by these findings, and it does not assert that a standalone local
+engine was remotely exposed.
+
+Credential rotation is **not required solely because a source finding existed**
+when there was no deployed/shared runtime and no real credential was placed in
+one. Rotation remains mandatory if deployment records, operator evidence, or a
+later incident review shows that a runtime was reachable/shared or held a real
+credential outside the supported standalone posture. This scope decision must
+be re-evaluated before the first hosted, shared, or enterprise deployment.
 
 ## Supported interim posture
 
@@ -11,8 +26,9 @@ address. Keep generated transport authentication enabled. Do not expose the
 engine port through a public listener, shared reverse proxy, tunnel, container
 port publication, or multi-tenant service.
 
-The following postures remain blocked until the focused security retest records
-a release decision:
+The following postures remain blocked until the final shared/hosted release
+decision records an allow decision after the focused retest and the assurance,
+dependency, and deployment gates all pass:
 
 - remotely reachable engine API;
 - shared or multi-tenant engine process;
@@ -28,14 +44,16 @@ API-overlapping, encoded-separator, traversal, and non-reserved prefixes back to
 
 ## Edge containment
 
-Until the corresponding remediation issue is merged and retested, an upstream
-edge must deny these route families if the engine is reachable beyond its
-standalone loopback owner:
+Until the final shared/hosted release decision records an allow decision after
+the focused retest and the assurance, dependency, and deployment gates all
+pass, an upstream edge must deny these route families if the engine is
+reachable beyond its standalone loopback owner:
 
 - pack install, update, uninstall, export, detection, and file access;
 - MCP definition and connection mutation;
 - provider and global configuration mutation, including token rotation;
 - channel configuration, credential, reload, and destination mutation;
+- channel enrollment, step-up grants, and sender-inventory reads;
 - permission/question decisions and workflow/governance approval mutation; and
 - browser-sidecar download or installation.
 
@@ -65,7 +83,8 @@ close symlink-swap races at open time.
 Do not place production provider, channel, signing, or deployment credentials
 in a shared runtime while this advisory is active.
 
-For any runtime that was previously reachable or shared:
+For any runtime that was previously reachable/shared, or that held real shared
+credentials:
 
 1. remove it from service and preserve logs needed for incident review;
 2. inventory transport, provider, channel, webhook, OAuth, signing, and sidecar
@@ -99,7 +118,10 @@ After starting:
    or any hosted pack host-path operation; and
 6. verify an ordinary authenticated principal cannot invoke browser install,
    browser smoke testing, storage repair, global disposal, or destructive
-   worktree mutation.
+   worktree mutation; and
+7. verify channel enrollment, channel step-up grants, and Slack sender inventory
+   reject an ordinary tenant principal, reject cross-tenant targets, and allow
+   only an exact deployment-admin grant or the direct standalone loopback owner.
 
 ## Rollback
 

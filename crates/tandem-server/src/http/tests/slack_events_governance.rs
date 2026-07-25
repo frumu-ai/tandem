@@ -499,11 +499,15 @@ async fn slack_senders_endpoint_surfaces_mapped_and_unmapped_identities() {
     let response = app.clone().oneshot(denied).await.expect("denied response");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let request = Request::builder()
-        .method("GET")
-        .uri("/channels/slack/senders")
-        .body(Body::empty())
-        .expect("senders request");
+    let request = super::channels::channel_tenant_request(
+        "GET",
+        "/channels/slack/senders",
+        ORG_ID,
+        WORKSPACE_ID,
+        "sender-inventory-admin",
+        true,
+        json!({}),
+    );
     let response = app.oneshot(request).await.expect("senders response");
     assert_eq!(response.status(), StatusCode::OK);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -623,11 +627,15 @@ async fn denials_are_audited_under_a_connection_bound_tenant() {
         "the denial must be audited under the connection's bound tenant"
     );
 
-    let request = Request::builder()
-        .method("GET")
-        .uri("/channels/slack/senders")
-        .body(Body::empty())
-        .expect("senders request");
+    let request = super::channels::channel_tenant_request(
+        "GET",
+        "/channels/slack/senders",
+        ORG_ID,
+        WORKSPACE_ID,
+        "sender-inventory-admin",
+        true,
+        json!({}),
+    );
     let response = app.oneshot(request).await.expect("senders response");
     assert_eq!(response.status(), StatusCode::OK);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -733,11 +741,15 @@ async fn sender_mapping_is_computed_against_each_channels_department_binding() {
 
     // Sender discovery must not let the engineering membership mask the
     // sales-channel gap: mapped is per observed channel, not tenant-wide.
-    let request = Request::builder()
-        .method("GET")
-        .uri("/channels/slack/senders")
-        .body(Body::empty())
-        .expect("senders request");
+    let request = super::channels::channel_tenant_request(
+        "GET",
+        "/channels/slack/senders",
+        ORG_ID,
+        WORKSPACE_ID,
+        "sender-inventory-admin",
+        true,
+        json!({}),
+    );
     let response = app.oneshot(request).await.expect("senders response");
     assert_eq!(response.status(), StatusCode::OK);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)

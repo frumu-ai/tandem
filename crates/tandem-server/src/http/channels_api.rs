@@ -301,7 +301,33 @@ const SLACK_SENDERS_CAP: usize = 500;
 /// tenant, with mapped/unmapped department status (TAN-765). Data source is
 /// the protected audit ledger (`channel.slack.ingress.accepted` / `.denied`),
 /// so the fail-closed unmapped state is visible and actionable.
-pub(crate) async fn slack_senders(State(state): State<AppState>) -> Response {
+pub(crate) async fn slack_senders(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<crate::http::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Response {
+    let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        locality,
+        crate::action_authorization::HostAction::ChannelSenderRead,
+        "deployment_channels",
+        tenant
+            .deployment_id
+            .as_deref()
+            .unwrap_or("local-deployment"),
+        json!({"operation": "read_slack_senders"}),
+    )
+    .await
+    {
+        Ok(authorized) => authorized,
+        Err(status) => return status.into_response(),
+    };
+    if let Err(error) = grant.revalidate(&state, &effect) {
+        return crate::http::host_authority::host_authorization_status(error).into_response();
+    }
     let effective = state.config.get_effective_value().await;
     let connections = crate::config::channels::slack_connections_from_effective_config(&effective);
     let mut tenants = connections

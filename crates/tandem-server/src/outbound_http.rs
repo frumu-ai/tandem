@@ -27,6 +27,7 @@ impl ResolvedPublicHttpsTarget {
 
     pub fn client(&self, timeout: Duration) -> anyhow::Result<Client> {
         let mut builder = Client::builder()
+            .no_proxy()
             .redirect(RedirectPolicy::none())
             .timeout(timeout);
         if let Some(host) = self.dns_override_host.as_deref() {
@@ -53,6 +54,27 @@ async fn resolve_outbound_url(
     raw: &str,
     allow_private_provider_endpoint: bool,
 ) -> anyhow::Result<ResolvedPublicHttpsTarget> {
+    resolve_outbound_url_with_resolver(
+        raw,
+        allow_private_provider_endpoint,
+        |host, port| async move {
+            Ok(tokio::net::lookup_host((host.as_str(), port))
+                .await?
+                .collect::<Vec<_>>())
+        },
+    )
+    .await
+}
+
+async fn resolve_outbound_url_with_resolver<F, Fut>(
+    raw: &str,
+    allow_private_provider_endpoint: bool,
+    resolver: F,
+) -> anyhow::Result<ResolvedPublicHttpsTarget>
+where
+    F: FnOnce(String, u16) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Vec<SocketAddr>>>,
+{
     let url = Url::parse(raw).context("parse outbound URL")?;
     let insecure_http = url.scheme() == "http";
     if url.scheme() != "https" && !(insecure_http && allow_private_provider_endpoint) {
@@ -102,21 +124,13 @@ async fn resolve_outbound_url(
             {
                 anyhow::bail!("outbound URL points to localhost/private network");
             }
-            let addrs = tokio::net::lookup_host((host.as_str(), port))
+            let addrs = resolver(host.clone(), port)
                 .await
-                .context("resolve outbound destination host")?
-                .collect::<Vec<_>>();
+                .context("resolve outbound destination host")?;
             if addrs.is_empty() {
                 anyhow::bail!("outbound destination host did not resolve");
             }
-            let any_private = addrs.iter().any(|addr| !ip_is_publicly_routable(addr.ip()));
-            let any_public = addrs.iter().any(|addr| ip_is_publicly_routable(addr.ip()));
-            if any_private && !allow_private_provider_endpoint {
-                anyhow::bail!("outbound URL resolves to a private or internal address");
-            }
-            if insecure_http && any_public {
-                anyhow::bail!("insecure provider HTTP is limited to private standalone endpoints");
-            }
+            validate_resolved_addresses(&addrs, allow_private_provider_endpoint, insecure_http)?;
             Ok(ResolvedPublicHttpsTarget {
                 url,
                 dns_override_host: Some(host),
@@ -124,6 +138,22 @@ async fn resolve_outbound_url(
             })
         }
     }
+}
+
+fn validate_resolved_addresses(
+    addrs: &[SocketAddr],
+    allow_private_provider_endpoint: bool,
+    insecure_http: bool,
+) -> anyhow::Result<()> {
+    let any_private = addrs.iter().any(|addr| !ip_is_publicly_routable(addr.ip()));
+    let any_public = addrs.iter().any(|addr| ip_is_publicly_routable(addr.ip()));
+    if any_private && !allow_private_provider_endpoint {
+        anyhow::bail!("outbound URL resolves to a private or internal address");
+    }
+    if insecure_http && any_public {
+        anyhow::bail!("insecure provider HTTP is limited to private standalone endpoints");
+    }
+    Ok(())
 }
 
 pub async fn read_response_body_limited(
@@ -190,6 +220,11 @@ fn ipv6_is_publicly_routable(ip: Ipv6Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::{Body, Bytes};
+    use axum::http::{header, StatusCode};
+    use axum::response::Response;
+    use axum::routing::get;
+    use axum::Router;
 
     #[tokio::test]
     async fn rejects_private_literal_and_url_credentials() {
@@ -203,5 +238,122 @@ mod tests {
         ] {
             assert!(resolve_public_https_url(url).await.is_err(), "{url}");
         }
+    }
+
+    #[tokio::test]
+    async fn fake_dns_and_cloud_metadata_answers_fail_closed() {
+        let public: SocketAddr = "8.8.8.8:443".parse().expect("public address");
+        let private: SocketAddr = "10.0.0.7:443".parse().expect("private address");
+        let metadata: SocketAddr = "169.254.169.254:443".parse().expect("metadata address");
+
+        let public_target = resolve_outbound_url_with_resolver(
+            "https://public.fixture.invalid/archive",
+            false,
+            move |host, port| async move {
+                assert_eq!(host, "public.fixture.invalid");
+                assert_eq!(port, 443);
+                Ok(vec![public])
+            },
+        )
+        .await
+        .expect("public fake DNS answer");
+        assert_eq!(public_target.dns_override_addrs, vec![public]);
+        public_target
+            .client(Duration::from_secs(2))
+            .expect("public fake DNS answer builds pinned client");
+
+        for answers in [vec![metadata], vec![public, private]] {
+            assert!(resolve_outbound_url_with_resolver(
+                "https://blocked.fixture.invalid/archive",
+                false,
+                move |_, _| async move { Ok(answers) },
+            )
+            .await
+            .is_err());
+        }
+
+        assert!(resolve_outbound_url_with_resolver(
+            "http://public.fixture.invalid/archive",
+            true,
+            move |_, _| async move { Ok(vec![public]) },
+        )
+        .await
+        .is_err());
+
+        let private_target = resolve_outbound_url_with_resolver(
+            "http://private.fixture.invalid/archive",
+            true,
+            move |_, _| async move { Ok(vec![private]) },
+        )
+        .await
+        .expect("explicit standalone private endpoint allowance");
+        private_target
+            .client(Duration::from_secs(2))
+            .expect("private fake DNS answer builds pinned client");
+    }
+
+    #[tokio::test]
+    async fn fake_redirect_and_streaming_budget_service_is_contained() {
+        async fn redirect_to_metadata() -> Response<Body> {
+            Response::builder()
+                .status(StatusCode::TEMPORARY_REDIRECT)
+                .header(header::LOCATION, "http://169.254.169.254/latest/meta-data/")
+                .body(Body::empty())
+                .expect("redirect response")
+        }
+        async fn unbounded_stream() -> Response<Body> {
+            Response::new(Body::from_stream(futures::stream::iter([
+                Ok::<Bytes, std::io::Error>(Bytes::from_static(b"12345678")),
+                Ok::<Bytes, std::io::Error>(Bytes::from_static(b"overflow")),
+            ])))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake egress service");
+        let address = listener.local_addr().expect("fake service address");
+        let app = Router::new()
+            .route("/redirect", get(redirect_to_metadata))
+            .route("/stream", get(unbounded_stream));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("fake egress server");
+        });
+        let target = resolve_outbound_url_with_resolver(
+            &format!("http://fixture.invalid:{}/redirect", address.port()),
+            true,
+            move |host, port| async move {
+                assert_eq!(host, "fixture.invalid");
+                assert_eq!(port, address.port());
+                Ok(vec![address])
+            },
+        )
+        .await
+        .expect("fake DNS-pinned target");
+        let client = target
+            .client(Duration::from_secs(2))
+            .expect("hardened client");
+        let redirect = client
+            .get(target.url().clone())
+            .send()
+            .await
+            .expect("redirect response");
+        assert_eq!(redirect.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            redirect
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("http://169.254.169.254/latest/meta-data/")
+        );
+
+        let stream = client
+            .get(target.url().join("/stream").expect("stream URL"))
+            .send()
+            .await
+            .expect("stream response");
+        assert!(read_response_body_limited(stream, 8).await.is_err());
+        server.abort();
     }
 }

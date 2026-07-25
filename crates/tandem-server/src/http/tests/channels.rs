@@ -2,6 +2,7 @@
 // Licensed under the Business Source License 1.1
 
 use super::*;
+use sha2::Digest;
 
 fn direct_loopback_request() -> axum::http::request::Builder {
     Request::builder().extension(axum::extract::ConnectInfo(
@@ -9,6 +10,62 @@ fn direct_loopback_request() -> axum::http::request::Builder {
             .parse::<std::net::SocketAddr>()
             .expect("loopback socket address"),
     ))
+}
+
+fn verified_channel_actor(
+    tenant_context: tandem_types::TenantContext,
+    actor_id: &str,
+    deployment_admin: bool,
+) -> tandem_types::VerifiedTenantContext {
+    let now = crate::now_ms();
+    tandem_types::VerifiedTenantContext {
+        tenant_context,
+        human_actor: tandem_types::HumanActor::tandem_user(actor_id),
+        authority_chain: tandem_types::AuthorityChain::from_request(
+            tandem_types::RequestPrincipal::authenticated_user(actor_id, "channel-test"),
+        ),
+        roles: Vec::new(),
+        org_units: Vec::new(),
+        capabilities: deployment_admin
+            .then(|| vec!["deployment.admin".to_string()])
+            .unwrap_or_default(),
+        policy_version: None,
+        strict_projection: None,
+        issuer: "channel-test".to_string(),
+        audience: "tandem".to_string(),
+        issued_at_ms: now,
+        expires_at_ms: now.saturating_add(60_000),
+        assertion_id: format!("channel-test-{actor_id}-{now}"),
+        assertion_key_id: None,
+    }
+}
+
+pub(super) fn channel_tenant_request(
+    method: &str,
+    uri: &str,
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+    deployment_admin: bool,
+    body: Value,
+) -> Request<Body> {
+    let tenant =
+        tandem_types::TenantContext::explicit_user_workspace(org_id, workspace_id, None, actor_id);
+    Request::builder()
+        .extension(axum::extract::ConnectInfo(
+            "198.51.100.44:443"
+                .parse::<std::net::SocketAddr>()
+                .expect("remote socket address"),
+        ))
+        .extension(verified_channel_actor(tenant, actor_id, deployment_admin))
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("x-tandem-org-id", org_id)
+        .header("x-tandem-workspace-id", workspace_id)
+        .header("x-tandem-actor-id", actor_id)
+        .body(Body::from(body.to_string()))
+        .expect("channel tenant request")
 }
 
 #[tokio::test]
@@ -864,6 +921,237 @@ async fn channels_delete_unknown_channel_returns_not_found() {
         .expect("request");
     let resp = app.clone().oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn channel_identity_authority_is_admin_only_tenant_exact_and_locally_compatible() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let low_privilege = channel_tenant_request(
+        "POST",
+        "/channels/step-up",
+        "org-a",
+        "workspace-a",
+        "member-a",
+        false,
+        json!({
+            "channel": "slack",
+            "user_id": "U-EXACT",
+            "tenant_org_id": "org-a",
+            "tenant_workspace_id": "workspace-a"
+        }),
+    );
+    let response = app.clone().oneshot(low_privilege).await.expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let cross_tenant = channel_tenant_request(
+        "POST",
+        "/channels/step-up",
+        "org-a",
+        "workspace-a",
+        "admin-a",
+        true,
+        json!({
+            "channel": "slack",
+            "user_id": "U-EXACT",
+            "tenant_org_id": "org-b",
+            "tenant_workspace_id": "workspace-b"
+        }),
+    );
+    let response = app.clone().oneshot(cross_tenant).await.expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        !state
+            .channel_step_up_active("slack", "U-EXACT", Some(("org-b", "workspace-b")))
+            .await
+    );
+
+    let exact_tenant = channel_tenant_request(
+        "POST",
+        "/channels/step-up",
+        "org-a",
+        "workspace-a",
+        "admin-a",
+        true,
+        json!({
+            "channel": "slack",
+            "user_id": "U-EXACT",
+            "tenant_org_id": "org-a",
+            "tenant_workspace_id": "workspace-a"
+        }),
+    );
+    let response = app.clone().oneshot(exact_tenant).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        state
+            .channel_step_up_active("slack", "U-EXACT", Some(("org-a", "workspace-a")))
+            .await
+    );
+
+    let issue = channel_tenant_request(
+        "POST",
+        "/channels/enroll",
+        "org-a",
+        "workspace-a",
+        "admin-a",
+        true,
+        json!({
+            "action": "issue",
+            "channel": "telegram",
+            "user_id": "4242",
+            "tier": "approve",
+            "issued_by": "spoofed-actor",
+            "tenant_org_id": "org-a",
+            "tenant_workspace_id": "workspace-a"
+        }),
+    );
+    let response = app.clone().oneshot(issue).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    let issued: Value = serde_json::from_slice(&body).expect("issue response");
+    let pairing_code = issued
+        .get("pairing_code")
+        .and_then(Value::as_str)
+        .expect("pairing code")
+        .to_string();
+    let pending = state
+        .pending_channel_enrollment_code(&pairing_code)
+        .await
+        .expect("pending enrollment");
+    assert_eq!(pending.issued_by.as_deref(), Some("admin-a"));
+    assert_eq!(pending.tenant_org_id.as_deref(), Some("org-a"));
+
+    for candidate in ["NOT-A-REAL-CODE", pairing_code.as_str()] {
+        let ordinary_confirm = channel_tenant_request(
+            "POST",
+            "/channels/enroll",
+            "org-a",
+            "workspace-a",
+            "member-a",
+            false,
+            json!({
+                "action": "confirm",
+                "pairing_code": candidate,
+                "enrolled_by": "member-a"
+            }),
+        );
+        let response = app
+            .clone()
+            .oneshot(ordinary_confirm)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    assert!(state
+        .pending_channel_enrollment_code(&pairing_code)
+        .await
+        .is_some());
+
+    let wrong_tenant_confirm = channel_tenant_request(
+        "POST",
+        "/channels/enroll",
+        "org-b",
+        "workspace-b",
+        "admin-b",
+        true,
+        json!({
+            "action": "confirm",
+            "pairing_code": pairing_code,
+            "enrolled_by": "admin-b"
+        }),
+    );
+    let response = app
+        .clone()
+        .oneshot(wrong_tenant_confirm)
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(state
+        .pending_channel_enrollment_code(&pairing_code)
+        .await
+        .is_some());
+
+    let exact_confirm = channel_tenant_request(
+        "POST",
+        "/channels/enroll",
+        "org-a",
+        "workspace-a",
+        "admin-a",
+        true,
+        json!({
+            "action": "confirm",
+            "pairing_code": pairing_code,
+            "enrolled_by": "spoofed-actor"
+        }),
+    );
+    let response = app.clone().oneshot(exact_confirm).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(state
+        .pending_channel_enrollment_code(&pairing_code)
+        .await
+        .is_none());
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    let code_resource = format!(
+        "code-sha256:{:x}",
+        sha2::Sha256::digest(pairing_code.trim().to_ascii_uppercase().as_bytes())
+    );
+    assert!(audit.contains(&code_resource));
+    assert!(
+        !audit.contains(&pairing_code),
+        "channel enrollment audit must identify the code by digest, never reveal it"
+    );
+
+    let local_state = test_state().await;
+    let local_app = app_router(local_state.clone());
+    let local_step_up = direct_loopback_request()
+        .method("POST")
+        .uri("/channels/step-up")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"channel": "slack", "user_id": "U-LOCAL"}).to_string(),
+        ))
+        .expect("local request");
+    let response = local_app.oneshot(local_step_up).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        local_state
+            .channel_step_up_active("slack", "U-LOCAL", None)
+            .await
+    );
+}
+
+#[tokio::test]
+async fn slack_sender_inventory_requires_deployment_admin() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let member = channel_tenant_request(
+        "GET",
+        "/channels/slack/senders",
+        "org-a",
+        "workspace-a",
+        "member-a",
+        false,
+        json!({}),
+    );
+    let response = app.clone().oneshot(member).await.expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let admin = channel_tenant_request(
+        "GET",
+        "/channels/slack/senders",
+        "org-a",
+        "workspace-a",
+        "admin-a",
+        true,
+        json!({}),
+    );
+    let response = app.oneshot(admin).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

@@ -140,6 +140,14 @@ jobs:
           node --test scripts/generate-artifact-manifest.test.mjs scripts/verify-workflow-security.test.mjs
           node scripts/verify-workflow-security.mjs --self-test
 
+      - name: Verify route policy and focused security retest inventories
+        run: |
+          node --test scripts/verify-route-policy-inventory.test.mjs scripts/verify-security-retest-matrix.test.mjs
+          node scripts/verify-route-policy-inventory.mjs --self-test
+          node scripts/verify-route-policy-inventory.mjs
+          node scripts/verify-security-retest-matrix.mjs --self-test
+          node scripts/verify-security-retest-matrix.mjs
+
       - name: Check touched Rust/TSX file sizes
         run: bash scripts/ci-file-size-check.sh
 

@@ -107,7 +107,6 @@ async fn public_webhook_body_limits_apply_before_collection_and_vary_by_provider
 /// conservative CPU/lock-time proxy: every request performs all work inline in
 /// this process, and the per-request ceiling includes the rejection-ledger lock.
 #[tokio::test]
-#[ignore = "run explicitly as the bounded TA-13 bad-signature load harness"]
 async fn bad_signature_load_is_throttled_and_retained_within_explicit_ceilings() {
     const REQUESTS: usize = 512;
     const MAX_UNTHROTTLED_REQUESTS: usize = 30;

@@ -2,8 +2,8 @@
 
 Host effects are operations that cross from request or workflow state into the
 engine host: file reads/searches, process creation, browser installation or
-navigation, storage repair, global disposal, managed Git worktrees, and pack
-lifecycle operations.
+navigation, storage repair, global disposal, managed Git worktrees, pack
+lifecycle operations, and process-global channel identity administration.
 
 Every migrated effect uses action_authorization and follows the same order:
 
@@ -58,6 +58,9 @@ handler.
 | Browser install/smoke test | action-specific capability | Yes |
 | Storage repair/global dispose | action-specific capability | Yes |
 | Pack reads/detect/install/uninstall/export | action-specific capability | Hosted host-path operations are disabled; full managed-resource migration remains pending |
+| Channel sender inventory | deployment.channels.senders.read | Yes |
+| Channel enrollment issue/confirm | deployment.channels.enrollment.issue / .confirm | Yes |
+| Channel step-up grant | deployment.channels.step_up.grant | Yes |
 
 ## Resource rules
 
@@ -103,6 +106,13 @@ returns counts without host paths or raw Git errors.
 
 Pack host-path operations fail closed outside the standalone loopback-local
 posture until their inputs are migrated to managed resource IDs and grants.
+
+Channel enrollment and step-up requests in a verified deployment must name the
+same org/workspace as the verified caller; unscoped or cross-tenant targets fail
+closed before state mutation. Confirmation resolves tenant scope from the
+server-side pending enrollment record, not from the caller. Caller-supplied
+issuer/enroller labels cannot replace the verified human actor. The standalone
+loopback owner retains the legacy unscoped workflow for local compatibility.
 
 ## Migration rule
 
