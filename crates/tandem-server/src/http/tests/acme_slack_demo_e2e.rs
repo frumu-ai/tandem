@@ -366,12 +366,17 @@ async fn submit_demo_prompt(
         ))
         .await
         .expect("Slack event response");
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "signed ingress must accept {}",
-        profile.slack_user_id
-    );
+    if response.status() != StatusCode::OK {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("read failed Slack response body");
+        panic!(
+            "signed ingress must accept {}: status {status}, body {}",
+            profile.slack_user_id,
+            String::from_utf8_lossy(&body)
+        );
+    }
 }
 
 fn expected_markers(dataset: &AcmeDemoDataset, profile: &DemoProfile) -> Vec<String> {
@@ -431,6 +436,7 @@ fn call_for_profile<'a>(
 /// governed session → engine + deterministic provider over actually retrieved
 /// memory → mock Slack delivery → persisted evidence.
 #[tokio::test]
+#[serial_test::serial]
 async fn acme_slack_demo_e2e_five_profiles_run_the_production_path() {
     let world = seed_acme_e2e_world(false).await;
     let app = app_router(world.state.clone());
@@ -631,6 +637,7 @@ async fn wait_for_slack_receipts(app: &axum::Router, expected: usize) -> Vec<Val
 /// selectable, Slack-attributed context run per profile, readable through the
 /// production `/context/runs` APIs with tenant isolation intact.
 #[tokio::test]
+#[serial_test::serial]
 async fn acme_slack_demo_e2e_persists_selectable_slack_receipts() {
     let world = seed_acme_e2e_world(false).await;
     let journaler = tokio::spawn(crate::run_session_context_run_journaler(
@@ -734,6 +741,7 @@ async fn acme_slack_demo_e2e_persists_selectable_slack_receipts() {
 /// the same five prompts yields the same governed outcome — the harness is
 /// deterministic end to end, not dependent on residue from a previous run.
 #[tokio::test]
+#[serial_test::serial]
 async fn acme_slack_demo_e2e_reset_and_replay_is_reproducible() {
     for round in 0..2 {
         let world = seed_acme_e2e_world(false).await;
@@ -779,17 +787,43 @@ async fn acme_slack_demo_e2e_reset_and_replay_is_reproducible() {
 #[tokio::test]
 #[serial_test::serial]
 async fn acme_slack_demo_e2e_finance_sensitive_tool_enters_the_real_approval_gate() {
-    struct RuntimeAuthModeGuard(Option<String>);
-    impl Drop for RuntimeAuthModeGuard {
+    struct HostedAuditEnvironment(Vec<(String, Option<std::ffi::OsString>)>);
+    impl Drop for HostedAuditEnvironment {
         fn drop(&mut self) {
-            match self.0.take() {
-                Some(previous) => std::env::set_var("TANDEM_RUNTIME_AUTH_MODE", previous),
-                None => std::env::remove_var("TANDEM_RUNTIME_AUTH_MODE"),
+            for (name, previous) in self.0.drain(..) {
+                match previous {
+                    Some(previous) => std::env::set_var(&name, previous),
+                    None => std::env::remove_var(&name),
+                }
             }
         }
     }
-    let _mode = RuntimeAuthModeGuard(std::env::var("TANDEM_RUNTIME_AUTH_MODE").ok());
+
+    const HOSTED_ENV_NAMES: [&str; 5] = [
+        "TANDEM_RUNTIME_AUTH_MODE",
+        "TANDEM_AUDIT_HMAC_KEY",
+        "TANDEM_AUDIT_HMAC_KEY_FILE",
+        "TANDEM_AUDIT_HMAC_KEYRING_FILE",
+        "TANDEM_AUDIT_ANCHOR_DIR",
+    ];
+    let anchor_root = tempfile::tempdir().expect("temporary audit anchor root");
+    let _environment = HostedAuditEnvironment(
+        HOSTED_ENV_NAMES
+            .iter()
+            .map(|name| ((*name).to_string(), std::env::var_os(name)))
+            .collect(),
+    );
     std::env::set_var("TANDEM_RUNTIME_AUTH_MODE", "hosted_single_tenant");
+    std::env::set_var(
+        "TANDEM_AUDIT_HMAC_KEY",
+        "acme-test-audit-integrity-secret-material-32-bytes",
+    );
+    std::env::remove_var("TANDEM_AUDIT_HMAC_KEY_FILE");
+    std::env::remove_var("TANDEM_AUDIT_HMAC_KEYRING_FILE");
+    std::env::set_var(
+        "TANDEM_AUDIT_ANCHOR_DIR",
+        anchor_root.path().join("anchors"),
+    );
 
     let world = seed_acme_e2e_world(true).await;
     let journaler = tokio::spawn(crate::run_session_context_run_journaler(

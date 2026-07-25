@@ -42,7 +42,13 @@ jobs:
         run: |
           set -euo pipefail
           state_dir="$RUNNER_TEMP/tandem-acme-state"
+          anchor_dir="$RUNNER_TEMP/tandem-acme-audit-anchors"
           mkdir -p "$RUNNER_TEMP/acme-proof"
+          mkdir -p "$anchor_dir"
+          chmod 700 "$anchor_dir"
+          export TANDEM_AUDIT_HMAC_KEY="acme-ci-audit-integrity-secret-material-32-bytes"
+          export TANDEM_AUDIT_HMAC_KEY_ID="acme-ci"
+          export TANDEM_AUDIT_ANCHOR_DIR="$anchor_dir"
           cargo run --locked -p tandem-ai --features acme-demo -- acme-slack-demo \
             --state-dir "$state_dir" > "$RUNNER_TEMP/acme-proof/first.json"
           cargo run --locked -p tandem-ai --features acme-demo -- acme-slack-demo \

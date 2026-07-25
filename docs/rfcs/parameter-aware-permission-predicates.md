@@ -14,7 +14,7 @@ The model is deny-by-default. A missing, malformed, unnormalizable, or over-budg
 
 ## Implementation status
 
-[PR #1897](https://github.com/frumu-ai/tandem/pull/1897) landed the `permission_predicates/v1` types, bounded evaluator, inheritance integration, enterprise authoring and preview APIs, tenant-scoped Control Panel Policy Studio, runtime enforcement adapter, and versioned CRM, finance, and coding starter policies. The TAN-744 through TAN-747 follow-up adds enterprise-admin tenantless global creation, canonical supersession matching, first-class pending dispatcher outcomes, single-use exact-action resume, and bounded deployment-HMAC predicate evidence. Hosted/enterprise predicate enforcement requires `TANDEM_AUDIT_HMAC_KEY` or `TANDEM_AUDIT_HMAC_KEY_FILE`; missing authority fails closed before a predicate-governed decision is recorded or exposed.
+[PR #1897](https://github.com/frumu-ai/tandem/pull/1897) landed the `permission_predicates/v1` types, bounded evaluator, inheritance integration, enterprise authoring and preview APIs, tenant-scoped Control Panel Policy Studio, runtime enforcement adapter, and versioned CRM, finance, and coding starter policies. The TAN-744 through TAN-747 follow-up adds enterprise-admin tenantless global creation, canonical supersession matching, first-class pending dispatcher outcomes, single-use exact-action resume, and bounded deployment-HMAC predicate evidence. Hosted/enterprise predicate enforcement requires `TANDEM_AUDIT_HMAC_KEY`, `TANDEM_AUDIT_HMAC_KEY_FILE`, or `TANDEM_AUDIT_HMAC_KEYRING_FILE`; missing authority fails closed before a predicate-governed decision is recorded or exposed.
 
 ## Motivation and current state
 

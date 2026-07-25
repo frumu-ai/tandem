@@ -1582,6 +1582,7 @@ mod tests {
             seq: 0,
             prev_hash: None,
             record_hash: String::new(),
+            integrity: None,
         }];
 
         let package = governance_evidence_package_for_records(

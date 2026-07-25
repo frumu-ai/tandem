@@ -14,7 +14,15 @@ cargo run -p tandem-ai --features acme-demo -- acme-slack-demo \
 ```
 
 If the server normally receives `TANDEM_STATE_DIR`, pass that exact value as
-`--state-dir`. The command exits with a JSON report containing the five
+`--state-dir`. Run the command with the stopped server's normal audit-integrity
+secret environment (`TANDEM_AUDIT_HMAC_KEY`, `TANDEM_AUDIT_HMAC_KEY_FILE`, or
+`TANDEM_AUDIT_HMAC_KEYRING_FILE`) and the same
+`TANDEM_AUDIT_ANCHOR_DIR`. The anchor directory must remain outside the state
+tree. The command enters strict hosted posture for the approval proof, so it
+fails closed if that authority is absent; using the server's real authority
+also keeps the appended audit/store records verifiable after restart.
+
+The command exits with a JSON report containing the five
 `receipt_run_ids`, the persisted `approval_decision_ids`, and the receipt IDs
 whose governance evidence correlates the decision and protected audit. After
 the normal server is restarted, the five receipts are

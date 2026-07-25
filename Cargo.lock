@@ -8241,11 +8241,13 @@ dependencies = [
  "fastembed",
  "getrandom 0.2.17",
  "ignore",
+ "libc",
  "once_cell",
  "pgvector",
  "rusqlite",
  "serde",
  "serde_json",
+ "serial_test",
  "sha2 0.10.9",
  "sqlite-vec",
  "tandem-data-boundary",
@@ -8260,6 +8262,7 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "uuid",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -8386,6 +8389,7 @@ dependencies = [
  "hmac 0.12.1",
  "ignore",
  "image",
+ "libc",
  "postgres",
  "r2d2",
  "r2d2_postgres",
@@ -8428,6 +8432,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "windows-sys 0.60.2",
  "zip 2.4.2",
 ]
 

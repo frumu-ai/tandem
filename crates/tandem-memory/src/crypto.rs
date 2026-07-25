@@ -23,6 +23,7 @@
 //! are classified as search-required plaintext and governed by authority-scoped
 //! reads instead. See `docs/internal` / the BR-14 notes.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -486,57 +487,337 @@ fn local_key_path() -> PathBuf {
     base.join(".tandem").join("memory").join("local_memory.key")
 }
 
-/// Load a 256-bit local key from `path`, generating and persisting one (0600) on
-/// first use.
+/// Load a 256-bit local key from `path`, generating and persisting one with
+/// owner-only access on first use.
 fn load_or_create_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN]> {
-    if let Ok(bytes) = std::fs::read(path) {
-        if bytes.len() == KEY_LEN {
-            let mut key = [0u8; KEY_LEN];
-            key.copy_from_slice(&bytes);
-            return Ok(key);
+    match open_existing_local_key(path) {
+        Ok(file) => return read_validated_local_key(path, file),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(MemoryError::InvalidConfig(format!(
+                "refusing to open local memory key file `{}`: {error}",
+                path.display()
+            )))
         }
-        // Tolerate a hex-encoded key file.
-        if let Some(decoded) = std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(|text| from_hex(text.trim()))
-        {
-            if decoded.len() == KEY_LEN {
-                let mut key = [0u8; KEY_LEN];
-                key.copy_from_slice(&decoded);
-                return Ok(key);
-            }
-        }
-        return Err(MemoryError::InvalidConfig(format!(
-            "local memory key file `{}` is not a valid 256-bit key",
-            path.display()
-        )));
     }
 
-    let key = random_bytes::<KEY_LEN>()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| {
-            MemoryError::InvalidConfig(format!("failed to create local key directory: {err}"))
-        })?;
-    }
-    std::fs::write(path, key).map_err(|err| {
-        MemoryError::InvalidConfig(format!("failed to write local memory key file: {err}"))
+    let parent = key_parent(path);
+    std::fs::create_dir_all(parent).map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "failed to create local key directory `{}`: {error}",
+            parent.display()
+        ))
     })?;
-    set_key_file_permissions(path);
-    Ok(key)
+
+    let key = random_bytes::<KEY_LEN>()?;
+    match create_local_key_file(path) {
+        Ok(mut file) => {
+            validate_open_local_key_file(path, &file)?;
+            file.write_all(&key).map_err(|error| {
+                MemoryError::InvalidConfig(format!(
+                    "failed to write local memory key file `{}`: {error}",
+                    path.display()
+                ))
+            })?;
+            file.sync_all().map_err(|error| {
+                MemoryError::InvalidConfig(format!(
+                    "failed to sync local memory key file `{}`: {error}",
+                    path.display()
+                ))
+            })?;
+            sync_key_parent(path)?;
+            Ok(key)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            read_concurrently_created_local_key(path)
+        }
+        Err(error) => Err(MemoryError::InvalidConfig(format!(
+            "failed to create local memory key file `{}`: {error}",
+            path.display()
+        ))),
+    }
 }
 
 #[cfg(unix)]
-fn set_key_file_permissions(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Ok(metadata) = std::fs::metadata(path) {
-        let mut perms = metadata.permissions();
-        perms.set_mode(0o600);
-        let _ = std::fs::set_permissions(path, perms);
+fn open_existing_local_key(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(unix)]
+fn create_local_key_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(unix)]
+fn validate_open_local_key_file(path: &Path, file: &std::fs::File) -> MemoryResult<()> {
+    let metadata = file.metadata().map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "failed to inspect local memory key file `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    validate_unix_key_metadata(path, &metadata, unsafe { libc::geteuid() })
+}
+
+#[cfg(unix)]
+fn validate_unix_key_metadata(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    effective_uid: u32,
+) -> MemoryResult<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+        return Err(MemoryError::InvalidConfig(format!(
+            "local memory key file `{}` must be a regular file with exactly one link",
+            path.display()
+        )));
     }
+    if metadata.uid() != effective_uid {
+        return Err(MemoryError::InvalidConfig(format!(
+            "local memory key file `{}` is not owned by the effective user",
+            path.display()
+        )));
+    }
+    if metadata.mode() & 0o777 != 0o600 {
+        return Err(MemoryError::InvalidConfig(format!(
+            "local memory key file `{}` must have mode 0600",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_existing_local_key(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+    validate_windows_key_parent(path)?;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn create_local_key_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+    validate_windows_key_parent(path)?;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn validate_open_local_key_file(path: &Path, file: &std::fs::File) -> MemoryResult<()> {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    let metadata = file.metadata().map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "failed to inspect local memory key file {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.file_type().is_file()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(MemoryError::InvalidConfig(format!(
+            "local memory key file {} must be a non-reparse regular file",
+            path.display()
+        )));
+    }
+    crate::windows_acl::validate_private_file_handle(file, "local memory key").map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "local memory key ACL validation failed for {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(windows)]
+fn validate_windows_key_parent(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    let parent = key_parent(path);
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(parent)?;
+    let metadata = directory.metadata()?;
+    if !metadata.file_type().is_dir()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "local memory key parent must be a non-reparse directory",
+        ));
+    }
+    crate::windows_acl::validate_private_file_handle(&directory, "local memory key parent")
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_existing_local_key(_path: &Path) -> std::io::Result<std::fs::File> {
+    Err(unsupported_local_key_platform())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_local_key_file(_path: &Path) -> std::io::Result<std::fs::File> {
+    Err(unsupported_local_key_platform())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn validate_open_local_key_file(_path: &Path, _file: &std::fs::File) -> MemoryResult<()> {
+    Err(MemoryError::InvalidConfig(
+        "local memory key files are unsupported on this platform".to_string(),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn unsupported_local_key_platform() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "local memory key files are unsupported on this platform",
+    )
+}
+
+fn read_concurrently_created_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN]> {
+    const ATTEMPTS: usize = 100;
+    for attempt in 0..ATTEMPTS {
+        let file = open_existing_local_key(path).map_err(|error| {
+            MemoryError::InvalidConfig(format!(
+                "local memory key was created concurrently but cannot be opened safely `{}`: {error}",
+                path.display()
+            ))
+        })?;
+        validate_open_local_key_file(path, &file)?;
+        let len = file
+            .metadata()
+            .map_err(|error| {
+                MemoryError::InvalidConfig(format!(
+                    "failed to inspect concurrently created local memory key file `{}`: {error}",
+                    path.display()
+                ))
+            })?
+            .len();
+        if len == KEY_LEN as u64 || len == (KEY_LEN * 2) as u64 || len == (KEY_LEN * 2 + 1) as u64 {
+            return read_validated_local_key(path, file);
+        }
+        if attempt + 1 < ATTEMPTS && len < KEY_LEN as u64 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            continue;
+        }
+        return read_validated_local_key(path, file);
+    }
+    Err(MemoryError::InvalidConfig(format!(
+        "concurrently created local memory key file `{}` did not become complete",
+        path.display()
+    )))
+}
+
+fn read_validated_local_key(path: &Path, mut file: std::fs::File) -> MemoryResult<[u8; KEY_LEN]> {
+    validate_open_local_key_file(path, &file)?;
+    let metadata = file.metadata().map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "failed to inspect local memory key file `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    if metadata.len() != KEY_LEN as u64
+        && metadata.len() != (KEY_LEN * 2) as u64
+        && metadata.len() != (KEY_LEN * 2 + 1) as u64
+    {
+        return Err(MemoryError::InvalidConfig(format!(
+            "local memory key file `{}` has an invalid size",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.read_to_end(&mut bytes).map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "failed to read local memory key file `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    decode_local_key(path, &bytes)
+}
+
+fn decode_local_key(path: &Path, bytes: &[u8]) -> MemoryResult<[u8; KEY_LEN]> {
+    if bytes.len() == KEY_LEN {
+        let mut key = [0u8; KEY_LEN];
+        key.copy_from_slice(bytes);
+        return Ok(key);
+    }
+    let hex_bytes = match bytes {
+        bytes if bytes.len() == KEY_LEN * 2 => Some(bytes),
+        bytes if bytes.len() == KEY_LEN * 2 + 1 && bytes.last() == Some(&10) => {
+            Some(&bytes[..KEY_LEN * 2])
+        }
+        _ => None,
+    };
+    if let Some(decoded) = hex_bytes
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(from_hex)
+    {
+        if decoded.len() == KEY_LEN {
+            let mut key = [0u8; KEY_LEN];
+            key.copy_from_slice(&decoded);
+            return Ok(key);
+        }
+    }
+    Err(MemoryError::InvalidConfig(format!(
+        "local memory key file `{}` is not a valid 256-bit key",
+        path.display()
+    )))
+}
+
+#[cfg(unix)]
+fn sync_key_parent(path: &Path) -> MemoryResult<()> {
+    let parent = key_parent(path);
+    let directory = std::fs::File::open(parent).map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "failed to open local key directory `{}` for sync: {error}",
+            parent.display()
+        ))
+    })?;
+    directory.sync_all().map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "failed to sync local key directory `{}`: {error}",
+            parent.display()
+        ))
+    })
+}
+
+fn key_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 #[cfg(not(unix))]
-fn set_key_file_permissions(_path: &Path) {}
+fn sync_key_parent(_path: &Path) -> MemoryResult<()> {
+    Ok(())
+}
 
 fn to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -666,6 +947,104 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600, "key file must be 0600");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bare_relative_key_path_uses_current_directory_parent() {
+        assert_eq!(key_parent(Path::new("memory.key")), Path::new("."));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn local_key_creation_is_0600_even_with_umask_zero() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let key_path = dir.path().join("local_memory.key");
+        let previous = unsafe { libc::umask(0) };
+        let result = load_or_create_local_key(&key_path);
+        unsafe {
+            libc::umask(previous);
+        }
+        result.expect("create key under permissive umask");
+        let mode = std::fs::metadata(&key_path)
+            .expect("key metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_key_rejects_symlink_hardlink_and_unsafe_existing_files() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let target = dir.path().join("target.key");
+        std::fs::write(&target, [7u8; KEY_LEN]).expect("target fixture");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+            .expect("target permissions");
+        let target_metadata = std::fs::metadata(&target).expect("target metadata");
+        let wrong_uid = unsafe { libc::geteuid() }.wrapping_add(1);
+        assert!(validate_unix_key_metadata(&target, &target_metadata, wrong_uid).is_err());
+        let link = dir.path().join("link.key");
+        symlink(&target, &link).expect("symlink fixture");
+        assert!(load_or_create_local_key(&link).is_err());
+
+        let hardlink = dir.path().join("hardlink.key");
+        std::fs::hard_link(&target, &hardlink).expect("hardlink fixture");
+        assert!(load_or_create_local_key(&hardlink).is_err());
+        std::fs::remove_file(&hardlink).expect("remove hardlink fixture");
+
+        let permissive = dir.path().join("permissive.key");
+        std::fs::write(&permissive, [8u8; KEY_LEN]).expect("permissive fixture");
+        std::fs::set_permissions(&permissive, std::fs::Permissions::from_mode(0o644))
+            .expect("permissive permissions");
+        assert!(load_or_create_local_key(&permissive).is_err());
+
+        let malformed = dir.path().join("malformed.key");
+        std::fs::write(&malformed, [b'z'; KEY_LEN * 2]).expect("malformed fixture");
+        std::fs::set_permissions(&malformed, std::fs::Permissions::from_mode(0o600))
+            .expect("malformed permissions");
+        assert!(load_or_create_local_key(&malformed).is_err());
+
+        let whitespace = dir.path().join("trailing-space.key");
+        let mut whitespace_bytes = b"ab".repeat(KEY_LEN);
+        whitespace_bytes.push(32);
+        std::fs::write(&whitespace, whitespace_bytes).expect("whitespace fixture");
+        std::fs::set_permissions(&whitespace, std::fs::Permissions::from_mode(0o600))
+            .expect("whitespace permissions");
+        assert!(load_or_create_local_key(&whitespace).is_err());
+
+        let valid_hex = dir.path().join("valid-hex.key");
+        let mut valid_hex_bytes = b"ab".repeat(KEY_LEN);
+        valid_hex_bytes.push(10);
+        std::fs::write(&valid_hex, valid_hex_bytes).expect("valid hex fixture");
+        std::fs::set_permissions(&valid_hex, std::fs::Permissions::from_mode(0o600))
+            .expect("valid hex permissions");
+        assert!(load_or_create_local_key(&valid_hex).is_ok());
+
+        let wrong_size = dir.path().join("wrong-size.key");
+        std::fs::write(&wrong_size, [9u8; KEY_LEN - 1]).expect("wrong-size fixture");
+        std::fs::set_permissions(&wrong_size, std::fs::Permissions::from_mode(0o600))
+            .expect("wrong-size permissions");
+        assert!(load_or_create_local_key(&wrong_size).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_key_concurrent_creation_converges_on_one_key() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let key_path = Arc::new(dir.path().join("local_memory.key"));
+        let first_path = key_path.clone();
+        let second_path = key_path.clone();
+        let first = std::thread::spawn(move || load_or_create_local_key(&first_path));
+        let second = std::thread::spawn(move || load_or_create_local_key(&second_path));
+        assert_eq!(
+            first.join().expect("first creator").expect("first key"),
+            second.join().expect("second creator").expect("second key")
+        );
     }
 
     #[test]

@@ -22,17 +22,45 @@ The active mode is resolved from the decrypt-broker config
 
 Stored ciphertext is self-describing: `tce1:<hex(nonce(12) || ciphertext+tag)>`.
 
+### Local key file lifecycle and platform behavior
+
+On Unix, first use opens the key path with no-follow, create-new semantics and mode
+`0600` in the creation syscall, so even `umask 000` has no permissive window. The
+engine fsyncs the key and parent directory. Existing files must be regular, single-link,
+owned by the effective user, mode `0600`, and exactly 32 raw bytes or 64 hexadecimal
+characters (with one optional trailing newline). Symlinks, hard links, wrong owner,
+permission drift, wrong size, malformed content, and unreadable files fail closed.
+Concurrent creators atomically converge on the single winning file. Key bytes are never
+logged.
+
+On Windows, Tandem opens the key parent and leaf with reparse-point protection, validates
+the opened parent as a directory and the leaf as a regular file, and reads each opened
+handle's security descriptor. The owner must match the process identity. Every granting
+DACL entry, including inherited entries, must target that owner, LocalSystem, or built-in
+Administrators; null DACLs, unprivileged grants, and unsupported granting ACE forms fail
+closed. Creation still uses create-new semantics and the resulting inherited file DACL is
+validated before key bytes are written. Hosted Windows deployments should continue to
+prefer hosted KMS.
+Other non-Unix/non-Windows targets do not support local key files.
+
+There is no automatic local-key rotation: replacing the key makes existing ciphertext
+unreadable. To rotate, take a consistent database/key backup, decrypt or re-encrypt all
+rows through a controlled migration, atomically install the new owner-only key, verify a
+read-back, and retain the old backup under the approved recovery policy. If key creation
+or directory sync fails, treat the newly created file as suspect and recover from a
+verified backup rather than retrying with relaxed permissions.
+
 ## Encrypted columns (ciphertext-at-rest)
 
 Encrypted on write / decrypted on authorized read via
 `MemoryCryptoProvider` (`crates/tandem-memory/src/crypto.rs`):
 
-| Payload | Table.column | Write | Read |
-| --- | --- | --- | --- |
-| Memory chunk text | `{session,project,global}_memory_chunks.content` | `store_chunk` | `row_to_chunk` |
-| Memory chunk metadata | `{session,project,global}_memory_chunks.metadata` | `store_chunk` | `row_to_chunk` |
-| Context layer text | `memory_layers.content` | `create_layer` | `get_layer` |
-| Cached LLM responses | `response_cache.response` | `put` / `put_scoped` | `get` |
+| Payload               | Table.column                                      | Write                | Read           |
+| --------------------- | ------------------------------------------------- | -------------------- | -------------- |
+| Memory chunk text     | `{session,project,global}_memory_chunks.content`  | `store_chunk`        | `row_to_chunk` |
+| Memory chunk metadata | `{session,project,global}_memory_chunks.metadata` | `store_chunk`        | `row_to_chunk` |
+| Context layer text    | `memory_layers.content`                           | `create_layer`       | `get_layer`    |
+| Cached LLM responses  | `response_cache.response`                         | `put` / `put_scoped` | `get`          |
 
 A raw SQLite dump of these columns shows only `tce1:…` ciphertext in
 local-encrypted / hosted mode; an unauthorized key cannot decrypt them.
@@ -43,10 +71,10 @@ These columns cannot be encrypted at rest without breaking core search and are
 governed by **authority-scoped reads** (tenant/data-class/source grants via the
 retrieval gateway, BR-02) plus the documented residual below:
 
-| Payload | Why it must stay plaintext |
-| --- | --- |
-| SQLite `{session,project,global}_memory_vectors.embedding` | sqlite-vec KNN computes distances over the raw vector; encryption breaks similarity search. |
-| SQLite `memory_records.content` | Indexed by the `memory_records_fts` FTS5 table (`content MATCH ?`); encryption breaks full-text search. |
+| Payload                                                    | Why it must stay plaintext                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| SQLite `{session,project,global}_memory_vectors.embedding` | sqlite-vec KNN computes distances over the raw vector; encryption breaks similarity search.             |
+| SQLite `memory_records.content`                            | Indexed by the `memory_records_fts` FTS5 table (`content MATCH ?`); encryption breaks full-text search. |
 
 Residual: embeddings can leak semantic content via inversion, and FTS content is
 plaintext. Both are tenant-partitioned and only returned through authority-filtered
@@ -86,12 +114,12 @@ before any provider is called.
 Hosted Google KMS configuration is intentionally separate from the context
 assertion signing key family and connector bearer-token secret families:
 
-| Env var | Purpose |
-| --- | --- |
-| `TANDEM_MEMORY_ENCRYPTION_REQUIRED=true` | Selects hosted fail-closed memory mode. |
-| `TANDEM_MEMORY_DECRYPT_PROVIDER=google_cloud_kms` | Selects the concrete hosted provider adapter. |
-| `TANDEM_MEMORY_DECRYPT_PRINCIPAL_ID=...` | Names the scoped runtime decrypt principal for this deployment. |
-| `TANDEM_MEMORY_GOOGLE_KMS_DECRYPT_COMMAND=...` | Optional command bridge used by the Google KMS adapter. |
+| Env var                                           | Purpose                                                         |
+| ------------------------------------------------- | --------------------------------------------------------------- |
+| `TANDEM_MEMORY_ENCRYPTION_REQUIRED=true`          | Selects hosted fail-closed memory mode.                         |
+| `TANDEM_MEMORY_DECRYPT_PROVIDER=google_cloud_kms` | Selects the concrete hosted provider adapter.                   |
+| `TANDEM_MEMORY_DECRYPT_PRINCIPAL_ID=...`          | Names the scoped runtime decrypt principal for this deployment. |
+| `TANDEM_MEMORY_GOOGLE_KMS_DECRYPT_COMMAND=...`    | Optional command bridge used by the Google KMS adapter.         |
 
 When the command bridge is configured, the runtime sends a JSON decrypt request
 on stdin with the Google CryptoKey id, wrapped DEK, AAD, principal, scope, and

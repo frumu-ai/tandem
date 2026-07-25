@@ -136,9 +136,17 @@ pub(crate) fn cross_tenant_grant_signing_key_configured() -> bool {
 }
 
 pub(crate) fn audit_hmac_key_configured() -> bool {
-    ["TANDEM_AUDIT_HMAC_KEY", "TANDEM_AUDIT_HMAC_KEY_FILE"]
-        .iter()
-        .any(|name| env_value_present(name))
+    [
+        "TANDEM_AUDIT_HMAC_KEY",
+        "TANDEM_AUDIT_HMAC_KEY_FILE",
+        "TANDEM_AUDIT_HMAC_KEYRING_FILE",
+    ]
+    .iter()
+    .any(|name| env_value_present(name))
+}
+
+pub(crate) fn audit_anchor_dir_configured() -> bool {
+    env_value_present("TANDEM_AUDIT_ANCHOR_DIR")
 }
 
 pub(crate) fn resolve_automation_execute_node_timeout_ms() -> u64 {

@@ -22,10 +22,11 @@ const CONTEXT_ASSERTION_LIFETIME_DEFAULT_MS: u64 = 15 * 60 * 1_000;
 const CONTEXT_ASSERTION_LIFETIME_MIN_MS: u64 = 1;
 const CONTEXT_ASSERTION_LIFETIME_MAX_MS: u64 = 60 * 60 * 1_000;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EngineConfigOptions {
     pub cli_transport_token_configured: bool,
     pub unsafe_no_api_token: bool,
+    pub runtime_state_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +48,7 @@ pub struct EngineConfig {
     pub hosted_control_plane_configured: bool,
     pub cross_tenant_grant_signing_key_configured: bool,
     pub audit_hmac_key_configured: bool,
+    pub audit_anchor_dir_configured: bool,
     pub transport_token_configured: bool,
     pub unsafe_no_api_token: bool,
 }
@@ -142,13 +144,14 @@ impl EngineConfigReport {
             cross_tenant_grant_signing_key_configured:
                 super::env::cross_tenant_grant_signing_key_configured(),
             audit_hmac_key_configured: super::env::audit_hmac_key_configured(),
+            audit_anchor_dir_configured: super::env::audit_anchor_dir_configured(),
             transport_token_configured,
             unsafe_no_api_token,
         };
 
         validate_data_boundary_config(&mut errors);
         validate_storage_backend_config(&mut errors);
-        validate_security_invariants(&config, &mut errors);
+        validate_security_invariants(&config, options.runtime_state_root.as_deref(), &mut errors);
         warnings.sort();
         warnings.dedup();
         errors.sort();
@@ -206,6 +209,10 @@ impl EngineConfigReport {
                 self.config.audit_hmac_key_configured
             ),
             format!(
+                "- audit_anchor_dir_configured: {}",
+                self.config.audit_anchor_dir_configured
+            ),
+            format!(
                 "- automation_execute_node_timeout_ms: {}",
                 self.config.automation_execute_node_timeout_ms
             ),
@@ -242,14 +249,19 @@ pub fn config_reference_markdown() -> String {
 - Assertion lifetime is bounded to a 15-minute default and one-hour hard ceiling.\n\
 - Hosted or enterprise auth mode requires an explicit transport token from `TANDEM_API_TOKEN`, `TANDEM_API_TOKEN_FILE`, or `--api-token`.\n\
 - Hosted or enterprise auth mode rejects `TANDEM_UNSAFE_NO_API_TOKEN`.\n\
+- Hosted or enterprise posture requires a valid audit-integrity key source and `TANDEM_AUDIT_ANCHOR_DIR` outside the state tree.\n\
 - Malformed verifier key material, invalid booleans, invalid modes, and out-of-range numeric settings fail fast.\n\
 - Unknown `TANDEM_*` variables are reported as warnings to catch typos without blocking local startup.\n\n\
-Predicate-governed decisions and enterprise-authored exact-action approvals additionally fail closed at decision time in hosted/enterprise mode unless `TANDEM_AUDIT_HMAC_KEY` or `TANDEM_AUDIT_HMAC_KEY_FILE` is configured.\n",
+Hosted/enterprise audit records and encrypted protected stores require a valid audit-integrity key source plus `TANDEM_AUDIT_ANCHOR_DIR`; keyed records fail closed on missing, revoked, or wrong-purpose keys and external-anchor mismatch.\n",
     );
     out
 }
 
-fn validate_security_invariants(config: &EngineConfig, errors: &mut Vec<String>) {
+fn validate_security_invariants(
+    config: &EngineConfig,
+    runtime_state_root: Option<&std::path::Path>,
+    errors: &mut Vec<String>,
+) {
     let hosted_or_enterprise = config.runtime_auth_mode != RuntimeAuthMode::LocalSingleTenant
         || config.hosted_control_plane_configured;
     if hosted_or_enterprise
@@ -287,6 +299,9 @@ fn validate_security_invariants(config: &EngineConfig, errors: &mut Vec<String>)
             "hosted/enterprise runtime requires TANDEM_API_TOKEN, TANDEM_API_TOKEN_FILE, or --api-token"
                 .to_string(),
         );
+    }
+    if let Err(error) = crate::audit_integrity::validate_configuration(runtime_state_root) {
+        errors.push(format!("audit integrity configuration is invalid: {error}"));
     }
     if hosted_or_enterprise && config.unsafe_no_api_token {
         errors.push(
@@ -874,8 +889,11 @@ const CONFIG_VARS: &[ConfigVar] = &[
     ConfigVar { name: "TANDEM_ENTERPRISE_CONTROL_PLANE_URL", default: "unset", notes: "Enterprise control-plane URL alias." },
     ConfigVar { name: "TANDEM_CROSS_TENANT_GRANT_SIGNING_KEY", default: "unset", notes: "Secret signing key for cross-tenant grants." },
     ConfigVar { name: "TANDEM_CROSS_TENANT_GRANT_SIGNING_KEY_FILE", default: "unset", notes: "File containing the cross-tenant grant signing key." },
-    ConfigVar { name: "TANDEM_AUDIT_HMAC_KEY", default: "unset", notes: "Deployment secret used for privacy-preserving predicate evidence and exact-action approval bindings. Required when those authored policies execute in hosted/enterprise mode." },
-    ConfigVar { name: "TANDEM_AUDIT_HMAC_KEY_FILE", default: "unset", notes: "File containing the deployment policy-evidence audit HMAC key." },
+    ConfigVar { name: "TANDEM_AUDIT_HMAC_KEY", default: "unset", notes: "Single active secret used for audit/store HMAC integrity and predicate evidence; hosted/enterprise also requires an external anchor directory." },
+    ConfigVar { name: "TANDEM_AUDIT_HMAC_KEY_FILE", default: "unset", notes: "Owner-only file containing the active audit-integrity HMAC key." },
+    ConfigVar { name: "TANDEM_AUDIT_HMAC_KEY_ID", default: "primary", notes: "Stable identifier for the single active audit-integrity key." },
+    ConfigVar { name: "TANDEM_AUDIT_HMAC_KEYRING_FILE", default: "unset", notes: "Owner-only JSON keyring with active, verify-only, and revoked audit-integrity keys for rotation." },
+    ConfigVar { name: "TANDEM_AUDIT_ANCHOR_DIR", default: "unset", notes: "Absolute external directory for authenticated audit/store heads; required outside the state tree in hosted/enterprise mode." },
     ConfigVar { name: "TANDEM_RUN_STALE_MS", default: "120000", notes: "Run staleness threshold; valid range 30000..=600000." },
     ConfigVar { name: "TANDEM_TOKEN_COST_PER_1K_USD", default: "0.0", notes: "Non-negative token cost used for estimates." },
     ConfigVar { name: "TANDEM_AUTOMATION_STRICT_RESEARCH_QUALITY", default: "true", notes: "Enable strict automation research quality checks." },
@@ -951,6 +969,9 @@ mod tests {
     #[test]
     #[serial]
     fn hosted_mode_with_key_and_token_passes() {
+        let anchor_root = tempfile::tempdir().expect("temporary anchor root");
+        let anchor_path = anchor_root.path().join("anchors");
+        let anchor_path = anchor_path.to_string_lossy().into_owned();
         with_env(
             &[
                 ("TANDEM_RUNTIME_AUTH_MODE", Some("enterprise_required")),
@@ -963,6 +984,13 @@ mod tests {
                     Some("target/test-context-assertion-replay.json"),
                 ),
                 ("TANDEM_API_TOKEN", Some("secret")),
+                (
+                    "TANDEM_AUDIT_HMAC_KEY",
+                    Some("test-audit-integrity-secret-material-32-bytes"),
+                ),
+                ("TANDEM_AUDIT_HMAC_KEY_FILE", None),
+                ("TANDEM_AUDIT_HMAC_KEYRING_FILE", None),
+                ("TANDEM_AUDIT_ANCHOR_DIR", Some(anchor_path.as_str())),
             ],
             || {
                 let report = EngineConfigReport::from_env(EngineConfigOptions::default());

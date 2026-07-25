@@ -26,6 +26,8 @@ pub mod recursive_retrieval;
 pub mod response_cache;
 pub mod store;
 pub mod types;
+#[cfg(windows)]
+pub mod windows_acl;
 
 pub use context_layers::*;
 pub use context_uri::*;
