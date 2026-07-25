@@ -334,6 +334,12 @@ jobs:
           grep -Fq 'tan_707_named_replan_edge_and_day_180_limit_are_explicit' \
             "$RUNNER_TEMP/nextest-tests.txt"
 
+      - name: Verify focused security tests were discovered and executed
+        run: |
+          node scripts/verify-security-retest-matrix.mjs \
+            --nextest-list "$RUNNER_TEMP/nextest-tests.txt" \
+            --junit target/nextest/ci/junit.xml
+
       - name: Verify governance audit tests were discovered and executed
         shell: bash
         run: |

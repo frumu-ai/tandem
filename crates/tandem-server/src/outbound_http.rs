@@ -109,14 +109,7 @@ async fn resolve_outbound_url(
             if addrs.is_empty() {
                 anyhow::bail!("outbound destination host did not resolve");
             }
-            let any_private = addrs.iter().any(|addr| !ip_is_publicly_routable(addr.ip()));
-            let any_public = addrs.iter().any(|addr| ip_is_publicly_routable(addr.ip()));
-            if any_private && !allow_private_provider_endpoint {
-                anyhow::bail!("outbound URL resolves to a private or internal address");
-            }
-            if insecure_http && any_public {
-                anyhow::bail!("insecure provider HTTP is limited to private standalone endpoints");
-            }
+            validate_resolved_addresses(&addrs, allow_private_provider_endpoint, insecure_http)?;
             Ok(ResolvedPublicHttpsTarget {
                 url,
                 dns_override_host: Some(host),
@@ -124,6 +117,22 @@ async fn resolve_outbound_url(
             })
         }
     }
+}
+
+fn validate_resolved_addresses(
+    addrs: &[SocketAddr],
+    allow_private_provider_endpoint: bool,
+    insecure_http: bool,
+) -> anyhow::Result<()> {
+    let any_private = addrs.iter().any(|addr| !ip_is_publicly_routable(addr.ip()));
+    let any_public = addrs.iter().any(|addr| ip_is_publicly_routable(addr.ip()));
+    if any_private && !allow_private_provider_endpoint {
+        anyhow::bail!("outbound URL resolves to a private or internal address");
+    }
+    if insecure_http && any_public {
+        anyhow::bail!("insecure provider HTTP is limited to private standalone endpoints");
+    }
+    Ok(())
 }
 
 pub async fn read_response_body_limited(
@@ -190,6 +199,11 @@ fn ipv6_is_publicly_routable(ip: Ipv6Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::{Body, Bytes};
+    use axum::http::{header, StatusCode};
+    use axum::response::Response;
+    use axum::routing::get;
+    use axum::Router;
 
     #[tokio::test]
     async fn rejects_private_literal_and_url_credentials() {
@@ -203,5 +217,76 @@ mod tests {
         ] {
             assert!(resolve_public_https_url(url).await.is_err(), "{url}");
         }
+    }
+
+    #[test]
+    fn fake_dns_and_cloud_metadata_answers_fail_closed() {
+        let public: SocketAddr = "8.8.8.8:443".parse().expect("public address");
+        let private: SocketAddr = "10.0.0.7:443".parse().expect("private address");
+        let metadata: SocketAddr = "169.254.169.254:80".parse().expect("metadata address");
+        assert!(validate_resolved_addresses(&[public], false, false).is_ok());
+        assert!(validate_resolved_addresses(&[metadata], false, false).is_err());
+        assert!(validate_resolved_addresses(&[public, private], false, false).is_err());
+        assert!(validate_resolved_addresses(&[private], true, true).is_ok());
+        assert!(validate_resolved_addresses(&[public], true, true).is_err());
+    }
+
+    #[tokio::test]
+    async fn fake_redirect_and_streaming_budget_service_is_contained() {
+        async fn redirect_to_metadata() -> Response<Body> {
+            Response::builder()
+                .status(StatusCode::TEMPORARY_REDIRECT)
+                .header(header::LOCATION, "http://169.254.169.254/latest/meta-data/")
+                .body(Body::empty())
+                .expect("redirect response")
+        }
+        async fn unbounded_stream() -> Response<Body> {
+            Response::new(Body::from_stream(futures::stream::iter([
+                Ok::<Bytes, std::io::Error>(Bytes::from_static(b"12345678")),
+                Ok::<Bytes, std::io::Error>(Bytes::from_static(b"overflow")),
+            ])))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake egress service");
+        let address = listener.local_addr().expect("fake service address");
+        let app = Router::new()
+            .route("/redirect", get(redirect_to_metadata))
+            .route("/stream", get(unbounded_stream));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("fake egress server");
+        });
+        let target = ResolvedPublicHttpsTarget {
+            url: Url::parse(&format!("http://{address}/redirect")).expect("redirect URL"),
+            dns_override_host: None,
+            dns_override_addrs: Vec::new(),
+        };
+        let client = target
+            .client(Duration::from_secs(2))
+            .expect("hardened client");
+        let redirect = client
+            .get(target.url().clone())
+            .send()
+            .await
+            .expect("redirect response");
+        assert_eq!(redirect.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            redirect
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("http://169.254.169.254/latest/meta-data/")
+        );
+
+        let stream = client
+            .get(format!("http://{address}/stream"))
+            .send()
+            .await
+            .expect("stream response");
+        assert!(read_response_body_limited(stream, 8).await.is_err());
+        server.abort();
     }
 }

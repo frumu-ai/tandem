@@ -44,6 +44,10 @@ pub enum HostAction {
     GlobalConfigUpdate,
     ApiTokenManage,
     ChannelRead,
+    ChannelSenderRead,
+    ChannelEnrollmentIssue,
+    ChannelEnrollmentConfirm,
+    ChannelStepUpGrant,
     ChannelVerify,
     ChannelConfigUpdate,
     ChannelConfigDelete,
@@ -76,6 +80,10 @@ impl HostAction {
             Self::GlobalConfigUpdate => "deployment.config.manage",
             Self::ApiTokenManage => "deployment.api_token.manage",
             Self::ChannelRead => "deployment.channels.read",
+            Self::ChannelSenderRead => "deployment.channels.senders.read",
+            Self::ChannelEnrollmentIssue => "deployment.channels.enrollment.issue",
+            Self::ChannelEnrollmentConfirm => "deployment.channels.enrollment.confirm",
+            Self::ChannelStepUpGrant => "deployment.channels.step_up.grant",
             Self::ChannelVerify => "deployment.channels.verify",
             Self::ChannelConfigUpdate => "deployment.channels.manage",
             Self::ChannelConfigDelete => "deployment.channels.manage",
@@ -101,6 +109,10 @@ impl HostAction {
                 | Self::GlobalConfigUpdate
                 | Self::ApiTokenManage
                 | Self::ChannelRead
+                | Self::ChannelSenderRead
+                | Self::ChannelEnrollmentIssue
+                | Self::ChannelEnrollmentConfirm
+                | Self::ChannelStepUpGrant
                 | Self::ChannelVerify
                 | Self::ChannelConfigUpdate
                 | Self::ChannelConfigDelete

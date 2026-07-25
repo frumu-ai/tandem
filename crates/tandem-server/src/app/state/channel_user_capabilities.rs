@@ -203,6 +203,17 @@ impl AppState {
         Ok(record)
     }
 
+    pub async fn pending_channel_enrollment_code(
+        &self,
+        code: &str,
+    ) -> Option<ChannelEnrollmentCodeRecord> {
+        self.channel_enrollment_codes
+            .read()
+            .await
+            .get(&normalize_enrollment_code(code))
+            .cloned()
+    }
+
     /// Resolve org-unit references (bare unit id or `taxonomy/unit_id`
     /// principal id) against the enterprise org-unit store. Errors on any
     /// unknown reference. Ambiguity is always REJECTED, never resolved to an
