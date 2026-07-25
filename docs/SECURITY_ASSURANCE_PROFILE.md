@@ -42,7 +42,7 @@ Before any hosted-enterprise deployment is released, the exact release commit mu
 | Multi-replica | At least two replicas, failover pass, and cross-replica authorization pass   |
 | Egress        | Default deny, a successful denied probe, and a reviewed allowlist            |
 
-Evidence is valid for at most 30 days and is bound to the exact 40-character commit SHA. Each control group requires its own content-addressed reference in the form `urn:tandem:evidence:<control-group>:sha256:<64 lowercase hex>`; placeholder or reused references fail. The validator emits only a redacted summary and rejects authorization/cookie fields, bearer credentials, JWTs, common cloud/GitHub/Slack token forms, presigned URL signatures, passwords, and private keys. Future hosted deployment workflows must consume a passing summary for their exact commit instead of bypassing this gate.
+Evidence is valid for at most 30 days and is bound to the exact 40-character commit SHA. Each of the five verified control groups requires its own content-addressed reference in the form `urn:tandem:evidence:<control-group>:sha256:<64 lowercase hex>`; placeholders, unknown groups, and reused digests fail. The validator emits only those five groups in its redacted summary and rejects authorization/cookie/connection-string fields, credential-bearing URI userinfo, bearer credentials, JWTs, common cloud/GitHub/Slack token forms, presigned URL signatures, passwords, and private keys. Future hosted deployment workflows must consume a passing summary for their exact commit instead of bypassing this gate.
 
 ## Release interpretation
 

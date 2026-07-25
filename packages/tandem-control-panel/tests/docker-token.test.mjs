@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { ensureTokenFile, readTokenFile } from "../bin/docker-token.js";
+import { resolveDockerRuntimeIdentity } from "../bin/docker-up.js";
 
 test("docker token provisioning creates one stable private token", async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "tandem-docker-token-"));
@@ -32,6 +33,20 @@ test("docker token provisioning rejects empty files and symbolic links", async (
   writeFileSync(tokenPath, "", { mode: 0o600 });
   assert.throws(() => readTokenFile(tokenPath), /invalid format/);
 
+  const token = `tk_${"0123456789abcdef".repeat(2)}`;
+  for (const invalid of [
+    ` ${token}\n`,
+    `${token} \n`,
+    `${token.slice(0, 20)}\n${token.slice(20)}\n`,
+  ]) {
+    writeFileSync(tokenPath, invalid, { mode: 0o600 });
+    assert.throws(() => readTokenFile(tokenPath), /invalid format/);
+  }
+  for (const valid of [token, `${token}\n`, `${token}\r\n`]) {
+    writeFileSync(tokenPath, valid, { mode: 0o600 });
+    assert.equal(readTokenFile(tokenPath), token);
+  }
+
   await rm(tokenPath);
   const targetPath = path.join(cwd, "elsewhere");
   const syntheticToken = `tk_${"0123456789abcdef".repeat(2)}\n`;
@@ -47,4 +62,29 @@ test("docker token provisioning rejects a symbolic-link secrets directory", asyn
   await mkdir(targetDirectory, { mode: 0o700 });
   symlinkSync(targetDirectory, path.join(cwd, "secrets"), "dir");
   assert.throws(() => ensureTokenFile({ cwd }), /real directory/);
+});
+
+test("docker runtime identity rejects non-root ownership mismatches", () => {
+  assert.deepEqual(
+    resolveDockerRuntimeIdentity({
+      hostUid: 1200,
+      hostGid: 1300,
+      hostIdentityAvailable: true,
+    }),
+    { runtimeUid: 1200, runtimeGid: 1300 }
+  );
+  assert.throws(
+    () =>
+      resolveDockerRuntimeIdentity({
+        hostUid: 1200,
+        hostGid: 1300,
+        hostIdentityAvailable: true,
+        requestedUid: "1400",
+      }),
+    /cannot override/
+  );
+  assert.throws(
+    () => resolveDockerRuntimeIdentity({ hostUid: 0, hostGid: 0, requestedUid: "00" }),
+    /non-root numeric identity/
+  );
 });

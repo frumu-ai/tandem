@@ -5,9 +5,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SHA = /^[0-9a-f]{40}$/;
+const VERIFIED_CONTROL_GROUPS = Object.freeze([
+  "egress",
+  "kmsIam",
+  "multiReplica",
+  "postgresql",
+  "reverseProxy",
+]);
 const FORBIDDEN_KEY = /(?:token|secret|password|private.?key)$/i;
 const FORBIDDEN_EXACT_KEY =
-  /^(?:authorization|proxyAuthorization|cookie|setCookie|session|credential|credentials|accessKey|apiKey|clientSecret|refreshToken|idToken|signedUrl)$/i;
+  /^(?:authorization|proxyAuthorization|cookie|setCookie|session|credential|credentials|accessKey|apiKey|clientSecret|refreshToken|idToken|signedUrl|connectionString|databaseUrl|dsn)$/i;
 const FORBIDDEN_VALUES = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
   /\btk_[0-9a-f]{32}\b/i,
@@ -18,7 +25,7 @@ const FORBIDDEN_VALUES = [
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/i,
   /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/,
   /[?&](?:X-Amz-(?:Credential|Signature|Security-Token)|sig|signature|token|access_token)=/i,
-  /https?:\/\/[^/\s:@]+:[^/\s@]+@/i,
+  /[A-Za-z][A-Za-z0-9+.-]*:[/][/][^/ :@]+:[^/ @]+@/,
 ];
 const EVIDENCE_REFERENCE = /^urn:tandem:evidence:([a-z][a-z0-9-]{2,31}):sha256:([0-9a-f]{64})$/;
 
@@ -26,7 +33,7 @@ function requireValue(condition, message, errors) {
   if (!condition) errors.push(message);
 }
 
-function evidenceReference(group, kind, errors, references) {
+function evidenceReference(group, kind, errors, digests) {
   const value = typeof group?.evidenceRef === "string" ? group.evidenceRef.trim() : "";
   const match = value.match(EVIDENCE_REFERENCE);
   requireValue(
@@ -35,8 +42,8 @@ function evidenceReference(group, kind, errors, references) {
     errors
   );
   if (match) {
-    requireValue(!references.has(value), `${kind} evidenceRef must be unique`, errors);
-    references.add(value);
+    requireValue(!digests.has(match[2]), `${kind} evidence digest must be unique`, errors);
+    digests.add(match[2]);
   }
 }
 
@@ -61,7 +68,7 @@ function rejectSecretMaterial(value, errors, cursor = "evidence") {
 
 export function validateReleaseEvidence(evidence, { expectedCommit, now = new Date() } = {}) {
   const errors = [];
-  const evidenceReferences = new Set();
+  const evidenceDigests = new Set();
   requireValue(evidence?.schemaVersion === 1, "schemaVersion must be 1", errors);
   requireValue(
     evidence?.profile === "hosted-enterprise",
@@ -104,6 +111,13 @@ export function validateReleaseEvidence(evidence, { expectedCommit, now = new Da
   }
 
   const controls = evidence?.controls || {};
+  for (const group of Object.keys(controls)) {
+    requireValue(
+      VERIFIED_CONTROL_GROUPS.includes(group),
+      `unknown control group is not verified: ${group}`,
+      errors
+    );
+  }
   const postgres = controls.postgresql || {};
   requireValue(postgres.tlsVerified === true, "PostgreSQL TLS must be verified", errors);
   requireValue(
@@ -111,7 +125,7 @@ export function validateReleaseEvidence(evidence, { expectedCommit, now = new Da
     "PostgreSQL certificate verification must be full",
     errors
   );
-  evidenceReference(postgres, "postgresql", errors, evidenceReferences);
+  evidenceReference(postgres, "postgresql", errors, evidenceDigests);
 
   const kmsIam = controls.kmsIam || {};
   requireValue(
@@ -129,7 +143,7 @@ export function validateReleaseEvidence(evidence, { expectedCommit, now = new Da
     "static cloud credential count must be zero",
     errors
   );
-  evidenceReference(kmsIam, "kms-iam", errors, evidenceReferences);
+  evidenceReference(kmsIam, "kms-iam", errors, evidenceDigests);
 
   const proxy = controls.reverseProxy || {};
   requireValue(
@@ -140,7 +154,7 @@ export function validateReleaseEvidence(evidence, { expectedCommit, now = new Da
   for (const field of ["hsts", "contentSecurityPolicy", "frameAncestors", "contentTypeOptions"]) {
     requireValue(proxy[field] === true, `reverse proxy ${field} control must pass`, errors);
   }
-  evidenceReference(proxy, "reverse-proxy", errors, evidenceReferences);
+  evidenceReference(proxy, "reverse-proxy", errors, evidenceDigests);
 
   const replicas = controls.multiReplica || {};
   requireValue(
@@ -154,13 +168,13 @@ export function validateReleaseEvidence(evidence, { expectedCommit, now = new Da
     "cross-replica authorization test must pass",
     errors
   );
-  evidenceReference(replicas, "multi-replica", errors, evidenceReferences);
+  evidenceReference(replicas, "multi-replica", errors, evidenceDigests);
 
   const egress = controls.egress || {};
   requireValue(egress.defaultDeny === true, "egress must default deny", errors);
   requireValue(egress.deniedProbePass === true, "denied egress probe must pass", errors);
   requireValue(egress.allowlistReviewed === true, "egress allowlist must be reviewed", errors);
-  evidenceReference(egress, "egress", errors, evidenceReferences);
+  evidenceReference(egress, "egress", errors, evidenceDigests);
 
   rejectSecretMaterial(evidence, errors);
   return errors;
@@ -228,6 +242,20 @@ function selfTest() {
   }
   for (const [name, mutate] of [
     ["placeholder", (fixture) => (fixture.controls.egress.evidenceRef = "abc")],
+    [
+      "reused digest",
+      (fixture) => (fixture.controls.egress.evidenceRef = testEvidenceReference("egress", "1")),
+    ],
+    [
+      "database credentials",
+      (fixture) =>
+        (fixture.controls.postgresql.databaseUrl = "postgresql://admin:password@db.example/app"),
+    ],
+    [
+      "non-HTTP URI userinfo",
+      (fixture) => (fixture.note = "postgresql://admin:password@db.example/app"),
+    ],
+    ["unknown control", (fixture) => (fixture.controls.uncheckedControl = { passed: true })],
     ["authorization", (fixture) => (fixture.authorization = "Bearer secret-value")],
     ["presigned URL", (fixture) => (fixture.url = "https://example.test/a?X-Amz-Signature=abc")],
     [
@@ -277,7 +305,7 @@ async function main() {
     environmentId: evidence.environmentId,
     observedAt: evidence.observedAt,
     expiresAt: evidence.expiresAt,
-    verifiedControlGroups: Object.keys(evidence.controls).sort(),
+    verifiedControlGroups: [...VERIFIED_CONTROL_GROUPS],
   };
   const output = argValue("--output");
   if (output) await writeFile(output, `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 });

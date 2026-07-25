@@ -3,7 +3,7 @@ set -euo pipefail
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
-  echo "Usage: TANDEM_ENGINE_BINARY_SHA256=<linux-x64-archive-sha256> scripts/bump-version.sh <version>" >&2
+  echo "Usage: TANDEM_ENGINE_BINARY_SHA256=<extracted-linux-x64-binary-sha256> scripts/bump-version.sh <version>" >&2
   exit 1
 fi
 

@@ -9,14 +9,23 @@ services:
       - /bin/sh
       - -euc
       - |
-        case "$${TANDEM_RUNTIME_UID}:$${TANDEM_RUNTIME_GID}" in
-          0:*|*:0|*[!0-9:]*|:*|*:) echo "runtime UID/GID must be non-root numeric values" >&2; exit 1 ;;
-        esac
+        is_non_root_id() {
+          case "$$1" in
+            ""|*[!0-9]*) return 1 ;;
+            *[1-9]*) return 0 ;;
+            *) return 1 ;;
+          esac
+        }
+        if ! is_non_root_id "$${TANDEM_RUNTIME_UID}" || ! is_non_root_id "$${TANDEM_RUNTIME_GID}"; then
+          echo "runtime UID/GID must be non-root numeric values" >&2
+          exit 1
+        fi
         for state_dir in /var/lib/tandem/engine /var/lib/tandem/panel; do
           marker="$${state_dir}/.tandem-owner-$${TANDEM_RUNTIME_UID}-$${TANDEM_RUNTIME_GID}"
           if [ ! -f "$${marker}" ]; then
-            touch "$${marker}"
             chown -R "$${TANDEM_RUNTIME_UID}:$${TANDEM_RUNTIME_GID}" "$${state_dir}"
+            touch "$${marker}"
+            chown "$${TANDEM_RUNTIME_UID}:$${TANDEM_RUNTIME_GID}" "$${marker}"
           fi
         done
     volumes:

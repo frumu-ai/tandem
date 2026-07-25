@@ -4,7 +4,7 @@ param(
 )
 
 if (-not $Version) {
-  Write-Error "Usage: scripts/bump-version.ps1 <version> -EngineBinarySha256 <linux-x64-archive-sha256>"
+  Write-Error "Usage: scripts/bump-version.ps1 <version> -EngineBinarySha256 <extracted-linux-x64-binary-sha256>"
   exit 1
 }
 

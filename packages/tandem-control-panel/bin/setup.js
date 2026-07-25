@@ -4061,7 +4061,7 @@ async function fingerprintWorkspaceFile(pathname) {
   };
 }
 
-async function fingerprintGitSubmodule(repoRoot, relativePath) {
+async function fingerprintGitSubmodule(repoRoot, relativePath, seenRoots = new Set()) {
   const staged = await runGit(["-C", repoRoot, "ls-files", "--stage", "--", relativePath], {
     stdio: "pipe",
     safeDirectory: repoRoot,
@@ -4069,6 +4069,11 @@ async function fingerprintGitSubmodule(repoRoot, relativePath) {
   const gitlink = String(staged?.stdout || "").match(/^160000\s+([0-9a-f]{40,64})\s+\d+\t/m)?.[1];
   if (!gitlink) return "";
   const submoduleRoot = join(repoRoot, relativePath);
+  const submoduleKey = resolve(submoduleRoot);
+  if (seenRoots.has(submoduleKey)) {
+    return createHash("sha1").update("recursive-submodule-cycle").digest("hex");
+  }
+  const nestedSeenRoots = new Set([...seenRoots, submoduleKey]);
   const readGit = async (args) =>
     String(
       (
@@ -4089,8 +4094,23 @@ async function fingerprintGitSubmodule(repoRoot, relativePath) {
   for (const pathname of untrackedPaths) {
     untracked.push([pathname, await fingerprintWorkspaceFile(join(submoduleRoot, pathname))]);
   }
+  const nestedPaths = (await readGit(["ls-files", "--stage", "-z"]))
+    .split("\0")
+    .map(
+      (record) =>
+        record.match(/^160000\s+[0-9a-f]{40,64}\s+\d+\t([^\0]+)$/)?.[1] || ""
+    )
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const nested = [];
+  for (const pathname of nestedPaths) {
+    nested.push([
+      pathname,
+      await fingerprintGitSubmodule(submoduleRoot, pathname, nestedSeenRoots),
+    ]);
+  }
   return createHash("sha1")
-    .update(JSON.stringify({ gitlink, head, status, trackedDiff, untracked }))
+    .update(JSON.stringify({ gitlink, head, status, trackedDiff, untracked, nested }))
     .digest("hex");
 }
 

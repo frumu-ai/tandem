@@ -39,11 +39,12 @@ function openRegularTokenFile(pathname, flags, { allowMissing = false } = {}) {
 }
 
 function readTokenDescriptor(descriptor, tokenPath) {
-  const token = readFileSync(descriptor, "utf8").trim();
-  if (!TOKEN_PATTERN.test(token)) {
+  const raw = readFileSync(descriptor, "utf8");
+  const match = raw.match(/^(tk_[0-9a-f]{32})(?:\r?\n)?$/);
+  if (!match || !TOKEN_PATTERN.test(match[1])) {
     throw new Error(`Token file is empty or has an invalid format: ${tokenPath}`);
   }
-  return token;
+  return match[1];
 }
 
 export function readTokenFile(tokenPath) {

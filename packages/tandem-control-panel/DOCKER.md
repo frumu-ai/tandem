@@ -61,9 +61,9 @@ Useful variables:
 
 - `TANDEM_DOCKER_PANEL_PORT`
 - `TANDEM_ENGINE_PORT`
-- `TANDEM_DOCKER_UID` and `TANDEM_DOCKER_GID` (non-root numeric overrides; normally derived automatically by `docker:up`)
+- `TANDEM_DOCKER_UID` and `TANDEM_DOCKER_GID` (non-root numeric overrides for root launchers; ordinary non-root launchers must use their invoking host identity)
 
-The image pins both the engine version and the corresponding release-binary SHA-256 in `docker/engine.Dockerfile`. Release preparation must update both together with `TANDEM_ENGINE_BINARY_SHA256=<sha256> scripts/bump-version.sh <version>`; release CI fails before publishing if the canonical package and Docker pin differ. Runtime OS packages come from a dated Debian snapshot and are version-pinned.
+The image pins both the engine version and the SHA-256 of the extracted Linux x64 `tandem-engine` release binary in `docker/engine.Dockerfile`. Release preparation must update both together with `TANDEM_ENGINE_BINARY_SHA256=<extracted-binary-sha256> scripts/bump-version.sh <version>`; release CI fails before publishing if the canonical package and Docker pin differ. Runtime OS packages come from a dated Debian snapshot and are version-pinned.
 
 On startup, `tandem-state-migrate` checks an ownership marker in each named volume. It performs a one-time recursive ownership migration when upgrading a volume created by the older root-running images, then both runtime services start under the mapped non-root identity. The migrator has a read-only root filesystem, drops all capabilities, adds back only `CHOWN` and `DAC_OVERRIDE`, and exits before either runtime starts.
 

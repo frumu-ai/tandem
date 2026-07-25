@@ -11,6 +11,8 @@ const EXPECTED_DEPLOYMENT_ASSETS = new Set([
 ]);
 const PINNED_NODE_BASE =
   "node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573";
+const EXACT_SEMVER =
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 function requireMatch(source, pattern, message, errors) {
   if (!pattern.test(source)) errors.push(message);
@@ -38,13 +40,18 @@ export function isDeploymentAsset(filename, source = "") {
       filename
     ) ||
     /(^|\/)(?:docker-)?compose[^/]*\.ya?ml$/.test(filename) ||
-    /\.tf(?:vars)?$/.test(filename) ||
+    /[.]tf(?:vars)?(?:[.]json)?$/i.test(filename) ||
     /(^|\/)(?:Chart|kustomization|helmfile)\.ya?ml$/i.test(filename) ||
     /\.nomad(?:\.hcl)?$/i.test(filename) ||
     (/\.ya?ml$/i.test(filename) &&
       /^\s*apiVersion\s*:\s*\S+/m.test(source) &&
       /^\s*kind\s*:\s*[A-Za-z]/m.test(source))
   );
+}
+
+export function parsePinnedEngineVersion(source) {
+  const value = String(source || "").match(/^\s*TANDEM_ENGINE_VERSION=([^ \r\n]+) \\$/m)?.[1] || "";
+  return EXACT_SEMVER.test(value) ? value : "";
 }
 
 export async function verifyContainerHardening(
@@ -100,8 +107,7 @@ export async function verifyContainerHardening(
     }
   }
 
-  const engineVersion =
-    engineDockerfile.match(/^\s*TANDEM_ENGINE_VERSION=(\d+\.\d+\.\d+) \\$/m)?.[1] || "";
+  const engineVersion = parsePinnedEngineVersion(engineDockerfile);
   if (!engineVersion) errors.push("engine image must pin an exact semantic version in the image");
   if (engineVersion && engineVersion !== String(enginePackage.version || "")) {
     errors.push(
@@ -169,6 +175,17 @@ export async function verifyContainerHardening(
   }
   requireMatch(
     compose,
+    /chown -R [^\n]+"\$\$\{state_dir\}"[\s\S]{0,120}touch "\$\$\{marker\}"/,
+    "Compose migration marker must be written after recursive ownership succeeds",
+    errors
+  );
+  for (const marker of ["is_non_root_id", "*[1-9]*"]) {
+    if (!compose.includes(marker)) {
+      errors.push(`Compose must reject zero-padded root identities using ${marker}`);
+    }
+  }
+  requireMatch(
+    compose,
     /source:\s*\.\/secrets\/tandem_api_token[\s\S]{0,160}target:\s*\/run\/secrets\/tandem_api_token[\s\S]{0,100}read_only:\s*true/,
     "engine secret must be a single read-only file mount",
     errors
@@ -221,6 +238,8 @@ function selfTest() {
     ["Dockerfile.production", ""],
     ["ops/Containerfile", ""],
     ["deploy/helmfile.yaml", ""],
+    ["deploy/main.tf.json", ""],
+    ["deploy/production.tfvars.json", ""],
     ["nomad/tandem.nomad.hcl", ""],
     ["k8s/workload.yaml", "apiVersion: apps/v1\nkind: Deployment\n"],
   ];
@@ -229,6 +248,14 @@ function selfTest() {
   }
   if (isDeploymentAsset(".github/workflows/ci.yml", "name: CI\nkindness: true\n")) {
     throw new Error("container hardening self-test classified a normal workflow as Kubernetes");
+  }
+  const slash = String.fromCharCode(92);
+  const prerelease = `ENV A=1 ${slash}\n  TANDEM_ENGINE_VERSION=0.8.0-beta.1 ${slash}\n  B=2`;
+  if (parsePinnedEngineVersion(prerelease) !== "0.8.0-beta.1") {
+    throw new Error("container hardening self-test rejected a supported prerelease SemVer");
+  }
+  if (parsePinnedEngineVersion(`  TANDEM_ENGINE_VERSION=latest ${slash}`) !== "") {
+    throw new Error("container hardening self-test accepted a floating engine version");
   }
 }
 
