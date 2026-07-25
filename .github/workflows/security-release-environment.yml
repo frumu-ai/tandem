@@ -1,0 +1,37 @@
+name: Hosted Security Release Evidence
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-hosted-environment:
+    name: Validate Exact-Commit Hosted Controls
+    runs-on: ubuntu-24.04
+    environment: hosted-production-security
+    env:
+      SECURITY_RELEASE_EVIDENCE_JSON: ${{ secrets.SECURITY_RELEASE_EVIDENCE_JSON }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+
+      - name: Validate fresh exact-commit release evidence
+        run: |
+          node scripts/verify-security-release-evidence.mjs \
+            --from-env SECURITY_RELEASE_EVIDENCE_JSON \
+            --expected-commit "$GITHUB_SHA" \
+            --output security-release-evidence-summary.json
+
+      - name: Upload redacted validation summary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-security-release-evidence-${{ github.sha }}
+          path: security-release-evidence-summary.json
+          if-no-files-found: error
+          retention-days: 30

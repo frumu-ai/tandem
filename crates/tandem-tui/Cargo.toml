@@ -9,10 +9,10 @@ default-run = "tandem-tui"
 
 [dependencies]
 # UI
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 pulldown-cmark = "0.10"
-throbber-widgets-tui = "0.8"
+throbber-widgets-tui = "0.11"
 
 # Async & Networking
 tokio = { version = "1", features = ["full"] }

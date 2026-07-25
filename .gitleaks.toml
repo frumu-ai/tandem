@@ -1,0 +1,15 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "tandem-generated-api-token"
+description = "Tandem generated API token"
+regex = '''\btk_[a-fA-F0-9]{32}\b'''
+keywords = ["tk_"]
+
+[[rules]]
+id = "tandem-token-assignment"
+description = "Tandem API token assignment or header"
+regex = '''(?i)(?:TANDEM_(?:API_TOKEN|CONTROL_PANEL_ENGINE_TOKEN)|x-tandem-token)["'\s:=]{1,24}([a-zA-Z0-9_=-]{20,})'''
+secretGroup = 1
+keywords = ["tandem", "x-tandem-token"]

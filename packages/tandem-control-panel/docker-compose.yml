@@ -1,10 +1,51 @@
 services:
+  tandem-state-migrate:
+    image: node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573
+    user: "0:0"
+    environment:
+      TANDEM_RUNTIME_UID: ${TANDEM_DOCKER_UID:-1000}
+      TANDEM_RUNTIME_GID: ${TANDEM_DOCKER_GID:-1000}
+    command:
+      - /bin/sh
+      - -euc
+      - |
+        is_non_root_id() {
+          case "$$1" in
+            ""|*[!0-9]*) return 1 ;;
+            *[1-9]*) return 0 ;;
+            *) return 1 ;;
+          esac
+        }
+        if ! is_non_root_id "$${TANDEM_RUNTIME_UID}" || ! is_non_root_id "$${TANDEM_RUNTIME_GID}"; then
+          echo "runtime UID/GID must be non-root numeric values" >&2
+          exit 1
+        fi
+        for state_dir in /var/lib/tandem/engine /var/lib/tandem/panel; do
+          marker="$${state_dir}/.tandem-owner-$${TANDEM_RUNTIME_UID}-$${TANDEM_RUNTIME_GID}"
+          if [ ! -f "$${marker}" ]; then
+            chown -R "$${TANDEM_RUNTIME_UID}:$${TANDEM_RUNTIME_GID}" "$${state_dir}"
+            touch "$${marker}"
+            chown "$${TANDEM_RUNTIME_UID}:$${TANDEM_RUNTIME_GID}" "$${marker}"
+          fi
+        done
+    volumes:
+      - tandem-engine-state:/var/lib/tandem/engine
+      - tandem-panel-state:/var/lib/tandem/panel
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
   tandem-engine:
     build:
-      context: .
-      dockerfile: docker/engine.Dockerfile
-      args:
-        ENGINE_VERSION: ${TANDEM_ENGINE_VERSION:-latest}
+      context: ../..
+      dockerfile: packages/tandem-control-panel/docker/engine.Dockerfile
+    user: "${TANDEM_DOCKER_UID:-1000}:${TANDEM_DOCKER_GID:-1000}"
     environment:
       TANDEM_ENGINE_HOST: 0.0.0.0
       TANDEM_ENGINE_PORT: ${TANDEM_ENGINE_PORT:-39731}
@@ -12,7 +53,21 @@ services:
       TANDEM_API_TOKEN_FILE: /run/secrets/tandem_api_token
     volumes:
       - tandem-engine-state:/var/lib/tandem/engine
-      - ./secrets:/run/secrets
+      - type: bind
+        source: ./secrets/tandem_api_token
+        target: /run/secrets/tandem_api_token
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    depends_on:
+      tandem-state-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [
@@ -26,8 +81,9 @@ services:
 
   tandem-control-panel:
     build:
-      context: .
-      dockerfile: docker/control-panel.Dockerfile
+      context: ../..
+      dockerfile: packages/tandem-control-panel/docker/control-panel.Dockerfile
+    user: "${TANDEM_DOCKER_UID:-1000}:${TANDEM_DOCKER_GID:-1000}"
     environment:
       TANDEM_CONTROL_PANEL_HOST: 0.0.0.0
       TANDEM_CONTROL_PANEL_PORT: ${TANDEM_DOCKER_PANEL_PORT:-39734}
@@ -39,9 +95,19 @@ services:
       TANDEM_CONTROL_PANEL_MODE: ${TANDEM_CONTROL_PANEL_MODE:-auto}
     volumes:
       - tandem-panel-state:/var/lib/tandem/panel
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
     ports:
       - "${TANDEM_DOCKER_PANEL_PORT:-39734}:${TANDEM_DOCKER_PANEL_PORT:-39734}"
     depends_on:
+      tandem-state-migrate:
+        condition: service_completed_successfully
       tandem-engine:
         condition: service_healthy
     healthcheck:

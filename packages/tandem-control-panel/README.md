@@ -25,7 +25,7 @@ npm i -g @frumu/tandem-panel
 
 If you want a containerized install, there is a ready-to-run compose setup in [`DOCKER.md`](./DOCKER.md).
 
-It installs the engine from npm and the panel from the checked-in package source, runs them on the same Docker network, and keeps the engine token in `./secrets/tandem_api_token` so the browser can log in with the same key the engine uses.
+It installs an exact engine version from npm, builds the panel from the checked-in lockfile and source, and runs both as non-root services on the same Docker network. The host creates `./secrets/tandem_api_token` with private permissions before startup and mounts only that file read-only into the engine, so the browser can log in with the same key the engine uses.
 
 By default the Docker panel listens on `39734` so it can sit next to the host engine and any older panel instance.
 

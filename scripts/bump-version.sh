@@ -3,18 +3,20 @@ set -euo pipefail
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
-  echo "Usage: scripts/bump-version.sh <version>" >&2
+  echo "Usage: TANDEM_ENGINE_BINARY_SHA256=<extracted-linux-x64-binary-sha256> scripts/bump-version.sh <version>" >&2
   exit 1
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENGINE_BINARY_SHA256="${TANDEM_ENGINE_BINARY_SHA256:-${2:-}}"
 
-VERSION="$VERSION" ROOT_DIR="$ROOT_DIR" node <<'NODE'
+VERSION="$VERSION" ROOT_DIR="$ROOT_DIR" ENGINE_BINARY_SHA256="$ENGINE_BINARY_SHA256" node <<'NODE'
 const fs = require("fs");
 const path = require("path");
 
 const version = process.env.VERSION;
 const rootDir = process.env.ROOT_DIR;
+const engineBinarySha256 = String(process.env.ENGINE_BINARY_SHA256 || "").trim();
 
 if (!version || !rootDir) {
   process.stderr.write("Missing VERSION or ROOT_DIR\n");
@@ -98,6 +100,33 @@ const updateJson = (relativePath) => {
   if (content !== original) {
     fs.writeFileSync(filePath, content);
   }
+  updatedFiles.push(relativePath);
+};
+
+const updateEngineDockerPin = () => {
+  const relativePath = "packages/tandem-control-panel/docker/engine.Dockerfile";
+  const filePath = path.join(rootDir, relativePath);
+  const original = fs.readFileSync(filePath, "utf8");
+  const currentVersion = original.match(/^\s*TANDEM_ENGINE_VERSION=([^ ]+) \\$/m)?.[1] || "";
+  if (currentVersion !== version && !/^[0-9a-f]{64}$/.test(engineBinarySha256)) {
+    throw new Error(
+      "A new release must provide TANDEM_ENGINE_BINARY_SHA256 so the Docker engine pin cannot silently retain an old artifact"
+    );
+  }
+  let content = original.replace(
+    /^(\s*TANDEM_ENGINE_VERSION=)[^ ]+( \\)$/m,
+    `$1${version}$2`
+  );
+  if (engineBinarySha256) {
+    if (!/^[0-9a-f]{64}$/.test(engineBinarySha256)) {
+      throw new Error("TANDEM_ENGINE_BINARY_SHA256 must be 64 lowercase hexadecimal characters");
+    }
+    content = content.replace(
+      /^(\s*TANDEM_ENGINE_BINARY_SHA256=)[0-9a-f]{64}( \\)$/m,
+      `$1${engineBinarySha256}$2`
+    );
+  }
+  if (content !== original) fs.writeFileSync(filePath, content);
   updatedFiles.push(relativePath);
 };
 
@@ -229,6 +258,7 @@ const stampBuslChangeDates = () => {
   }
 };
 
+updateEngineDockerPin();
 jsonFiles.forEach(updateJson);
 cargoFiles.forEach(updateCargo);
 pyprojectFiles.forEach(updatePyproject);

@@ -6,18 +6,39 @@ coverage reporting.
 ## Pull Request Checks
 
 - `Cargo Deny` is a required PR gate for Rust dependency licenses, duplicate
-  dependency bans, and source policy. Its advisory check follows the same
-  warning-on-PR policy as `cargo audit`.
-- `Cargo Audit` runs on PRs in warning mode. A PR can continue while an advisory
-  is triaged, but the same scan fails scheduled and manual runs.
+  dependency bans, source policy, and reviewed advisory exceptions.
+- `Cargo Audit` is a required PR gate. The ignore-free verifier rejects
+  advisories that are not explicitly owned, controlled, documented, and
+  unexpired; the configured scan then rejects anything outside that reviewed
+  exception set.
+- `node scripts/audit-javascript-workspaces.mjs` is a required PR gate. It
+  rejects untracked lockfile additions and any production or development
+  advisory in the desktop, guide, TypeScript SDK, control panel, or benchmark
+  workspace.
+- The desktop blackboard suite is required and must execute its compiled test
+  files; a zero-test result is not accepted as coverage evidence.
+- The `Security Assurance` workflow scans all Git refs with a digest-pinned,
+  network-isolated Gitleaks image and explicit Tandem token patterns. Exact
+  historical fixture fingerprints live in `.gitleaksignore`; a changed copy
+  receives a new fingerprint and fails.
+- The same workflow rejects dangerous secret-file paths across every Git ref,
+  runs CodeQL `security-extended` JavaScript/TypeScript analysis, verifies the
+  complete deployment-asset inventory, builds both images, emits SPDX JSON
+  SBOMs, and fails on fixable high/critical image vulnerabilities.
+- Container images must use supported digest-pinned bases, exact package
+  versions, non-root users, read-only filesystems, dropped capabilities, and a
+  single read-only API-token mount. `scripts/verify-container-hardening.mjs`
+  makes those controls and the no-Kubernetes/no-Terraform inventory explicit.
 
 ## Nightly And Manual Checks
 
 The `Rust Security and Coverage` workflow runs nightly and by
 `workflow_dispatch`.
 
-- `cargo audit` fails on advisories unless an accepted advisory is listed in
-  `.cargo/audit.toml`.
+- `node scripts/verify-rustsec-report.mjs` runs Cargo Audit without repository
+  ignores and fails unless every reported advisory is present in the reviewed,
+  unexpired exception table below. It also rejects yanked packages.
+- `cargo audit` then fails on every advisory not listed in `.cargo/audit.toml`.
 - `cargo deny --config .config/deny.toml check licenses bans sources` and
   `cargo deny --config .config/deny.toml check advisories` fail on
   scheduled/manual policy violations (cargo-deny ≥ 0.20 takes `--config` on
@@ -41,17 +62,20 @@ in `docs/LICENSING.md`.
 
 ### Current Advisory Exceptions
 
-| Advisory                                                                                                | Crate family                                  | Owner                    | Reason / mitigation                                                                                                                                 | Expires    |
-| ------------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| `RUSTSEC-2024-0411` - `RUSTSEC-2024-0420`                                                               | GTK3/Tauri Linux stack                        | Desktop runtime          | Tauri's current Linux stack still pulls archived gtk-rs GTK3 crates. Keep desktop builds patched through Tauri updates; revisit on Tauri/GTK4 path. | 2026-09-30 |
-| `RUSTSEC-2024-0320`, `RUSTSEC-2025-0141`                                                                | `yaml-rust`, `bincode` via `syntect`/`ppt-rs` | Desktop document preview | No direct safe upgrade in the current `ppt-rs`/`syntect` chain. Replace or isolate PowerPoint preview parsing before expiry.                        | 2026-09-30 |
-| `RUSTSEC-2024-0370`, `RUSTSEC-2024-0388`                                                                | `proc-macro-error`, `derivative`              | Desktop runtime          | Transitive macro/helper crates through GTK/D-Bus dependencies. Remove with upstream desktop dependency refresh or replacement.                      | 2026-09-30 |
-| `RUSTSEC-2024-0384`, `RUSTSEC-2025-0057`, `RUSTSEC-2025-0119`, `RUSTSEC-2024-0436`                      | Utility transitive crates                     | Runtime dependencies     | Unmaintained transitive helpers with no direct security exploit in Tandem paths. Prefer upstream dependency updates before adding direct forks.     | 2026-09-30 |
-| `RUSTSEC-2025-0075`, `RUSTSEC-2025-0080`, `RUSTSEC-2025-0081`, `RUSTSEC-2025-0098`, `RUSTSEC-2025-0100` | `rust-unic` via Tauri `urlpattern`            | Desktop runtime          | Tauri URL pattern parsing currently depends on unmaintained `rust-unic` crates. Remove through upstream Tauri/urlpattern update.                    | 2026-09-30 |
-| `RUSTSEC-2025-0134`                                                                                     | `rustls-pemfile` 1.x                          | Runtime dependencies     | Transitive through legacy `reqwest` 0.11 chain. Keep TLS-sensitive paths on newer reqwest/rustls where possible; replace legacy dependency.         | 2026-09-30 |
-| `RUSTSEC-2026-0105`                                                                                     | `core2` via `image`/`rav1e`                   | Runtime dependencies     | Yanked/unmaintained transitive crate through image encoding dependencies. Track upstream image/rav1e replacement or version cleanup.                | 2026-09-30 |
-| `RUSTSEC-2026-0192`                                                                                     | `ttf-parser` via `lopdf`/`pdf-extract`        | Desktop document preview | Updated `pdf-extract`/`lopdf` to patched parser versions; `ttf-parser` remains a transitive unmaintained PDF font parser with no safe replacement.  | 2026-09-30 |
-| `RUSTSEC-2026-0194`, `RUSTSEC-2026-0195`                                                                | `quick-xml` via `wayland-scanner`             | Desktop runtime          | Direct document XML parsing uses `quick-xml` 0.41; remaining 0.39 path is Wayland protocol codegen over packaged protocol XML.                     | 2026-09-30 |
+The verifier requires every ignored ID to appear exactly once in this table,
+with a non-empty owner, reachability/compensating-control statement, and a
+future expiry. Each ID maps to `https://rustsec.org/advisories/<ID>.html`.
+
+| Advisory IDs | Crate family | Owner | Reachability / compensating control | Expires |
+| --- | --- | --- | --- | --- |
+| `RUSTSEC-2024-0411`, `RUSTSEC-2024-0412`, `RUSTSEC-2024-0413`, `RUSTSEC-2024-0414`, `RUSTSEC-2024-0415`, `RUSTSEC-2024-0416`, `RUSTSEC-2024-0417`, `RUSTSEC-2024-0418`, `RUSTSEC-2024-0419`, `RUSTSEC-2024-0420`, `RUSTSEC-2024-0429` | GTK3/Tauri Linux stack | Desktop runtime | Reachable only in the Linux desktop GTK runtime. Tandem does not directly call the affected archived APIs or `VariantStrIter`; keep Tauri patched, exercise Linux desktop CI, and replace this stack before expiry. | 2026-09-30 |
+| `RUSTSEC-2024-0320`, `RUSTSEC-2025-0141` | `yaml-rust`, `bincode` via `syntect`/`ppt-rs` | Desktop document preview | Reachable only while parsing local document-preview input. The preview remains local/user-initiated; replace or isolate PowerPoint preview parsing before expiry. | 2026-09-30 |
+| `RUSTSEC-2024-0370`, `RUSTSEC-2024-0388` | `proc-macro-error`, `derivative` | Desktop runtime | Compile-time/macro or generated helper paths through GTK/D-Bus; no attacker-controlled runtime entry was identified. Remove through upstream desktop dependency refresh. | 2026-09-30 |
+| `RUSTSEC-2024-0384`, `RUSTSEC-2024-0436`, `RUSTSEC-2025-0057`, `RUSTSEC-2025-0119` | Utility transitive crates | Runtime dependencies | Unmaintained helpers with no identified Tandem call path that crosses an untrusted boundary. CI pins the lockfile and will reject any new advisory; prefer upstream removal over a direct fork. | 2026-09-30 |
+| `RUSTSEC-2025-0075`, `RUSTSEC-2025-0080`, `RUSTSEC-2025-0081`, `RUSTSEC-2025-0098`, `RUSTSEC-2025-0100` | `rust-unic` via Tauri `urlpattern` | Desktop runtime | Limited to Tauri URL-pattern parsing; application navigation and deep links remain allowlisted. Remove through upstream Tauri/urlpattern replacement. | 2026-09-30 |
+| `RUSTSEC-2025-0134` | `rustls-pemfile` 1.x | Runtime dependencies | Transitive through the legacy `reqwest` 0.11 chain. TLS-sensitive Tandem paths use the newer pinned reqwest/rustls clients; replace the legacy dependency before expiry. | 2026-09-30 |
+| `RUSTSEC-2026-0097` | `rand` 0.7 via `selectors` code generation | Desktop build | Build-time-only path through Tauri HTML selector code generation. The advisory requires a custom logger that re-enters `rand::thread_rng()` during reseed; that precondition is absent from the generator. | 2026-09-30 |
+| `RUSTSEC-2026-0192` | `ttf-parser` via `lopdf`/`pdf-extract` | Desktop document preview | Reachable only for local document-preview font parsing. Updated parser parents remain pinned; preview input is local/user-initiated and the parser must be replaced before expiry. | 2026-09-30 |
 
 ### Current License Exceptions
 
@@ -75,3 +99,13 @@ linking a passing `governance-coverage` artifact in the PR description.
 
 Do not fail PRs on absolute coverage percentages yet. Once baselines are stable,
 future work can make negative deltas fail for the governance-critical crates.
+
+## Deployment evidence boundary
+
+Repository CI proves the local Compose profile described in
+`docs/SECURITY_ASSURANCE_PROFILE.md`. There is currently no hosted enterprise
+environment from which PostgreSQL, KMS/IAM, reverse-proxy, multi-replica, or
+egress evidence can be collected. `.github/workflows/security-release-environment.yml`
+therefore fails closed unless fresh, exact-commit evidence is supplied through
+the protected `hosted-production-security` environment. This gate applies to a
+future hosted-enterprise deployment, not to standalone engines.

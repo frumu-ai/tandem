@@ -19,4 +19,4 @@ export TANDEM_CONTROL_PANEL_STATE_DIR
 export TANDEM_CONTROL_PANEL_CONFIG_FILE
 export TANDEM_CONTROL_PANEL_MODE
 
-exec node /opt/tandem-control-panel/bin/setup.js
+exec node /opt/tandem/packages/tandem-control-panel/bin/setup.js

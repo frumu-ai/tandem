@@ -1,4 +1,5 @@
 import { defineConfig } from "astro/config"
+import { unified } from "@astrojs/markdown-remark"
 import mermaid from "astro-mermaid"
 import starlight from "@astrojs/starlight"
 
@@ -42,7 +43,7 @@ export default defineConfig({
   site,
   base,
   markdown: {
-    remarkPlugins: [prefixPublicImageBase],
+    processor: unified({ remarkPlugins: [prefixPublicImageBase] }),
   },
   integrations: [
     mermaid({
@@ -123,9 +124,13 @@ export default defineConfig({
           ],
         },
       ],
-      social: {
-        github: `https://github.com/${owner}/${repo}`,
-      },
+      social: [
+        {
+          icon: "github",
+          label: "GitHub",
+          href: `https://github.com/${owner}/${repo}`,
+        },
+      ],
     }),
   ],
 })
