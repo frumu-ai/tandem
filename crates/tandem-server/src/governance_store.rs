@@ -224,14 +224,37 @@ impl<'a> GovernanceStore<'a> {
         record_id: &str,
         durable: bool,
     ) -> anyhow::Result<()> {
+        self.append_jsonl_line_with_anchor(
+            file,
+            line,
+            tenant_context,
+            owner_org_unit_id,
+            record_id,
+            durable,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn append_jsonl_line_with_anchor(
+        &self,
+        file: GovernanceStoreFile,
+        line: &str,
+        tenant_context: &TenantContext,
+        owner_org_unit_id: Option<&str>,
+        record_id: &str,
+        durable: bool,
+        additional_anchor: Option<crate::audit_integrity::ExternalAnchorUpdate<'_>>,
+    ) -> anyhow::Result<()> {
         let path = self.path(file);
         let context = file.record_context(tenant_context, owner_org_unit_id, record_id);
-        crate::encrypted_file_store::append_jsonl_record_file(
+        crate::encrypted_file_store::append_jsonl_record_file_with_anchor(
             path,
             line,
             &context,
             &file.storage_context(),
             durable,
+            additional_anchor,
         )
         .await
         .with_context(|| format!("append governance JSONL store {}", path.display()))
@@ -242,7 +265,7 @@ impl<'a> GovernanceStore<'a> {
         file: GovernanceStoreFile,
         expected_legacy_lines: &[String],
         migrated_records: &[(String, crate::encrypted_file_store::ProtectedRecordContext)],
-        additional_anchor: Option<(&str, &str, u64, &str)>,
+        additional_anchor: Option<crate::audit_integrity::ExternalAnchorUpdate<'_>>,
     ) -> anyhow::Result<()> {
         let path = self.path(file);
         anyhow::ensure!(

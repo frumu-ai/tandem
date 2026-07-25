@@ -20,7 +20,15 @@ use super::{
     AUTHENTICATED_STORE_VERSION, SCOPED_COLLECTION_PREFIX,
 };
 
+#[cfg(test)]
+mod anchor_tests;
+mod anchors;
 mod migration;
+use anchors::{
+    ensure_legacy_store_not_anchored, finish_failed_transaction, protected_store_anchor_identity,
+    rollback_additional_anchor, rollback_protected_store_anchor, write_additional_anchor,
+    write_protected_store_anchor,
+};
 use migration::encrypt_legacy_local_line;
 pub(crate) use migration::migrate_jsonl_records_file;
 
@@ -642,47 +650,6 @@ async fn read_committed_head(
     Ok(head)
 }
 
-fn protected_store_anchor_identity(
-    path: &Path,
-    store: &ProtectedStoreContext,
-) -> anyhow::Result<String> {
-    Ok(format!(
-        "{}:{}",
-        store.store_id,
-        crate::audit_integrity::canonical_state_file_identity(path)?
-    ))
-}
-
-async fn ensure_legacy_store_not_anchored(
-    path: &Path,
-    store: &ProtectedStoreContext,
-) -> anyhow::Result<()> {
-    let identity = protected_store_anchor_identity(path, store)?;
-    crate::audit_integrity::ensure_external_anchor_absent("protected-store", &identity, path)
-        .await
-        .context("reject legacy protected-store replacement against external anchor")
-}
-
-async fn write_protected_store_anchor(
-    path: &Path,
-    store: &ProtectedStoreContext,
-    head: &AuthenticatedStoreHead,
-) -> anyhow::Result<()> {
-    if head.integrity_key_id.is_some() {
-        let identity = protected_store_anchor_identity(path, store)?;
-        crate::audit_integrity::write_external_anchor(
-            "protected-store",
-            &identity,
-            head.generation,
-            &head.digest,
-            path,
-        )
-        .await
-        .context("anchor protected store outside the state directory")?;
-    }
-    Ok(())
-}
-
 fn encode_authenticated_head(
     crypto: &ProtectedFileCrypto,
     head: &AuthenticatedStoreHead,
@@ -1214,6 +1181,17 @@ pub(crate) async fn append_jsonl_record_file(
     store: &ProtectedStoreContext,
     durable: bool,
 ) -> anyhow::Result<()> {
+    append_jsonl_record_file_with_anchor(path, plaintext, context, store, durable, None).await
+}
+
+pub(crate) async fn append_jsonl_record_file_with_anchor(
+    path: &Path,
+    plaintext: &str,
+    context: &ProtectedRecordContext,
+    store: &ProtectedStoreContext,
+    durable: bool,
+    additional_anchor: Option<crate::audit_integrity::ExternalAnchorUpdate<'_>>,
+) -> anyhow::Result<()> {
     let lock = path_lock_for(path).await;
     let _guard = lock.lock().await;
     if let Some(parent) = path.parent() {
@@ -1231,8 +1209,15 @@ pub(crate) async fn append_jsonl_record_file(
         };
         let mut row = plaintext.as_bytes().to_vec();
         row.push(b'\n');
-        return append_jsonl_without_integrity(path, &row, durable, existed_before, previous_len)
-            .await;
+        append_jsonl_without_integrity(path, &row, durable, existed_before, previous_len).await?;
+        if let Err(error) = write_additional_anchor(additional_anchor, path).await {
+            let anchor_rollback = rollback_additional_anchor(additional_anchor, path).await;
+            let data_rollback = restore_jsonl_append_data(path, existed_before, previous_len)
+                .await
+                .context("restore plaintext JSONL after companion-anchor failure");
+            return finish_failed_transaction(error, [anchor_rollback, data_rollback]);
+        }
+        return Ok(());
     }
 
     let head_path = integrity_head_path(path);
@@ -1276,9 +1261,14 @@ pub(crate) async fn append_jsonl_record_file(
                 context,
                 store,
                 authority,
+                additional_anchor,
             )
             .await;
         }
+        anyhow::ensure!(
+            additional_anchor.is_none(),
+            "a companion anchor requires a configured integrity authority"
+        );
         let stored = encrypt_legacy_local_line(&crypto, plaintext, context)?;
         return append_jsonl_without_integrity(
             path,
@@ -1382,11 +1372,17 @@ pub(crate) async fn append_jsonl_record_file(
             existed_before,
         )
         .await?;
+        write_protected_store_anchor(path, store, &head).await?;
+        write_additional_anchor(additional_anchor, path).await?;
         anyhow::Ok(())
     }
     .await;
     if let Err(error) = write_result {
-        let rollback = restore_failed_jsonl_append(
+        let additional_rollback = rollback_additional_anchor(additional_anchor, path).await;
+        let store_anchor_rollback =
+            rollback_protected_store_anchor(path, store, &head, previous_committed_head.as_ref())
+                .await;
+        let file_rollback = restore_failed_jsonl_append(
             path,
             existed_before,
             previous_len,
@@ -1398,14 +1394,11 @@ pub(crate) async fn append_jsonl_record_file(
             previous_committed_head.as_ref(),
         )
         .await;
-        return match rollback {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(error.context(format!(
-                "failed to roll back protected JSONL append: {rollback_error:#}"
-            ))),
-        };
+        return finish_failed_transaction(
+            error,
+            [additional_rollback, store_anchor_rollback, file_rollback],
+        );
     }
-    write_protected_store_anchor(path, store, &head).await?;
     Ok(())
 }
 
@@ -1489,11 +1482,15 @@ pub(crate) async fn write_json_records_file(
         atomic_replace(path, stored.as_bytes())
             .await
             .context("write protected collection data")?;
+        write_protected_store_anchor(path, store, &head).await?;
         anyhow::Ok(())
     }
     .await;
     if let Err(error) = write_result {
-        let rollback = restore_failed_collection_write(
+        let anchor_rollback =
+            rollback_protected_store_anchor(path, store, &head, previous_cached_head.as_ref())
+                .await;
+        let file_rollback = restore_failed_collection_write(
             path,
             old_data.as_deref(),
             &head_path,
@@ -1504,14 +1501,8 @@ pub(crate) async fn write_json_records_file(
             previous_cached_head.as_ref(),
         )
         .await;
-        return match rollback {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(error.context(format!(
-                "failed to roll back protected collection write: {rollback_error:#}"
-            ))),
-        };
+        return finish_failed_transaction(error, [anchor_rollback, file_rollback]);
     }
-    write_protected_store_anchor(path, store, &head).await?;
     Ok(())
 }
 
@@ -1562,14 +1553,18 @@ mod tests {
         )
     }
 
-    fn json_record(value: u64) -> Vec<ProtectedJsonRecord> {
+    pub(super) fn json_record(value: u64) -> Vec<ProtectedJsonRecord> {
         vec![
             ProtectedJsonRecord::new("record", &value, record_context("record"))
                 .expect("JSON record"),
         ]
     }
 
-    async fn assert_collection_value(path: &Path, store: &ProtectedStoreContext, expected: u64) {
+    pub(super) async fn assert_collection_value(
+        path: &Path,
+        store: &ProtectedStoreContext,
+        expected: u64,
+    ) {
         let plaintext = read_text_file(path, store).await.expect("read collection");
         let value = serde_json::from_str::<serde_json::Value>(&plaintext).expect("collection JSON");
         assert_eq!(value["record"], expected);

@@ -27,32 +27,12 @@ pub(super) fn encrypt_legacy_local_line(
         .0)
 }
 
-async fn rollback_protected_store_anchor(
-    path: &Path,
-    store: &ProtectedStoreContext,
-    head: &AuthenticatedStoreHead,
-) -> anyhow::Result<()> {
-    if head.integrity_key_id.is_some() {
-        let identity = protected_store_anchor_identity(path, store)?;
-        crate::audit_integrity::rollback_external_anchor_write(
-            "protected-store",
-            &identity,
-            head.generation,
-            &head.digest,
-            path,
-        )
-        .await
-        .context("roll back newly published protected store anchor")?;
-    }
-    Ok(())
-}
-
 pub(crate) async fn migrate_jsonl_records_file(
     path: &Path,
     expected_legacy_lines: &[String],
     migrated_records: &[(String, ProtectedRecordContext)],
     store: &ProtectedStoreContext,
-    additional_anchor: Option<(&str, &str, u64, &str)>,
+    additional_anchor: Option<crate::audit_integrity::ExternalAnchorUpdate<'_>>,
 ) -> anyhow::Result<()> {
     let lock = path_lock_for(path).await;
     let _guard = lock.lock().await;
@@ -96,6 +76,7 @@ pub(super) async fn migrate_legacy_jsonl_and_append(
     context: &ProtectedRecordContext,
     store: &ProtectedStoreContext,
     authority: &crate::audit_integrity::AuditIntegrityKeyring,
+    additional_anchor: Option<crate::audit_integrity::ExternalAnchorUpdate<'_>>,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         !legacy_lines.is_empty(),
@@ -106,14 +87,22 @@ pub(super) async fn migrate_legacy_jsonl_and_append(
         .map(|line| (line.clone(), store.manifest.clone()))
         .collect::<Vec<_>>();
     records.push((plaintext.to_string(), context.clone()));
-    commit_legacy_jsonl_migration(crypto, path, &records, store, Some(authority), None).await
+    commit_legacy_jsonl_migration(
+        crypto,
+        path,
+        &records,
+        store,
+        Some(authority),
+        additional_anchor,
+    )
+    .await
 }
 
 async fn rewrite_plaintext_legacy_jsonl(
     path: &Path,
     migrated_records: &[(String, ProtectedRecordContext)],
     store: &ProtectedStoreContext,
-    additional_anchor: Option<(&str, &str, u64, &str)>,
+    additional_anchor: Option<crate::audit_integrity::ExternalAnchorUpdate<'_>>,
 ) -> anyhow::Result<()> {
     ensure_legacy_store_not_anchored(path, store).await?;
     ensure_integrity_sidecars_absent(path, "plaintext protected JSONL migration").await?;
@@ -138,7 +127,7 @@ async fn rewrite_plaintext_legacy_jsonl(
         let data_rollback = restore_file(path, Some(&previous_data))
             .await
             .context("restore plaintext protected JSONL after failed migration");
-        return finish_failed_migration(error, [anchor_rollback, data_rollback]);
+        return finish_failed_transaction(error, [anchor_rollback, data_rollback]);
     }
     Ok(())
 }
@@ -149,7 +138,7 @@ async fn commit_legacy_jsonl_migration(
     migrated_records: &[(String, ProtectedRecordContext)],
     store: &ProtectedStoreContext,
     authority: Option<&crate::audit_integrity::AuditIntegrityKeyring>,
-    additional_anchor: Option<(&str, &str, u64, &str)>,
+    additional_anchor: Option<crate::audit_integrity::ExternalAnchorUpdate<'_>>,
 ) -> anyhow::Result<()> {
     let previous_data = read_optional_file(path)
         .await?
@@ -212,7 +201,7 @@ async fn commit_legacy_jsonl_migration(
     .await;
     if let Err(error) = write_result {
         let additional_rollback = rollback_additional_anchor(additional_anchor, path).await;
-        let store_anchor_rollback = rollback_protected_store_anchor(path, store, &head).await;
+        let store_anchor_rollback = rollback_protected_store_anchor(path, store, &head, None).await;
         let file_rollback = restore_failed_collection_write(
             path,
             Some(&previous_data),
@@ -224,57 +213,12 @@ async fn commit_legacy_jsonl_migration(
             previous_cached_head.as_ref(),
         )
         .await;
-        return finish_failed_migration(
+        return finish_failed_transaction(
             error,
             [additional_rollback, store_anchor_rollback, file_rollback],
         );
     }
     Ok(())
-}
-
-async fn write_additional_anchor(
-    additional_anchor: Option<(&str, &str, u64, &str)>,
-    path: &Path,
-) -> anyhow::Result<()> {
-    if let Some((scope, identity, generation, digest)) = additional_anchor {
-        crate::audit_integrity::write_external_anchor(scope, identity, generation, digest, path)
-            .await
-            .context("write migration companion anchor")?;
-    }
-    Ok(())
-}
-
-async fn rollback_additional_anchor(
-    additional_anchor: Option<(&str, &str, u64, &str)>,
-    path: &Path,
-) -> anyhow::Result<()> {
-    if let Some((scope, identity, generation, digest)) = additional_anchor {
-        crate::audit_integrity::rollback_external_anchor_write(
-            scope, identity, generation, digest, path,
-        )
-        .await
-        .context("roll back migration companion anchor")?;
-    }
-    Ok(())
-}
-
-fn finish_failed_migration<const N: usize>(
-    error: anyhow::Error,
-    rollbacks: [anyhow::Result<()>; N],
-) -> anyhow::Result<()> {
-    let failures = rollbacks
-        .into_iter()
-        .filter_map(Result::err)
-        .map(|error| format!("{error:#}"))
-        .collect::<Vec<_>>();
-    if failures.is_empty() {
-        Err(error)
-    } else {
-        Err(error.context(format!(
-            "failed to roll back protected JSONL migration: {}",
-            failures.join("; ")
-        )))
-    }
 }
 
 #[cfg(test)]
@@ -402,6 +346,84 @@ mod tests {
                     )
                     .await
                     .expect("failed migration must not retain its anchor");
+                }),
+            )
+            .await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn companion_anchor_failure_restores_sequenced_legacy_migration() {
+        let (_root, path, anchors, store, first_context, second_context) =
+            migration_fixture("companion-anchor-rollback");
+        with_test_crypto_provider(MemoryCryptoProvider::local_key([0x66; 32]), None, async {
+            fs::create_dir_all(path.parent().expect("state parent"))
+                .await
+                .expect("state directory");
+            let legacy = encrypt_legacy_local_line(&crypto(), r#"{"seq":1}"#, &first_context)
+                .expect("legacy sequenced row");
+            let original = format!("{legacy}\n");
+            fs::write(&path, &original).await.expect("legacy store");
+            let authority = crate::audit_integrity::test_keyring(
+                "active",
+                "companion-anchor-rollback-secret-32-bytes",
+                &[],
+            );
+
+            crate::audit_integrity::with_test_keyring(
+                Some(authority),
+                crate::audit_integrity::with_test_anchor_dir(anchors, async {
+                    let logical_identity = format!(
+                        "protected-audit:{}",
+                        crate::audit_integrity::canonical_state_file_identity(&path)
+                            .expect("canonical logical identity")
+                    );
+                    let update = crate::audit_integrity::ExternalAnchorUpdate {
+                        scope: "protected-audit-ledger",
+                        identity: &logical_identity,
+                        generation: 2,
+                        digest: "logical-sequence-two-digest",
+                        previous: None,
+                    };
+                    crate::audit_integrity::with_test_anchor_write_failure_after(
+                        2,
+                        append_jsonl_record_file_with_anchor(
+                            &path,
+                            r#"{"seq":2}"#,
+                            &second_context,
+                            &store,
+                            true,
+                            Some(update),
+                        ),
+                    )
+                    .await
+                    .expect_err("companion anchor publication must fail");
+
+                    assert_eq!(fs::read_to_string(&path).await.unwrap(), original);
+                    assert!(!integrity_head_path(&path).exists());
+                    assert!(!initialized_state_path(&path).exists());
+                    assert!(cached_head(&path).await.is_none());
+                    assert_eq!(
+                        read_jsonl_records_file(&path, &store).await.unwrap(),
+                        vec![r#"{"seq":1}"#.to_string()]
+                    );
+                    let physical_identity =
+                        protected_store_anchor_identity(&path, &store).expect("physical identity");
+                    crate::audit_integrity::ensure_external_anchor_absent(
+                        "protected-store",
+                        &physical_identity,
+                        &path,
+                    )
+                    .await
+                    .expect("physical anchor rolled back");
+                    crate::audit_integrity::ensure_external_anchor_absent(
+                        update.scope,
+                        update.identity,
+                        &path,
+                    )
+                    .await
+                    .expect("companion anchor rolled back");
                 }),
             )
             .await;

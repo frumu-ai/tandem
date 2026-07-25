@@ -20,8 +20,8 @@ use tokio::fs;
 mod integrity;
 
 pub(crate) use integrity::{
-    append_jsonl_record_file, migrate_jsonl_records_file, read_jsonl_records_file, read_text_file,
-    write_json_records_file,
+    append_jsonl_record_file, append_jsonl_record_file_with_anchor, migrate_jsonl_records_file,
+    read_jsonl_records_file, read_text_file, write_json_records_file,
 };
 
 pub(crate) const ENCRYPTED_PAYLOAD_PREFIX: &str = "tce1:";

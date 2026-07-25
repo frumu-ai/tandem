@@ -391,6 +391,20 @@ pub async fn append_protected_audit_event(
     // survives power loss (flush() only reaches the OS page cache). The store
     // facade encrypts JSONL rows for the file-backed implementation.
     let serialized = serde_json::to_string(&row)?;
+    let anchor_identity = protected_audit_anchor_identity(&path)?;
+    let companion_anchor =
+        row.integrity
+            .as_ref()
+            .map(|_| crate::audit_integrity::ExternalAnchorUpdate {
+                scope: "protected-audit-ledger",
+                identity: anchor_identity.as_str(),
+                generation: row.seq,
+                digest: row.record_hash.as_str(),
+                previous: last
+                    .as_ref()
+                    .filter(|record| record.integrity.is_some())
+                    .map(|record| (record.seq, record.record_hash.as_str())),
+            });
     let write_result = if migrating_unsequenced {
         records.push(row.clone());
         let migrated_records = records
@@ -402,15 +416,6 @@ pub async fn append_protected_audit_event(
                 ))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let anchor_identity = protected_audit_anchor_identity(&path)?;
-        let companion_anchor = row.integrity.as_ref().map(|_| {
-            (
-                "protected-audit-ledger",
-                anchor_identity.as_str(),
-                row.seq,
-                row.record_hash.as_str(),
-            )
-        });
         governance_store
             .migrate_jsonl_lines(
                 store_file,
@@ -421,33 +426,20 @@ pub async fn append_protected_audit_event(
             .await
     } else {
         governance_store
-            .append_jsonl_line(
+            .append_jsonl_line_with_anchor(
                 store_file,
                 &serialized,
                 &row.tenant_context,
                 None,
                 &row.event_id,
                 matches!(row.durability, AuditDurability::DurableRequired),
+                companion_anchor,
             )
             .await
     };
 
     match write_result {
-        Ok(()) => {
-            if row.integrity.is_some() && !migrating_unsequenced {
-                let anchor_identity = protected_audit_anchor_identity(&path)?;
-                crate::audit_integrity::write_external_anchor(
-                    "protected-audit-ledger",
-                    &anchor_identity,
-                    row.seq,
-                    &row.record_hash,
-                    &path,
-                )
-                .await
-                .context("anchor protected audit ledger outside the state directory")?;
-            }
-            Ok(())
-        }
+        Ok(()) => Ok(()),
         Err(err) => {
             tracing::error!(
                 path = %path.display(),

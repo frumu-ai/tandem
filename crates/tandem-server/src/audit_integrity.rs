@@ -25,7 +25,7 @@ const ANCHOR_VERSION: u32 = 1;
 tokio::task_local! {
     static TEST_ANCHOR_DIR: PathBuf;
     static TEST_KEYRING: Option<AuditIntegrityKeyring>;
-    static TEST_FAIL_AFTER_ANCHOR_WRITE: bool;
+    static TEST_FAIL_AFTER_ANCHOR_WRITES: std::cell::Cell<usize>;
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -481,24 +481,72 @@ pub(crate) fn canonical_state_file_identity(path: &Path) -> anyhow::Result<Strin
             !metadata.file_type().is_symlink(),
             "protected state path must not be a symbolic link"
         ),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let file_name = path
+                .file_name()
+                .context("protected state path is missing a file name")?;
+            let parent =
+                std::fs::canonicalize(path_parent_or_current(path)).with_context(|| {
+                    format!(
+                        "canonicalize protected state directory `{}`",
+                        path_parent_or_current(path).display()
+                    )
+                })?;
+            return encode_canonical_path_identity(&parent.join(file_name));
+        }
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("inspect protected state path `{}`", path.display()))
         }
+    };
+    let canonical = std::fs::canonicalize(path)
+        .with_context(|| format!("canonicalize protected state path `{}`", path.display()))?;
+    encode_canonical_path_identity(&canonical)
+}
+
+fn push_hex_byte(encoded: &mut String, byte: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    encoded.push(HEX[(byte >> 4) as usize] as char);
+    encoded.push(HEX[(byte & 0x0f) as usize] as char);
+}
+
+#[cfg(unix)]
+fn encode_canonical_path_identity(path: &Path) -> anyhow::Result<String> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = path.as_os_str().as_bytes();
+    let mut encoded = String::with_capacity(14 + bytes.len() * 2);
+    encoded.push_str("unix-bytes-v1:");
+    for byte in bytes {
+        push_hex_byte(&mut encoded, *byte);
     }
-    let file_name = path
-        .file_name()
-        .context("protected state path is missing a file name")?;
-    let canonical = std::fs::canonicalize(path_parent_or_current(path))
-        .with_context(|| {
-            format!(
-                "canonicalize protected state directory `{}`",
-                path_parent_or_current(path).display()
-            )
-        })?
-        .join(file_name);
-    Ok(canonical.to_string_lossy().into_owned())
+    Ok(encoded)
+}
+
+#[cfg(windows)]
+fn encode_canonical_path_identity(path: &Path) -> anyhow::Result<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut encoded = String::from("windows-utf16le-v1:");
+    for unit in path.as_os_str().encode_wide() {
+        for byte in unit.to_le_bytes() {
+            push_hex_byte(&mut encoded, byte);
+        }
+    }
+    Ok(encoded)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn encode_canonical_path_identity(path: &Path) -> anyhow::Result<String> {
+    let value = path
+        .to_str()
+        .context("canonical protected state path is not valid UTF-8")?;
+    let mut encoded = String::with_capacity(8 + value.len() * 2);
+    encoded.push_str("utf8-v1:");
+    for byte in value.as_bytes() {
+        push_hex_byte(&mut encoded, *byte);
+    }
+    Ok(encoded)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -532,6 +580,15 @@ pub(crate) struct AnchorVerification {
     pub key_id: Option<String>,
     pub generation: Option<u64>,
     pub anchored_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExternalAnchorUpdate<'a> {
+    pub scope: &'a str,
+    pub identity: &'a str,
+    pub generation: u64,
+    pub digest: &'a str,
+    pub previous: Option<(u64, &'a str)>,
 }
 
 impl AnchorVerification {
@@ -679,8 +736,14 @@ pub(crate) async fn write_external_anchor(
         .await
         .context("join external audit anchor write")??;
     #[cfg(test)]
-    if TEST_FAIL_AFTER_ANCHOR_WRITE
-        .try_with(|fail| *fail)
+    if TEST_FAIL_AFTER_ANCHOR_WRITES
+        .try_with(|remaining| {
+            let current = remaining.get();
+            if current > 0 {
+                remaining.set(current - 1);
+            }
+            current == 1
+        })
         .unwrap_or(false)
     {
         anyhow::bail!("injected external anchor failure after publication");
@@ -694,22 +757,31 @@ pub(crate) async fn write_external_anchor(
     })
 }
 
-pub(crate) async fn rollback_external_anchor_write(
-    scope: &str,
-    identity: &str,
-    generation: u64,
-    digest: &str,
+pub(crate) async fn rollback_external_anchor_update(
+    update: ExternalAnchorUpdate<'_>,
     state_path: &Path,
 ) -> anyhow::Result<()> {
-    let anchor_path = resolved_anchor_path(scope, identity, state_path)?;
+    let anchor_path = resolved_anchor_path(update.scope, update.identity, state_path)?;
     let Some(bytes) = read_external_anchor_bytes(&anchor_path).await? else {
+        if let Some((generation, digest)) = update.previous {
+            write_external_anchor(
+                update.scope,
+                update.identity,
+                generation,
+                digest,
+                state_path,
+            )
+            .await?;
+        }
         return Ok(());
     };
     let anchor = serde_json::from_slice::<ExternalAnchor>(&bytes)
         .context("parse external integrity anchor during rollback")?;
     anyhow::ensure!(
-        anchor.version == ANCHOR_VERSION && anchor.scope == scope && anchor.identity == identity,
-        "refusing to remove a different external integrity anchor during rollback"
+        anchor.version == ANCHOR_VERSION
+            && anchor.scope == update.scope
+            && anchor.identity == update.identity,
+        "refusing to restore a different external integrity anchor during rollback"
     );
     let keyring = verification_keyring()?
         .context("external integrity anchor rollback requires its audit keyring")?;
@@ -719,10 +791,28 @@ pub(crate) async fn rollback_external_anchor_write(
         &anchor_mac_payload(&anchor)?,
         &anchor.mac,
     )?;
-    validate_anchor_target(&anchor, generation, digest)?;
-    tokio::task::spawn_blocking(move || remove_anchor_file(&anchor_path))
-        .await
-        .context("join external audit anchor rollback")?
+    if anchor.generation == update.generation && anchor.digest == update.digest {
+        return match update.previous {
+            Some((generation, digest)) => write_external_anchor(
+                update.scope,
+                update.identity,
+                generation,
+                digest,
+                state_path,
+            )
+            .await
+            .map(|_| ()),
+            None => tokio::task::spawn_blocking(move || remove_anchor_file(&anchor_path))
+                .await
+                .context("join external audit anchor rollback")?,
+        };
+    }
+    if update.previous.is_some_and(|(generation, digest)| {
+        anchor.generation == generation && anchor.digest == digest
+    }) {
+        return Ok(());
+    }
+    anyhow::bail!("external integrity anchor changed during rollback")
 }
 
 pub(crate) async fn verify_external_anchor(
@@ -1101,7 +1191,17 @@ pub(crate) async fn with_test_anchor_write_failure<F, T>(future: F) -> T
 where
     F: std::future::Future<Output = T>,
 {
-    TEST_FAIL_AFTER_ANCHOR_WRITE.scope(true, future).await
+    with_test_anchor_write_failure_after(1, future).await
+}
+
+#[cfg(test)]
+pub(crate) async fn with_test_anchor_write_failure_after<F, T>(writes: usize, future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    TEST_FAIL_AFTER_ANCHOR_WRITES
+        .scope(std::cell::Cell::new(writes), future)
+        .await
 }
 
 #[cfg(test)]
@@ -1424,8 +1524,19 @@ mod tests {
                 .expect("second identity")
         );
 
+        std::fs::write(&direct, b"state").expect("state file");
+        let alternate_case = first.path().join("LEDGER.JSONL");
+        if std::fs::metadata(&alternate_case).is_ok() {
+            assert_eq!(
+                canonical_state_file_identity(&direct).expect("stored-case identity"),
+                canonical_state_file_identity(&alternate_case).expect("alternate-case identity")
+            );
+        }
+
         #[cfg(unix)]
         {
+            use std::ffi::OsString;
+            use std::os::unix::ffi::OsStringExt;
             use std::os::unix::fs::symlink;
 
             let alias_root = tempfile::tempdir().expect("alias root");
@@ -1437,10 +1548,20 @@ mod tests {
                     .expect("directory alias identity")
             );
 
-            std::fs::write(&direct, b"state").expect("state file");
             let file_alias = alias_root.path().join("state-file-alias");
             symlink(&direct, &file_alias).expect("state file symlink");
             assert!(canonical_state_file_identity(&file_alias).is_err());
+
+            let invalid_one = alias_root.path().join(OsString::from_vec(vec![b'a', 0xff]));
+            let invalid_two = alias_root.path().join(OsString::from_vec(vec![b'a', 0xfe]));
+            std::fs::create_dir(&invalid_one).expect("first invalid UTF-8 directory");
+            std::fs::create_dir(&invalid_two).expect("second invalid UTF-8 directory");
+            assert_ne!(
+                canonical_state_file_identity(&invalid_one.join("ledger.jsonl"))
+                    .expect("first lossless identity"),
+                canonical_state_file_identity(&invalid_two.join("ledger.jsonl"))
+                    .expect("second lossless identity")
+            );
         }
     }
 
