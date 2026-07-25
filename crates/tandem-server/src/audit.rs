@@ -1043,10 +1043,11 @@ mod tests {
     #[tokio::test]
     async fn missing_anchored_audit_ledger_fails_closed() {
         let state = tempfile::tempdir().expect("state directory");
-        let anchors = tempfile::tempdir().expect("anchor directory");
+        let anchor_root = tempfile::tempdir().expect("anchor root");
+        let anchors = anchor_root.path().join("anchors");
         let path = state.path().join("missing-audit.jsonl");
 
-        crate::audit_integrity::with_test_anchor_dir(anchors.path().to_path_buf(), async {
+        crate::audit_integrity::with_test_anchor_dir(anchors, async {
             crate::audit_integrity::write_test_anchor_marker(
                 "protected-audit-ledger",
                 &protected_audit_anchor_identity(&path).expect("canonical audit anchor identity"),

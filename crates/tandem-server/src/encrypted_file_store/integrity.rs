@@ -1562,13 +1562,14 @@ mod tests {
     #[tokio::test]
     async fn missing_anchored_collections_and_jsonl_fail_closed() {
         let state = tempfile::tempdir().expect("state directory");
-        let anchors = tempfile::tempdir().expect("anchor directory");
+        let anchor_root = tempfile::tempdir().expect("anchor root");
+        let anchors = anchor_root.path().join("anchors");
         let collection_path = state.path().join("missing.json");
         let jsonl_path = state.path().join("missing.jsonl");
         let collection_store = store_context("missing-collection");
         let jsonl_store = store_context("missing-jsonl");
 
-        crate::audit_integrity::with_test_anchor_dir(anchors.path().to_path_buf(), async {
+        crate::audit_integrity::with_test_anchor_dir(anchors, async {
             for (path, store) in [
                 (&collection_path, &collection_store),
                 (&jsonl_path, &jsonl_store),
