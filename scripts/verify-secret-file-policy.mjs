@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,9 +17,7 @@ const DANGEROUS_BASENAMES = new Set([
   "id_rsa",
   "id_ed25519",
 ]);
-const REVIEWED_PUBLIC_CONFIG_CONTENT = new Map([
-  ["packages/tandem-ai/.npmrc", "git-checks=false"],
-]);
+const REVIEWED_PUBLIC_CONFIG_CONTENT = new Map([["packages/tandem-ai/.npmrc", "git-checks=false"]]);
 
 export function isDangerousSecretPath(filename) {
   const normalized = filename.replaceAll("\\", "/");
@@ -41,25 +41,52 @@ export function verifySecretFileHistory(root = process.cwd()) {
     if (ref.trim()) refs.add(ref.trim());
   }
   const violations = new Map();
+  const pathOutput = git(
+    [
+      "-c",
+      "core.quotePath=false",
+      "log",
+      "--all",
+      "--full-history",
+      "--root",
+      "--diff-merges=first-parent",
+      "--no-renames",
+      "--format=",
+      "--name-only",
+      "-z",
+    ],
+    root
+  );
+  const historicalPaths = pathOutput.split("\0").map((value) => value.replace(/^\n+/, ""));
+  const uniquePaths = new Set(historicalPaths.filter(Boolean));
   let blobsScanned = 0;
-  const objects = git(["-c", "core.quotePath=false", "rev-list", "--objects", "--all"], root);
-  for (const record of objects.split(/\r?\n/)) {
-    const separator = record.indexOf(" ");
-    if (separator <= 0) continue;
-    const objectId = record.slice(0, separator);
-    const filename = record.slice(separator + 1);
+  for (const filename of uniquePaths) {
     if (!filename || !isDangerousSecretPath(filename)) continue;
-    if (git(["cat-file", "-t", objectId], root).trim() !== "blob") continue;
     blobsScanned += 1;
     const allowedContent = REVIEWED_PUBLIC_CONFIG_CONTENT.get(filename);
     if (allowedContent !== undefined) {
-      const content = git(["cat-file", "-p", objectId], root).trim();
-      if (content === allowedContent) continue;
+      let allowed = true;
+      const commits = git(["log", "--all", "--full-history", "--format=%H", "--", filename], root)
+        .split(/\r?\n/)
+        .filter(Boolean);
+      for (const commit of commits) {
+        const objectSpec = `${commit}:${filename}`;
+        try {
+          if (git(["cat-file", "-t", objectSpec], root).trim() !== "blob") continue;
+          if (git(["cat-file", "-p", objectSpec], root).trim() !== allowedContent) {
+            allowed = false;
+            break;
+          }
+        } catch {
+          // The path was deleted in this commit; an earlier revision is checked separately.
+        }
+      }
+      if (allowed) continue;
     }
     if (!violations.has(filename)) violations.set(filename, []);
-    violations.get(filename).push(objectId);
+    violations.get(filename).push("historical-path");
   }
-  return { blobsScanned, refsScanned: refs.size, violations };
+  return { blobsScanned, pathsScanned: uniquePaths.size, refsScanned: refs.size, violations };
 }
 
 function selfTest() {
@@ -67,6 +94,34 @@ function selfTest() {
   const allowed = [".env.example", "docs/secrets.md", "src/credentials.ts", "cert/public.crt"];
   if (!dangerous.every(isDangerousSecretPath) || allowed.some(isDangerousSecretPath)) {
     throw new Error("secret-file path self-test failed");
+  }
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "tandem-secret-history-"));
+  try {
+    git(["init"], testRoot);
+    mkdirSync(path.join(testRoot, "secrets"));
+    writeFileSync(path.join(testRoot, "README"), "same public bytes\n");
+    writeFileSync(path.join(testRoot, "secrets", "token"), "same public bytes\n");
+    git(["add", "README", "secrets/token"], testRoot);
+    git(
+      [
+        "-c",
+        "user.name=Tandem Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "fixture",
+      ],
+      testRoot
+    );
+    const result = verifySecretFileHistory(testRoot);
+    if (!result.violations.has("secrets/token")) {
+      throw new Error(
+        "secret-file history self-test missed a dangerous path sharing an allowed blob"
+      );
+    }
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
   }
 }
 
@@ -80,7 +135,7 @@ function main() {
     throw new Error(`tracked secret-file patterns found across refs:\n${detail}`);
   }
   process.stdout.write(
-    `secret-file path policy passed (${result.refsScanned} refs, ${result.blobsScanned} sensitive-path blobs inspected)\n`
+    `secret-file path policy passed (${result.refsScanned} refs, ${result.blobsScanned} sensitive historical paths inspected)\n`
   );
 }
 

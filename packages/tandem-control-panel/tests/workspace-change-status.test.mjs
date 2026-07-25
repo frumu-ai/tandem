@@ -14,3 +14,18 @@ test("status-only workspace transitions retain meaningful classifications", () =
   assert.equal(classifyStatusOnlyWorkspaceChange("D", ""), "updated");
   assert.equal(classifyStatusOnlyWorkspaceChange("A", "M"), "updated");
 });
+
+test("unchanged outer status still detects a changed submodule fingerprint", () => {
+  assert.equal(
+    classifyStatusOnlyWorkspaceChange("M", "M", "head-a:dirty-a", "head-b:dirty-a"),
+    "updated"
+  );
+  assert.equal(
+    classifyStatusOnlyWorkspaceChange("M", "M", "head-a:dirty-a", "head-a:dirty-b"),
+    "updated"
+  );
+  assert.equal(
+    classifyStatusOnlyWorkspaceChange("M", "M", "head-a:dirty-a", "head-a:dirty-a"),
+    null
+  );
+});

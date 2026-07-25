@@ -1,13 +1,17 @@
-param([string]$Version)
+param(
+  [string]$Version,
+  [string]$EngineBinarySha256 = $env:TANDEM_ENGINE_BINARY_SHA256
+)
 
 if (-not $Version) {
-  Write-Error "Usage: scripts/bump-version.ps1 <version>"
+  Write-Error "Usage: scripts/bump-version.ps1 <version> -EngineBinarySha256 <linux-x64-archive-sha256>"
   exit 1
 }
 
 $rootDir = Resolve-Path (Join-Path $PSScriptRoot "..")
 $env:VERSION = $Version
 $env:ROOT_DIR = $rootDir.Path
+$env:ENGINE_BINARY_SHA256 = $EngineBinarySha256
 
 $script = @'
 const fs = require("fs");
@@ -15,6 +19,7 @@ const path = require("path");
 
 const version = process.env.VERSION;
 const rootDir = process.env.ROOT_DIR;
+const engineBinarySha256 = String(process.env.ENGINE_BINARY_SHA256 || "").trim();
 
 if (!version || !rootDir) {
   process.stderr.write("Missing VERSION or ROOT_DIR\n");
@@ -81,6 +86,33 @@ const updateJson = (relativePath) => {
   // Leave internal npm dependency ranges pinned to published-compatible
   // versions; CI runs before the candidate release exists on npm.
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
+  updatedFiles.push(relativePath);
+};
+
+const updateEngineDockerPin = () => {
+  const relativePath = "packages/tandem-control-panel/docker/engine.Dockerfile";
+  const filePath = path.join(rootDir, relativePath);
+  const original = fs.readFileSync(filePath, "utf8");
+  const currentVersion = original.match(/^\s*TANDEM_ENGINE_VERSION=([^ ]+) \\$/m)?.[1] || "";
+  if (currentVersion !== version && !/^[0-9a-f]{64}$/.test(engineBinarySha256)) {
+    throw new Error(
+      "A new release must provide ENGINE_BINARY_SHA256 so the Docker engine pin cannot silently retain an old artifact"
+    );
+  }
+  let content = original.replace(
+    /^(\s*TANDEM_ENGINE_VERSION=)[^ ]+( \\)$/m,
+    `$1${version}$2`
+  );
+  if (engineBinarySha256) {
+    if (!/^[0-9a-f]{64}$/.test(engineBinarySha256)) {
+      throw new Error("ENGINE_BINARY_SHA256 must be 64 lowercase hexadecimal characters");
+    }
+    content = content.replace(
+      /^(\s*TANDEM_ENGINE_BINARY_SHA256=)[0-9a-f]{64}( \\)$/m,
+      `$1${engineBinarySha256}$2`
+    );
+  }
+  if (content !== original) fs.writeFileSync(filePath, content);
   updatedFiles.push(relativePath);
 };
 
@@ -200,6 +232,7 @@ const stampBuslChangeDates = () => {
   }
 };
 
+updateEngineDockerPin();
 jsonFiles.forEach(updateJson);
 cargoFiles.forEach(updateCargo);
 pyprojectFiles.forEach(updatePyproject);

@@ -4061,6 +4061,39 @@ async function fingerprintWorkspaceFile(pathname) {
   };
 }
 
+async function fingerprintGitSubmodule(repoRoot, relativePath) {
+  const staged = await runGit(["-C", repoRoot, "ls-files", "--stage", "--", relativePath], {
+    stdio: "pipe",
+    safeDirectory: repoRoot,
+  }).catch(() => null);
+  const gitlink = String(staged?.stdout || "").match(/^160000\s+([0-9a-f]{40,64})\s+\d+\t/m)?.[1];
+  if (!gitlink) return "";
+  const submoduleRoot = join(repoRoot, relativePath);
+  const readGit = async (args) =>
+    String(
+      (
+        await runGit(["-C", submoduleRoot, ...args], {
+          stdio: "pipe",
+          safeDirectory: submoduleRoot,
+        }).catch(() => ({ stdout: "" }))
+      ).stdout || ""
+    );
+  const head = (await readGit(["rev-parse", "HEAD"])).trim() || "uninitialized";
+  const status = await readGit(["status", "--porcelain=v1", "--untracked-files=all", "-z"]);
+  const trackedDiff = await readGit(["diff", "--binary", "HEAD"]);
+  const untrackedPaths = (await readGit(["ls-files", "--others", "--exclude-standard", "-z"]))
+    .split("\0")
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const untracked = [];
+  for (const pathname of untrackedPaths) {
+    untracked.push([pathname, await fingerprintWorkspaceFile(join(submoduleRoot, pathname))]);
+  }
+  return createHash("sha1")
+    .update(JSON.stringify({ gitlink, head, status, trackedDiff, untracked }))
+    .digest("hex");
+}
+
 function parseGitStatusEntries(output) {
   const chunks = String(output || "").split("\0");
   const entries = [];
@@ -4135,19 +4168,26 @@ async function captureGitWorkspaceSnapshot(workspaceRoot, includePaths = []) {
   if (!gitStatus) return null;
   const entries = parseGitStatusEntries(gitStatus.stdout || "");
   const files = Object.create(null);
+  const statusFingerprintsByPath = Object.create(null);
   const candidatePaths = collectWorkspaceSnapshotSeedPaths([
     ...entries.flatMap((entry) => [entry?.path || "", entry?.originalPath || ""]),
     ...includePaths,
   ]);
   for (const relativePath of candidatePaths) {
     const fingerprint = await fingerprintWorkspaceFile(join(repo.root, relativePath));
-    if (fingerprint) files[relativePath] = fingerprint;
+    if (fingerprint) {
+      files[relativePath] = fingerprint;
+      continue;
+    }
+    const statusFingerprint = await fingerprintGitSubmodule(repo.root, relativePath);
+    if (statusFingerprint) statusFingerprintsByPath[relativePath] = statusFingerprint;
   }
   return {
     mode: "git_status",
     root: repo.root,
     files,
     statusByPath: buildGitStatusIndex(entries),
+    statusFingerprintsByPath,
   };
 }
 
@@ -4183,6 +4223,7 @@ async function captureWorkspaceSnapshot(workspaceRoot, options = {}) {
     root,
     files,
     statusByPath: Object.create(null),
+    statusFingerprintsByPath: Object.create(null),
   };
 }
 
@@ -4199,6 +4240,16 @@ function summarizeWorkspaceChanges(beforeSnapshot, afterSnapshot) {
     afterSnapshot?.statusByPath && typeof afterSnapshot.statusByPath === "object"
       ? afterSnapshot.statusByPath
       : {};
+  const beforeStatusFingerprints =
+    beforeSnapshot?.statusFingerprintsByPath &&
+    typeof beforeSnapshot.statusFingerprintsByPath === "object"
+      ? beforeSnapshot.statusFingerprintsByPath
+      : {};
+  const afterStatusFingerprints =
+    afterSnapshot?.statusFingerprintsByPath &&
+    typeof afterSnapshot.statusFingerprintsByPath === "object"
+      ? afterSnapshot.statusFingerprintsByPath
+      : {};
   const created = [];
   const updated = [];
   const deleted = [];
@@ -4207,6 +4258,8 @@ function summarizeWorkspaceChanges(beforeSnapshot, afterSnapshot) {
     ...Object.keys(afterFiles),
     ...Object.keys(beforeStatusByPath),
     ...Object.keys(afterStatusByPath),
+    ...Object.keys(beforeStatusFingerprints),
+    ...Object.keys(afterStatusFingerprints),
   ]);
   for (const pathname of Array.from(allPaths)) {
     const beforeFingerprint = beforeFiles[pathname];
@@ -4218,7 +4271,12 @@ function summarizeWorkspaceChanges(beforeSnapshot, afterSnapshot) {
       .trim()
       .toUpperCase();
     if (!beforeFingerprint && !afterFingerprint) {
-      const classification = classifyStatusOnlyWorkspaceChange(beforeStatus, afterStatus);
+      const classification = classifyStatusOnlyWorkspaceChange(
+        beforeStatus,
+        afterStatus,
+        beforeStatusFingerprints[pathname],
+        afterStatusFingerprints[pathname]
+      );
       if (classification === "deleted") deleted.push(pathname);
       else if (classification === "updated") updated.push(pathname);
       continue;

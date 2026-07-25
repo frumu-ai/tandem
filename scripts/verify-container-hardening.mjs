@@ -32,16 +32,25 @@ async function walk(directory, root = directory) {
   return files;
 }
 
-function isDeploymentAsset(filename) {
+export function isDeploymentAsset(filename, source = "") {
   return (
-    /(^|\/)(?:Dockerfile|[^/]+\.Dockerfile)$/.test(filename) ||
+    /(^|\/)(?:Dockerfile(?:\.[^/]+)?|[^/]+\.Dockerfile|Containerfile(?:\.[^/]+)?|[^/]+\.Containerfile)$/i.test(
+      filename
+    ) ||
     /(^|\/)(?:docker-)?compose[^/]*\.ya?ml$/.test(filename) ||
     /\.tf(?:vars)?$/.test(filename) ||
-    /(^|\/)(?:Chart|kustomization)\.ya?ml$/.test(filename)
+    /(^|\/)(?:Chart|kustomization|helmfile)\.ya?ml$/i.test(filename) ||
+    /\.nomad(?:\.hcl)?$/i.test(filename) ||
+    (/\.ya?ml$/i.test(filename) &&
+      /^\s*apiVersion\s*:\s*\S+/m.test(source) &&
+      /^\s*kind\s*:\s*[A-Za-z]/m.test(source))
   );
 }
 
-export async function verifyContainerHardening(root = process.cwd()) {
+export async function verifyContainerHardening(
+  root = process.cwd(),
+  { expectedEngineVersion } = {}
+) {
   const errors = [];
   const engineDockerfile = await readFile(
     path.join(root, "packages/tandem-control-panel/docker/engine.Dockerfile"),
@@ -63,6 +72,9 @@ export async function verifyContainerHardening(root = process.cwd()) {
     path.join(root, "packages/tandem-control-panel/bin/docker-token.js"),
     "utf8"
   );
+  const enginePackage = JSON.parse(
+    await readFile(path.join(root, "packages/tandem-engine/package.json"), "utf8")
+  );
 
   for (const [name, source] of [
     ["engine Dockerfile", engineDockerfile],
@@ -79,14 +91,28 @@ export async function verifyContainerHardening(root = process.cwd()) {
     if (/@latest\b|ENGINE_VERSION=latest\b/.test(source)) {
       errors.push(`${name} contains a floating latest dependency`);
     }
+    for (const marker of [
+      "snapshot.debian.org/archive/debian/20260720T000000Z",
+      "ca-certificates=20250419",
+      "curl=8.14.1-2+deb13u4",
+    ]) {
+      if (!source.includes(marker)) errors.push(`${name} is missing immutable OS input ${marker}`);
+    }
   }
 
-  requireMatch(
-    engineDockerfile,
-    /^\s*TANDEM_ENGINE_VERSION=\d+\.\d+\.\d+ \\$/m,
-    "engine image must pin an exact semantic version in the image",
-    errors
-  );
+  const engineVersion =
+    engineDockerfile.match(/^\s*TANDEM_ENGINE_VERSION=(\d+\.\d+\.\d+) \\$/m)?.[1] || "";
+  if (!engineVersion) errors.push("engine image must pin an exact semantic version in the image");
+  if (engineVersion && engineVersion !== String(enginePackage.version || "")) {
+    errors.push(
+      `engine image version ${engineVersion} must match packages/tandem-engine ${enginePackage.version || "missing"}`
+    );
+  }
+  if (expectedEngineVersion && engineVersion !== expectedEngineVersion) {
+    errors.push(
+      `engine image version ${engineVersion || "missing"} must be pre-pinned for release ${expectedEngineVersion}`
+    );
+  }
   requireMatch(
     engineDockerfile,
     /^\s*TANDEM_ENGINE_BINARY_SHA256=[0-9a-f]{64} \\$/m,
@@ -110,17 +136,36 @@ export async function verifyContainerHardening(root = process.cwd()) {
       errors
     );
   }
-  if (countMatches(compose, /^\s{4}read_only:\s*true\s*$/gm) !== 2) {
-    errors.push("both Compose services must use a read-only root filesystem");
+  if (countMatches(compose, /^\s{4}read_only:\s*true\s*$/gm) !== 3) {
+    errors.push(
+      "both runtime services and the migration service must use a read-only root filesystem"
+    );
   }
-  if (countMatches(compose, /^\s{4}cap_drop:\s*$/gm) !== 2 || countMatches(compose, /^\s{6}- ALL\s*$/gm) !== 2) {
-    errors.push("both Compose services must drop every Linux capability");
+  if (
+    countMatches(compose, /^\s{4}cap_drop:\s*$/gm) !== 3 ||
+    countMatches(compose, /^\s{6}- ALL\s*$/gm) !== 3
+  ) {
+    errors.push(
+      "every Compose service must drop all Linux capabilities before any narrow add-back"
+    );
   }
-  if (countMatches(compose, /^\s{6}- no-new-privileges:true\s*$/gm) !== 2) {
-    errors.push("both Compose services must set no-new-privileges");
+  if (countMatches(compose, /^\s{6}- no-new-privileges:true\s*$/gm) !== 3) {
+    errors.push("every Compose service must set no-new-privileges");
   }
   if (countMatches(compose, /^\s{4}init:\s*true\s*$/gm) !== 2) {
-    errors.push("both Compose services must enable an init process");
+    errors.push("both runtime services must enable an init process");
+  }
+  for (const marker of [
+    "tandem-state-migrate:",
+    'user: "0:0"',
+    "- CHOWN",
+    "- DAC_OVERRIDE",
+    'user: "${TANDEM_DOCKER_UID:-1000}:${TANDEM_DOCKER_GID:-1000}"',
+  ]) {
+    if (!compose.includes(marker)) errors.push(`Compose ownership migration is missing ${marker}`);
+  }
+  if (countMatches(compose, /condition:\s*service_completed_successfully/g) !== 2) {
+    errors.push("both runtime services must wait for state-volume ownership migration");
   }
   requireMatch(
     compose,
@@ -140,11 +185,26 @@ export async function verifyContainerHardening(root = process.cwd()) {
   if (/tandem-engine token generate|>\s*"?\$TANDEM_API_TOKEN_FILE/.test(engineEntrypoint)) {
     errors.push("engine entrypoint must never generate or write the mounted secret");
   }
-  for (const marker of ["O_EXCL", "O_NOFOLLOW", "0o600", "0o700", "isSymbolicLink"]) {
+  for (const marker of [
+    "O_EXCL",
+    "O_NOFOLLOW",
+    "fstatSync",
+    "fchmodSync",
+    "fchownSync",
+    "0o600",
+    "0o700",
+    "isSymbolicLink",
+  ]) {
     if (!dockerToken.includes(marker)) errors.push(`host token provisioner is missing ${marker}`);
   }
 
-  const discovered = new Set((await walk(root)).filter(isDeploymentAsset));
+  const discovered = new Set();
+  for (const filename of await walk(root)) {
+    const assetSource = /\.ya?ml$/i.test(filename)
+      ? await readFile(path.join(root, filename), "utf8")
+      : "";
+    if (isDeploymentAsset(filename, assetSource)) discovered.add(filename);
+  }
   for (const expected of EXPECTED_DEPLOYMENT_ASSETS) {
     if (!discovered.has(expected)) errors.push(`expected deployment asset is missing: ${expected}`);
   }
@@ -156,12 +216,38 @@ export async function verifyContainerHardening(root = process.cwd()) {
   return { assets: [...discovered].sort(), errors };
 }
 
+function selfTest() {
+  const expected = [
+    ["Dockerfile.production", ""],
+    ["ops/Containerfile", ""],
+    ["deploy/helmfile.yaml", ""],
+    ["nomad/tandem.nomad.hcl", ""],
+    ["k8s/workload.yaml", "apiVersion: apps/v1\nkind: Deployment\n"],
+  ];
+  if (expected.some(([filename, source]) => !isDeploymentAsset(filename, source))) {
+    throw new Error("container hardening self-test missed a common deployment asset");
+  }
+  if (isDeploymentAsset(".github/workflows/ci.yml", "name: CI\nkindness: true\n")) {
+    throw new Error("container hardening self-test classified a normal workflow as Kubernetes");
+  }
+}
+
+function argValue(name) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
 async function main() {
-  const result = await verifyContainerHardening();
+  if (process.argv.includes("--self-test")) selfTest();
+  const result = await verifyContainerHardening(process.cwd(), {
+    expectedEngineVersion: argValue("--expected-engine-version"),
+  });
   if (result.errors.length > 0) {
     throw new Error(`container hardening policy failed:\n${result.errors.join("\n")}`);
   }
-  process.stdout.write(`container hardening policy passed (${result.assets.length} deployment assets)\n`);
+  process.stdout.write(
+    `container hardening policy passed (${result.assets.length} deployment assets)\n`
+  );
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

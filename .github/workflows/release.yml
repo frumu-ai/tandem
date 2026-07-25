@@ -43,6 +43,11 @@ jobs:
           export VERSION
           echo "Using version: $VERSION"
 
+          # Release tags must be cut from a prepared commit whose Docker image
+          # already pins the same engine version and reviewed artifact digest.
+          node scripts/verify-container-hardening.mjs \
+            --expected-engine-version "$VERSION"
+
           python - <<'PY'
           import datetime
           import json

@@ -32,7 +32,7 @@ The engine is not published to the host by default. The control panel is the pub
 
 ## Login token
 
-The host-side `docker:up` helper creates `./secrets/tandem_api_token` before Compose starts. The directory is mode `0700`, the file is mode `0600`, and an existing invalid, empty, non-regular, or symbolic-link token is rejected. Containers never create or modify this secret.
+The host-side `docker:up` helper creates `./secrets/tandem_api_token` before Compose starts. The directory is mode `0700`, the file is mode `0600`, and an existing invalid, empty, non-regular, or symbolic-link token is rejected. Existing files are opened with `O_NOFOLLOW`, validated with `fstat`, and read and chmod’d through the same descriptor. The launcher maps both runtime services to the invoking non-root host UID/GID, so the owner-only token remains readable without making it group- or world-readable. Containers never create or modify this secret.
 
 You can use that token to sign in to the control panel.
 
@@ -61,8 +61,11 @@ Useful variables:
 
 - `TANDEM_DOCKER_PANEL_PORT`
 - `TANDEM_ENGINE_PORT`
+- `TANDEM_DOCKER_UID` and `TANDEM_DOCKER_GID` (non-root numeric overrides; normally derived automatically by `docker:up`)
 
-The image pins both the engine version and the corresponding release-binary SHA-256 in `docker/engine.Dockerfile`. Upgrades must review and change both values together; they are intentionally not runtime or Compose overrides.
+The image pins both the engine version and the corresponding release-binary SHA-256 in `docker/engine.Dockerfile`. Release preparation must update both together with `TANDEM_ENGINE_BINARY_SHA256=<sha256> scripts/bump-version.sh <version>`; release CI fails before publishing if the canonical package and Docker pin differ. Runtime OS packages come from a dated Debian snapshot and are version-pinned.
+
+On startup, `tandem-state-migrate` checks an ownership marker in each named volume. It performs a one-time recursive ownership migration when upgrading a volume created by the older root-running images, then both runtime services start under the mapped non-root identity. The migrator has a read-only root filesystem, drops all capabilities, adds back only `CHOWN` and `DAC_OVERRIDE`, and exits before either runtime starts.
 
 If you already have an engine running elsewhere, you can point the panel at it by changing `TANDEM_ENGINE_URL` and disabling the local engine service.
 
@@ -72,5 +75,5 @@ If you already have an engine running elsewhere, you can point the panel at it b
 - The control panel talks to the engine over the Docker network.
 - The engine token stays in a file instead of being hard-coded into the browser.
 - The panel does not auto-start a second engine when the engine URL is a Docker service name.
-- Both services run as the unprivileged `node` user with a read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`, and only their named state volume plus a constrained `/tmp` writable.
+- Both services run as the invoking unprivileged UID/GID with a read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`, and only their named state volume plus a constrained `/tmp` writable.
 - The engine is not published to the host. This Compose profile is for local or single-host self-managed use; hosted-enterprise release evidence is a separate fail-closed gate documented in `docs/SECURITY_ASSURANCE_PROFILE.md`.

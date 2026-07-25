@@ -11,9 +11,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
   npm_config_fund=false \
   npm_config_audit=false
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git \
-  && rm -rf /var/lib/apt/lists/*
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+  && printf '%s\n' \
+    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260720T000000Z trixie main' \
+    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260720T000000Z trixie-security main' \
+    > /etc/apt/sources.list \
+  && apt-get -o Acquire::Check-Valid-Until=false update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates=20250419 \
+    curl=8.14.1-2+deb13u4 \
+  && rm -rf /var/lib/apt/lists/* /etc/apt/sources.list
 
 RUN case "${TANDEM_ENGINE_VERSION}" in \
       ""|latest|next|beta|alpha) echo "ENGINE_VERSION must be an exact published version" >&2; exit 1 ;; \

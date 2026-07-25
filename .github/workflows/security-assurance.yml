@@ -31,7 +31,7 @@ jobs:
         run: node scripts/verify-secret-file-policy.mjs --self-test
 
       - name: Verify container and deployment inventory policy
-        run: node scripts/verify-container-hardening.mjs
+        run: node scripts/verify-container-hardening.mjs --self-test
 
       - name: Verify hosted release evidence gate
         run: node scripts/verify-security-release-evidence.mjs --self-test
