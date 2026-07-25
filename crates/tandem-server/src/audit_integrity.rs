@@ -526,9 +526,54 @@ fn encode_canonical_path_identity(path: &Path) -> anyhow::Result<String> {
 #[cfg(windows)]
 fn encode_canonical_path_identity(path: &Path) -> anyhow::Result<String> {
     use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Globalization::{
+        LCMapStringEx, LCMAP_UPPERCASE, LOCALE_NAME_INVARIANT,
+    };
 
-    let mut encoded = String::from("windows-utf16le-v1:");
-    for unit in path.as_os_str().encode_wide() {
+    let source = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let source_len = source
+        .len()
+        .try_into()
+        .context("canonical path is too long")?;
+    let required = unsafe {
+        LCMapStringEx(
+            LOCALE_NAME_INVARIANT,
+            LCMAP_UPPERCASE,
+            source.as_ptr(),
+            source_len,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+        )
+    };
+    anyhow::ensure!(
+        required > 0,
+        "normalize canonical Windows path identity: {}",
+        std::io::Error::last_os_error()
+    );
+    let mut normalized = vec![0u16; required as usize];
+    let written = unsafe {
+        LCMapStringEx(
+            LOCALE_NAME_INVARIANT,
+            LCMAP_UPPERCASE,
+            source.as_ptr(),
+            source_len,
+            normalized.as_mut_ptr(),
+            required,
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+        )
+    };
+    anyhow::ensure!(
+        written == required,
+        "normalize canonical Windows path identity: {}",
+        std::io::Error::last_os_error()
+    );
+    let mut encoded = String::from("windows-uppercase-utf16le-v1:");
+    for unit in normalized {
         for byte in unit.to_le_bytes() {
             push_hex_byte(&mut encoded, byte);
         }
@@ -589,6 +634,11 @@ pub(crate) struct ExternalAnchorUpdate<'a> {
     pub generation: u64,
     pub digest: &'a str,
     pub previous: Option<(u64, &'a str)>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExternalAnchorSnapshot {
+    bytes: Option<Vec<u8>>,
 }
 
 impl AnchorVerification {
@@ -757,24 +807,62 @@ pub(crate) async fn write_external_anchor(
     })
 }
 
+pub(crate) async fn snapshot_external_anchor_update(
+    update: ExternalAnchorUpdate<'_>,
+    state_path: &Path,
+) -> anyhow::Result<ExternalAnchorSnapshot> {
+    let anchor_path = resolved_anchor_path(update.scope, update.identity, state_path)?;
+    let bytes = read_external_anchor_bytes(&anchor_path).await?;
+    match (&bytes, update.previous) {
+        (None, None) => {}
+        (None, Some(_)) => anyhow::bail!("previous external integrity anchor is missing"),
+        (Some(_), None) => {
+            anyhow::bail!("unexpected external integrity anchor already exists")
+        }
+        (Some(bytes), Some((generation, digest))) => {
+            let anchor = serde_json::from_slice::<ExternalAnchor>(bytes)
+                .context("parse previous external integrity anchor")?;
+            anyhow::ensure!(
+                anchor.version == ANCHOR_VERSION
+                    && anchor.scope == update.scope
+                    && anchor.identity == update.identity,
+                "previous external integrity anchor identity mismatch"
+            );
+            let keyring = verification_keyring()?
+                .context("previous external integrity anchor requires its audit keyring")?;
+            keyring.verify(
+                &anchor.key_id,
+                b"external-anchor",
+                &anchor_mac_payload(&anchor)?,
+                &anchor.mac,
+            )?;
+            validate_anchor_target(&anchor, generation, digest)?;
+        }
+    }
+    Ok(ExternalAnchorSnapshot { bytes })
+}
+
 pub(crate) async fn rollback_external_anchor_update(
     update: ExternalAnchorUpdate<'_>,
+    snapshot: &ExternalAnchorSnapshot,
     state_path: &Path,
 ) -> anyhow::Result<()> {
     let anchor_path = resolved_anchor_path(update.scope, update.identity, state_path)?;
     let Some(bytes) = read_external_anchor_bytes(&anchor_path).await? else {
-        if let Some((generation, digest)) = update.previous {
-            write_external_anchor(
-                update.scope,
-                update.identity,
-                generation,
-                digest,
-                state_path,
-            )
-            .await?;
+        if let Some(previous) = snapshot.bytes.as_ref() {
+            let anchor_path_for_write = anchor_path.clone();
+            let previous = previous.clone();
+            tokio::task::spawn_blocking(move || {
+                atomic_write_anchor(&anchor_path_for_write, &previous)
+            })
+            .await
+            .context("join exact external audit anchor restore")??;
         }
         return Ok(());
     };
+    if snapshot.bytes.as_deref() == Some(bytes.as_slice()) {
+        return Ok(());
+    }
     let anchor = serde_json::from_slice::<ExternalAnchor>(&bytes)
         .context("parse external integrity anchor during rollback")?;
     anyhow::ensure!(
@@ -792,25 +880,20 @@ pub(crate) async fn rollback_external_anchor_update(
         &anchor.mac,
     )?;
     if anchor.generation == update.generation && anchor.digest == update.digest {
-        return match update.previous {
-            Some((generation, digest)) => write_external_anchor(
-                update.scope,
-                update.identity,
-                generation,
-                digest,
-                state_path,
-            )
-            .await
-            .map(|_| ()),
+        return match snapshot.bytes.as_ref() {
+            Some(previous) => {
+                let anchor_path_for_write = anchor_path.clone();
+                let previous = previous.clone();
+                tokio::task::spawn_blocking(move || {
+                    atomic_write_anchor(&anchor_path_for_write, &previous)
+                })
+                .await
+                .context("join exact external audit anchor rollback")?
+            }
             None => tokio::task::spawn_blocking(move || remove_anchor_file(&anchor_path))
                 .await
                 .context("join external audit anchor rollback")?,
         };
-    }
-    if update.previous.is_some_and(|(generation, digest)| {
-        anchor.generation == generation && anchor.digest == digest
-    }) {
-        return Ok(());
     }
     anyhow::bail!("external integrity anchor changed during rollback")
 }
@@ -870,6 +953,16 @@ async fn read_external_anchor_bytes(path: &Path) -> anyhow::Result<Option<Vec<u8
     tokio::task::spawn_blocking(move || read_anchor_file(&path_for_read))
         .await
         .context("join external audit anchor read")?
+}
+
+#[cfg(test)]
+pub(crate) async fn read_test_anchor_bytes(
+    scope: &str,
+    identity: &str,
+    state_path: &Path,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let anchor_path = resolved_anchor_path(scope, identity, state_path)?;
+    read_external_anchor_bytes(&anchor_path).await
 }
 
 pub(crate) async fn ensure_external_anchor_absent(
@@ -1527,10 +1620,21 @@ mod tests {
         std::fs::write(&direct, b"state").expect("state file");
         let alternate_case = first.path().join("LEDGER.JSONL");
         if std::fs::metadata(&alternate_case).is_ok() {
+            let stored_identity =
+                canonical_state_file_identity(&direct).expect("stored-case identity");
             assert_eq!(
-                canonical_state_file_identity(&direct).expect("stored-case identity"),
+                stored_identity,
                 canonical_state_file_identity(&alternate_case).expect("alternate-case identity")
             );
+            #[cfg(windows)]
+            {
+                std::fs::remove_file(&direct).expect("remove aliased state file");
+                assert_eq!(
+                    stored_identity,
+                    canonical_state_file_identity(&alternate_case)
+                        .expect("deleted alternate-case identity")
+                );
+            }
         }
 
         #[cfg(unix)]

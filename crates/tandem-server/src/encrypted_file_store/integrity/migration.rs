@@ -114,6 +114,7 @@ async fn rewrite_plaintext_legacy_jsonl(
         stored.push_str(record);
         stored.push('\n');
     }
+    let additional_anchor_snapshot = snapshot_additional_anchor(additional_anchor, path).await?;
 
     let write_result = async {
         atomic_replace(path, stored.as_bytes())
@@ -123,7 +124,12 @@ async fn rewrite_plaintext_legacy_jsonl(
     }
     .await;
     if let Err(error) = write_result {
-        let anchor_rollback = rollback_additional_anchor(additional_anchor, path).await;
+        let anchor_rollback = rollback_additional_anchor(
+            additional_anchor,
+            additional_anchor_snapshot.as_ref(),
+            path,
+        )
+        .await;
         let data_rollback = restore_file(path, Some(&previous_data))
             .await
             .context("restore plaintext protected JSONL after failed migration");
@@ -184,6 +190,8 @@ async fn commit_legacy_jsonl_migration(
     validate_cached_head(path, &head).await?;
     let encoded_head = encode_authenticated_head(crypto, &head, store)?;
     let encoded_state = encode_authenticated_state(crypto, &authenticated_state(&head), store)?;
+    let store_anchor_snapshot = snapshot_protected_store_anchor(path, store, &head, None).await?;
+    let additional_anchor_snapshot = snapshot_additional_anchor(additional_anchor, path).await?;
 
     let write_result = async {
         atomic_replace(&state_path, encoded_state.as_bytes())
@@ -200,8 +208,20 @@ async fn commit_legacy_jsonl_migration(
     }
     .await;
     if let Err(error) = write_result {
-        let additional_rollback = rollback_additional_anchor(additional_anchor, path).await;
-        let store_anchor_rollback = rollback_protected_store_anchor(path, store, &head, None).await;
+        let additional_rollback = rollback_additional_anchor(
+            additional_anchor,
+            additional_anchor_snapshot.as_ref(),
+            path,
+        )
+        .await;
+        let store_anchor_rollback = rollback_protected_store_anchor(
+            path,
+            store,
+            &head,
+            None,
+            store_anchor_snapshot.as_ref(),
+        )
+        .await;
         let file_rollback = restore_failed_collection_write(
             path,
             Some(&previous_data),

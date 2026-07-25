@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
+use std::time::Duration;
+
 use tandem_memory::MemoryCryptoProvider;
 
 use super::tests::{assert_collection_value, json_record, record_context, store_context};
@@ -60,7 +62,18 @@ async fn anchor_failure_restores_prior_jsonl_and_collection_generations() {
                 .expect("first anchored JSONL append");
                 let jsonl_files = committed_triplet(&jsonl_path).await;
                 let jsonl_cache = cached_head(&jsonl_path).await;
+                let jsonl_identity =
+                    protected_store_anchor_identity(&jsonl_path, &jsonl_store).unwrap();
+                let jsonl_anchor = crate::audit_integrity::read_test_anchor_bytes(
+                    "protected-store",
+                    &jsonl_identity,
+                    &jsonl_path,
+                )
+                .await
+                .unwrap()
+                .unwrap();
 
+                tokio::time::sleep(Duration::from_millis(5)).await;
                 crate::audit_integrity::with_test_anchor_write_failure(append_jsonl_record_file(
                     &jsonl_path,
                     "failed",
@@ -77,6 +90,17 @@ async fn anchor_failure_restores_prior_jsonl_and_collection_generations() {
                         .await
                         .expect("read restored JSONL"),
                     vec!["first".to_string()]
+                );
+                assert_eq!(
+                    crate::audit_integrity::read_test_anchor_bytes(
+                        "protected-store",
+                        &jsonl_identity,
+                        &jsonl_path,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                    jsonl_anchor
                 );
 
                 append_jsonl_record_file(
@@ -100,7 +124,18 @@ async fn anchor_failure_restores_prior_jsonl_and_collection_generations() {
                     .expect("first anchored collection write");
                 let collection_files = committed_triplet(&collection_path).await;
                 let collection_cache = cached_head(&collection_path).await;
+                let collection_identity =
+                    protected_store_anchor_identity(&collection_path, &collection_store).unwrap();
+                let collection_anchor = crate::audit_integrity::read_test_anchor_bytes(
+                    "protected-store",
+                    &collection_identity,
+                    &collection_path,
+                )
+                .await
+                .unwrap()
+                .unwrap();
 
+                tokio::time::sleep(Duration::from_millis(5)).await;
                 crate::audit_integrity::with_test_anchor_write_failure(write_json_records_file(
                     &collection_path,
                     &json_record(2),
@@ -111,6 +146,17 @@ async fn anchor_failure_restores_prior_jsonl_and_collection_generations() {
                 assert_triplet(&collection_path, &collection_files).await;
                 assert_eq!(cached_head(&collection_path).await, collection_cache);
                 assert_collection_value(&collection_path, &collection_store, 1).await;
+                assert_eq!(
+                    crate::audit_integrity::read_test_anchor_bytes(
+                        "protected-store",
+                        &collection_identity,
+                        &collection_path,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                    collection_anchor
+                );
 
                 write_json_records_file(&collection_path, &json_record(3), &collection_store)
                     .await

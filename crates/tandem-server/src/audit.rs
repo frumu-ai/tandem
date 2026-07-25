@@ -400,8 +400,9 @@ pub async fn append_protected_audit_event(
                 identity: anchor_identity.as_str(),
                 generation: row.seq,
                 digest: row.record_hash.as_str(),
-                previous: last
-                    .as_ref()
+                previous: (!migrating_unsequenced)
+                    .then(|| last.as_ref())
+                    .flatten()
                     .filter(|record| record.integrity.is_some())
                     .map(|record| (record.seq, record.record_hash.as_str())),
             });
@@ -1130,6 +1131,9 @@ mod tests {
         )
         .await
         .expect("legacy audit ledger");
+        let original = fs::read(&state.protected_audit_path)
+            .await
+            .expect("original legacy audit ledger");
 
         let authority = crate::audit_integrity::test_keyring(
             "active",
@@ -1142,6 +1146,31 @@ mod tests {
             crate::audit_integrity::with_test_keyring(
                 Some(authority),
                 crate::audit_integrity::with_test_anchor_dir(anchors, async {
+                    crate::audit_integrity::with_test_anchor_write_failure(
+                        append_protected_audit_event(
+                            &state,
+                            "governance.failed-migration",
+                            &TenantContext::local_implicit(),
+                            Some("tester".to_string()),
+                            serde_json::json!({"failed": true}),
+                        ),
+                    )
+                    .await
+                    .expect_err("failed logical anchor must roll back migration");
+                    assert_eq!(
+                        fs::read(&state.protected_audit_path).await.unwrap(),
+                        original
+                    );
+                    let identity =
+                        protected_audit_anchor_identity(&state.protected_audit_path).unwrap();
+                    crate::audit_integrity::ensure_external_anchor_absent(
+                        "protected-audit-ledger",
+                        &identity,
+                        &state.protected_audit_path,
+                    )
+                    .await
+                    .expect("failed unsequenced migration must not invent a prior anchor");
+
                     append_protected_audit_event(
                         &state,
                         "governance.after-migration",
