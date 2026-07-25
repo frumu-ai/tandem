@@ -209,16 +209,6 @@ pub(crate) async fn channel_enroll(
             pairing_code,
             enrolled_by,
         } => {
-            let Some(pending) = state.pending_channel_enrollment_code(pairing_code).await else {
-                return enrollment_error(StatusCode::NOT_FOUND, "pairing code not found");
-            };
-            let target = match normalized_target_tenant(
-                pending.tenant_org_id.as_deref(),
-                pending.tenant_workspace_id.as_deref(),
-            ) {
-                Ok(target) => target,
-                Err(response) => return response,
-            };
             if let Some(actor_id) = authority_actor(&request_tenant, verified.as_deref()) {
                 *enrolled_by = Some(actor_id);
             }
@@ -228,22 +218,24 @@ pub(crate) async fn channel_enroll(
                     "code-sha256:{:x}",
                     Sha256::digest(pairing_code.trim().to_ascii_uppercase().as_bytes())
                 ),
-                target,
+                None,
             )
         }
     };
-    if let Err(response) = require_target_tenant_scope(
-        &state,
-        &request_tenant,
-        verified.as_deref(),
-        target_tenant
-            .as_ref()
-            .map(|(org, workspace)| (org.as_str(), workspace.as_str())),
-        "channel_enrollment",
-    )
-    .await
-    {
-        return response;
+    if matches!(&input, ChannelEnrollRequest::Issue { .. }) {
+        if let Err(response) = require_target_tenant_scope(
+            &state,
+            &request_tenant,
+            verified.as_deref(),
+            target_tenant
+                .as_ref()
+                .map(|(org, workspace)| (org.as_str(), workspace.as_str())),
+            "channel_enrollment_issue",
+        )
+        .await
+        {
+            return response;
+        }
     }
     let arguments = match serde_json::to_value(&input) {
         Ok(arguments) => arguments,
@@ -269,6 +261,31 @@ pub(crate) async fn channel_enroll(
         Ok(authorized) => authorized,
         Err(status) => return status.into_response(),
     };
+    if let ChannelEnrollRequest::Confirm { pairing_code, .. } = &input {
+        let Some(pending) = state.pending_channel_enrollment_code(pairing_code).await else {
+            return enrollment_error(StatusCode::NOT_FOUND, "pairing code not found");
+        };
+        let target = match normalized_target_tenant(
+            pending.tenant_org_id.as_deref(),
+            pending.tenant_workspace_id.as_deref(),
+        ) {
+            Ok(target) => target,
+            Err(response) => return response,
+        };
+        if let Err(response) = require_target_tenant_scope(
+            &state,
+            &request_tenant,
+            verified.as_deref(),
+            target
+                .as_ref()
+                .map(|(org, workspace)| (org.as_str(), workspace.as_str())),
+            "channel_enrollment_confirm",
+        )
+        .await
+        {
+            return response;
+        }
+    }
     if let Err(error) = grant.revalidate(&state, &effect) {
         return crate::http::host_authority::host_authorization_status(error).into_response();
     }

@@ -324,20 +324,20 @@ jobs:
           set -euo pipefail
           cargo nextest list --workspace --exclude tandem \
             --features tandem-ai/browser,tandem-server/premium-governance \
-            --profile ci > "$RUNNER_TEMP/nextest-tests.txt"
+            --profile ci --message-format json > "$RUNNER_TEMP/nextest-tests.json"
           grep -Fq 'migration_write_failures_roll_back_every_imported_record_type' \
-            "$RUNNER_TEMP/nextest-tests.txt"
+            "$RUNNER_TEMP/nextest-tests.json"
           grep -Fq 'completed_migration_keeps_sqlite_authoritative_when_legacy_files_change' \
-            "$RUNNER_TEMP/nextest-tests.txt"
+            "$RUNNER_TEMP/nextest-tests.json"
           grep -Fq 'tan_707_goal_plan_execute_verify_complete_survives_180_day_store_journey' \
-            "$RUNNER_TEMP/nextest-tests.txt"
+            "$RUNNER_TEMP/nextest-tests.json"
           grep -Fq 'tan_707_named_replan_edge_and_day_180_limit_are_explicit' \
-            "$RUNNER_TEMP/nextest-tests.txt"
+            "$RUNNER_TEMP/nextest-tests.json"
 
       - name: Verify focused security tests were discovered and executed
         run: |
           node scripts/verify-security-retest-matrix.mjs \
-            --nextest-list "$RUNNER_TEMP/nextest-tests.txt" \
+            --nextest-list "$RUNNER_TEMP/nextest-tests.json" \
             --junit target/nextest/ci/junit.xml
 
       - name: Verify governance audit tests were discovered and executed
@@ -353,7 +353,7 @@ jobs:
               for line in pathlib.Path('.github/governance-audit-critical-tests.txt').read_text().splitlines()
               if line.strip() and not line.lstrip().startswith('#')
           ]
-          discovered = pathlib.Path("${{ runner.temp }}/nextest-tests.txt").read_text()
+          discovered = pathlib.Path("${{ runner.temp }}/nextest-tests.json").read_text()
           junit_path = pathlib.Path('target/nextest/ci/junit.xml')
           if not junit_path.exists():
               raise SystemExit('nextest junit report is missing')
@@ -407,7 +407,7 @@ jobs:
           name: nextest-junit
           path: |
             target/nextest/ci/junit.xml
-            ${{ runner.temp }}/nextest-tests.txt
+            ${{ runner.temp }}/nextest-tests.json
             ${{ runner.temp }}/governance-coverage.md
           if-no-files-found: ignore
           retention-days: 14

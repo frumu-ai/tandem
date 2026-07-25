@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  assertLoopbackCallbackAddress,
   classifyRoute,
   extractRoutesFromRust,
   verifyInventory,
@@ -72,6 +73,57 @@ test("reports dynamic paths instead of silently omitting them", () => {
   assert.equal(result.routes.length, 0);
   assert.equal(result.unsupported.length, 1);
   assert.match(result.unsupported[0], /dynamic route path/);
+});
+
+test("reports computed incident-monitor suffixes instead of silently omitting them", () => {
+  const source = `
+    fn apply(router: Router<AppState>, suffix: &str) -> Router<AppState> {
+      route_prefixed(router, "/api/engine", suffix, get(handler))
+    }
+  `;
+  const result = extractRoutesFromRust(source, "routes_incident_monitor.rs");
+  assert.equal(result.routes.length, 0);
+  assert.equal(result.unsupported.length, 1);
+  assert.match(result.unsupported[0], /dynamic incident-monitor suffix/);
+});
+
+test("rejects a wildcard OAuth callback bind even when the constant name is unchanged", () => {
+  assert.throws(
+    () =>
+      assertLoopbackCallbackAddress(
+        'const OPENAI_CODEX_LOCAL_CALLBACK_ADDR: &str = "0.0.0.0:1455";',
+      ),
+    /not statically loopback-only/,
+  );
+  assert.doesNotThrow(() =>
+    assertLoopbackCallbackAddress(
+      'const OPENAI_CODEX_LOCAL_CALLBACK_ADDR: &str = "127.0.0.1:1455";',
+    ),
+  );
+});
+
+test("classifies effective config mutation and protected audit policies", () => {
+  const config = classifyRoute({
+    listener: "engine_api",
+    method: "PATCH",
+    path: "/config",
+  });
+  assert.equal(config.policy_origin, "admin.deployment");
+  assert.equal(config.capability, "deployment.config.manage");
+
+  for (const path of [
+    "/audit/protected",
+    "/audit/stream",
+    "/audit/ledger/manifest",
+    "/audit/ledger/export",
+  ]) {
+    const audit = classifyRoute({ listener: "engine_api", method: "GET", path });
+    assert.equal(audit.policy_origin, "audit.admin");
+    assert.equal(
+      audit.authorization_policy,
+      "api_token_or_control_panel_admin_source_and_tenant_scope",
+    );
+  }
 });
 
 test("rejects a stale committed inventory", () => {

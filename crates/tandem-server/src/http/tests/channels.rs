@@ -1024,6 +1024,32 @@ async fn channel_identity_authority_is_admin_only_tenant_exact_and_locally_compa
     assert_eq!(pending.issued_by.as_deref(), Some("admin-a"));
     assert_eq!(pending.tenant_org_id.as_deref(), Some("org-a"));
 
+    for candidate in ["NOT-A-REAL-CODE", pairing_code.as_str()] {
+        let ordinary_confirm = channel_tenant_request(
+            "POST",
+            "/channels/enroll",
+            "org-a",
+            "workspace-a",
+            "member-a",
+            false,
+            json!({
+                "action": "confirm",
+                "pairing_code": candidate,
+                "enrolled_by": "member-a"
+            }),
+        );
+        let response = app
+            .clone()
+            .oneshot(ordinary_confirm)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    assert!(state
+        .pending_channel_enrollment_code(&pairing_code)
+        .await
+        .is_some());
+
     let wrong_tenant_confirm = channel_tenant_request(
         "POST",
         "/channels/enroll",

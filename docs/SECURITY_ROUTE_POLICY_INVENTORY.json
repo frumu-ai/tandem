@@ -756,10 +756,10 @@
       "method": "GET",
       "path": "/audit/ledger/export",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
+      "authorization_policy": "api_token_or_control_panel_admin_source_and_tenant_scope",
       "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "resolver": "request_principal_source_and_tenant_audit_ledger",
+      "policy_origin": "audit.admin",
       "sources": [
         "crates/tandem-server/src/http/router.rs:136"
       ]
@@ -769,10 +769,10 @@
       "method": "HEAD",
       "path": "/audit/ledger/export",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
+      "authorization_policy": "api_token_or_control_panel_admin_source_and_tenant_scope",
       "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "resolver": "request_principal_source_and_tenant_audit_ledger",
+      "policy_origin": "audit.admin",
       "sources": [
         "crates/tandem-server/src/http/router.rs:136"
       ]
@@ -782,10 +782,10 @@
       "method": "GET",
       "path": "/audit/ledger/manifest",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
+      "authorization_policy": "api_token_or_control_panel_admin_source_and_tenant_scope",
       "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "resolver": "request_principal_source_and_tenant_audit_ledger",
+      "policy_origin": "audit.admin",
       "sources": [
         "crates/tandem-server/src/http/router.rs:132"
       ]
@@ -795,10 +795,10 @@
       "method": "HEAD",
       "path": "/audit/ledger/manifest",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
+      "authorization_policy": "api_token_or_control_panel_admin_source_and_tenant_scope",
       "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "resolver": "request_principal_source_and_tenant_audit_ledger",
+      "policy_origin": "audit.admin",
       "sources": [
         "crates/tandem-server/src/http/router.rs:132"
       ]
@@ -808,10 +808,10 @@
       "method": "GET",
       "path": "/audit/protected",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
+      "authorization_policy": "api_token_or_control_panel_admin_source_and_tenant_scope",
       "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "resolver": "request_principal_source_and_tenant_audit_ledger",
+      "policy_origin": "audit.admin",
       "sources": [
         "crates/tandem-server/src/http/router.rs:124"
       ]
@@ -821,10 +821,10 @@
       "method": "HEAD",
       "path": "/audit/protected",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
+      "authorization_policy": "api_token_or_control_panel_admin_source_and_tenant_scope",
       "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "resolver": "request_principal_source_and_tenant_audit_ledger",
+      "policy_origin": "audit.admin",
       "sources": [
         "crates/tandem-server/src/http/router.rs:124"
       ]
@@ -834,10 +834,10 @@
       "method": "GET",
       "path": "/audit/stream",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
+      "authorization_policy": "api_token_or_control_panel_admin_source_and_tenant_scope",
       "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "resolver": "request_principal_source_and_tenant_audit_ledger",
+      "policy_origin": "audit.admin",
       "sources": [
         "crates/tandem-server/src/http/router.rs:128"
       ]
@@ -847,10 +847,10 @@
       "method": "HEAD",
       "path": "/audit/stream",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
+      "authorization_policy": "api_token_or_control_panel_admin_source_and_tenant_scope",
       "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "resolver": "request_principal_source_and_tenant_audit_ledger",
+      "policy_origin": "audit.admin",
       "sources": [
         "crates/tandem-server/src/http/router.rs:128"
       ]
@@ -3356,10 +3356,10 @@
       "method": "PATCH",
       "path": "/config",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
-      "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "authorization_policy": "deployment_administrator_or_loopback_local_owner",
+      "capability": "deployment.config.manage",
+      "resolver": "tenant_project_config",
+      "policy_origin": "admin.deployment",
       "sources": [
         "crates/tandem-server/src/http/routes_config_providers.rs:13"
       ]
@@ -3395,10 +3395,10 @@
       "method": "PATCH",
       "path": "/config/identity",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
-      "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "authorization_policy": "deployment_administrator_or_loopback_local_owner",
+      "capability": "deployment.config.manage",
+      "resolver": "tenant_project_config",
+      "policy_origin": "admin.deployment",
       "sources": [
         "crates/tandem-server/src/http/routes_config_providers.rs:14"
       ]

@@ -44,8 +44,17 @@ function allControls(matrix) {
   ]);
 }
 
-export function matrixSymbols(matrix) {
-  return [...new Set(allControls(matrix).map((control) => control.symbol))].sort();
+export function matrixTests(matrix) {
+  const byIdentity = new Map();
+  for (const control of allControls(matrix)) {
+    const key = `${control.binary_id}\0${control.test_name}`;
+    if (!byIdentity.has(key)) byIdentity.set(key, control);
+  }
+  return [...byIdentity.values()].sort(
+    (left, right) =>
+      left.binary_id.localeCompare(right.binary_id) ||
+      left.test_name.localeCompare(right.test_name),
+  );
 }
 
 export function validateMatrix(
@@ -94,6 +103,23 @@ export function validateMatrix(
           errors.push(`${finding.id} has invalid test symbol ${control.symbol ?? "<missing>"}`);
           continue;
         }
+        if (
+          typeof control.binary_id !== "string" ||
+          !/^[A-Za-z0-9_-]+(?:::[A-Za-z0-9_/-]+)?$/.test(control.binary_id) ||
+          !(
+            control.binary_id === control.package ||
+            control.binary_id.startsWith(`${control.package}::`)
+          )
+        ) {
+          errors.push(`${finding.id} has invalid binary_id ${control.binary_id ?? "<missing>"}`);
+        }
+        if (
+          typeof control.test_name !== "string" ||
+          !/^[A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*$/.test(control.test_name) ||
+          !control.test_name.endsWith(`::${control.symbol}`)
+        ) {
+          errors.push(`${finding.id} has invalid full test_name ${control.test_name ?? "<missing>"}`);
+        }
         let source;
         try {
           source = readSource(control.source);
@@ -111,22 +137,56 @@ export function validateMatrix(
     }
   }
   if (errors.length > 0) throw new Error(`security retest matrix invalid:\n${errors.join("\n")}`);
-  return { finding_count: matrix.findings.length, test_count: matrixSymbols(matrix).length };
+  return { finding_count: matrix.findings.length, test_count: matrixTests(matrix).length };
+}
+
+function xmlAttribute(tag, name) {
+  const match = new RegExp(`\\b${name}="([^"]*)"`).exec(tag);
+  if (!match) return null;
+  return match[1]
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
 }
 
 export function verifyNextestEvidence(matrix, discoveredText, junitText) {
   const errors = [];
-  const executedTestcases = [...junitText.matchAll(/<testcase\b[^>]*(?:\/>|>[\s\S]*?<\/testcase>)/g)]
-    .map((match) => match[0])
-    .filter((testcase) => !/<skipped\b/.test(testcase))
-    .join("\n");
-  for (const symbol of matrixSymbols(matrix)) {
-    const exactIdentifier = new RegExp(
-      `(?:^|[^A-Za-z0-9_])${escapeRegExp(symbol)}(?:$|[^A-Za-z0-9_])`,
-      "m",
-    );
-    if (!exactIdentifier.test(discoveredText)) errors.push(`not discovered: ${symbol}`);
-    if (!exactIdentifier.test(executedTestcases)) errors.push(`not executed: ${symbol}`);
+  let discovery;
+  try {
+    discovery = JSON.parse(discoveredText);
+  } catch {
+    throw new Error("security retest discovery evidence is not valid nextest JSON");
+  }
+  const suites = discovery["rust-suites"];
+  if (!suites || typeof suites !== "object") {
+    throw new Error("security retest discovery evidence has no rust-suites map");
+  }
+
+  const executed = new Set();
+  for (const match of junitText.matchAll(/<testcase\b[^>]*(?:\/>|>[\s\S]*?<\/testcase>)/g)) {
+    const testcase = match[0];
+    if (/<skipped\b/.test(testcase)) continue;
+    const tag = testcase.slice(0, testcase.indexOf(">") + 1);
+    const binaryId = xmlAttribute(tag, "classname");
+    const testName = xmlAttribute(tag, "name");
+    if (binaryId && testName) executed.add(`${binaryId}\0${testName}`);
+  }
+
+  for (const test of matrixTests(matrix)) {
+    const label = `${test.package} ${test.binary_id} ${test.test_name}`;
+    const suite = suites[test.binary_id];
+    if (
+      !suite ||
+      suite["package-name"] !== test.package ||
+      !Object.hasOwn(suite.testcases ?? {}, test.test_name)
+    ) {
+      errors.push(`not discovered: ${label}`);
+    }
+    if (!executed.has(`${test.binary_id}\0${test.test_name}`)) {
+      errors.push(`not executed: ${label}`);
+    }
   }
   if (errors.length > 0) {
     throw new Error(`security retest execution evidence incomplete:\n${errors.join("\n")}`);
@@ -161,7 +221,14 @@ function main() {
   const matrix = loadMatrix();
   const summary = validateMatrix(matrix);
   if (process.argv.includes("--print-nextest-filter")) {
-    process.stdout.write(`${matrixSymbols(matrix).map((symbol) => `test(${symbol})`).join(" | ")}\n`);
+    process.stdout.write(
+      `${matrixTests(matrix)
+        .map(
+          (test) =>
+            `(package(${test.package}) & binary_id(${test.binary_id}) & test(=${test.test_name}))`,
+        )
+        .join(" | ")}\n`,
+    );
     return;
   }
   const discoveredPath = optionValue("--nextest-list");

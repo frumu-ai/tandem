@@ -59,7 +59,7 @@ pub(super) async fn auth_gate(
     {
         return next.run(request).await;
     }
-    if path == "/global/health" {
+    if is_public_health_request(request.method(), path) {
         return next.run(request).await;
     }
     if is_public_oauth_callback_path(path) {
@@ -401,6 +401,10 @@ fn is_public_web_ui_request(method: &Method, path: &str, prefix: &str) -> bool {
         || path
             .strip_prefix(prefix)
             .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn is_public_health_request(method: &Method, path: &str) -> bool {
+    matches!(*method, Method::GET | Method::HEAD) && path == "/global/health"
 }
 
 /// The signed Slack Events webhook (`/channels/slack/events`) authenticates via the
@@ -1860,6 +1864,21 @@ mod web_ui_bypass_tests {
     }
 }
 
+#[cfg(test)]
+mod health_bypass_tests {
+    use super::is_public_health_request;
+    use axum::http::Method;
+
+    #[test]
+    fn health_bypass_is_method_and_path_exact() {
+        assert!(is_public_health_request(&Method::GET, "/global/health"));
+        assert!(is_public_health_request(&Method::HEAD, "/global/health"));
+        assert!(!is_public_health_request(&Method::POST, "/global/health"));
+        assert!(!is_public_health_request(&Method::PATCH, "/global/health"));
+        assert!(!is_public_health_request(&Method::GET, "/global/health/"));
+    }
+}
+
 pub(super) async fn startup_gate(
     State(state): State<AppState>,
     request: Request,
@@ -1868,7 +1887,7 @@ pub(super) async fn startup_gate(
     if request.method() == Method::OPTIONS {
         return next.run(request).await;
     }
-    if request.uri().path() == "/global/health" {
+    if is_public_health_request(request.method(), request.uri().path()) {
         return next.run(request).await;
     }
     if state.is_ready() {

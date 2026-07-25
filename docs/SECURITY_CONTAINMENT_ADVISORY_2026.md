@@ -43,9 +43,10 @@ API-overlapping, encoded-separator, traversal, and non-reserved prefixes back to
 
 ## Edge containment
 
-Until the final focused retest records an allow decision, an upstream edge must
-deny these route families if the engine is reachable beyond its standalone
-loopback owner:
+Until the final shared/hosted release decision records an allow decision after
+the focused retest and the assurance, dependency, and deployment gates all
+pass, an upstream edge must deny these route families if the engine is
+reachable beyond its standalone loopback owner:
 
 - pack install, update, uninstall, export, detection, and file access;
 - MCP definition and connection mutation;

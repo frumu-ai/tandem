@@ -2,217 +2,617 @@
   "schema_version": 1,
   "scope": "Focused dynamic retest for confirmed findings TA-01 through TA-17",
   "fixture_catalog": {
-    "synthetic_tenants": ["org-a/workspace-a", "org-b/workspace-b"],
-    "roles": ["ordinary_member", "deployment_admin", "independent_reviewer"],
-    "disposable_resources": ["temporary_workspace", "temporary_git_repository", "temporary_pack_root"],
-    "canaries": ["marker_provider_credential", "marker_channel_credential", "marker_audit_value"],
-    "network": ["fake_private_dns_answer", "fake_cloud_metadata_address", "fake_redirect_service", "chunked_over_budget_service"],
-    "failure_injection": ["protected_audit_unwritable", "state_persistence_failure", "two_replay_store_instances"]
+    "synthetic_tenants": [
+      "org-a/workspace-a",
+      "org-b/workspace-b"
+    ],
+    "roles": [
+      "ordinary_member",
+      "deployment_admin",
+      "independent_reviewer"
+    ],
+    "disposable_resources": [
+      "temporary_workspace",
+      "temporary_git_repository",
+      "temporary_pack_root"
+    ],
+    "canaries": [
+      "marker_provider_credential",
+      "marker_channel_credential",
+      "marker_audit_value"
+    ],
+    "network": [
+      "fake_private_dns_answer",
+      "fake_cloud_metadata_address",
+      "fake_redirect_service",
+      "chunked_over_budget_service"
+    ],
+    "failure_injection": [
+      "protected_audit_unwritable",
+      "state_persistence_failure",
+      "two_replay_store_instances"
+    ]
   },
   "findings": [
     {
       "id": "TA-01",
       "title": "Authenticated OS command execution and process-global Windows PTY",
-      "fixture_tags": ["ordinary_member", "temporary_workspace"],
+      "fixture_tags": [
+        "ordinary_member",
+        "temporary_workspace"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/action_authorization.rs", "symbol": "broad_role_does_not_authorize_host_effect"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/system_api_hardened.rs", "symbol": "legacy_command_payloads_cannot_supply_an_executable_or_arguments"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/action_authorization.rs",
+          "symbol": "broad_role_does_not_authorize_host_effect",
+          "binary_id": "tandem-server",
+          "test_name": "action_authorization::tests::broad_role_does_not_authorize_host_effect"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/system_api_hardened.rs",
+          "symbol": "legacy_command_payloads_cannot_supply_an_executable_or_arguments",
+          "binary_id": "tandem-server",
+          "test_name": "http::system_api_hardened::tests::legacy_command_payloads_cannot_supply_an_executable_or_arguments"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/system_api_hardened.rs", "symbol": "command_presets_do_not_accept_executables_or_interpreters"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/system_api_hardened.rs",
+          "symbol": "command_presets_do_not_accept_executables_or_interpreters",
+          "binary_id": "tandem-server",
+          "test_name": "http::system_api_hardened::tests::command_presets_do_not_accept_executables_or_interpreters"
+        }
       ]
     },
     {
       "id": "TA-02",
       "title": "Arbitrary-root file content search and resource exhaustion",
-      "fixture_tags": ["temporary_workspace", "marker_audit_value"],
+      "fixture_tags": [
+        "temporary_workspace",
+        "marker_audit_value"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/system_api_hardened.rs", "symbol": "workspace_path_resolution_blocks_absolute_and_symlink_escapes"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/system_api_hardened.rs", "symbol": "descriptor_relative_open_rejects_symlink_swaps"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/system_api_hardened.rs",
+          "symbol": "workspace_path_resolution_blocks_absolute_and_symlink_escapes",
+          "binary_id": "tandem-server",
+          "test_name": "http::system_api_hardened::tests::workspace_path_resolution_blocks_absolute_and_symlink_escapes"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/system_api_hardened.rs",
+          "symbol": "descriptor_relative_open_rejects_symlink_swaps",
+          "binary_id": "tandem-server",
+          "test_name": "http::system_api_hardened::tests::descriptor_relative_open_rejects_symlink_swaps"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/system_api_hardened.rs", "symbol": "bounded_file_listing_honors_the_server_owned_result_limit"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/system_api_hardened.rs",
+          "symbol": "bounded_file_listing_honors_the_server_owned_result_limit",
+          "binary_id": "tandem-server",
+          "test_name": "http::system_api_hardened::tests::bounded_file_listing_honors_the_server_owned_result_limit"
+        }
       ]
     },
     {
       "id": "TA-03",
       "title": "Process-global permission/question queues permit cross-tenant decisions",
-      "fixture_tags": ["org-a/workspace-a", "org-b/workspace-b", "independent_reviewer"],
+      "fixture_tags": [
+        "org-a/workspace-a",
+        "org-b/workspace-b",
+        "independent_reviewer"
+      ],
       "negative_controls": [
-        {"package": "tandem-core", "source": "crates/tandem-core/src/permissions.rs", "symbol": "tenant_scoped_permission_state_cannot_be_discovered_or_decided_cross_tenant"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/permissions.rs", "symbol": "question_reply_rejects_requester_self_review"}
+        {
+          "package": "tandem-core",
+          "source": "crates/tandem-core/src/permissions.rs",
+          "symbol": "tenant_scoped_permission_state_cannot_be_discovered_or_decided_cross_tenant",
+          "binary_id": "tandem-core",
+          "test_name": "permissions::tests::tenant_scoped_permission_state_cannot_be_discovered_or_decided_cross_tenant"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/permissions.rs",
+          "symbol": "question_reply_rejects_requester_self_review",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::permissions::question_reply_rejects_requester_self_review"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/permissions.rs", "symbol": "permission_reply_route_applies_and_persists_allow_rule"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/permissions.rs",
+          "symbol": "permission_reply_route_applies_and_persists_allow_rule",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::permissions::permission_reply_route_applies_and_persists_allow_rule"
+        }
       ]
     },
     {
       "id": "TA-04",
       "title": "Legacy workflow gates can be approved by an unrelated tenant actor",
-      "fixture_tags": ["org-a/workspace-a", "org-b/workspace-b", "independent_reviewer"],
+      "fixture_tags": [
+        "org-a/workspace-a",
+        "org-b/workspace-b",
+        "independent_reviewer"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/workflows.rs", "symbol": "workflow_gate_hosted_visibility_and_review_are_actor_scoped"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/workflows.rs", "symbol": "workflow_gate_rejects_stale_and_expired_requests_without_resuming"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/workflows.rs",
+          "symbol": "workflow_gate_hosted_visibility_and_review_are_actor_scoped",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::workflows::workflow_gate_hosted_visibility_and_review_are_actor_scoped"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/workflows.rs",
+          "symbol": "workflow_gate_rejects_stale_and_expired_requests_without_resuming",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::workflows::workflow_gate_rejects_stale_and_expired_requests_without_resuming"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/workflows.rs", "symbol": "workflow_gate_pauses_run_and_resumes_after_human_approval"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/workflows.rs",
+          "symbol": "workflow_gate_pauses_run_and_resumes_after_human_approval",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::workflows::workflow_gate_pauses_run_and_resumes_after_human_approval"
+        }
       ]
     },
     {
       "id": "TA-05",
       "title": "Governance grants and lifecycle mutations lack tenant/resource authorization",
-      "fixture_tags": ["org-a/workspace-a", "org-b/workspace-b", "protected_audit_unwritable"],
+      "fixture_tags": [
+        "org-a/workspace-a",
+        "org-b/workspace-b",
+        "protected_audit_unwritable"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/governance_parts/part01.rs", "symbol": "governance_approval_rejects_cross_tenant_approve_replay"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/governance_parts/part01.rs", "symbol": "governance_grant_audit_failure_leaves_state_unchanged"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/governance_parts/part01.rs",
+          "symbol": "governance_approval_rejects_cross_tenant_approve_replay",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::governance::governance_approval_rejects_cross_tenant_approve_replay"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/governance_parts/part01.rs",
+          "symbol": "governance_grant_audit_failure_leaves_state_unchanged",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::governance::governance_grant_audit_failure_leaves_state_unchanged"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/governance.rs", "symbol": "automations_v2_grant_revoke_pauses_automation_and_requests_dependency_review"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/governance.rs",
+          "symbol": "automations_v2_grant_revoke_pauses_automation_and_requests_dependency_review",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::governance::automations_v2_grant_revoke_pauses_automation_and_requests_dependency_review"
+        }
       ]
     },
     {
       "id": "TA-06",
       "title": "Global provider endpoint poisoning and shared transport-token rotation",
-      "fixture_tags": ["org-a/workspace-a", "org-b/workspace-b", "marker_provider_credential"],
+      "fixture_tags": [
+        "org-a/workspace-a",
+        "org-b/workspace-b",
+        "marker_provider_credential"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/providers.rs", "symbol": "hosted_admin_cannot_configure_private_local_provider_origin"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/providers.rs", "symbol": "tenant_a_cannot_list_update_or_delete_tenant_b_provider_api_key"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/providers.rs",
+          "symbol": "hosted_admin_cannot_configure_private_local_provider_origin",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::providers::hosted_admin_cannot_configure_private_local_provider_origin"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/providers.rs",
+          "symbol": "tenant_a_cannot_list_update_or_delete_tenant_b_provider_api_key",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::providers::tenant_a_cannot_list_update_or_delete_tenant_b_provider_api_key"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/providers.rs", "symbol": "standalone_loopback_owner_can_configure_private_local_provider_origin"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/providers.rs",
+          "symbol": "standalone_loopback_owner_can_configure_private_local_provider_origin",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::providers::standalone_loopback_owner_can_configure_private_local_provider_origin"
+        }
       ]
     },
     {
       "id": "TA-07",
       "title": "Channel endpoint changes exfiltrate preserved shared bot credentials",
-      "fixture_tags": ["org-a/workspace-a", "org-b/workspace-b", "marker_channel_credential"],
+      "fixture_tags": [
+        "org-a/workspace-a",
+        "org-b/workspace-b",
+        "marker_channel_credential"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/channels.rs", "symbol": "channel_identity_authority_is_admin_only_tenant_exact_and_locally_compatible"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/channels.rs", "symbol": "slack_sender_inventory_requires_deployment_admin"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/channels.rs",
+          "symbol": "channel_identity_authority_is_admin_only_tenant_exact_and_locally_compatible",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::channels::channel_identity_authority_is_admin_only_tenant_exact_and_locally_compatible"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/channels.rs",
+          "symbol": "slack_sender_inventory_requires_deployment_admin",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::channels::slack_sender_inventory_requires_deployment_admin"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/channels.rs", "symbol": "channels_put_protected_audit_records_shape_without_raw_credentials"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/channels.rs", "symbol": "channel_identity_authority_is_admin_only_tenant_exact_and_locally_compatible"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/channels.rs",
+          "symbol": "channels_put_protected_audit_records_shape_without_raw_credentials",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::channels::channels_put_protected_audit_records_shape_without_raw_credentials"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/channels.rs",
+          "symbol": "channel_identity_authority_is_admin_only_tenant_exact_and_locally_compatible",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::channels::channel_identity_authority_is_admin_only_tenant_exact_and_locally_compatible"
+        }
       ]
     },
     {
       "id": "TA-08",
       "title": "Global MCP mutation/deletion and unrestricted server-side requests",
-      "fixture_tags": ["ordinary_member", "temporary_workspace", "marker_audit_value"],
+      "fixture_tags": [
+        "ordinary_member",
+        "temporary_workspace",
+        "marker_audit_value"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/mcp_admin_hardening.rs", "symbol": "private_mcp_oauth_requires_standalone_listener_posture"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/mcp_admin_hardening.rs", "symbol": "stopped_listener_posture_blocks_actual_private_mcp_request"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/mcp_admin_hardening.rs",
+          "symbol": "private_mcp_oauth_requires_standalone_listener_posture",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::mcp_admin_hardening::private_mcp_oauth_requires_standalone_listener_posture"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/mcp_admin_hardening.rs",
+          "symbol": "stopped_listener_posture_blocks_actual_private_mcp_request",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::mcp_admin_hardening::stopped_listener_posture_blocks_actual_private_mcp_request"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/mcp_admin_hardening.rs", "symbol": "mcp_registration_audit_records_header_names_without_values"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/mcp_admin_hardening.rs",
+          "symbol": "mcp_registration_audit_records_header_names_without_values",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::mcp_admin_hardening::mcp_registration_audit_records_header_names_without_values"
+        }
       ]
     },
     {
       "id": "TA-09",
       "title": "Destructive process-global and arbitrary-repository operations",
-      "fixture_tags": ["temporary_git_repository", "org-a/workspace-a", "org-b/workspace-b"],
+      "fixture_tags": [
+        "temporary_git_repository",
+        "org-a/workspace-a",
+        "org-b/workspace-b"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/global_parts/part07.rs", "symbol": "managed_worktree_create_rejects_external_path_override"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/global_parts/part07.rs", "symbol": "managed_worktree_mutations_require_matching_active_lease"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/global_parts/part07.rs",
+          "symbol": "managed_worktree_create_rejects_external_path_override",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::global::managed_worktree_create_rejects_external_path_override"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/global_parts/part07.rs",
+          "symbol": "managed_worktree_mutations_require_matching_active_lease",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::global::managed_worktree_mutations_require_matching_active_lease"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/global_parts/part07.rs", "symbol": "managed_worktree_endpoints_are_idempotent_and_cleanup_branch"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/global_parts/part07.rs",
+          "symbol": "managed_worktree_endpoints_are_idempotent_and_cleanup_branch",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::global::managed_worktree_endpoints_are_idempotent_and_cleanup_branch"
+        }
       ]
     },
     {
       "id": "TA-10",
       "title": "Pack install/export path escape, SSRF, and unbounded download",
-      "fixture_tags": ["temporary_pack_root", "fake_private_dns_answer", "fake_cloud_metadata_address", "fake_redirect_service", "chunked_over_budget_service"],
+      "fixture_tags": [
+        "temporary_pack_root",
+        "fake_private_dns_answer",
+        "fake_cloud_metadata_address",
+        "fake_redirect_service",
+        "chunked_over_budget_service"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/outbound_http.rs", "symbol": "fake_dns_and_cloud_metadata_answers_fail_closed"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/outbound_http.rs", "symbol": "fake_redirect_and_streaming_budget_service_is_contained"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/pack_manager_tests.rs", "symbol": "safe_extract_blocks_traversal"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/outbound_http.rs",
+          "symbol": "fake_dns_and_cloud_metadata_answers_fail_closed",
+          "binary_id": "tandem-server",
+          "test_name": "outbound_http::tests::fake_dns_and_cloud_metadata_answers_fail_closed"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/outbound_http.rs",
+          "symbol": "fake_redirect_and_streaming_budget_service_is_contained",
+          "binary_id": "tandem-server",
+          "test_name": "outbound_http::tests::fake_redirect_and_streaming_budget_service_is_contained"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/pack_manager_tests.rs",
+          "symbol": "safe_extract_blocks_traversal",
+          "binary_id": "tandem-server",
+          "test_name": "pack_manager::tests::safe_extract_blocks_traversal"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/packs.rs", "symbol": "packs_install_list_and_uninstall_roundtrip"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/packs.rs",
+          "symbol": "packs_install_list_and_uninstall_roundtrip",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::packs::packs_install_list_and_uninstall_roundtrip"
+        }
       ]
     },
     {
       "id": "TA-11",
       "title": "Configurable Web UI prefix can exempt API routes from authentication",
-      "fixture_tags": ["ordinary_member", "marker_audit_value"],
+      "fixture_tags": [
+        "ordinary_member",
+        "marker_audit_value"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/middleware.rs", "symbol": "web_ui_bypass_is_method_and_segment_exact"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/middleware.rs",
+          "symbol": "web_ui_bypass_is_method_and_segment_exact",
+          "binary_id": "tandem-server",
+          "test_name": "http::middleware::web_ui_bypass_tests::web_ui_bypass_is_method_and_segment_exact"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/global_parts/part01.rs", "symbol": "global_health_route_returns_only_minimal_public_shape"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/global_parts/part01.rs",
+          "symbol": "global_health_route_returns_only_minimal_public_shape",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::global::global_health_route_returns_only_minimal_public_shape"
+        }
       ]
     },
     {
       "id": "TA-12",
       "title": "Security-relevant effects can precede protected audit durability",
-      "fixture_tags": ["protected_audit_unwritable", "state_persistence_failure", "marker_audit_value"],
+      "fixture_tags": [
+        "protected_audit_unwritable",
+        "state_persistence_failure",
+        "marker_audit_value"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/action_authorization.rs", "symbol": "audit_persistence_failure_prevents_grant_issuance"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/workflows.rs", "symbol": "workflow_gate_persistence_failure_keeps_nonce_pending"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/action_authorization.rs",
+          "symbol": "audit_persistence_failure_prevents_grant_issuance",
+          "binary_id": "tandem-server",
+          "test_name": "action_authorization::tests::audit_persistence_failure_prevents_grant_issuance"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/workflows.rs",
+          "symbol": "workflow_gate_persistence_failure_keeps_nonce_pending",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::workflows::workflow_gate_persistence_failure_keeps_nonce_pending"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/providers.rs", "symbol": "provider_auth_set_writes_protected_audit_record"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/providers.rs",
+          "symbol": "provider_auth_set_writes_protected_audit_record",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::providers::provider_auth_set_writes_protected_audit_record"
+        }
       ]
     },
     {
       "id": "TA-13",
       "title": "Public webhook rejection path enables disk/write amplification",
-      "fixture_tags": ["chunked_over_budget_service", "marker_audit_value"],
+      "fixture_tags": [
+        "chunked_over_budget_service",
+        "marker_audit_value"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/automation_webhooks/security.rs", "symbol": "bad_signature_load_is_throttled_and_retained_within_explicit_ceilings"},
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/automation_webhooks/security.rs", "symbol": "public_webhook_body_limits_apply_before_collection_and_vary_by_provider"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/automation_webhooks/security.rs",
+          "symbol": "bad_signature_load_is_throttled_and_retained_within_explicit_ceilings",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::automation_webhooks::security::bad_signature_load_is_throttled_and_retained_within_explicit_ceilings"
+        },
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/automation_webhooks/security.rs",
+          "symbol": "public_webhook_body_limits_apply_before_collection_and_vary_by_provider",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::automation_webhooks::security::public_webhook_body_limits_apply_before_collection_and_vary_by_provider"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/http/tests/automation_webhooks.rs", "symbol": "public_automation_webhook_accepts_signed_request_without_transport_auth"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/http/tests/automation_webhooks.rs",
+          "symbol": "public_automation_webhook_accepts_signed_request_without_transport_auth",
+          "binary_id": "tandem-server",
+          "test_name": "http::tests::automation_webhooks::public_automation_webhook_accepts_signed_request_without_transport_auth"
+        }
       ]
     },
     {
       "id": "TA-14",
       "title": "Browser sidecar installer executes unsigned, unbounded release artifacts",
-      "fixture_tags": ["temporary_workspace", "marker_audit_value"],
+      "fixture_tags": [
+        "temporary_workspace",
+        "marker_audit_value"
+      ],
       "negative_controls": [
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/artifact_integrity.rs", "symbol": "rejects_tampered_manifest_bytes"},
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/artifact_integrity.rs", "symbol": "digest_verifier_rejects_oversize_before_hashing"}
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/artifact_integrity.rs",
+          "symbol": "rejects_tampered_manifest_bytes",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "artifact_integrity::tests::rejects_tampered_manifest_bytes"
+        },
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/artifact_integrity.rs",
+          "symbol": "digest_verifier_rejects_oversize_before_hashing",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "artifact_integrity::tests::digest_verifier_rejects_oversize_before_hashing"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/artifact_integrity.rs", "symbol": "verifies_signed_manifest_and_exact_target"}
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/artifact_integrity.rs",
+          "symbol": "verifies_signed_manifest_and_exact_target",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "artifact_integrity::tests::verifies_signed_manifest_and_exact_target"
+        }
       ]
     },
     {
       "id": "TA-15",
       "title": "Desktop engine sidecar and release chain lack artifact integrity",
-      "fixture_tags": ["temporary_workspace", "marker_audit_value"],
+      "fixture_tags": [
+        "temporary_workspace",
+        "marker_audit_value"
+      ],
       "negative_controls": [
-        {"package": "tandem-server", "source": "crates/tandem-server/src/browser_parts/artifact_install.rs", "symbol": "failed_version_probe_restores_previous_binary"},
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/artifact_integrity.rs", "symbol": "rejects_wrong_release_after_valid_signature"}
+        {
+          "package": "tandem-server",
+          "source": "crates/tandem-server/src/browser_parts/artifact_install.rs",
+          "symbol": "failed_version_probe_restores_previous_binary",
+          "binary_id": "tandem-server",
+          "test_name": "browser::browser_artifact_install_tests::failed_version_probe_restores_previous_binary"
+        },
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/artifact_integrity.rs",
+          "symbol": "rejects_wrong_release_after_valid_signature",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "artifact_integrity::tests::rejects_wrong_release_after_valid_signature"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/artifact_integrity.rs", "symbol": "digest_verifier_accepts_exact_bytes"}
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/artifact_integrity.rs",
+          "symbol": "digest_verifier_accepts_exact_bytes",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "artifact_integrity::tests::digest_verifier_accepts_exact_bytes"
+        }
       ]
     },
     {
       "id": "TA-16",
       "title": "Context-assertion replay cache is process-local",
-      "fixture_tags": ["two_replay_store_instances", "org-a/workspace-a", "org-b/workspace-b"],
+      "fixture_tags": [
+        "two_replay_store_instances",
+        "org-a/workspace-a",
+        "org-b/workspace-b"
+      ],
       "negative_controls": [
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/context_assertion_security_tests.rs", "symbol": "persistent_replay_store_coordinates_one_shot_and_bound_across_instances"},
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/context_assertion_security_tests.rs", "symbol": "concurrent_one_shot_race_has_exactly_one_winner"}
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/context_assertion_security_tests.rs",
+          "symbol": "persistent_replay_store_coordinates_one_shot_and_bound_across_instances",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "context_assertion_security::tests::persistent_replay_store_coordinates_one_shot_and_bound_across_instances"
+        },
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/context_assertion_security_tests.rs",
+          "symbol": "concurrent_one_shot_race_has_exactly_one_winner",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "context_assertion_security::tests::concurrent_one_shot_race_has_exactly_one_winner"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/context_assertion_security_tests.rs", "symbol": "replay_expiry_namespace_and_capacity_limits_are_enforced"}
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/context_assertion_security_tests.rs",
+          "symbol": "replay_expiry_namespace_and_capacity_limits_are_enforced",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "context_assertion_security::tests::replay_expiry_namespace_and_capacity_limits_are_enforced"
+        }
       ]
     },
     {
       "id": "TA-17",
       "title": "ACA verifier accepts materially under-validated identity claims",
-      "fixture_tags": ["org-a/workspace-a", "org-b/workspace-b", "marker_audit_value"],
+      "fixture_tags": [
+        "org-a/workspace-a",
+        "org-b/workspace-b",
+        "marker_audit_value"
+      ],
       "negative_controls": [
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/aca_request_auth.rs", "symbol": "hosted_mode_rejects_identity_issuer_version_and_lifetime_drift"},
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/aca_request_auth.rs", "symbol": "hosted_mode_rejects_wrong_audience_in_claims"}
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/aca_request_auth.rs",
+          "symbol": "hosted_mode_rejects_identity_issuer_version_and_lifetime_drift",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "aca_request_auth::tests::hosted_mode_rejects_identity_issuer_version_and_lifetime_drift"
+        },
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/aca_request_auth.rs",
+          "symbol": "hosted_mode_rejects_wrong_audience_in_claims",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "aca_request_auth::tests::hosted_mode_rejects_wrong_audience_in_claims"
+        }
       ],
       "positive_controls": [
-        {"package": "tandem-enterprise-contract", "source": "crates/tandem-enterprise-contract/src/aca_request_auth.rs", "symbol": "hosted_mode_full_verifier_accepts_valid_assertion"}
+        {
+          "package": "tandem-enterprise-contract",
+          "source": "crates/tandem-enterprise-contract/src/aca_request_auth.rs",
+          "symbol": "hosted_mode_full_verifier_accepts_valid_assertion",
+          "binary_id": "tandem-enterprise-contract",
+          "test_name": "aca_request_auth::tests::hosted_mode_full_verifier_accepts_valid_assertion"
+        }
       ]
     }
   ]

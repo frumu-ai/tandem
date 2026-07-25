@@ -191,9 +191,16 @@ export function extractRoutesFromRust(source, sourcePath = "fixture.rs") {
 
   if (/routes_incident_monitor\.rs$/.test(sourcePath)) {
     for (const call of callsNamed(production, "route_prefixed(")) {
+      const beforeCall = production.slice(Math.max(0, call.index - 16), call.index);
+      if (/\bfn\s*$/.test(beforeCall)) continue;
       const args = splitTopLevelArguments(call.body);
       const suffix = args.length >= 4 ? rustStringLiteral(args[2]) : null;
-      if (!suffix) continue;
+      if (!suffix) {
+        unsupported.push(
+          `${sourcePath}:${lineNumber(production, call.index)} dynamic incident-monitor suffix ${args[2] ?? "<missing>"}`,
+        );
+        continue;
+      }
       const methods = methodsFromRouterExpression(args.slice(3).join(","));
       if (methods.length === 0) {
         unsupported.push(`${sourcePath}:${lineNumber(production, call.index)} prefixed route has no statically visible method`);
@@ -268,6 +275,17 @@ function loopbackOAuthRoutes() {
   if (!source.includes("TcpListener::bind(OPENAI_CODEX_LOCAL_CALLBACK_ADDR)")) {
     throw new Error("loopback OAuth callback listener binding drifted");
   }
+  const constantSourcePath = path.join(
+    "crates",
+    "tandem-server",
+    "src",
+    "http",
+    "config_providers_parts",
+    "part01.rs",
+  );
+  assertLoopbackCallbackAddress(
+    fs.readFileSync(path.join(repoRoot, constantSourcePath), "utf8"),
+  );
   const extracted = extractRoutesFromRust(source, sourcePath);
   if (extracted.unsupported.length > 0) {
     throw new Error(`loopback OAuth route cannot be inventoried:\n${extracted.unsupported.join("\n")}`);
@@ -277,6 +295,20 @@ function loopbackOAuthRoutes() {
     path: `{loopback_oauth_listener}${route.path}`,
     listener: "loopback_oauth_callback",
   }));
+}
+
+export function assertLoopbackCallbackAddress(source) {
+  const match =
+    /const\s+OPENAI_CODEX_LOCAL_CALLBACK_ADDR\s*:\s*&str\s*=\s*"([^"]+)"\s*;/.exec(
+      source,
+    );
+  if (!match || !/^127(?:\.\d{1,3}){3}:\d+$/.test(match[1])) {
+    throw new Error("OpenAI Codex OAuth callback address is not statically loopback-only");
+  }
+  const [host] = match[1].split(":");
+  if (Number(host.split(".")[0]) !== 127) {
+    throw new Error("OpenAI Codex OAuth callback address is not statically loopback-only");
+  }
 }
 
 function assertProductionRouteCoverage(files) {
@@ -339,6 +371,27 @@ export function classifyRoute(route) {
       capability: null,
       resolver: "none",
       policy_origin: "public.health",
+    };
+  }
+  if (
+    (method === "GET" || method === "HEAD") &&
+    /^\/audit\/(?:protected|stream|ledger\/(?:manifest|export))$/.test(routePath)
+  ) {
+    return {
+      ingress_policy: "runtime_auth_gate",
+      authorization_policy: "api_token_or_control_panel_admin_source_and_tenant_scope",
+      capability: null,
+      resolver: "request_principal_source_and_tenant_audit_ledger",
+      policy_origin: "audit.admin",
+    };
+  }
+  if (method === "PATCH" && /^\/config(?:\/identity)?$/.test(routePath)) {
+    return {
+      ingress_policy: "runtime_auth_gate",
+      authorization_policy: "deployment_administrator_or_loopback_local_owner",
+      capability: "deployment.config.manage",
+      resolver: "tenant_project_config",
+      policy_origin: "admin.deployment",
     };
   }
   if (method === "POST" && routePath === "/channels/slack/events") {
