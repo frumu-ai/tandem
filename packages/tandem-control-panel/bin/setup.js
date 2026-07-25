@@ -20,6 +20,7 @@ import {
 } from "../lib/setup/control-panel-config.js";
 import { resolveControlPanelPrincipalIdentity } from "../lib/setup/control-panel-principal.js";
 import { resolveControlPanelPreferencesPath } from "../lib/setup/control-panel-preferences.js";
+import { classifyStatusOnlyWorkspaceChange } from "../lib/setup/workspace-change-status.js";
 import { createSwarmApiHandler, getOrchestratorMetrics } from "../server/routes/swarm.js";
 import { createAcaApiHandler } from "../server/routes/aca.js";
 import {
@@ -4217,8 +4218,9 @@ function summarizeWorkspaceChanges(beforeSnapshot, afterSnapshot) {
       .trim()
       .toUpperCase();
     if (!beforeFingerprint && !afterFingerprint) {
-      if (afterStatus === "D") deleted.push(pathname);
-      else if (afterStatus || beforeStatus) updated.push(pathname);
+      const classification = classifyStatusOnlyWorkspaceChange(beforeStatus, afterStatus);
+      if (classification === "deleted") deleted.push(pathname);
+      else if (classification === "updated") updated.push(pathname);
       continue;
     }
     if (!beforeFingerprint && afterFingerprint) {

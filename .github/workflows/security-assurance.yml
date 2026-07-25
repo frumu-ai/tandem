@@ -1,0 +1,154 @@
+name: Security Assurance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-assurance-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Assurance Policy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+
+      - name: Verify secret-file history policy
+        run: node scripts/verify-secret-file-policy.mjs --self-test
+
+      - name: Verify container and deployment inventory policy
+        run: node scripts/verify-container-hardening.mjs
+
+      - name: Verify hosted release evidence gate
+        run: node scripts/verify-security-release-evidence.mjs --self-test
+
+      - name: Verify workflow action pins and permissions
+        run: node scripts/verify-workflow-security.mjs
+
+  secret-history:
+    name: Gitleaks All History
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify full history is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit_count="$(git rev-list --all --count)"
+          test "$commit_count" -gt 1
+          echo "Scanning $commit_count commits across all fetched refs"
+
+      - name: Scan all refs with pinned Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --network none \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
+            --workdir "$GITHUB_WORKSPACE" \
+            ghcr.io/gitleaks/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 \
+            detect --source . --config .gitleaks.toml --log-opts=--all --redact --no-banner --exit-code 1
+
+  codeql:
+    name: CodeQL JavaScript and TypeScript
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+
+      - name: Analyze JavaScript and TypeScript
+        uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        with:
+          category: /language:javascript-typescript
+
+  containers:
+    name: Container ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: engine
+            dockerfile: packages/tandem-control-panel/docker/engine.Dockerfile
+            image: tandem-engine:security-assurance
+            build_args: ""
+          - name: control-panel
+            dockerfile: packages/tandem-control-panel/docker/control-panel.Dockerfile
+            image: tandem-control-panel:security-assurance
+            build_args: ""
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build immutable test image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build_args }}
+          load: true
+          pull: true
+          tags: ${{ matrix.image }}
+
+      - name: Generate SPDX JSON SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ matrix.image }}
+          format: spdx-json
+          syft-version: v1.42.3
+          output-file: ${{ matrix.name }}.sbom.spdx.json
+          upload-artifact: false
+
+      - name: Fail on fixable high or critical vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ matrix.image }}
+          output-format: table
+          output-file: ${{ matrix.name }}.grype.txt
+          grype-version: v0.110.0
+          severity-cutoff: high
+          only-fixed: true
+          fail-build: true
+
+      - name: Upload image assurance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.name }}-security-assurance
+          path: |
+            ${{ matrix.name }}.sbom.spdx.json
+            ${{ matrix.name }}.grype.txt
+          if-no-files-found: warn
+          retention-days: 30

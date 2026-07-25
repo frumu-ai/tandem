@@ -40,6 +40,9 @@ jobs:
       - name: Run desktop TypeScript check
         run: pnpm -C apps/tandem-desktop exec tsc --noEmit
 
+      - name: Run desktop blackboard tests
+        run: pnpm -C apps/tandem-desktop test:blackboard
+
       - name: Validate i18n parity
         run: pnpm i18n:parity
 
@@ -126,6 +129,26 @@ jobs:
           path: ${{ runner.temp }}/control-panel-package/*.tgz
           if-no-files-found: error
           retention-days: 7
+
+  audit-javascript-lockfiles:
+    name: Audit JavaScript Lockfiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Audit every JavaScript lockfile
+        run: node scripts/audit-javascript-workspaces.mjs
 
   lint-backend:
     name: Backend Rust Gates
@@ -505,7 +528,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
           cache-dependency-path: guide/pnpm-lock.yaml
 
@@ -578,7 +601,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
           cache-dependency-path: guide/pnpm-lock.yaml
 

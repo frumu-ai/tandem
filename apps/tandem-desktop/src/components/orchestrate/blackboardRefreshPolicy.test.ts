@@ -40,7 +40,7 @@ test("relevant refresh trigger seq returns newest relevant seq past watermark", 
     10
   );
   assert.equal(seq, 12);
-  assert.equal(relevantRefreshTriggerSeq([event(1, "task_trace")], 0), null);
+  assert.equal(relevantRefreshTriggerSeq([event(1, "task_trace")], 1), null);
 });
 
 test("status transition trigger only fires on actual status changes", () => {

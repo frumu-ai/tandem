@@ -15,6 +15,8 @@ on:
       - "docs/CI_SECURITY_AND_COVERAGE.md"
       - "docs/LICENSING.md"
       - "scripts/summarize-rust-coverage.mjs"
+      - "scripts/verify-rustsec-exceptions.mjs"
+      - "scripts/verify-rustsec-report.mjs"
   schedule:
     - cron: "23 5 * * *"
   workflow_dispatch:
@@ -42,15 +44,14 @@ jobs:
       - name: Install cargo-audit
         uses: taiki-e/install-action@724a716c48615d544d33401a24b782e907dc5881 # cargo-audit
 
-      - name: Run cargo audit
-        continue-on-error: ${{ github.event_name == 'pull_request' }}
-        run: cargo audit
+      - name: Verify advisory exception governance
+        run: node scripts/verify-rustsec-exceptions.mjs
 
-      - name: PR audit policy
-        if: github.event_name == 'pull_request'
-        run: |
-          echo "cargo-audit is warning-only on pull requests." >> "$GITHUB_STEP_SUMMARY"
-          echo "The same advisory scan fails scheduled and manual runs." >> "$GITHUB_STEP_SUMMARY"
+      - name: Run ignore-free RustSec reconciliation
+        run: node scripts/verify-rustsec-report.mjs
+
+      - name: Run cargo audit
+        run: cargo audit
 
   cargo-deny:
     name: Cargo Deny
@@ -78,7 +79,6 @@ jobs:
           cargo deny --config .config/deny.toml check licenses bans sources
 
       - name: Check advisories
-        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: cargo deny --config .config/deny.toml check advisories
 
   coverage:

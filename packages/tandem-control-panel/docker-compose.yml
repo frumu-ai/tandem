@@ -1,10 +1,8 @@
 services:
   tandem-engine:
     build:
-      context: .
-      dockerfile: docker/engine.Dockerfile
-      args:
-        ENGINE_VERSION: ${TANDEM_ENGINE_VERSION:-latest}
+      context: ../..
+      dockerfile: packages/tandem-control-panel/docker/engine.Dockerfile
     environment:
       TANDEM_ENGINE_HOST: 0.0.0.0
       TANDEM_ENGINE_PORT: ${TANDEM_ENGINE_PORT:-39731}
@@ -12,7 +10,18 @@ services:
       TANDEM_API_TOKEN_FILE: /run/secrets/tandem_api_token
     volumes:
       - tandem-engine-state:/var/lib/tandem/engine
-      - ./secrets:/run/secrets
+      - type: bind
+        source: ./secrets/tandem_api_token
+        target: /run/secrets/tandem_api_token
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
     healthcheck:
       test:
         [
@@ -26,8 +35,8 @@ services:
 
   tandem-control-panel:
     build:
-      context: .
-      dockerfile: docker/control-panel.Dockerfile
+      context: ../..
+      dockerfile: packages/tandem-control-panel/docker/control-panel.Dockerfile
     environment:
       TANDEM_CONTROL_PANEL_HOST: 0.0.0.0
       TANDEM_CONTROL_PANEL_PORT: ${TANDEM_DOCKER_PANEL_PORT:-39734}
@@ -39,6 +48,14 @@ services:
       TANDEM_CONTROL_PANEL_MODE: ${TANDEM_CONTROL_PANEL_MODE:-auto}
     volumes:
       - tandem-panel-state:/var/lib/tandem/panel
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
     ports:
       - "${TANDEM_DOCKER_PANEL_PORT:-39734}:${TANDEM_DOCKER_PANEL_PORT:-39734}"
     depends_on:
