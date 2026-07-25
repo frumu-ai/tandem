@@ -73,7 +73,7 @@ impl GovernanceStoreFile {
         )
     }
 
-    fn record_context(
+    pub(crate) fn record_context(
         self,
         tenant_context: &TenantContext,
         owner_org_unit_id: Option<&str>,
@@ -235,6 +235,29 @@ impl<'a> GovernanceStore<'a> {
         )
         .await
         .with_context(|| format!("append governance JSONL store {}", path.display()))
+    }
+
+    pub(crate) async fn migrate_jsonl_lines(
+        &self,
+        file: GovernanceStoreFile,
+        expected_legacy_lines: &[String],
+        migrated_records: &[(String, crate::encrypted_file_store::ProtectedRecordContext)],
+        additional_anchor: Option<(&str, &str, u64, &str)>,
+    ) -> anyhow::Result<()> {
+        let path = self.path(file);
+        anyhow::ensure!(
+            Self::is_jsonl(file),
+            "migrate_jsonl_lines requires a JSONL governance store"
+        );
+        crate::encrypted_file_store::migrate_jsonl_records_file(
+            path,
+            expected_legacy_lines,
+            migrated_records,
+            &file.storage_context(),
+            additional_anchor,
+        )
+        .await
+        .with_context(|| format!("migrate governance JSONL store {}", path.display()))
     }
 
     pub(crate) async fn read_jsonl_lines(

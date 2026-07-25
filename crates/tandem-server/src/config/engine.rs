@@ -22,10 +22,11 @@ const CONTEXT_ASSERTION_LIFETIME_DEFAULT_MS: u64 = 15 * 60 * 1_000;
 const CONTEXT_ASSERTION_LIFETIME_MIN_MS: u64 = 1;
 const CONTEXT_ASSERTION_LIFETIME_MAX_MS: u64 = 60 * 60 * 1_000;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EngineConfigOptions {
     pub cli_transport_token_configured: bool,
     pub unsafe_no_api_token: bool,
+    pub runtime_state_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -150,7 +151,7 @@ impl EngineConfigReport {
 
         validate_data_boundary_config(&mut errors);
         validate_storage_backend_config(&mut errors);
-        validate_security_invariants(&config, &mut errors);
+        validate_security_invariants(&config, options.runtime_state_root.as_deref(), &mut errors);
         warnings.sort();
         warnings.dedup();
         errors.sort();
@@ -256,7 +257,11 @@ Hosted/enterprise audit records and encrypted protected stores require a valid a
     out
 }
 
-fn validate_security_invariants(config: &EngineConfig, errors: &mut Vec<String>) {
+fn validate_security_invariants(
+    config: &EngineConfig,
+    runtime_state_root: Option<&std::path::Path>,
+    errors: &mut Vec<String>,
+) {
     let hosted_or_enterprise = config.runtime_auth_mode != RuntimeAuthMode::LocalSingleTenant
         || config.hosted_control_plane_configured;
     if hosted_or_enterprise
@@ -295,7 +300,7 @@ fn validate_security_invariants(config: &EngineConfig, errors: &mut Vec<String>)
                 .to_string(),
         );
     }
-    if let Err(error) = crate::audit_integrity::validate_configuration() {
+    if let Err(error) = crate::audit_integrity::validate_configuration(runtime_state_root) {
         errors.push(format!("audit integrity configuration is invalid: {error}"));
     }
     if hosted_or_enterprise && config.unsafe_no_api_token {

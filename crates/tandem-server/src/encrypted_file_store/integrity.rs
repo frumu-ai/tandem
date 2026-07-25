@@ -22,6 +22,7 @@ use super::{
 
 mod migration;
 use migration::encrypt_legacy_local_line;
+pub(crate) use migration::migrate_jsonl_records_file;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScopedEncryptedCollection {
@@ -627,9 +628,10 @@ async fn read_committed_head(
             && state.integrity_key_id == head.integrity_key_id,
         "protected store persistent initialized witness does not match its integrity head"
     );
+    let identity = protected_store_anchor_identity(path, store)?;
     crate::audit_integrity::verify_external_anchor(
         "protected-store",
-        &protected_store_anchor_identity(path, store),
+        &identity,
         head.generation,
         &head.digest,
         head.integrity_key_id.is_some(),
@@ -640,21 +642,25 @@ async fn read_committed_head(
     Ok(head)
 }
 
-fn protected_store_anchor_identity(path: &Path, store: &ProtectedStoreContext) -> String {
-    format!("{}:{}", store.store_id, path.to_string_lossy())
+fn protected_store_anchor_identity(
+    path: &Path,
+    store: &ProtectedStoreContext,
+) -> anyhow::Result<String> {
+    Ok(format!(
+        "{}:{}",
+        store.store_id,
+        crate::audit_integrity::canonical_state_file_identity(path)?
+    ))
 }
 
 async fn ensure_legacy_store_not_anchored(
     path: &Path,
     store: &ProtectedStoreContext,
 ) -> anyhow::Result<()> {
-    crate::audit_integrity::ensure_external_anchor_absent(
-        "protected-store",
-        &protected_store_anchor_identity(path, store),
-        path,
-    )
-    .await
-    .context("reject legacy protected-store replacement against external anchor")
+    let identity = protected_store_anchor_identity(path, store)?;
+    crate::audit_integrity::ensure_external_anchor_absent("protected-store", &identity, path)
+        .await
+        .context("reject legacy protected-store replacement against external anchor")
 }
 
 async fn write_protected_store_anchor(
@@ -663,9 +669,10 @@ async fn write_protected_store_anchor(
     head: &AuthenticatedStoreHead,
 ) -> anyhow::Result<()> {
     if head.integrity_key_id.is_some() {
+        let identity = protected_store_anchor_identity(path, store)?;
         crate::audit_integrity::write_external_anchor(
             "protected-store",
-            &protected_store_anchor_identity(path, store),
+            &identity,
             head.generation,
             &head.digest,
             path,
@@ -1656,7 +1663,8 @@ mod tests {
             ] {
                 crate::audit_integrity::write_test_anchor_marker(
                     "protected-store",
-                    &protected_store_anchor_identity(path, store),
+                    &protected_store_anchor_identity(path, store)
+                        .expect("canonical protected-store anchor identity"),
                     path,
                 )
                 .expect("write external anchor marker");

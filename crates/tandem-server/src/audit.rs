@@ -236,37 +236,14 @@ async fn read_protected_audit_records(
 async fn ensure_protected_audit_ledger_is_uninitialized(
     path: &std::path::Path,
 ) -> anyhow::Result<()> {
-    crate::audit_integrity::ensure_external_anchor_absent(
-        "protected-audit-ledger",
-        &path.to_string_lossy(),
-        path,
-    )
-    .await
-    .context("reject missing protected audit ledger against its dedicated external anchor")
+    let identity = protected_audit_anchor_identity(path)?;
+    crate::audit_integrity::ensure_external_anchor_absent("protected-audit-ledger", &identity, path)
+        .await
+        .context("reject missing protected audit ledger against its dedicated external anchor")
 }
 
-async fn read_last_protected_audit_record(
-    path: &std::path::Path,
-) -> anyhow::Result<Option<ProtectedAuditEnvelope>> {
-    let records = match read_protected_audit_records(path).await {
-        Ok(records) => records,
-        Err(err)
-            if err
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-        {
-            return Ok(None)
-        }
-        Err(err) => return Err(err),
-    };
-    let verification = verify_protected_audit_records(&records);
-    anyhow::ensure!(
-        verification.valid,
-        "protected audit ledger failed hash-chain verification: {:?}",
-        verification.violation
-    );
-    verify_protected_audit_anchor(path, &records).await?;
-    Ok(records.into_iter().last())
+fn protected_audit_anchor_identity(path: &Path) -> anyhow::Result<String> {
+    crate::audit_integrity::canonical_state_file_identity(path)
 }
 
 pub fn protected_audit_event_matches_tenant(
@@ -347,7 +324,31 @@ pub async fn append_protected_audit_event(
     // is then acquired in one consistent order, avoiding nested re-acquisition.
     let _chain_guard = ProtectedAuditChainLock::acquire(&path).await?;
     let authority = crate::audit_integrity::integrity_authority()?;
-    let last = read_last_protected_audit_record(&path).await?;
+    let store_file = crate::governance_store::GovernanceStoreFile::ProtectedAudit;
+    let governance_store = crate::governance_store::for_state(state);
+    let legacy_lines = match governance_store.read_jsonl_lines(store_file).await? {
+        Some(lines) => lines,
+        None => {
+            ensure_protected_audit_ledger_is_uninitialized(&path).await?;
+            Vec::new()
+        }
+    };
+    let records = parse_protected_audit_records(&legacy_lines)
+        .context("parse protected audit ledger before append")?;
+    let verification = verify_protected_audit_records(&records);
+    anyhow::ensure!(
+        verification.valid,
+        "protected audit ledger failed hash-chain verification: {:?}",
+        verification.violation
+    );
+    verify_protected_audit_anchor(&path, &records).await?;
+    let migrating_unsequenced = records.iter().any(|record| record.seq == 0);
+    let mut records = if migrating_unsequenced {
+        migrate_unsequenced_audit_records(records, authority.as_ref())?
+    } else {
+        records
+    };
+    let last = records.last().cloned();
     let next_seq = last
         .as_ref()
         .map(|record| record.seq)
@@ -390,23 +391,54 @@ pub async fn append_protected_audit_event(
     // survives power loss (flush() only reaches the OS page cache). The store
     // facade encrypts JSONL rows for the file-backed implementation.
     let serialized = serde_json::to_string(&row)?;
-    let write_result = crate::governance_store::for_state(state)
-        .append_jsonl_line(
-            crate::governance_store::GovernanceStoreFile::ProtectedAudit,
-            &serialized,
-            &row.tenant_context,
-            None,
-            &row.event_id,
-            matches!(row.durability, AuditDurability::DurableRequired),
-        )
-        .await;
+    let write_result = if migrating_unsequenced {
+        records.push(row.clone());
+        let migrated_records = records
+            .iter()
+            .map(|record| {
+                Ok((
+                    serde_json::to_string(record)?,
+                    store_file.record_context(&record.tenant_context, None, &record.event_id),
+                ))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let anchor_identity = protected_audit_anchor_identity(&path)?;
+        let companion_anchor = row.integrity.as_ref().map(|_| {
+            (
+                "protected-audit-ledger",
+                anchor_identity.as_str(),
+                row.seq,
+                row.record_hash.as_str(),
+            )
+        });
+        governance_store
+            .migrate_jsonl_lines(
+                store_file,
+                &legacy_lines,
+                &migrated_records,
+                companion_anchor,
+            )
+            .await
+    } else {
+        governance_store
+            .append_jsonl_line(
+                store_file,
+                &serialized,
+                &row.tenant_context,
+                None,
+                &row.event_id,
+                matches!(row.durability, AuditDurability::DurableRequired),
+            )
+            .await
+    };
 
     match write_result {
         Ok(()) => {
-            if row.integrity.is_some() {
+            if row.integrity.is_some() && !migrating_unsequenced {
+                let anchor_identity = protected_audit_anchor_identity(&path)?;
                 crate::audit_integrity::write_external_anchor(
                     "protected-audit-ledger",
-                    &path.to_string_lossy(),
+                    &anchor_identity,
                     row.seq,
                     &row.record_hash,
                     &path,
@@ -428,6 +460,34 @@ pub async fn append_protected_audit_event(
             Err(err)
         }
     }
+}
+
+fn migrate_unsequenced_audit_records(
+    records: Vec<ProtectedAuditEnvelope>,
+    authority: Option<&crate::audit_integrity::AuditIntegrityKeyring>,
+) -> anyhow::Result<Vec<ProtectedAuditEnvelope>> {
+    anyhow::ensure!(
+        records.iter().all(|record| record.seq == 0),
+        "cannot migrate a mixed sequenced and unsequenced protected audit ledger"
+    );
+    let mut migrated = Vec::with_capacity(records.len());
+    let mut previous_hash = None;
+    for (index, mut record) in records.into_iter().enumerate() {
+        record.seq = index as u64 + 1;
+        record.prev_hash = previous_hash;
+        record.integrity = authority.map(|keyring| AuditRecordIntegrity {
+            algorithm: "hmac-sha256".to_string(),
+            key_id: keyring.active_key_id().to_string(),
+            segment_start: index == 0,
+        });
+        record.record_hash = match authority {
+            Some(keyring) => compute_audit_envelope_mac(&record, keyring)?,
+            None => compute_audit_envelope_hash(&record),
+        };
+        previous_hash = Some(record.record_hash.clone());
+        migrated.push(record);
+    }
+    Ok(migrated)
 }
 
 /// Append protected audit evidence without failing the caller.
@@ -758,7 +818,7 @@ async fn verify_protected_audit_anchor(
     };
     crate::audit_integrity::verify_external_anchor(
         "protected-audit-ledger",
-        &path.to_string_lossy(),
+        &protected_audit_anchor_identity(path)?,
         last.seq,
         &last.record_hash,
         last.integrity.is_some(),
@@ -857,6 +917,7 @@ pub async fn generate_audit_ledger_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tandem_memory::MemoryCryptoProvider;
 
     fn audit_row(seq: u64, prev_hash: Option<String>) -> ProtectedAuditEnvelope {
         let mut row = ProtectedAuditEnvelope {
@@ -995,7 +1056,7 @@ mod tests {
         crate::audit_integrity::with_test_anchor_dir(anchors.path().to_path_buf(), async {
             crate::audit_integrity::write_test_anchor_marker(
                 "protected-audit-ledger",
-                &path.to_string_lossy(),
+                &protected_audit_anchor_identity(&path).expect("canonical audit anchor identity"),
                 &path,
             )
             .expect("write audit anchor marker");
@@ -1042,6 +1103,84 @@ mod tests {
         );
         assert!(verify_protected_audit_records(&parsed).valid);
         assert!(parse_protected_audit_records(["{not-json}"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn append_migrates_unsequenced_audit_rows_into_verified_keyed_chain() {
+        let mut state = crate::test_support::test_state().await;
+        let root = tempfile::tempdir().expect("migration root");
+        state.protected_audit_path = root.path().join("state").join("protected-audit.jsonl");
+        let anchors = root.path().join("anchors");
+        fs::create_dir_all(
+            state
+                .protected_audit_path
+                .parent()
+                .expect("protected audit parent"),
+        )
+        .await
+        .expect("protected audit directory");
+
+        let mut first = audit_row(0, None);
+        first.event_id = "legacy-one".to_string();
+        first.payload = serde_json::json!({"legacy": 1});
+        first.record_hash.clear();
+        let mut second = audit_row(0, None);
+        second.event_id = "legacy-two".to_string();
+        second.payload = serde_json::json!({"legacy": 2});
+        second.record_hash.clear();
+        fs::write(
+            &state.protected_audit_path,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&first).expect("serialize first legacy row"),
+                serde_json::to_string(&second).expect("serialize second legacy row")
+            ),
+        )
+        .await
+        .expect("legacy audit ledger");
+
+        let authority = crate::audit_integrity::test_keyring(
+            "active",
+            "audit-migration-integrity-secret-32-bytes",
+            &[],
+        );
+        crate::encrypted_file_store::with_test_crypto_provider(
+            MemoryCryptoProvider::plaintext(),
+            None,
+            crate::audit_integrity::with_test_keyring(
+                Some(authority),
+                crate::audit_integrity::with_test_anchor_dir(anchors, async {
+                    append_protected_audit_event(
+                        &state,
+                        "governance.after-migration",
+                        &TenantContext::local_implicit(),
+                        Some("tester".to_string()),
+                        serde_json::json!({"new": true}),
+                    )
+                    .await
+                    .expect("append after legacy migration");
+
+                    let rows = read_protected_audit_records(&state.protected_audit_path)
+                        .await
+                        .expect("read migrated audit ledger");
+                    assert_eq!(rows[0].event_id, "legacy-one");
+                    assert_eq!(rows[1].event_id, "legacy-two");
+                    assert_eq!(rows[2].event_type, "governance.after-migration");
+                    assert_eq!(
+                        rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
+                        vec![1, 2, 3]
+                    );
+                    assert_eq!(rows[0].payload, serde_json::json!({"legacy": 1}));
+                    assert_eq!(rows[1].payload, serde_json::json!({"legacy": 2}));
+                    assert!(rows.iter().all(|row| row.integrity.is_some()));
+                    assert!(verify_protected_audit_records(&rows).valid);
+                    verify_protected_audit_anchor(&state.protected_audit_path, &rows)
+                        .await
+                        .expect("verify migrated audit anchor");
+                }),
+            ),
+        )
+        .await;
     }
 
     #[test]

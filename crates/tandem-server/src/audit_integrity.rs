@@ -25,7 +25,7 @@ const ANCHOR_VERSION: u32 = 1;
 tokio::task_local! {
     static TEST_ANCHOR_DIR: PathBuf;
     static TEST_KEYRING: Option<AuditIntegrityKeyring>;
-    static TEST_STATE_ROOT: Option<PathBuf>;
+    static TEST_FAIL_AFTER_ANCHOR_WRITE: bool;
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -198,7 +198,7 @@ pub(crate) fn configured_active_key_material() -> anyhow::Result<Option<Vec<u8>>
     ))
 }
 
-pub(crate) fn validate_configuration() -> anyhow::Result<()> {
+pub(crate) fn validate_configuration(runtime_state_root: Option<&Path>) -> anyhow::Result<()> {
     let authority = integrity_authority()?;
     if let Some(authority) = authority {
         authority.usable_key(authority.active_key_id(), true)?;
@@ -209,9 +209,21 @@ pub(crate) fn validate_configuration() -> anyhow::Result<()> {
             "TANDEM_AUDIT_ANCHOR_DIR must be an absolute path"
         );
         let canonical_anchor = prepare_anchor_dir(&anchor_dir)?;
-        if let Some(state_root) = canonical_configured_state_root()? {
-            ensure_anchor_outside_state_roots(&canonical_anchor, &[state_root])?;
+        let mut state_roots = Vec::new();
+        if let Some(root) = runtime_state_root {
+            state_roots.push(std::fs::canonicalize(root).with_context(|| {
+                format!(
+                    "canonicalize resolved Tandem state root `{}`",
+                    root.display()
+                )
+            })?);
         }
+        if let Some(configured_root) = canonical_configured_state_root()? {
+            if !state_roots.contains(&configured_root) {
+                state_roots.push(configured_root);
+            }
+        }
+        ensure_anchor_outside_state_roots(&canonical_anchor, &state_roots)?;
     }
     Ok(())
 }
@@ -463,6 +475,32 @@ fn path_parent_or_current(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
+pub(crate) fn canonical_state_file_identity(path: &Path) -> anyhow::Result<String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "protected state path must not be a symbolic link"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect protected state path `{}`", path.display()))
+        }
+    }
+    let file_name = path
+        .file_name()
+        .context("protected state path is missing a file name")?;
+    let canonical = std::fs::canonicalize(path_parent_or_current(path))
+        .with_context(|| {
+            format!(
+                "canonicalize protected state directory `{}`",
+                path_parent_or_current(path).display()
+            )
+        })?
+        .join(file_name);
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExternalAnchor {
@@ -640,6 +678,13 @@ pub(crate) async fn write_external_anchor(
     tokio::task::spawn_blocking(move || atomic_write_anchor(&path_for_write, &encoded))
         .await
         .context("join external audit anchor write")??;
+    #[cfg(test)]
+    if TEST_FAIL_AFTER_ANCHOR_WRITE
+        .try_with(|fail| *fail)
+        .unwrap_or(false)
+    {
+        anyhow::bail!("injected external anchor failure after publication");
+    }
     Ok(AnchorVerification {
         configured: true,
         verified: true,
@@ -647,6 +692,37 @@ pub(crate) async fn write_external_anchor(
         generation: Some(anchor.generation),
         anchored_at_ms: Some(anchor.anchored_at_ms),
     })
+}
+
+pub(crate) async fn rollback_external_anchor_write(
+    scope: &str,
+    identity: &str,
+    generation: u64,
+    digest: &str,
+    state_path: &Path,
+) -> anyhow::Result<()> {
+    let anchor_path = resolved_anchor_path(scope, identity, state_path)?;
+    let Some(bytes) = read_external_anchor_bytes(&anchor_path).await? else {
+        return Ok(());
+    };
+    let anchor = serde_json::from_slice::<ExternalAnchor>(&bytes)
+        .context("parse external integrity anchor during rollback")?;
+    anyhow::ensure!(
+        anchor.version == ANCHOR_VERSION && anchor.scope == scope && anchor.identity == identity,
+        "refusing to remove a different external integrity anchor during rollback"
+    );
+    let keyring = verification_keyring()?
+        .context("external integrity anchor rollback requires its audit keyring")?;
+    keyring.verify(
+        &anchor.key_id,
+        b"external-anchor",
+        &anchor_mac_payload(&anchor)?,
+        &anchor.mac,
+    )?;
+    validate_anchor_target(&anchor, generation, digest)?;
+    tokio::task::spawn_blocking(move || remove_anchor_file(&anchor_path))
+        .await
+        .context("join external audit anchor rollback")?
 }
 
 pub(crate) async fn verify_external_anchor(
@@ -828,10 +904,6 @@ fn validate_windows_anchor_directory(path: &Path) -> anyhow::Result<()> {
 }
 
 fn canonical_configured_state_root() -> anyhow::Result<Option<PathBuf>> {
-    #[cfg(test)]
-    if let Ok(root) = TEST_STATE_ROOT.try_with(Clone::clone) {
-        return Ok(root);
-    }
     if let Some(root) = configured_path("TANDEM_STATE_DIR") {
         anyhow::ensure!(root.is_absolute(), "TANDEM_STATE_DIR must be absolute");
         return std::fs::canonicalize(&root)
@@ -929,6 +1001,16 @@ fn replace_anchor_file(source: &Path, destination: &Path) -> std::io::Result<()>
     std::fs::rename(source, destination)
 }
 
+fn remove_anchor_file(path: &Path) -> anyhow::Result<()> {
+    std::fs::remove_file(path)
+        .with_context(|| format!("remove external audit anchor at {}", path.display()))?;
+    #[cfg(unix)]
+    std::fs::File::open(path_parent_or_current(path))?
+        .sync_all()
+        .context("sync external audit anchor directory after rollback")?;
+    Ok(())
+}
+
 fn atomic_write_anchor(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
@@ -1015,11 +1097,11 @@ where
 }
 
 #[cfg(test)]
-async fn with_test_state_root<F, T>(state_root: Option<PathBuf>, future: F) -> T
+pub(crate) async fn with_test_anchor_write_failure<F, T>(future: F) -> T
 where
     F: std::future::Future<Output = T>,
 {
-    TEST_STATE_ROOT.scope(state_root, future).await
+    TEST_FAIL_AFTER_ANCHOR_WRITE.scope(true, future).await
 }
 
 #[cfg(test)]
@@ -1316,16 +1398,50 @@ mod tests {
 
         with_test_keyring(
             Some(authority),
-            with_test_anchor_dir(
-                anchor_dir,
-                with_test_state_root(Some(state_root), async {
-                    let error = validate_configuration()
-                        .expect_err("nested external anchor must fail startup validation");
-                    assert!(error.to_string().contains("outside"));
-                }),
-            ),
+            with_test_anchor_dir(anchor_dir, async {
+                let error = validate_configuration(Some(&state_root))
+                    .expect_err("nested external anchor must fail startup validation");
+                assert!(error.to_string().contains("outside"));
+            }),
         )
         .await;
+    }
+
+    #[test]
+    fn canonical_state_file_identity_normalizes_spelling_and_separates_roots() {
+        let first = tempfile::tempdir().expect("first root");
+        let second = tempfile::tempdir().expect("second root");
+        std::fs::create_dir(first.path().join("child")).expect("first child");
+        let direct = first.path().join("ledger.jsonl");
+        let equivalent = first.path().join("child").join("..").join("ledger.jsonl");
+        assert_eq!(
+            canonical_state_file_identity(&direct).expect("direct identity"),
+            canonical_state_file_identity(&equivalent).expect("equivalent identity")
+        );
+        assert_ne!(
+            canonical_state_file_identity(&direct).expect("first identity"),
+            canonical_state_file_identity(&second.path().join("ledger.jsonl"))
+                .expect("second identity")
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let alias_root = tempfile::tempdir().expect("alias root");
+            let directory_alias = alias_root.path().join("state-alias");
+            symlink(first.path(), &directory_alias).expect("directory symlink");
+            assert_eq!(
+                canonical_state_file_identity(&direct).expect("direct identity"),
+                canonical_state_file_identity(&directory_alias.join("ledger.jsonl"))
+                    .expect("directory alias identity")
+            );
+
+            std::fs::write(&direct, b"state").expect("state file");
+            let file_alias = alias_root.path().join("state-file-alias");
+            symlink(&direct, &file_alias).expect("state file symlink");
+            assert!(canonical_state_file_identity(&file_alias).is_err());
+        }
     }
 
     #[cfg(unix)]

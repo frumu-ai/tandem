@@ -779,12 +779,20 @@ async fn run_main() -> anyhow::Result<()> {
             web_ui_prefix,
             disable_embeddings,
         } => {
+            let state_dir = resolve_state_dir(state_dir);
+            std::fs::create_dir_all(&state_dir).with_context(|| {
+                format!(
+                    "create resolved Tandem state directory before startup validation `{}`",
+                    state_dir.display()
+                )
+            })?;
             let startup_config =
                 tandem_server::EngineConfigReport::from_env(tandem_server::EngineConfigOptions {
                     cli_transport_token_configured: api_token
                         .as_ref()
                         .is_some_and(|token| !token.trim().is_empty()),
                     unsafe_no_api_token,
+                    runtime_state_root: Some(state_dir.clone()),
                 });
             for warning in &startup_config.warnings {
                 eprintln!("warning: {warning}");
@@ -798,7 +806,6 @@ async fn run_main() -> anyhow::Result<()> {
             }
             let provider = normalize_and_validate_provider(provider)?;
             let overrides = build_cli_overrides(api_key, provider, model)?;
-            let state_dir = resolve_state_dir(state_dir);
             // Canonical logs must be shared across desktop/engine/tui.
             // If shared path resolution fails, fall back to state-dir-local logs.
             let logs_dir = resolve_shared_paths()
