@@ -129,7 +129,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
         with:
-          version: 9
+          version: 11.17.0
 
       - name: Install npm publish deps
         shell: bash
@@ -373,7 +373,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
         with:
-          version: 9
+          version: 11.17.0
 
       - name: Install npm publish deps
         shell: bash

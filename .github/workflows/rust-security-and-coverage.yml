@@ -43,15 +43,17 @@ jobs:
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@724a716c48615d544d33401a24b782e907dc5881 # cargo-audit
+        with:
+          tool: cargo-audit@0.22.2
 
       - name: Verify advisory exception governance
         run: node scripts/verify-rustsec-exceptions.mjs
 
+      - name: Run cargo audit and initialize advisory database
+        run: cargo audit
+
       - name: Run ignore-free RustSec reconciliation
         run: node scripts/verify-rustsec-report.mjs
-
-      - name: Run cargo audit
-        run: cargo audit
 
   cargo-deny:
     name: Cargo Deny

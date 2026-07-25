@@ -240,7 +240,7 @@ jobs:
       - name: Setup pnpm for locked signing CLI
         uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
         with:
-          version: 9
+          version: 11.17.0
 
       - name: Setup Node.js for locked signing CLI
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
