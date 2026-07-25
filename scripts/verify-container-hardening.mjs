@@ -11,8 +11,15 @@ const EXPECTED_DEPLOYMENT_ASSETS = new Set([
 ]);
 const PINNED_NODE_BASE =
   "node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573";
-const EXACT_SEMVER =
-  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
+const SEMVER_PRERELEASE_IDENTIFIER =
+  "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
+const SEMVER_BUILD_IDENTIFIER = "[0-9A-Za-z-]+";
+const EXACT_SEMVER = new RegExp(
+  `^${SEMVER_NUMERIC_IDENTIFIER}\\.${SEMVER_NUMERIC_IDENTIFIER}\\.${SEMVER_NUMERIC_IDENTIFIER}` +
+    `(?:-${SEMVER_PRERELEASE_IDENTIFIER}(?:\\.${SEMVER_PRERELEASE_IDENTIFIER})*)?` +
+    `(?:\\+${SEMVER_BUILD_IDENTIFIER}(?:\\.${SEMVER_BUILD_IDENTIFIER})*)?$`
+);
 
 function requireMatch(source, pattern, message, errors) {
   if (!pattern.test(source)) errors.push(message);
@@ -250,12 +257,16 @@ function selfTest() {
     throw new Error("container hardening self-test classified a normal workflow as Kubernetes");
   }
   const slash = String.fromCharCode(92);
-  const prerelease = `ENV A=1 ${slash}\n  TANDEM_ENGINE_VERSION=0.8.0-beta.1 ${slash}\n  B=2`;
-  if (parsePinnedEngineVersion(prerelease) !== "0.8.0-beta.1") {
+  const prerelease =
+    `ENV A=1 ${slash}\n` +
+    `  TANDEM_ENGINE_VERSION=0.8.0-beta.1+build.01 ${slash}\n  B=2`;
+  if (parsePinnedEngineVersion(prerelease) !== "0.8.0-beta.1+build.01") {
     throw new Error("container hardening self-test rejected a supported prerelease SemVer");
   }
-  if (parsePinnedEngineVersion(`  TANDEM_ENGINE_VERSION=latest ${slash}`) !== "") {
-    throw new Error("container hardening self-test accepted a floating engine version");
+  for (const invalid of ["latest", "01.2.3", "1.02.3", "1.2.03", "1.2.3-01"]) {
+    if (parsePinnedEngineVersion(`  TANDEM_ENGINE_VERSION=${invalid} ${slash}`) !== "") {
+      throw new Error(`container hardening self-test accepted invalid SemVer ${invalid}`);
+    }
   }
 }
 

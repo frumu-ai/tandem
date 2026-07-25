@@ -13,8 +13,22 @@ const VERIFIED_CONTROL_GROUPS = Object.freeze([
   "reverseProxy",
 ]);
 const FORBIDDEN_KEY = /(?:token|secret|password|private.?key)$/i;
-const FORBIDDEN_EXACT_KEY =
-  /^(?:authorization|proxyAuthorization|cookie|setCookie|session|credential|credentials|accessKey|apiKey|clientSecret|refreshToken|idToken|signedUrl|connectionString|databaseUrl|dsn)$/i;
+const FORBIDDEN_CANONICAL_KEYS = new Set([
+  "authorization",
+  "proxyauthorization",
+  "cookie",
+  "setcookie",
+  "session",
+  "credential",
+  "credentials",
+  "accesskey",
+  "apikey",
+  "clientsecret",
+  "refreshtoken",
+  "idtoken",
+  "signedurl",
+  "databaseurl",
+]);
 const FORBIDDEN_VALUES = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
   /\btk_[0-9a-f]{32}\b/i,
@@ -25,7 +39,7 @@ const FORBIDDEN_VALUES = [
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/i,
   /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/,
   /[?&](?:X-Amz-(?:Credential|Signature|Security-Token)|sig|signature|token|access_token)=/i,
-  /[A-Za-z][A-Za-z0-9+.-]*:[/][/][^/ :@]+:[^/ @]+@/,
+  /[A-Za-z][A-Za-z0-9+.-]*:[/][/][^/ :@]*:[^/ @]+@/,
 ];
 const EVIDENCE_REFERENCE = /^urn:tandem:evidence:([a-z][a-z0-9-]{2,31}):sha256:([0-9a-f]{64})$/;
 
@@ -54,7 +68,18 @@ function rejectSecretMaterial(value, errors, cursor = "evidence") {
   }
   if (value && typeof value === "object") {
     for (const [key, nested] of Object.entries(value)) {
-      if (FORBIDDEN_KEY.test(key) || FORBIDDEN_EXACT_KEY.test(key)) {
+      const canonicalKey = key.replace(/[^0-9A-Za-z]/g, "").toLowerCase();
+      const keyWords = key
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean);
+      if (
+        FORBIDDEN_KEY.test(key) ||
+        FORBIDDEN_CANONICAL_KEYS.has(canonicalKey) ||
+        keyWords.includes("connection") ||
+        keyWords.includes("dsn")
+      ) {
         errors.push(`${cursor}.${key} is a forbidden secret-bearing field`);
       }
       rejectSecretMaterial(nested, errors, `${cursor}.${key}`);
@@ -252,8 +277,24 @@ function selfTest() {
         (fixture.controls.postgresql.databaseUrl = "postgresql://admin:password@db.example/app"),
     ],
     [
+      "snake-case connection string",
+      (fixture) =>
+        (fixture.controls.postgresql.connection_string =
+          "host=db.example user=admin password=hunter2"),
+    ],
+    [
+      "prefixed DSN",
+      (fixture) =>
+        (fixture.controls.postgresql.postgresDsn =
+          "host=db.example user=admin password=hunter2"),
+    ],
+    [
       "non-HTTP URI userinfo",
       (fixture) => (fixture.note = "postgresql://admin:password@db.example/app"),
+    ],
+    [
+      "password-only URI userinfo",
+      (fixture) => (fixture.note = "redis://:hunter2@cache.example/0"),
     ],
     ["unknown control", (fixture) => (fixture.controls.uncheckedControl = { passed: true })],
     ["authorization", (fixture) => (fixture.authorization = "Bearer secret-value")],
