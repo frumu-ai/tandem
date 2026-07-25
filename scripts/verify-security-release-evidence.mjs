@@ -69,16 +69,11 @@ function rejectSecretMaterial(value, errors, cursor = "evidence") {
   if (value && typeof value === "object") {
     for (const [key, nested] of Object.entries(value)) {
       const canonicalKey = key.replace(/[^0-9A-Za-z]/g, "").toLowerCase();
-      const keyWords = key
-        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter(Boolean);
       if (
         FORBIDDEN_KEY.test(key) ||
         FORBIDDEN_CANONICAL_KEYS.has(canonicalKey) ||
-        keyWords.includes("connection") ||
-        keyWords.includes("dsn")
+        canonicalKey.includes("connection") ||
+        canonicalKey.includes("dsn")
       ) {
         errors.push(`${cursor}.${key} is a forbidden secret-bearing field`);
       }
@@ -286,6 +281,18 @@ function selfTest() {
       "prefixed DSN",
       (fixture) =>
         (fixture.controls.postgresql.postgresDsn =
+          "host=db.example user=admin password=hunter2"),
+    ],
+    [
+      "concatenated connection string",
+      (fixture) =>
+        (fixture.controls.postgresql.connectionstring =
+          "host=db.example user=admin password=hunter2"),
+    ],
+    [
+      "acronym-preserving DSN",
+      (fixture) =>
+        (fixture.controls.postgresql.POSTGRESDSN =
           "host=db.example user=admin password=hunter2"),
     ],
     [
