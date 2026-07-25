@@ -120,7 +120,7 @@ async fn rewrite_plaintext_legacy_jsonl(
         atomic_replace(path, stored.as_bytes())
             .await
             .context("write migrated plaintext protected JSONL data")?;
-        write_additional_anchor(additional_anchor, path).await
+        write_additional_anchor(additional_anchor, additional_anchor_snapshot.as_ref(), path).await
     }
     .await;
     if let Err(error) = write_result {
@@ -187,11 +187,11 @@ async fn commit_legacy_jsonl_migration(
         integrity_key_id: authority.map(|keys| keys.active_key_id().to_string()),
     };
     let previous_cached_head = cached_head(path).await;
+    let store_anchor_snapshot = snapshot_protected_store_anchor(path, store, &head, None).await?;
+    let additional_anchor_snapshot = snapshot_additional_anchor(additional_anchor, path).await?;
     validate_cached_head(path, &head).await?;
     let encoded_head = encode_authenticated_head(crypto, &head, store)?;
     let encoded_state = encode_authenticated_state(crypto, &authenticated_state(&head), store)?;
-    let store_anchor_snapshot = snapshot_protected_store_anchor(path, store, &head, None).await?;
-    let additional_anchor_snapshot = snapshot_additional_anchor(additional_anchor, path).await?;
 
     let write_result = async {
         atomic_replace(&state_path, encoded_state.as_bytes())
@@ -203,8 +203,8 @@ async fn commit_legacy_jsonl_migration(
         atomic_replace(path, stored.as_bytes())
             .await
             .context("write migrated protected JSONL data")?;
-        write_protected_store_anchor(path, store, &head).await?;
-        write_additional_anchor(additional_anchor, path).await
+        write_protected_store_anchor(path, store, &head, store_anchor_snapshot.as_ref()).await?;
+        write_additional_anchor(additional_anchor, additional_anchor_snapshot.as_ref(), path).await
     }
     .await;
     if let Err(error) = write_result {

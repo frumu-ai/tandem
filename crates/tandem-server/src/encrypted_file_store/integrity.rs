@@ -1213,7 +1213,9 @@ pub(crate) async fn append_jsonl_record_file_with_anchor(
         row.push(b'\n');
         let anchor_snapshot = snapshot_additional_anchor(additional_anchor, path).await?;
         append_jsonl_without_integrity(path, &row, durable, existed_before, previous_len).await?;
-        if let Err(error) = write_additional_anchor(additional_anchor, path).await {
+        if let Err(error) =
+            write_additional_anchor(additional_anchor, anchor_snapshot.as_ref(), path).await
+        {
             let anchor_rollback =
                 rollback_additional_anchor(additional_anchor, anchor_snapshot.as_ref(), path).await;
             let data_rollback = restore_jsonl_append_data(path, existed_before, previous_len)
@@ -1317,11 +1319,11 @@ pub(crate) async fn append_jsonl_record_file_with_anchor(
     let state = authenticated_state(&head);
     let encoded_head = encode_authenticated_head(&crypto, &head, store)?;
     let encoded_state = encode_authenticated_state(&crypto, &state, store)?;
-    validate_cached_head(path, &head).await?;
     let store_anchor_snapshot =
         snapshot_protected_store_anchor(path, store, &head, previous_committed_head.as_ref())
             .await?;
     let additional_anchor_snapshot = snapshot_additional_anchor(additional_anchor, path).await?;
+    validate_cached_head(path, &head).await?;
 
     // The persistent witness advances first. Any crash before all three files
     // agree makes the store unavailable instead of accepting a partial append.
@@ -1380,8 +1382,9 @@ pub(crate) async fn append_jsonl_record_file_with_anchor(
             existed_before,
         )
         .await?;
-        write_protected_store_anchor(path, store, &head).await?;
-        write_additional_anchor(additional_anchor, path).await?;
+        write_protected_store_anchor(path, store, &head, store_anchor_snapshot.as_ref()).await?;
+        write_additional_anchor(additional_anchor, additional_anchor_snapshot.as_ref(), path)
+            .await?;
         anyhow::Ok(())
     }
     .await;

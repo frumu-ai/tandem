@@ -168,3 +168,84 @@ async fn anchor_failure_restores_prior_jsonl_and_collection_generations() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn anchor_snapshot_failure_does_not_advance_trusted_head_cache() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let path = root.path().join("state").join("snapshot-failure.jsonl");
+    let anchors = root.path().join("anchors");
+    let store = store_context("snapshot-failure");
+    let authority = crate::audit_integrity::test_keyring(
+        "active",
+        "snapshot-failure-cache-secret-material-32-bytes",
+        &[],
+    );
+    let identity = "snapshot-failure-companion";
+
+    with_test_crypto_provider(MemoryCryptoProvider::local_key([0x67; 32]), None, async {
+        crate::audit_integrity::with_test_keyring(
+            Some(authority),
+            crate::audit_integrity::with_test_anchor_dir(anchors, async {
+                append_jsonl_record_file_with_anchor(
+                    &path,
+                    "first",
+                    &record_context("first"),
+                    &store,
+                    true,
+                    Some(crate::audit_integrity::ExternalAnchorUpdate {
+                        scope: "snapshot-failure-logical",
+                        identity,
+                        generation: 1,
+                        digest: "logical-one",
+                        previous: None,
+                    }),
+                )
+                .await
+                .expect("first anchored append");
+                let trusted = cached_head(&path).await;
+
+                let error = append_jsonl_record_file_with_anchor(
+                    &path,
+                    "failed",
+                    &record_context("failed"),
+                    &store,
+                    true,
+                    Some(crate::audit_integrity::ExternalAnchorUpdate {
+                        scope: "snapshot-failure-logical",
+                        identity,
+                        generation: 2,
+                        digest: "logical-two",
+                        previous: None,
+                    }),
+                )
+                .await
+                .expect_err("unexpected companion anchor must reject before cache advance");
+                assert!(format!("{error:#}").contains("already exists"));
+                assert_eq!(cached_head(&path).await, trusted);
+
+                append_jsonl_record_file_with_anchor(
+                    &path,
+                    "retry",
+                    &record_context("retry"),
+                    &store,
+                    true,
+                    Some(crate::audit_integrity::ExternalAnchorUpdate {
+                        scope: "snapshot-failure-logical",
+                        identity,
+                        generation: 2,
+                        digest: "logical-two",
+                        previous: Some((1, "logical-one")),
+                    }),
+                )
+                .await
+                .expect("retry after snapshot rejection");
+                assert_eq!(
+                    read_jsonl_records_file(&path, &store).await.unwrap(),
+                    vec!["first".to_string(), "retry".to_string()]
+                );
+            }),
+        )
+        .await;
+    })
+    .await;
+}

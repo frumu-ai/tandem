@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use fs2::FileExt;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -636,9 +637,11 @@ pub(crate) struct ExternalAnchorUpdate<'a> {
     pub previous: Option<(u64, &'a str)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ExternalAnchorSnapshot {
+    anchor_path: PathBuf,
     bytes: Option<Vec<u8>>,
+    _lock: std::fs::File,
 }
 
 impl AnchorVerification {
@@ -759,6 +762,7 @@ pub(crate) async fn write_external_anchor(
     identity: &str,
     generation: u64,
     digest: &str,
+    snapshot: &ExternalAnchorSnapshot,
     state_path: &Path,
 ) -> anyhow::Result<AnchorVerification> {
     let Some(keyring) = integrity_authority()? else {
@@ -769,6 +773,10 @@ pub(crate) async fn write_external_anchor(
         "external anchor is incomplete"
     );
     let anchor_path = resolved_anchor_path(scope, identity, state_path)?;
+    anyhow::ensure!(
+        anchor_path == snapshot.anchor_path,
+        "external integrity anchor snapshot does not match its update path"
+    );
     let mut anchor = ExternalAnchor {
         version: ANCHOR_VERSION,
         scope: scope.to_string(),
@@ -812,6 +820,11 @@ pub(crate) async fn snapshot_external_anchor_update(
     state_path: &Path,
 ) -> anyhow::Result<ExternalAnchorSnapshot> {
     let anchor_path = resolved_anchor_path(update.scope, update.identity, state_path)?;
+    let anchor_path_for_lock = anchor_path.clone();
+    let lock =
+        tokio::task::spawn_blocking(move || acquire_external_anchor_lock(&anchor_path_for_lock))
+            .await
+            .context("join external integrity anchor lock acquisition")??;
     let bytes = read_external_anchor_bytes(&anchor_path).await?;
     match (&bytes, update.previous) {
         (None, None) => {}
@@ -839,7 +852,11 @@ pub(crate) async fn snapshot_external_anchor_update(
             validate_anchor_target(&anchor, generation, digest)?;
         }
     }
-    Ok(ExternalAnchorSnapshot { bytes })
+    Ok(ExternalAnchorSnapshot {
+        anchor_path,
+        bytes,
+        _lock: lock,
+    })
 }
 
 pub(crate) async fn rollback_external_anchor_update(
@@ -848,6 +865,10 @@ pub(crate) async fn rollback_external_anchor_update(
     state_path: &Path,
 ) -> anyhow::Result<()> {
     let anchor_path = resolved_anchor_path(update.scope, update.identity, state_path)?;
+    anyhow::ensure!(
+        anchor_path == snapshot.anchor_path,
+        "external integrity anchor snapshot does not match its rollback path"
+    );
     let Some(bytes) = read_external_anchor_bytes(&anchor_path).await? else {
         if let Some(previous) = snapshot.bytes.as_ref() {
             let anchor_path_for_write = anchor_path.clone();
@@ -1146,6 +1167,60 @@ fn resolved_anchor_path(scope: &str, identity: &str, state_path: &Path) -> anyho
     hasher.update(b"\0");
     hasher.update(identity.as_bytes());
     Ok(canonical_anchor.join(format!("{}.anchor.json", hex_bytes(&hasher.finalize()))))
+}
+
+fn acquire_external_anchor_lock(anchor_path: &Path) -> anyhow::Result<std::fs::File> {
+    #[cfg(unix)]
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    #[cfg(windows)]
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    let mut lock_name = anchor_path.as_os_str().to_os_string();
+    lock_name.push(".lock");
+    let lock_path = PathBuf::from(lock_name);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    options
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    #[cfg(windows)]
+    options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = options.open(&lock_path).with_context(|| {
+        format!(
+            "open external integrity anchor lock at {}",
+            lock_path.display()
+        )
+    })?;
+    let metadata = file.metadata()?;
+    #[cfg(unix)]
+    anyhow::ensure!(
+        metadata.file_type().is_file()
+            && metadata.nlink() == 1
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o777 == 0o600,
+        "external integrity anchor lock must be an owner-only regular single-link file"
+    );
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        anyhow::ensure!(
+            metadata.file_type().is_file()
+                && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+            "external integrity anchor lock must be a non-reparse regular file"
+        );
+        tandem_memory::windows_acl::validate_private_file_handle(
+            &file,
+            "external integrity anchor lock",
+        )?;
+    }
+    #[cfg(not(any(unix, windows)))]
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "external integrity anchor lock must be a regular file"
+    );
+    FileExt::lock_exclusive(&file).context("lock external integrity anchor update path")?;
+    Ok(file)
 }
 
 #[cfg(windows)]

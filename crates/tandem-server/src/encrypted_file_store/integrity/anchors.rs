@@ -59,14 +59,17 @@ pub(super) async fn write_protected_store_anchor(
     path: &Path,
     store: &ProtectedStoreContext,
     head: &AuthenticatedStoreHead,
+    snapshot: Option<&crate::audit_integrity::ExternalAnchorSnapshot>,
 ) -> anyhow::Result<()> {
     if head.integrity_key_id.is_some() {
+        let snapshot = snapshot.context("protected store anchor snapshot is missing")?;
         let identity = protected_store_anchor_identity(path, store)?;
         crate::audit_integrity::write_external_anchor(
             "protected-store",
             &identity,
             head.generation,
             &head.digest,
+            snapshot,
             path,
         )
         .await
@@ -119,14 +122,17 @@ pub(super) async fn snapshot_additional_anchor(
 
 pub(super) async fn write_additional_anchor(
     update: Option<crate::audit_integrity::ExternalAnchorUpdate<'_>>,
+    snapshot: Option<&crate::audit_integrity::ExternalAnchorSnapshot>,
     path: &Path,
 ) -> anyhow::Result<()> {
     if let Some(update) = update {
+        let snapshot = snapshot.context("companion external anchor snapshot is missing")?;
         crate::audit_integrity::write_external_anchor(
             update.scope,
             update.identity,
             update.generation,
             update.digest,
+            snapshot,
             path,
         )
         .await
