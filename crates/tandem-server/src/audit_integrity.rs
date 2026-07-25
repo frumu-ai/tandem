@@ -526,6 +526,14 @@ fn encode_canonical_path_identity(path: &Path) -> anyhow::Result<String> {
 
 #[cfg(windows)]
 fn encode_canonical_path_identity(path: &Path) -> anyhow::Result<String> {
+    encode_windows_path_identity(
+        path,
+        windows_directory_is_case_sensitive(path_parent_or_current(path))?,
+    )
+}
+
+#[cfg(windows)]
+fn encode_windows_path_identity(path: &Path, case_sensitive: bool) -> anyhow::Result<String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Globalization::{
         LCMapStringEx, LCMAP_UPPERCASE, LOCALE_NAME_INVARIANT,
@@ -536,50 +544,98 @@ fn encode_canonical_path_identity(path: &Path) -> anyhow::Result<String> {
         .len()
         .try_into()
         .context("canonical path is too long")?;
-    let required = unsafe {
-        LCMapStringEx(
-            LOCALE_NAME_INVARIANT,
-            LCMAP_UPPERCASE,
-            source.as_ptr(),
-            source_len,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null(),
-            std::ptr::null(),
-            0,
-        )
+    let (prefix, normalized) = if case_sensitive {
+        ("windows-case-sensitive-utf16le-v1:", source)
+    } else {
+        let required = unsafe {
+            LCMapStringEx(
+                LOCALE_NAME_INVARIANT,
+                LCMAP_UPPERCASE,
+                source.as_ptr(),
+                source_len,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+            )
+        };
+        anyhow::ensure!(
+            required > 0,
+            "normalize canonical Windows path identity: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut normalized = vec![0u16; required as usize];
+        let written = unsafe {
+            LCMapStringEx(
+                LOCALE_NAME_INVARIANT,
+                LCMAP_UPPERCASE,
+                source.as_ptr(),
+                source_len,
+                normalized.as_mut_ptr(),
+                required,
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+            )
+        };
+        anyhow::ensure!(
+            written == required,
+            "normalize canonical Windows path identity: {}",
+            std::io::Error::last_os_error()
+        );
+        ("windows-uppercase-utf16le-v1:", normalized)
     };
-    anyhow::ensure!(
-        required > 0,
-        "normalize canonical Windows path identity: {}",
-        std::io::Error::last_os_error()
-    );
-    let mut normalized = vec![0u16; required as usize];
-    let written = unsafe {
-        LCMapStringEx(
-            LOCALE_NAME_INVARIANT,
-            LCMAP_UPPERCASE,
-            source.as_ptr(),
-            source_len,
-            normalized.as_mut_ptr(),
-            required,
-            std::ptr::null(),
-            std::ptr::null(),
-            0,
-        )
-    };
-    anyhow::ensure!(
-        written == required,
-        "normalize canonical Windows path identity: {}",
-        std::io::Error::last_os_error()
-    );
-    let mut encoded = String::from("windows-uppercase-utf16le-v1:");
+    let mut encoded = String::from(prefix);
     for unit in normalized {
         for byte in unit.to_le_bytes() {
             push_hex_byte(&mut encoded, byte);
         }
     }
     Ok(encoded)
+}
+
+#[cfg(windows)]
+fn windows_directory_is_case_sensitive(path: &Path) -> anyhow::Result<bool> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileCaseSensitiveInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_CASE_SENSITIVE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 1;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .with_context(|| {
+            format!(
+                "open protected state directory for case-sensitivity query at {}",
+                path.display()
+            )
+        })?;
+    let metadata = directory.metadata()?;
+    anyhow::ensure!(
+        metadata.file_type().is_dir()
+            && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+        "protected state directory must be a non-reparse directory"
+    );
+    let mut info = FILE_CASE_SENSITIVE_INFO::default();
+    let result = unsafe {
+        GetFileInformationByHandleEx(
+            directory.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+            FileCaseSensitiveInfo,
+            std::ptr::addr_of_mut!(info).cast(),
+            std::mem::size_of::<FILE_CASE_SENSITIVE_INFO>() as u32,
+        )
+    };
+    anyhow::ensure!(
+        result != 0,
+        "query protected state directory case sensitivity: {}",
+        std::io::Error::last_os_error()
+    );
+    Ok(info.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1710,6 +1766,20 @@ mod tests {
                         .expect("deleted alternate-case identity")
                 );
             }
+        }
+
+        #[cfg(windows)]
+        {
+            let lower = first.path().join("case-sensitive-ledger.jsonl");
+            let upper = first.path().join("CASE-SENSITIVE-LEDGER.JSONL");
+            assert_eq!(
+                encode_windows_path_identity(&lower, false).expect("folded lower identity"),
+                encode_windows_path_identity(&upper, false).expect("folded upper identity")
+            );
+            assert_ne!(
+                encode_windows_path_identity(&lower, true).expect("sensitive lower identity"),
+                encode_windows_path_identity(&upper, true).expect("sensitive upper identity")
+            );
         }
 
         #[cfg(unix)]

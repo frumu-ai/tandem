@@ -187,11 +187,11 @@ async fn commit_legacy_jsonl_migration(
         integrity_key_id: authority.map(|keys| keys.active_key_id().to_string()),
     };
     let previous_cached_head = cached_head(path).await;
+    let encoded_head = encode_authenticated_head(crypto, &head, store)?;
+    let encoded_state = encode_authenticated_state(crypto, &authenticated_state(&head), store)?;
     let store_anchor_snapshot = snapshot_protected_store_anchor(path, store, &head, None).await?;
     let additional_anchor_snapshot = snapshot_additional_anchor(additional_anchor, path).await?;
     validate_cached_head(path, &head).await?;
-    let encoded_head = encode_authenticated_head(crypto, &head, store)?;
-    let encoded_state = encode_authenticated_state(crypto, &authenticated_state(&head), store)?;
 
     let write_result = async {
         atomic_replace(&state_path, encoded_state.as_bytes())

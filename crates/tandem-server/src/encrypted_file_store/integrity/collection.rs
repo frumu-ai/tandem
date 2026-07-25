@@ -66,12 +66,12 @@ pub(crate) async fn write_json_records_file(
     let (stored, head) =
         crypto.encrypt_json_collection(records, store, generation, previous_digest)?;
     let previous_cached_head = cached_head(path).await;
-    let store_anchor_snapshot =
-        snapshot_protected_store_anchor(path, store, &head, previous_cached_head.as_ref()).await?;
-    validate_cached_head(path, &head).await?;
     let state = authenticated_state(&head);
     let encoded_head = encode_authenticated_head(&crypto, &head, store)?;
     let encoded_state = encode_authenticated_state(&crypto, &state, store)?;
+    let store_anchor_snapshot =
+        snapshot_protected_store_anchor(path, store, &head, previous_cached_head.as_ref()).await?;
+    validate_cached_head(path, &head).await?;
 
     // Advance the persistent witness before the sealed head and data. A crash
     // before all three renames agree leaves the store unavailable.
