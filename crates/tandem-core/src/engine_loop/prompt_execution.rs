@@ -162,12 +162,13 @@ impl EngineLoop {
                 "sessionID": session_id
             });
             if let Some(run_id) = &run_id {
-                props.as_object_mut().unwrap().insert("runID".to_string(), json!(run_id));
+                props
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("runID".to_string(), json!(run_id));
             }
-            self.event_bus.publish(EngineEvent::new(
-                "message.part.updated",
-                props,
-            ));
+            self.event_bus
+                .publish(EngineEvent::new("message.part.updated", props));
             user_message_id = Some(created_message_id);
         }
         let user_message_id = user_message_id.unwrap_or_else(|| "unknown".to_string());
@@ -1337,12 +1338,13 @@ impl EngineLoop {
                                     "sessionID": session_id
                                 });
                                 if let Some(run_id) = &run_id {
-                                    props.as_object_mut().unwrap().insert("runID".to_string(), json!(run_id));
+                                    props
+                                        .as_object_mut()
+                                        .unwrap()
+                                        .insert("runID".to_string(), json!(run_id));
                                 }
-                                self.event_bus.publish(EngineEvent::new(
-                                    "message.part.updated",
-                                    props,
-                                ));
+                                self.event_bus
+                                    .publish(EngineEvent::new("message.part.updated", props));
                             }
                             StreamChunk::ReasoningDelta(_reasoning) => {}
                             StreamChunk::Done {
@@ -1408,12 +1410,13 @@ impl EngineLoop {
                                     "sessionID": session_id
                                 });
                                 if let Some(run_id) = &run_id {
-                                    props.as_object_mut().unwrap().insert("runID".to_string(), json!(run_id));
+                                    props
+                                        .as_object_mut()
+                                        .unwrap()
+                                        .insert("runID".to_string(), json!(run_id));
                                 }
-                                self.event_bus.publish(EngineEvent::new(
-                                    "message.part.updated",
-                                    props,
-                                ));
+                                self.event_bus
+                                    .publish(EngineEvent::new("message.part.updated", props));
                             }
                             StreamChunk::ToolCallEnd { id: _ } => {}
                         }
@@ -1766,12 +1769,13 @@ impl EngineLoop {
             "sessionID": session_id
         });
         if let Some(run_id) = &run_id {
-            props.as_object_mut().unwrap().insert("runID".to_string(), json!(run_id));
+            props
+                .as_object_mut()
+                .unwrap()
+                .insert("runID".to_string(), json!(run_id));
         }
-        self.event_bus.publish(EngineEvent::new(
-            "message.part.updated",
-            props,
-        ));
+        self.event_bus
+            .publish(EngineEvent::new("message.part.updated", props));
         self.event_bus.publish(EngineEvent::new(
             "session.updated",
             json!({"sessionID": session_id, "status":"idle"}),

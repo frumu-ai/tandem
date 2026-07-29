@@ -365,16 +365,15 @@ fn extract_string(properties: &Value, keys: &[&str]) -> Option<String> {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     });
-    
+
     if top_level.is_some() {
         return top_level;
     }
-    
+
     // If not found, check inside "part" key if it exists
     if let Some(part) = properties.get("part") {
         keys.iter().find_map(|key| {
-            part
-                .get(key)
+            part.get(key)
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
