@@ -51,6 +51,7 @@ export type AppPageProps = {
   toast: (kind: ToastKind, text: string) => void;
   navigate: (route: string) => void;
   currentRoute: RouteId;
+  principalId: string;
   providerStatus: ProviderStatus;
   identity: IdentityInfo;
   refreshProviderStatus: () => Promise<void>;

@@ -1,7 +1,6 @@
-import { useState, useEffect } from "react";
 import { PanelCard, EmptyState, IconButton, Icon } from "../../ui/index.tsx";
 
-type Note = {
+export type Note = {
   id: string;
   title: string;
   content: string;
@@ -9,57 +8,64 @@ type Note = {
   updatedAt: number;
 };
 
-const STORAGE_KEY = "tandem-control-panel-notes";
+const STORAGE_KEY_PREFIX = "tandem-control-panel-notes";
 
-function loadNotes(): Note[] {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) return [];
-    const parsed = JSON.parse(stored);
-    if (!Array.isArray(parsed)) return [];
-    return parsed;
-  } catch {
-    return [];
+function notesStorageKey(principalId: string): string {
+  const normalizedPrincipalId = principalId.trim();
+  if (!normalizedPrincipalId) {
+    throw new Error("A principal ID is required to access notes.");
   }
+  return `${STORAGE_KEY_PREFIX}:${encodeURIComponent(normalizedPrincipalId)}`;
 }
 
-function saveNotes(notes: Note[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
-  } catch {
-    // ignore
-  }
+function isNote(value: unknown): value is Note {
+  if (!value || typeof value !== "object") return false;
+  const note = value as Partial<Note>;
+  return (
+    typeof note.id === "string" &&
+    typeof note.title === "string" &&
+    typeof note.content === "string" &&
+    typeof note.createdAt === "number" &&
+    Number.isFinite(note.createdAt) &&
+    typeof note.updatedAt === "number" &&
+    Number.isFinite(note.updatedAt)
+  );
 }
 
-export function NotesList({ onSelectNote }: { onSelectNote: (note: Note) => void }) {
-  const [notes, setNotes] = useState<Note[]>(() => loadNotes());
+export function loadNotes(principalId: string): Note[] {
+  const stored = localStorage.getItem(notesStorageKey(principalId));
+  if (!stored) return [];
+  const parsed: unknown = JSON.parse(stored);
+  if (!Array.isArray(parsed) || !parsed.every(isNote)) {
+    throw new Error("Stored notes are invalid.");
+  }
+  return parsed;
+}
 
-  const createNote = () => {
-    const newNote: Note = {
-      id: crypto.randomUUID(),
-      title: "New Note",
-      content: "",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    const next = [newNote, ...notes];
-    setNotes(next);
-    saveNotes(next);
-    onSelectNote(newNote);
-  };
+export function saveNotes(principalId: string, notes: Note[]): void {
+  localStorage.setItem(notesStorageKey(principalId), JSON.stringify(notes));
+}
 
-  const deleteNote = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const next = notes.filter((n) => n.id !== id);
-    setNotes(next);
-    saveNotes(next);
-  };
+type NotesListProps = {
+  notes: Note[];
+  selectedNoteId: string | null;
+  onCreateNote: () => void;
+  onSelectNote: (id: string) => void;
+  onDeleteNote: (id: string) => void;
+};
 
+export function NotesList({
+  notes,
+  selectedNoteId,
+  onCreateNote,
+  onSelectNote,
+  onDeleteNote,
+}: NotesListProps) {
   return (
     <PanelCard
       title="Notes"
       actions={
-        <button type="button" className="tcp-btn-primary" onClick={createNote}>
+        <button type="button" className="tcp-btn-primary" onClick={onCreateNote}>
           <Icon name="plus" />
           New Note
         </button>
@@ -71,7 +77,7 @@ export function NotesList({ onSelectNote }: { onSelectNote: (note: Note) => void
           <EmptyState
             text="Create your first note to get started"
             action={
-              <button type="button" className="tcp-btn-primary" onClick={createNote}>
+              <button type="button" className="tcp-btn-primary" onClick={onCreateNote}>
                 Create Note
               </button>
             }
@@ -82,7 +88,8 @@ export function NotesList({ onSelectNote }: { onSelectNote: (note: Note) => void
               <div
                 key={note.id}
                 className="flex items-center justify-between gap-3 p-3 rounded-lg border border-white/6 bg-white/3 hover:bg-white/6 cursor-pointer"
-                onClick={() => onSelectNote(note)}
+                onClick={() => onSelectNote(note.id)}
+                aria-current={selectedNoteId === note.id ? "true" : undefined}
               >
                 <div className="min-w-0">
                   <div className="font-semibold truncate">
@@ -94,7 +101,10 @@ export function NotesList({ onSelectNote }: { onSelectNote: (note: Note) => void
                 </div>
                 <IconButton
                   aria-label="Delete note"
-                  onClick={(e) => deleteNote(note.id, e)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDeleteNote(note.id);
+                  }}
                 >
                   <Icon name="trash-2" />
                 </IconButton>
@@ -106,5 +116,3 @@ export function NotesList({ onSelectNote }: { onSelectNote: (note: Note) => void
     </PanelCard>
   );
 }
-
-export { loadNotes, saveNotes, type Note };

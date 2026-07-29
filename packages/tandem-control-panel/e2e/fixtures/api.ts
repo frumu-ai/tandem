@@ -26,7 +26,13 @@ type ResponseOverride = {
 const jsonHeaders = { "access-control-allow-origin": "*", "content-type": "application/json" };
 
 function responseFor(path: string, method: string): unknown {
-  if (path === "/api/auth/me") return { ok: true, user: { id: "e2e-user", name: "E2E User" } };
+  if (path === "/api/auth/me") {
+    return {
+      ok: true,
+      principal_id: "e2e-user",
+      user: { id: "e2e-user", name: "E2E User" },
+    };
+  }
   if (path === "/api/capabilities") {
     return {
       aca_integration: false,

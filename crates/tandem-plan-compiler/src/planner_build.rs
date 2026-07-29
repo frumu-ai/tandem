@@ -111,7 +111,11 @@ fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
             Some("am" | "pm") => format!("{next}{}", tokens[index + 2]),
             _ => next.clone(),
         };
-        if let Some(time) = parse_prompt_clock_time(&combined, true) {
+        // A bare hour is only unambiguous at the end of the prompt. This preserves
+        // "at 9" without treating phrases such as "at 5 repos" as clock times.
+        // Explicit 09:00/am/pm forms remain valid anywhere.
+        let allow_bare_hour = tokens.get(index + 2).is_none();
+        if let Some(time) = parse_prompt_clock_time(&combined, allow_bare_hour) {
             return Some(time);
         }
     }
@@ -1552,6 +1556,31 @@ mod tests {
             AutomationV2ScheduleType::Manual
         );
         assert!(request.explicit_schedule.is_none());
+    }
+
+    #[test]
+    fn prepare_build_request_accepts_terminal_bare_hour() {
+        let request = prepare_build_request(
+            "wfplan-bare-hour".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Create a report every weekday at 9",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+
+        assert_eq!(
+            request.fallback_schedule.schedule_type,
+            AutomationV2ScheduleType::Cron
+        );
+        assert_eq!(
+            request.fallback_schedule.cron_expression.as_deref(),
+            Some("0 9 * * Mon-Fri")
+        );
     }
 
     #[test]
