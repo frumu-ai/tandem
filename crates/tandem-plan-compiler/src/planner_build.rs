@@ -61,7 +61,7 @@ fn normalized_time_token(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn parse_prompt_clock_time(value: &str) -> Option<(u8, u8)> {
+fn parse_prompt_clock_time(value: &str, allow_bare_hour: bool) -> Option<(u8, u8)> {
     let value = normalized_time_token(value);
     let (clock, meridiem) = if let Some(clock) = value.strip_suffix("am") {
         (clock, Some("am"))
@@ -76,7 +76,7 @@ fn parse_prompt_clock_time(value: &str) -> Option<(u8, u8)> {
         }
         (hour.parse::<u8>().ok()?, minute.parse::<u8>().ok()?)
     } else {
-        if meridiem.is_none() {
+        if meridiem.is_none() && !allow_bare_hour {
             return None;
         }
         (clock.parse::<u8>().ok()?, 0)
@@ -111,7 +111,7 @@ fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
             Some("am" | "pm") => format!("{next}{}", tokens[index + 2]),
             _ => next.clone(),
         };
-        if let Some(time) = parse_prompt_clock_time(&combined) {
+        if let Some(time) = parse_prompt_clock_time(&combined, true) {
             return Some(time);
         }
     }
@@ -121,7 +121,7 @@ fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
             _ => token.clone(),
         };
         if combined.contains(':') || combined.ends_with("am") || combined.ends_with("pm") {
-            if let Some(time) = parse_prompt_clock_time(&combined) {
+            if let Some(time) = parse_prompt_clock_time(&combined, false) {
                 return Some(time);
             }
         }

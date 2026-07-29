@@ -15,6 +15,7 @@ export const ROUTES = [
   ["coding", "Coder", "code"],
   ["agents", "Agents", "users"],
   ["orchestrator", "Task Board", "workflow"],
+  ["notes", "Notes", "file-text"],
   ["files", "Files", "folder"],
   ["memory", "Memory", "database"],
   ["runs", "Runs", "list-checks"],
@@ -51,6 +52,7 @@ const NAV_ROUTE_ORDER = [
   "agents",
   "orchestrator",
   "incident-monitor",
+  "notes",
   "files",
   "memory",
   "runs",
@@ -79,7 +81,7 @@ export const NAV_GROUPS = [
   },
   { label: "Operate", routeIds: ["goal-operations", "runs", "webhooks", "orchestrator", "coding", "incident-monitor"] },
   { label: "Govern", routeIds: ["approvals", "control-loop", "slack-receipts", "channel-connections", "enterprise-admin"] },
-  { label: "System", routeIds: ["agents", "memory", "files", "marketplace", "experiments", "settings"] },
+  { label: "System", routeIds: ["agents", "memory", "notes", "files", "marketplace", "experiments", "settings"] },
 ];
 
 // Group an (already visibility-filtered) list of nav routes into the ordered
