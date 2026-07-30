@@ -485,6 +485,7 @@ impl EngineLoop {
         &self,
         session_id: &str,
         message_id: &str,
+        run_id: Option<&str>,
         tool: String,
         args: Value,
         initial_tool_call_id: Option<String>,
@@ -496,6 +497,20 @@ impl EngineLoop {
     ) -> anyhow::Result<Option<String>> {
         let tool = normalize_tool_name(&tool);
         let raw_args = args.clone();
+        let publish_tool_part = |part: WireMessagePart| {
+            let mut properties = json!({
+                "part": part,
+                "sessionID": session_id,
+            });
+            if let Some(run_id) = run_id {
+                properties
+                    .as_object_mut()
+                    .expect("tool part event properties must be an object")
+                    .insert("runID".to_string(), json!(run_id));
+            }
+            self.event_bus
+                .publish(EngineEvent::new("message.part.updated", properties));
+        };
         // Resolve the originating tenant once so every tool-effect audit event is tagged
         // and can be tenant-scoped on the `/audit/stream` read path.
         let tool_effect_tenant_context = self
@@ -628,10 +643,7 @@ impl EngineLoop {
                 provider_specific_write_reason(&tool, &missing_reason, normalized.raw_args_state)
                     .unwrap_or_else(|| missing_reason.clone());
             failed_part.error = Some(surfaced_reason.clone());
-            self.event_bus.publish(EngineEvent::new(
-                "message.part.updated",
-                json!({"part": failed_part}),
-            ));
+            publish_tool_part(failed_part);
             publish_tool_effect(
                 None,
                 ToolEffectLedgerPhase::Outcome,
@@ -718,10 +730,7 @@ impl EngineLoop {
                     "failed".to_string()
                 });
                 blocked_part.error = Some(reason.clone());
-                self.event_bus.publish(EngineEvent::new(
-                    "message.part.updated",
-                    json!({"part": blocked_part}),
-                ));
+                publish_tool_part(blocked_part);
                 let mut record = build_tool_effect_ledger_record(
                     session_id,
                     message_id,
@@ -801,10 +810,7 @@ impl EngineLoop {
             );
             blocked_part.state = Some("failed".to_string());
             blocked_part.error = Some(violation.clone());
-            self.event_bus.publish(EngineEvent::new(
-                "message.part.updated",
-                json!({"part": blocked_part}),
-            ));
+            publish_tool_part(blocked_part);
             self.event_bus.publish(EngineEvent::new(
                 "tool.call.rejected_write_policy",
                 json!({
@@ -840,10 +846,7 @@ impl EngineLoop {
             );
             blocked_part.state = Some("failed".to_string());
             blocked_part.error = Some(violation.clone());
-            self.event_bus.publish(EngineEvent::new(
-                "message.part.updated",
-                json!({"part": blocked_part}),
-            ));
+            publish_tool_part(blocked_part);
             publish_tool_effect(
                 tool_call_id.as_deref(),
                 ToolEffectLedgerPhase::Outcome,
@@ -987,10 +990,7 @@ impl EngineLoop {
                 pending_part.id = Some(pending.id.clone());
                 tool_call_id = Some(pending.id.clone());
                 pending_part.state = Some("pending".to_string());
-                self.event_bus.publish(EngineEvent::new(
-                    "message.part.updated",
-                    json!({"part": pending_part}),
-                ));
+                publish_tool_part(pending_part);
                 let reply = self
                     .permissions
                     .wait_for_reply_with_timeout(
@@ -1028,10 +1028,7 @@ impl EngineLoop {
                         "Permission request timed out after {} ms",
                         timeout_ms
                     ));
-                    self.event_bus.publish(EngineEvent::new(
-                        "message.part.updated",
-                        json!({"part": timeout_part}),
-                    ));
+                    publish_tool_part(timeout_part);
                     let timeout_reason = format!(
                         "Permission request for tool `{tool}` timed out after {timeout_ms} ms."
                     );
@@ -1071,10 +1068,7 @@ impl EngineLoop {
                     denied_part.id = Some(pending.id);
                     denied_part.state = Some("denied".to_string());
                     denied_part.error = Some("Permission denied by user".to_string());
-                    self.event_bus.publish(EngineEvent::new(
-                        "message.part.updated",
-                        json!({"part": denied_part}),
-                    ));
+                    publish_tool_part(denied_part);
                     let denied_reason = format!("Permission denied for tool `{tool}` by user.");
                     publish_tool_effect(
                         tool_call_id.as_deref(),
@@ -1178,10 +1172,7 @@ impl EngineLoop {
             invoke_part.id = Some(call_id);
         }
         let invoke_part_id = invoke_part.id.clone();
-        self.event_bus.publish(EngineEvent::new(
-            "message.part.updated",
-            json!({"part": invoke_part}),
-        ));
+        publish_tool_part(invoke_part);
         if let (Some(args), Some(tool_call_id)) = (args.as_object_mut(), invoke_part_id.as_deref())
         {
             args.insert(
@@ -1195,6 +1186,7 @@ impl EngineLoop {
             event_bus: self.event_bus.clone(),
             session_id: session_id.to_string(),
             message_id: message_id.to_string(),
+            run_id: run_id.map(str::to_string),
             tool_call_id: invoke_part_id.clone(),
             source_tool: tool.clone(),
         });
@@ -1256,10 +1248,7 @@ impl EngineLoop {
                     json!(output.clone()),
                 );
                 result_part.id = invoke_part_id.clone();
-                self.event_bus.publish(EngineEvent::new(
-                    "message.part.updated",
-                    json!({"part": result_part}),
-                ));
+                publish_tool_part(result_part);
                 publish_tool_effect(
                     invoke_part_id.as_deref(),
                     ToolEffectLedgerPhase::Outcome,
@@ -1289,10 +1278,7 @@ impl EngineLoop {
             failed_part.id = invoke_part_id.clone();
             failed_part.state = Some("failed".to_string());
             failed_part.error = Some(output.to_string());
-            self.event_bus.publish(EngineEvent::new(
-                "message.part.updated",
-                json!({"part": failed_part}),
-            ));
+            publish_tool_part(failed_part);
             publish_tool_effect(
                 invoke_part_id.as_deref(),
                 ToolEffectLedgerPhase::Outcome,
@@ -1523,10 +1509,7 @@ impl EngineLoop {
                     failed_part.id = invoke_part_id.clone();
                     failed_part.state = Some("failed".to_string());
                     failed_part.error = Some(timeout_output.clone());
-                    self.event_bus.publish(EngineEvent::new(
-                        "message.part.updated",
-                        json!({"part": failed_part}),
-                    ));
+                    publish_tool_part(failed_part);
                     publish_tool_effect(
                         invoke_part_id.as_deref(),
                         ToolEffectLedgerPhase::Outcome,
@@ -1567,10 +1550,7 @@ impl EngineLoop {
                         json!(auth_output.clone()),
                     );
                     result_part.id = invoke_part_id.clone();
-                    self.event_bus.publish(EngineEvent::new(
-                        "message.part.updated",
-                        json!({"part": result_part}),
-                    ));
+                    publish_tool_part(result_part);
                     publish_tool_effect(
                         invoke_part_id.as_deref(),
                         ToolEffectLedgerPhase::Outcome,
@@ -1599,10 +1579,7 @@ impl EngineLoop {
                 failed_part.id = invoke_part_id.clone();
                 failed_part.state = Some("failed".to_string());
                 failed_part.error = Some(err_text.clone());
-                self.event_bus.publish(EngineEvent::new(
-                    "message.part.updated",
-                    json!({"part": failed_part}),
-                ));
+                publish_tool_part(failed_part);
                 publish_tool_effect(
                     invoke_part_id.as_deref(),
                     ToolEffectLedgerPhase::Outcome,
@@ -1699,10 +1676,7 @@ impl EngineLoop {
             stored_result,
         );
         result_part.id = invoke_part_id.clone();
-        self.event_bus.publish(EngineEvent::new(
-            "message.part.updated",
-            json!({"part": result_part}),
-        ));
+        publish_tool_part(result_part);
         publish_tool_effect(
             invoke_part_id.as_deref(),
             ToolEffectLedgerPhase::Outcome,

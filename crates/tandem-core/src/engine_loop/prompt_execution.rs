@@ -197,6 +197,7 @@ impl EngineLoop {
                     .execute_tool_with_permission(
                         &session_id,
                         &user_message_id,
+                        run_ref,
                         tool.clone(),
                         args,
                         None,

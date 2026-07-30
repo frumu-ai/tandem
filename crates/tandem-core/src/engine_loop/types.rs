@@ -83,6 +83,7 @@ pub(super) struct EngineToolProgressSink {
     pub(super) event_bus: EventBus,
     pub(super) session_id: String,
     pub(super) message_id: String,
+    pub(super) run_id: Option<String>,
     pub(super) tool_call_id: Option<String>,
     pub(super) source_tool: String,
 }
@@ -93,6 +94,7 @@ impl ToolProgressSink for EngineToolProgressSink {
             event.properties,
             &self.session_id,
             &self.message_id,
+            self.run_id.as_deref(),
             self.tool_call_id.as_deref(),
             &self.source_tool,
         );
@@ -105,6 +107,7 @@ pub(super) fn merge_tool_progress_properties(
     properties: Value,
     session_id: &str,
     message_id: &str,
+    run_id: Option<&str>,
     tool_call_id: Option<&str>,
     source_tool: &str,
 ) -> Value {
@@ -117,6 +120,9 @@ pub(super) fn merge_tool_progress_properties(
         "messageID".to_string(),
         Value::String(message_id.to_string()),
     );
+    if let Some(run_id) = run_id {
+        base.insert("runID".to_string(), Value::String(run_id.to_string()));
+    }
     base.insert(
         "sourceTool".to_string(),
         Value::String(source_tool.to_string()),
@@ -272,4 +278,75 @@ pub trait PromptContextHook: Send + Sync {
         ctx: PromptContextHookContext,
         messages: Vec<ChatMessage>,
     ) -> BoxFuture<'static, anyhow::Result<PromptContextHookResult>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn progress_message_part_updates_preserve_run_id_for_events_and_persistence() {
+        let bus = EventBus::new();
+        let mut live_rx = bus.subscribe();
+        let mut persistence_rx = bus
+            .take_session_part_receiver()
+            .expect("session part persistence receiver");
+        let sink = EngineToolProgressSink {
+            event_bus: bus,
+            session_id: "session-1".to_string(),
+            message_id: "message-1".to_string(),
+            run_id: Some("run-1".to_string()),
+            tool_call_id: Some("tool-call-1".to_string()),
+            source_tool: "progress-tool".to_string(),
+        };
+
+        sink.publish(ToolProgressEvent::new(
+            "message.part.updated",
+            json!({
+                "runID": "untrusted-run",
+                "part": {
+                    "id": "tool-call-1",
+                    "sessionID": "session-1",
+                    "messageID": "message-1",
+                    "type": "tool",
+                    "tool": "progress-tool",
+                    "state": "completed",
+                    "result": {"ok": true}
+                }
+            }),
+        ));
+
+        let live_event = live_rx.try_recv().expect("live progress event");
+        assert_eq!(live_event.event_type, "message.part.updated");
+        assert_eq!(
+            live_event.properties.get("runID").and_then(Value::as_str),
+            Some("run-1")
+        );
+        assert_eq!(
+            live_event
+                .envelope
+                .as_ref()
+                .and_then(|envelope| envelope.run_id.as_deref()),
+            Some("run-1")
+        );
+
+        let persisted_event = persistence_rx
+            .try_recv()
+            .expect("progress update queued for persistence");
+        assert_eq!(
+            persisted_event
+                .properties
+                .get("runID")
+                .and_then(Value::as_str),
+            Some("run-1")
+        );
+        assert_eq!(
+            persisted_event
+                .envelope
+                .as_ref()
+                .and_then(|envelope| envelope.run_id.as_deref()),
+            Some("run-1")
+        );
+    }
 }

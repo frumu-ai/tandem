@@ -273,6 +273,7 @@
                             .execute_tool_with_permission(
                                 &session_id,
                                 &user_message_id,
+                                run_ref,
                                 tool,
                                 effective_args,
                                 call_id,

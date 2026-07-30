@@ -1373,6 +1373,7 @@ pub(super) fn sse_run_stream(
     ));
     let filter_session_id = session_id.clone();
     let filter_run_id = run_id.clone();
+    let end_session_id = session_id.clone();
     let end_run_id = run_id.clone();
     let map_session_id = session_id.clone();
     let map_run_id = run_id.clone();
@@ -1381,16 +1382,8 @@ pub(super) fn sse_run_stream(
         Ok(event) if event_matches_run(&event, &filter_session_id, &filter_run_id) => Some(event),
         _ => None,
     });
-    let live = run_events.take_while(move |event| {
-        let is_finished = event.event_type == "session.run.finished"
-            && event
-                .properties
-                .get("runID")
-                .and_then(|v| v.as_str())
-                .map(|v| v == end_run_id.as_str())
-                .unwrap_or(false);
-        !is_finished
-    });
+    let live = run_events
+        .take_while(move |event| !event_finishes_run(event, &end_session_id, &end_run_id));
     let mapped = live.map(move |event| {
         let normalized = normalize_run_event(event, &map_session_id, &map_run_id, &tenant_context);
         let payload = serde_json::to_string(&normalized).unwrap_or_default();
@@ -1422,19 +1415,58 @@ pub(super) fn attach_event_stream_path(session_id: &str, run_id: &str) -> String
     format!("/event?sessionID={session_id}&runID={run_id}")
 }
 
+fn event_run_id(event: &EngineEvent) -> Option<&str> {
+    event
+        .envelope
+        .as_ref()
+        .and_then(|envelope| envelope.run_id.as_deref())
+        .or_else(|| {
+            event
+                .properties
+                .get("runID")
+                .or_else(|| event.properties.get("runId"))
+                .or_else(|| event.properties.get("run_id"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    event
+                        .properties
+                        .get("part")
+                        .and_then(|part| part.get("runID"))
+                        .or_else(|| {
+                            event
+                                .properties
+                                .get("part")
+                                .and_then(|part| part.get("runId"))
+                        })
+                        .or_else(|| {
+                            event
+                                .properties
+                                .get("part")
+                                .and_then(|part| part.get("run_id"))
+                        })
+                        .and_then(Value::as_str)
+                })
+        })
+}
+
+pub(super) fn event_finishes_run(event: &EngineEvent, session_id: &str, run_id: &str) -> bool {
+    event.event_type == "session.run.finished"
+        && event_run_id(event) == Some(run_id)
+        && event_matches_run(event, session_id, run_id)
+}
+
 pub(super) fn event_matches_run(event: &EngineEvent, session_id: &str, run_id: &str) -> bool {
-    // First check envelope for session id and run id (source of truth)
+    // First check the envelope for the session id (source of truth).
     let envelope_session = event
         .envelope
         .as_ref()
         .and_then(|e| e.session_id.as_deref());
-    let envelope_run = event.envelope.as_ref().and_then(|e| e.run_id.as_deref());
 
-    // Check session id match: either envelope matches, or properties match
+    // Check session id match: either envelope matches, or properties match.
     let session_matches = match envelope_session {
         Some(s) => s == session_id,
         None => {
-            // Fallback to checking properties (including nested "part")
+            // Fallback to checking properties (including nested "part").
             let event_session = event
                 .properties
                 .get("sessionID")
@@ -1468,30 +1500,10 @@ pub(super) fn event_matches_run(event: &EngineEvent, session_id: &str, run_id: &
         return false;
     }
 
-    // Check run id match: either envelope matches, or properties match (or no run id in event)
-    match envelope_run {
+    // Check run id match: either envelope/properties match, or no run id is present.
+    match event_run_id(event) {
         Some(r) => r == run_id,
-        None => {
-            let event_run = event
-                .properties
-                .get("runID")
-                .or_else(|| event.properties.get("runId"))
-                .or_else(|| event.properties.get("run_id"))
-                .and_then(|v| v.as_str())
-                .or_else(|| {
-                    event
-                        .properties
-                        .get("part")
-                        .and_then(|p| p.get("runID"))
-                        .or_else(|| event.properties.get("part").and_then(|p| p.get("runId")))
-                        .or_else(|| event.properties.get("part").and_then(|p| p.get("run_id")))
-                        .and_then(|v| v.as_str())
-                });
-            match event_run {
-                Some(value) => value == run_id,
-                None => true,
-            }
-        }
+        None => true,
     }
 }
 

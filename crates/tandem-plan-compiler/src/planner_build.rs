@@ -94,6 +94,29 @@ fn parse_prompt_clock_time(value: &str, allow_bare_hour: bool) -> Option<(u8, u8
     Some((hour, minute))
 }
 
+fn bare_hour_has_temporal_context(tokens: &[String], at_index: usize) -> bool {
+    let context = &tokens[..at_index];
+    let ends_with = |suffix: &[&str]| {
+        context.len() >= suffix.len()
+            && context[context.len() - suffix.len()..]
+                .iter()
+                .map(String::as_str)
+                .eq(suffix.iter().copied())
+    };
+
+    ends_with(&["daily"])
+        || ends_with(&["weekday"])
+        || ends_with(&["weekdays"])
+        || ends_with(&["weekend"])
+        || ends_with(&["weekends"])
+        || ends_with(&["every", "day"])
+        || ends_with(&["each", "day"])
+        || ends_with(&["monday", "through", "friday"])
+        || ends_with(&["monday", "to", "friday"])
+        || ends_with(&["mondayfriday"])
+        || ends_with(&["monfri"])
+}
+
 fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
     let tokens = prompt
         .split_whitespace()
@@ -111,10 +134,11 @@ fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
             Some("am" | "pm") => format!("{next}{}", tokens[index + 2]),
             _ => next.clone(),
         };
-        // A bare hour is only unambiguous at the end of the prompt. This preserves
-        // "at 9" without treating phrases such as "at 5 repos" as clock times.
-        // Explicit 09:00/am/pm forms remain valid anywhere.
-        let allow_bare_hour = tokens.get(index + 2).is_none();
+        // Only terminal, cadence-localized bare numbers are clock times. Prompt
+        // position alone is insufficient: "limit set at 5" is still a count.
+        // Explicit 09:00/am/pm forms remain valid without cadence-local context.
+        let allow_bare_hour =
+            tokens.get(index + 2).is_none() && bare_hour_has_temporal_context(&tokens, index);
         if let Some(time) = parse_prompt_clock_time(&combined, allow_bare_hour) {
             return Some(time);
         }
@@ -1559,7 +1583,29 @@ mod tests {
     }
 
     #[test]
-    fn prepare_build_request_accepts_terminal_bare_hour() {
+    fn prepare_build_request_does_not_treat_terminal_bare_limit_as_clock_time() {
+        let request = prepare_build_request(
+            "wfplan-terminal-count".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Create a daily report with the limit set at 5",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+
+        assert_eq!(
+            request.fallback_schedule.schedule_type,
+            AutomationV2ScheduleType::Manual
+        );
+        assert!(request.explicit_schedule.is_none());
+    }
+
+    #[test]
+    fn prepare_build_request_accepts_cadence_contextual_bare_hour() {
         let request = prepare_build_request(
             "wfplan-bare-hour".to_string(),
             "v1".to_string(),

@@ -171,6 +171,7 @@ async fn nonfatal_tool_execution_error_does_not_abort_prompt_execution() {
         .execute_tool_with_permission(
             &session_id,
             "message-1",
+            None,
             "failing_tool".to_string(),
             json!({}),
             Some("tool-call-1".to_string()),
@@ -187,6 +188,124 @@ async fn nonfatal_tool_execution_error_does_not_abort_prompt_execution() {
     assert!(output.contains("Tool `failing_tool` failed during execution"));
     assert!(output.contains("transient connector failure"));
     assert!(output.contains("recoverable in the current turn"));
+}
+
+#[tokio::test]
+async fn tool_message_updates_preserve_run_id_through_persistence_queue() {
+    let base = std::env::temp_dir().join(format!("engine-loop-tool-run-id-{}", Uuid::new_v4()));
+    let storage = Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(
+        Some("tool run correlation".to_string()),
+        Some(base.to_string_lossy().to_string()),
+    );
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    let bus = EventBus::new();
+    let mut live_rx = bus.subscribe();
+    let mut persistence_rx = bus
+        .take_session_part_receiver()
+        .expect("session part persistence receiver");
+    let providers = ProviderRegistry::new(AppConfig::default());
+    let plugins = PluginRegistry::new(&base).await.expect("plugins");
+    let agents = AgentRegistry::new(&base).await.expect("agents");
+    let permissions = PermissionManager::new(bus.clone());
+    let tools = ToolRegistry::new();
+    tools
+        .register_tool("loop_tool".to_string(), Arc::new(LoopingTool))
+        .await;
+    let cancellations = CancellationRegistry::new();
+    let host_runtime_context = HostRuntimeContext {
+        os: HostOs::Linux,
+        arch: std::env::consts::ARCH.to_string(),
+        shell_family: ShellFamily::Posix,
+        path_style: PathStyle::Posix,
+    };
+    let engine = EngineLoop::new(
+        storage,
+        bus,
+        providers,
+        plugins,
+        agents,
+        permissions,
+        tools,
+        cancellations,
+        host_runtime_context,
+    );
+    engine
+        .set_session_allowed_tools(&session_id, vec!["loop_tool".to_string()])
+        .await;
+    engine
+        .set_session_auto_approve_permissions(&session_id, true)
+        .await;
+
+    let output = engine
+        .execute_tool_with_permission(
+            &session_id,
+            "message-run-id",
+            Some("automation-run-42"),
+            "loop_tool".to_string(),
+            json!({}),
+            Some("tool-call-run-id".to_string()),
+            None,
+            "use the loop tool",
+            false,
+            None,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("tool execution")
+        .expect("tool output");
+    assert!(output.contains("loop tool produced output"));
+
+    let mut live_updates = Vec::new();
+    while let Ok(event) = live_rx.try_recv() {
+        if event.event_type == "message.part.updated" {
+            live_updates.push(event);
+        }
+    }
+    assert_eq!(live_updates.len(), 2, "invoke and result updates");
+    for event in &live_updates {
+        assert_eq!(
+            event.properties.get("sessionID").and_then(Value::as_str),
+            Some(session_id.as_str())
+        );
+        assert_eq!(
+            event.properties.get("runID").and_then(Value::as_str),
+            Some("automation-run-42")
+        );
+        assert_eq!(
+            event
+                .envelope
+                .as_ref()
+                .and_then(|envelope| envelope.run_id.as_deref()),
+            Some("automation-run-42")
+        );
+    }
+
+    let persisted_event = persistence_rx
+        .try_recv()
+        .expect("completed tool update queued for persistence");
+    assert_eq!(persisted_event.event_type, "message.part.updated");
+    assert_eq!(
+        persisted_event
+            .properties
+            .get("runID")
+            .and_then(Value::as_str),
+        Some("automation-run-42")
+    );
+    assert_eq!(
+        persisted_event
+            .envelope
+            .as_ref()
+            .and_then(|envelope| envelope.run_id.as_deref()),
+        Some("automation-run-42")
+    );
+    assert!(
+        persistence_rx.try_recv().is_err(),
+        "running invocation previews remain filtered from persistence"
+    );
+    let _ = std::fs::remove_dir_all(base);
 }
 
 #[tokio::test]
@@ -234,6 +353,7 @@ async fn write_required_auto_approve_denial_fails_loudly() {
         .execute_tool_with_permission(
             &session_id,
             "message-1",
+            None,
             "failing_tool".to_string(),
             json!({}),
             Some("tool-call-1".to_string()),
@@ -296,6 +416,7 @@ async fn write_required_permission_timeout_fails_loudly() {
         .execute_tool_with_permission(
             &session_id,
             "message-1",
+            None,
             "failing_tool".to_string(),
             json!({}),
             Some("tool-call-1".to_string()),

@@ -1,6 +1,78 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
+fn envelope_only_run_event(
+    event_type: &str,
+    seq: u64,
+    session_id: &str,
+    run_id: &str,
+) -> EngineEvent {
+    EngineEvent::new(event_type, json!({"status": "completed"})).with_envelope(
+        tandem_types::RuntimeEventEnvelope {
+            event_id: format!("event-{seq}"),
+            seq,
+            schema_version: tandem_types::RUNTIME_EVENT_SCHEMA_VERSION,
+            occurred_at_ms: 1_000 + seq,
+            session_id: Some(session_id.to_string()),
+            run_id: Some(run_id.to_string()),
+            node_id: None,
+            tenant_context: None,
+        },
+    )
+}
+
+#[test]
+fn run_finished_detection_uses_envelope_and_requires_explicit_run_id() {
+    let envelope_only =
+        envelope_only_run_event("session.run.finished", 1, "session-1", "run-1");
+    assert!(event_finishes_run(&envelope_only, "session-1", "run-1"));
+    assert!(!event_finishes_run(
+        &envelope_only,
+        "session-1",
+        "run-2"
+    ));
+
+    let session_only = EngineEvent::new(
+        "session.run.finished",
+        json!({"sessionID": "session-1", "status": "completed"}),
+    );
+    assert!(!event_finishes_run(&session_only, "session-1", "run-1"));
+}
+
+#[tokio::test]
+async fn sse_run_stream_ends_on_envelope_only_finished_event() {
+    let state = test_state().await;
+    let stream = sse_run_stream(
+        state.clone(),
+        "session-1".to_string(),
+        "run-1".to_string(),
+        None,
+        None,
+        TenantContext::local_implicit(),
+    );
+    tokio::pin!(stream);
+
+    assert!(
+        matches!(stream.next().await, Some(Ok(_))),
+        "stream should begin with session.run.started"
+    );
+
+    state.event_bus.publish(envelope_only_run_event(
+        "session.run.finished",
+        2,
+        "session-1",
+        "run-1",
+    ));
+
+    let terminal = tokio::time::timeout(Duration::from_secs(1), stream.next())
+        .await
+        .expect("SSE stream should terminate after its run finishes");
+    assert!(
+        terminal.is_none(),
+        "session.run.finished should terminate without being forwarded"
+    );
+}
+
 #[test]
 fn normalize_run_event_adds_required_fields() {
     let event = EngineEvent::new(
