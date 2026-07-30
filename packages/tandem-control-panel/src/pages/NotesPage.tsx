@@ -125,24 +125,33 @@ export function NotesPage({ principalId, toast }: AppPageProps) {
         setHasInvalidStoredNotes(error instanceof InvalidStoredNotesError);
       }
     };
-    window.addEventListener("storage", syncFromStorage);
-    return () => {
-      window.removeEventListener("storage", syncFromStorage);
+    const flushPendingUpdatesBeforeTeardown = (retainOnFailure: boolean) => {
       if (pendingSaveTimerRef.current !== null) {
         window.clearTimeout(pendingSaveTimerRef.current);
         pendingSaveTimerRef.current = null;
       }
       const pendingUpdates = new Map(pendingNoteUpdatesRef.current);
-      pendingNoteUpdatesRef.current.clear();
       if (pendingUpdates.size === 0) return;
       try {
         const storedNotes = loadNotes(principalId);
-        saveNotes(principalId, applyPendingNoteUpdates(storedNotes, pendingUpdates));
+        const nextNotes = applyPendingNoteUpdates(storedNotes, pendingUpdates);
+        saveNotes(principalId, nextNotes);
+        persistedNotesRef.current = nextNotes;
+        pendingNoteUpdatesRef.current.clear();
       } catch (error) {
+        if (!retainOnFailure) pendingNoteUpdatesRef.current.clear();
         const message =
           error instanceof InvalidStoredNotesError ? NOTES_LOAD_ERROR : NOTES_SAVE_ERROR;
         toastRef.current("err", message);
       }
+    };
+    const handlePageHide = () => flushPendingUpdatesBeforeTeardown(true);
+    window.addEventListener("storage", syncFromStorage);
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      window.removeEventListener("storage", syncFromStorage);
+      window.removeEventListener("pagehide", handlePageHide);
+      flushPendingUpdatesBeforeTeardown(false);
     };
   }, [principalId]);
 

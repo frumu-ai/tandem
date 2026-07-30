@@ -215,6 +215,28 @@ test("note edits update immediately and persist in one debounced write", async (
       () => (window as typeof window & { __notesWriteCount: number }).__notesWriteCount
     )
   ).toBe(2);
+
+  await titleInput.press("End");
+  await titleInput.pressSequentially(" before teardown");
+  expect(await titleInput.inputValue()).toBe("Original 2 blurred before teardown");
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: false }));
+  });
+  expect(
+    await page.evaluate(
+      () => (window as typeof window & { __notesWriteCount: number }).__notesWriteCount
+    )
+  ).toBe(3);
+  const teardownFlushedTitle = await page.evaluate((storageKey) => {
+    return JSON.parse(localStorage.getItem(storageKey) || "[]")[0]?.title;
+  }, CURRENT_ACCOUNT_KEY);
+  expect(teardownFlushedTitle).toBe("Original 2 blurred before teardown");
+  await page.clock.runFor(400);
+  expect(
+    await page.evaluate(
+      () => (window as typeof window & { __notesWriteCount: number }).__notesWriteCount
+    )
+  ).toBe(3);
 });
 
 test("debounced note edits roll back when persistence fails", async ({ page }) => {
