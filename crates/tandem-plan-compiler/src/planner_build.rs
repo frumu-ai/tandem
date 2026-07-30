@@ -94,13 +94,13 @@ fn parse_prompt_clock_time(value: &str, allow_bare_hour: bool) -> Option<(u8, u8
     Some((hour, minute))
 }
 
-fn bare_hour_has_temporal_context(tokens: &[String], at_index: usize) -> bool {
+fn bare_hour_has_temporal_context(tokens: &[(String, &str)], at_index: usize) -> bool {
     let context = &tokens[..at_index];
     let ends_with = |suffix: &[&str]| {
         context.len() >= suffix.len()
             && context[context.len() - suffix.len()..]
                 .iter()
-                .map(String::as_str)
+                .map(|(token, _)| token.as_str())
                 .eq(suffix.iter().copied())
     };
 
@@ -117,35 +117,65 @@ fn bare_hour_has_temporal_context(tokens: &[String], at_index: usize) -> bool {
         || ends_with(&["monfri"])
 }
 
+fn timezone_from_prompt_token(raw_token: &str) -> Option<String> {
+    let token = raw_token.trim_matches(|ch: char| {
+        !ch.is_ascii_alphanumeric() && !matches!(ch, '/' | '_' | '-' | '+')
+    });
+    if token.is_empty() {
+        return None;
+    }
+    let abbreviation = token.to_ascii_uppercase();
+    let mapped = match abbreviation.as_str() {
+        "PT" | "PST" | "PDT" => Some("America/Los_Angeles"),
+        "MT" | "MST" | "MDT" => Some("America/Denver"),
+        "CT" | "CST" | "CDT" => Some("America/Chicago"),
+        "ET" | "EST" | "EDT" => Some("America/New_York"),
+        _ => None,
+    };
+    mapped.map(str::to_string).or_else(|| {
+        token
+            .parse::<Tz>()
+            .ok()
+            .map(|timezone| timezone.to_string())
+    })
+}
+
 fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
     let tokens = prompt
         .split_whitespace()
-        .map(normalized_time_token)
-        .filter(|token| !token.is_empty())
+        .filter_map(|raw_token| {
+            let token = normalized_time_token(raw_token);
+            (!token.is_empty()).then_some((token, raw_token))
+        })
         .collect::<Vec<_>>();
-    for (index, token) in tokens.iter().enumerate() {
+    for (index, (token, _)) in tokens.iter().enumerate() {
         if token != "at" {
             continue;
         }
-        let Some(next) = tokens.get(index + 1) else {
+        let Some((next, _)) = tokens.get(index + 1) else {
             continue;
         };
-        let combined = match tokens.get(index + 2).map(String::as_str) {
-            Some("am" | "pm") => format!("{next}{}", tokens[index + 2]),
+        let suffix = tokens.get(index + 2);
+        let combined = match suffix.map(|(token, _)| token.as_str()) {
+            Some(suffix @ ("am" | "pm")) => format!("{next}{suffix}"),
             _ => next.clone(),
         };
-        // Only terminal, cadence-localized bare numbers are clock times. Prompt
-        // position alone is insufficient: "limit set at 5" is still a count.
-        // Explicit 09:00/am/pm forms remain valid without cadence-local context.
+        // Only cadence-localized bare numbers are clock times. They may be
+        // terminal or followed by a recognized timezone; arbitrary suffixes
+        // remain disallowed so "at 5 repos" is still a count.
+        let suffix_allows_bare_hour = match suffix {
+            None => true,
+            Some((_, raw_token)) => timezone_from_prompt_token(raw_token).is_some(),
+        };
         let allow_bare_hour =
-            tokens.get(index + 2).is_none() && bare_hour_has_temporal_context(&tokens, index);
+            suffix_allows_bare_hour && bare_hour_has_temporal_context(&tokens, index);
         if let Some(time) = parse_prompt_clock_time(&combined, allow_bare_hour) {
             return Some(time);
         }
     }
-    for (index, token) in tokens.iter().enumerate() {
-        let combined = match tokens.get(index + 1).map(String::as_str) {
-            Some("am" | "pm") => format!("{token}{}", tokens[index + 1]),
+    for (index, (token, _)) in tokens.iter().enumerate() {
+        let combined = match tokens.get(index + 1).map(|(token, _)| token.as_str()) {
+            Some(suffix @ ("am" | "pm")) => format!("{token}{suffix}"),
             _ => token.clone(),
         };
         if combined.contains(':') || combined.ends_with("am") || combined.ends_with("pm") {
@@ -172,26 +202,9 @@ fn prompt_negates_cadence(prompt: &str, cadence: &str) -> bool {
 }
 
 fn prompt_timezone(prompt: &str, default_timezone: &str) -> String {
-    for raw_token in prompt.split_whitespace() {
-        let token = raw_token.trim_matches(|ch: char| {
-            !ch.is_ascii_alphanumeric() && !matches!(ch, '/' | '_' | '-' | '+')
-        });
-        if token.is_empty() {
-            continue;
-        }
-        let abbreviation = token.to_ascii_uppercase();
-        let mapped = match abbreviation.as_str() {
-            "PT" | "PST" | "PDT" => Some("America/Los_Angeles"),
-            "MT" | "MST" | "MDT" => Some("America/Denver"),
-            "CT" | "CST" | "CDT" => Some("America/Chicago"),
-            "ET" | "EST" | "EDT" => Some("America/New_York"),
-            _ => None,
-        };
-        if let Some(timezone) = mapped {
-            return timezone.to_string();
-        }
-        if let Ok(timezone) = token.parse::<Tz>() {
-            return timezone.to_string();
+    for token in prompt.split_whitespace() {
+        if let Some(timezone) = timezone_from_prompt_token(token) {
+            return timezone;
         }
     }
     default_timezone.to_string()
@@ -1627,6 +1640,71 @@ mod tests {
             request.fallback_schedule.cron_expression.as_deref(),
             Some("0 9 * * Mon-Fri")
         );
+    }
+
+    #[test]
+    fn prepare_build_request_accepts_timezone_after_cadence_contextual_bare_hour() {
+        let request = prepare_build_request(
+            "wfplan-bare-hour-timezone".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Create a report every weekday at 9 ET",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+
+        assert_eq!(
+            request.fallback_schedule.cron_expression.as_deref(),
+            Some("0 9 * * Mon-Fri")
+        );
+        assert_eq!(request.fallback_schedule.timezone, "America/New_York");
+
+        let iana_request = prepare_build_request(
+            "wfplan-bare-hour-iana-timezone".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Create a report every weekday at 9 America/Los_Angeles",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+        assert_eq!(
+            iana_request.fallback_schedule.cron_expression.as_deref(),
+            Some("0 9 * * Mon-Fri")
+        );
+        assert_eq!(
+            iana_request.fallback_schedule.timezone,
+            "America/Los_Angeles"
+        );
+    }
+
+    #[test]
+    fn prepare_build_request_rejects_unrecognized_suffix_after_bare_hour() {
+        let request = prepare_build_request(
+            "wfplan-bare-hour-suffix".to_string(),
+            "v1".to_string(),
+            "unit_test".to_string(),
+            "Create a report every weekday at 9 repositories",
+            None,
+            "UTC",
+            Value::String("run_once".to_string()),
+            Vec::new(),
+            Some("/tmp/project"),
+            None,
+        );
+
+        assert_eq!(
+            request.fallback_schedule.schedule_type,
+            AutomationV2ScheduleType::Manual
+        );
+        assert!(request.explicit_schedule.is_none());
     }
 
     #[test]
