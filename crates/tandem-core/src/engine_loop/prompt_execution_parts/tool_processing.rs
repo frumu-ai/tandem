@@ -249,9 +249,16 @@
                             finalized_part.id = Some(call_id);
                         }
                         finalized_part.state = Some("pending".to_string());
+                        let mut props = json!({
+                            "part": finalized_part,
+                            "sessionID": session_id
+                        });
+                        if let Some(run_id) = &run_id {
+                            props.as_object_mut().unwrap().insert("runID".to_string(), json!(run_id));
+                        }
                         self.event_bus.publish(EngineEvent::new(
                             "message.part.updated",
-                            json!({"part": finalized_part}),
+                            props,
                         ));
                         *entry += 1;
                         accepted_tool_calls_in_cycle =
@@ -262,20 +269,20 @@
                             Vec::new()
                         };
                         let provider_call_id = call_id.clone();
-                        let tool_output_result = self
-                            .execute_tool_with_permission(
-                                &session_id,
-                                &user_message_id,
-                                tool,
-                                effective_args,
-                                call_id,
-                                active_agent.skills.as_deref(),
-                                &text,
-                                requested_write_required,
-                                Some(&completion),
-                                cancel.clone(),
-                            )
-                            .await;
+                        let tool_output_result = Box::pin(self.execute_tool_with_permission(
+                            &session_id,
+                            &user_message_id,
+                            run_ref,
+                            tool,
+                            effective_args,
+                            call_id,
+                            active_agent.skills.as_deref(),
+                            &text,
+                            requested_write_required,
+                            Some(&completion),
+                            cancel.clone(),
+                        ))
+                        .await;
                         let Some(output) = (match tool_output_result {
                             Ok(output) => output,
                             Err(err) => {

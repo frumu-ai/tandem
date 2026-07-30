@@ -57,6 +57,7 @@ const IncidentMonitorPage = lazyNamed(
 );
 const TeamsPage = lazyNamed(() => import("../pages/TeamsPage"), "TeamsPage");
 const SettingsPage = lazyNamed(() => import("../pages/SettingsPage"), "SettingsPage");
+const NotesPage = lazyNamed(() => import("../pages/NotesPage"), "NotesPage");
 
 function RouteFallback() {
   return (
@@ -142,6 +143,8 @@ function renderRoute(routeId: ReturnType<typeof ensureRouteId>, pageProps: any) 
       return <OrchestratorPage {...pageProps} />;
     case "incident-monitor":
       return <IncidentMonitorPage {...pageProps} />;
+    case "notes":
+      return <NotesPage {...pageProps} />;
     case "files":
       return <FilesPage {...pageProps} />;
     case "memory":

@@ -108,3 +108,6 @@ guide/.astro/
 target-workflow-planner/
 
 error.log
+
+# audits
+security-audit

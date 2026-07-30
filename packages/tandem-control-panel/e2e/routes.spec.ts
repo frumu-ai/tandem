@@ -25,6 +25,7 @@ const routeIdentity: Record<string, string> = {
   coding: "Coder",
   agents: "Agents",
   orchestrator: "Task Board",
+  notes: "Notes",
   files: "Files",
   memory: "Memory",
   runs: "Runs",

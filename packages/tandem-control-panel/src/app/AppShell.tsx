@@ -26,6 +26,7 @@ const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
   coding: { title: "Coder", subtitle: "Durable coder runs and repos" },
   agents: { title: "Agents", subtitle: "Reusable roles and drafts" },
   orchestrator: { title: "Task Board", subtitle: "Plan-driven task execution" },
+  notes: { title: "Notes", subtitle: "Personal notes and snippets" },
   memory: { title: "Memory", subtitle: "Records and context snapshots" },
   runs: { title: "Runs", subtitle: "Queue state and run inspection" },
   "control-loop": { title: "Control Loop", subtitle: "Goal-to-audit traceability" },
@@ -51,6 +52,7 @@ const FULL_HEIGHT_ROUTES = new Set([
   "files",
   "runs",
   "control-loop",
+  "notes",
 ]);
 
 function formatElapsedSeconds(value: number | undefined): string {

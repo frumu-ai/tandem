@@ -577,6 +577,9 @@ function AppBody() {
     toast,
     navigate,
     currentRoute,
+    principalId: String(
+      authQuery.data?.principal_id || authQuery.data?.user?.id || ""
+    ).trim(),
     providerStatus: {
       ready: !!providerQuery.data?.ready,
       defaultProvider: providerQuery.data?.defaultProvider || "",

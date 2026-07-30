@@ -155,14 +155,20 @@ impl EngineLoop {
                 .await?;
 
             let user_part = WireMessagePart::text(&session_id, &created_message_id, text.clone());
-            self.event_bus.publish(EngineEvent::new(
-                "message.part.updated",
-                json!({
-                    "part": user_part,
-                    "delta": text,
-                    "agent": active_agent.name
-                }),
-            ));
+            let mut props = json!({
+                "part": user_part,
+                "delta": text,
+                "agent": active_agent.name,
+                "sessionID": session_id
+            });
+            if let Some(run_id) = &run_id {
+                props
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("runID".to_string(), json!(run_id));
+            }
+            self.event_bus
+                .publish(EngineEvent::new("message.part.updated", props));
             user_message_id = Some(created_message_id);
         }
         let user_message_id = user_message_id.unwrap_or_else(|| "unknown".to_string());
@@ -187,20 +193,20 @@ impl EngineLoop {
                     active_agent.name
                 )
             } else {
-                match self
-                    .execute_tool_with_permission(
-                        &session_id,
-                        &user_message_id,
-                        tool.clone(),
-                        args,
-                        None,
-                        active_agent.skills.as_deref(),
-                        &text,
-                        requested_write_required,
-                        None,
-                        cancel.clone(),
-                    )
-                    .await
+                match Box::pin(self.execute_tool_with_permission(
+                    &session_id,
+                    &user_message_id,
+                    run_ref,
+                    tool.clone(),
+                    args,
+                    None,
+                    active_agent.skills.as_deref(),
+                    &text,
+                    requested_write_required,
+                    None,
+                    cancel.clone(),
+                ))
+                .await
                 {
                     Ok(output) => output.unwrap_or_default(),
                     Err(err) => {
@@ -1326,10 +1332,19 @@ impl EngineLoop {
                                     &user_message_id,
                                     delta.clone(),
                                 );
-                                self.event_bus.publish(EngineEvent::new(
-                                    "message.part.updated",
-                                    json!({"part": delta_part, "delta": delta}),
-                                ));
+                                let mut props = json!({
+                                    "part": delta_part,
+                                    "delta": delta,
+                                    "sessionID": session_id
+                                });
+                                if let Some(run_id) = &run_id {
+                                    props
+                                        .as_object_mut()
+                                        .unwrap()
+                                        .insert("runID".to_string(), json!(run_id));
+                                }
+                                self.event_bus
+                                    .publish(EngineEvent::new("message.part.updated", props));
                             }
                             StreamChunk::ReasoningDelta(_reasoning) => {}
                             StreamChunk::Done {
@@ -1383,19 +1398,25 @@ impl EngineLoop {
                                         "streamed write tool args delta received"
                                     );
                                 }
-                                self.event_bus.publish(EngineEvent::new(
-                                    "message.part.updated",
-                                    json!({
-                                        "part": tool_part,
-                                        "toolCallDelta": {
-                                            "id": id,
-                                            "tool": tool_name,
-                                            "argsDelta": truncate_text(&args_delta, 1_000),
-                                            "rawArgsPreview": truncate_text(&entry.args, 2_000),
-                                            "parsedArgsPreview": parsed_preview
-                                        }
-                                    }),
-                                ));
+                                let mut props = json!({
+                                    "part": tool_part,
+                                    "toolCallDelta": {
+                                        "id": id,
+                                        "tool": tool_name,
+                                        "argsDelta": truncate_text(&args_delta, 1_000),
+                                        "rawArgsPreview": truncate_text(&entry.args, 2_000),
+                                        "parsedArgsPreview": parsed_preview
+                                    },
+                                    "sessionID": session_id
+                                });
+                                if let Some(run_id) = &run_id {
+                                    props
+                                        .as_object_mut()
+                                        .unwrap()
+                                        .insert("runID".to_string(), json!(run_id));
+                                }
+                                self.event_bus
+                                    .publish(EngineEvent::new("message.part.updated", props));
                             }
                             StreamChunk::ToolCallEnd { id: _ } => {}
                         }
@@ -1707,6 +1728,7 @@ impl EngineLoop {
                 &self.event_bus,
                 &session_id,
                 &user_message_id,
+                run_ref,
                 &completion,
             )
             .await;
@@ -1717,6 +1739,7 @@ impl EngineLoop {
                     &self.event_bus,
                     &session_id,
                     &user_message_id,
+                    run_ref,
                     &completion,
                 )
                 .await;
@@ -1743,10 +1766,18 @@ impl EngineLoop {
             &assistant_message_id,
             truncate_text(&completion, 16_000),
         );
-        self.event_bus.publish(EngineEvent::new(
-            "message.part.updated",
-            json!({"part": final_part}),
-        ));
+        let mut props = json!({
+            "part": final_part,
+            "sessionID": session_id
+        });
+        if let Some(run_id) = &run_id {
+            props
+                .as_object_mut()
+                .unwrap()
+                .insert("runID".to_string(), json!(run_id));
+        }
+        self.event_bus
+            .publish(EngineEvent::new("message.part.updated", props));
         self.event_bus.publish(EngineEvent::new(
             "session.updated",
             json!({"sessionID": session_id, "status":"idle"}),
