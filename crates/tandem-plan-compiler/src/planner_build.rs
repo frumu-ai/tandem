@@ -1378,6 +1378,10 @@ fn build_llm_workflow_creation_prompt<M: serde::Serialize>(
 }
 
 #[cfg(test)]
+#[path = "planner_build_timezone_tests.rs"]
+mod timezone_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -1640,71 +1644,6 @@ mod tests {
             request.fallback_schedule.cron_expression.as_deref(),
             Some("0 9 * * Mon-Fri")
         );
-    }
-
-    #[test]
-    fn prepare_build_request_accepts_timezone_after_cadence_contextual_bare_hour() {
-        let request = prepare_build_request(
-            "wfplan-bare-hour-timezone".to_string(),
-            "v1".to_string(),
-            "unit_test".to_string(),
-            "Create a report every weekday at 9 ET",
-            None,
-            "UTC",
-            Value::String("run_once".to_string()),
-            Vec::new(),
-            Some("/tmp/project"),
-            None,
-        );
-
-        assert_eq!(
-            request.fallback_schedule.cron_expression.as_deref(),
-            Some("0 9 * * Mon-Fri")
-        );
-        assert_eq!(request.fallback_schedule.timezone, "America/New_York");
-
-        let iana_request = prepare_build_request(
-            "wfplan-bare-hour-iana-timezone".to_string(),
-            "v1".to_string(),
-            "unit_test".to_string(),
-            "Create a report every weekday at 9 America/Los_Angeles",
-            None,
-            "UTC",
-            Value::String("run_once".to_string()),
-            Vec::new(),
-            Some("/tmp/project"),
-            None,
-        );
-        assert_eq!(
-            iana_request.fallback_schedule.cron_expression.as_deref(),
-            Some("0 9 * * Mon-Fri")
-        );
-        assert_eq!(
-            iana_request.fallback_schedule.timezone,
-            "America/Los_Angeles"
-        );
-    }
-
-    #[test]
-    fn prepare_build_request_rejects_unrecognized_suffix_after_bare_hour() {
-        let request = prepare_build_request(
-            "wfplan-bare-hour-suffix".to_string(),
-            "v1".to_string(),
-            "unit_test".to_string(),
-            "Create a report every weekday at 9 repositories",
-            None,
-            "UTC",
-            Value::String("run_once".to_string()),
-            Vec::new(),
-            Some("/tmp/project"),
-            None,
-        );
-
-        assert_eq!(
-            request.fallback_schedule.schedule_type,
-            AutomationV2ScheduleType::Manual
-        );
-        assert!(request.explicit_schedule.is_none());
     }
 
     #[test]
