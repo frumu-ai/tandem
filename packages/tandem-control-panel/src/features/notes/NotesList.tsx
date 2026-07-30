@@ -10,6 +10,13 @@ export type Note = {
 
 const STORAGE_KEY_PREFIX = "tandem-control-panel-notes";
 
+export class InvalidStoredNotesError extends Error {
+  constructor() {
+    super("Stored notes are invalid.");
+    this.name = "InvalidStoredNotesError";
+  }
+}
+
 export function notesStorageKey(principalId: string): string {
   const normalizedPrincipalId = principalId.trim();
   if (!normalizedPrincipalId) {
@@ -23,6 +30,7 @@ function isNote(value: unknown): value is Note {
   const note = value as Partial<Note>;
   return (
     typeof note.id === "string" &&
+    note.id.trim().length > 0 &&
     typeof note.title === "string" &&
     typeof note.content === "string" &&
     typeof note.createdAt === "number" &&
@@ -34,10 +42,18 @@ function isNote(value: unknown): value is Note {
 
 export function loadNotes(principalId: string): Note[] {
   const stored = localStorage.getItem(notesStorageKey(principalId));
-  if (!stored) return [];
-  const parsed: unknown = JSON.parse(stored);
+  if (stored === null) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stored);
+  } catch {
+    throw new InvalidStoredNotesError();
+  }
   if (!Array.isArray(parsed) || !parsed.every(isNote)) {
-    throw new Error("Stored notes are invalid.");
+    throw new InvalidStoredNotesError();
+  }
+  if (new Set(parsed.map((note) => note.id)).size !== parsed.length) {
+    throw new InvalidStoredNotesError();
   }
   return parsed;
 }
@@ -103,7 +119,10 @@ export function NotesList({
                     {note.content || "No content"}
                   </div>
                 </button>
-                <IconButton aria-label="Delete note" onClick={() => onDeleteNote(note.id)}>
+                <IconButton
+                  aria-label={`Delete note ${note.title || "Untitled Note"}`}
+                  onClick={() => onDeleteNote(note.id)}
+                >
                   <Icon name="trash-2" />
                 </IconButton>
               </div>

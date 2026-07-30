@@ -10,9 +10,11 @@ export type NoteUpdate = {
 export function NoteEditor({
   note,
   onUpdate,
+  onFlush,
 }: {
   note: Note;
   onUpdate: (noteId: string, update: NoteUpdate) => void;
+  onFlush: () => void;
 }) {
   return (
     <PanelCard title={note.title || "Untitled Note"} fullHeight>
@@ -28,6 +30,7 @@ export function NoteEditor({
               updatedAt: Date.now(),
             })
           }
+          onBlur={onFlush}
         />
         <textarea
           className="flex-1 w-full min-h-0 bg-transparent border border-white/6 rounded-lg p-3 resize-none"
@@ -39,6 +42,7 @@ export function NoteEditor({
               updatedAt: Date.now(),
             })
           }
+          onBlur={onFlush}
         />
       </div>
     </PanelCard>

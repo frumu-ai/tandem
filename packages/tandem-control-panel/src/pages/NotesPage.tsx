@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { AnimatedPage, SplitView, EmptyState } from "../ui/index.tsx";
 import {
+  InvalidStoredNotesError,
   NotesList,
   loadNotes,
   notesStorageKey,
@@ -13,6 +14,7 @@ import type { AppPageProps } from "./pageTypes";
 const NOTES_LOAD_ERROR = "Notes could not be loaded for this account.";
 const NOTES_SAVE_ERROR =
   "Notes could not be saved in this browser. Check storage permissions or available space.";
+const NOTES_SAVE_DEBOUNCE_MS = 400;
 
 function createNoteId(): string {
   const browserCrypto = globalThis.crypto as Crypto | undefined;
@@ -26,58 +28,178 @@ function createNoteId(): string {
   return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+function applyPendingNoteUpdates(
+  notes: Note[],
+  pendingUpdates: ReadonlyMap<string, NoteUpdate>
+): Note[] {
+  if (pendingUpdates.size === 0) return notes;
+  return notes.map((note) => {
+    const update = pendingUpdates.get(note.id);
+    return update
+      ? { ...note, ...update, updatedAt: Math.max(note.updatedAt, update.updatedAt) }
+      : note;
+  });
+}
+
 export function NotesPage({ principalId, toast }: AppPageProps) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [hasInvalidStoredNotes, setHasInvalidStoredNotes] = useState(false);
+  const persistedNotesRef = useRef<Note[]>([]);
+  const pendingNoteUpdatesRef = useRef<Map<string, NoteUpdate>>(new Map());
+  const pendingSaveTimerRef = useRef<number | null>(null);
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
   const selectedNote = notes.find((note) => note.id === selectedNoteId) || null;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setSelectedNoteId(null);
     let storageKey: string;
     try {
       storageKey = notesStorageKey(principalId);
-      const storedNotes = loadNotes(principalId);
-      setNotes(storedNotes);
-      setStorageError(null);
     } catch {
+      persistedNotesRef.current = [];
       setNotes([]);
       setStorageError(NOTES_LOAD_ERROR);
+      setHasInvalidStoredNotes(false);
       return;
     }
 
+    try {
+      const storedNotes = loadNotes(principalId);
+      persistedNotesRef.current = storedNotes;
+      setNotes(storedNotes);
+      setStorageError(null);
+      setHasInvalidStoredNotes(false);
+    } catch (error) {
+      persistedNotesRef.current = [];
+      setNotes([]);
+      setStorageError(NOTES_LOAD_ERROR);
+      setHasInvalidStoredNotes(error instanceof InvalidStoredNotesError);
+    }
+
     const syncFromStorage = (event: StorageEvent) => {
-      if (event.storageArea !== localStorage || event.key !== storageKey) return;
+      if (
+        event.storageArea !== localStorage ||
+        (event.key !== storageKey && event.key !== null)
+      ) {
+        return;
+      }
       try {
         const storedNotes = loadNotes(principalId);
-        setNotes(storedNotes);
+        persistedNotesRef.current = storedNotes;
+        const storedNoteIds = new Set(storedNotes.map((note) => note.id));
+        for (const noteId of pendingNoteUpdatesRef.current.keys()) {
+          if (!storedNoteIds.has(noteId)) pendingNoteUpdatesRef.current.delete(noteId);
+        }
+        if (
+          pendingNoteUpdatesRef.current.size === 0 &&
+          pendingSaveTimerRef.current !== null
+        ) {
+          window.clearTimeout(pendingSaveTimerRef.current);
+          pendingSaveTimerRef.current = null;
+        }
+        const renderedNotes = applyPendingNoteUpdates(
+          storedNotes,
+          pendingNoteUpdatesRef.current
+        );
+        setNotes(renderedNotes);
         setSelectedNoteId((currentId) =>
-          currentId && storedNotes.some((note) => note.id === currentId) ? currentId : null
+          currentId && renderedNotes.some((note) => note.id === currentId) ? currentId : null
         );
         setStorageError(null);
-      } catch {
+        setHasInvalidStoredNotes(false);
+      } catch (error) {
+        if (pendingSaveTimerRef.current !== null) {
+          window.clearTimeout(pendingSaveTimerRef.current);
+          pendingSaveTimerRef.current = null;
+        }
+        pendingNoteUpdatesRef.current.clear();
+        const retainedNotes = persistedNotesRef.current;
+        setNotes(retainedNotes);
+        setSelectedNoteId((currentId) =>
+          currentId && retainedNotes.some((note) => note.id === currentId) ? currentId : null
+        );
         setStorageError(NOTES_LOAD_ERROR);
+        setHasInvalidStoredNotes(error instanceof InvalidStoredNotesError);
       }
     };
     window.addEventListener("storage", syncFromStorage);
-    return () => window.removeEventListener("storage", syncFromStorage);
+    return () => {
+      window.removeEventListener("storage", syncFromStorage);
+      if (pendingSaveTimerRef.current !== null) {
+        window.clearTimeout(pendingSaveTimerRef.current);
+        pendingSaveTimerRef.current = null;
+      }
+      const pendingUpdates = new Map(pendingNoteUpdatesRef.current);
+      pendingNoteUpdatesRef.current.clear();
+      if (pendingUpdates.size === 0) return;
+      try {
+        const storedNotes = loadNotes(principalId);
+        saveNotes(principalId, applyPendingNoteUpdates(storedNotes, pendingUpdates));
+      } catch (error) {
+        const message =
+          error instanceof InvalidStoredNotesError ? NOTES_LOAD_ERROR : NOTES_SAVE_ERROR;
+        toastRef.current("err", message);
+      }
+    };
   }, [principalId]);
 
-  const persistNotes = (mutate: (storedNotes: Note[]) => Note[]): boolean => {
+  const commitNotes = (
+    mutate?: (storedNotes: Note[]) => Note[],
+    discardPendingNoteId?: string
+  ): boolean => {
+    if (pendingSaveTimerRef.current !== null) {
+      window.clearTimeout(pendingSaveTimerRef.current);
+      pendingSaveTimerRef.current = null;
+    }
+    if (discardPendingNoteId) pendingNoteUpdatesRef.current.delete(discardPendingNoteId);
+    const pendingUpdates = new Map(pendingNoteUpdatesRef.current);
+    pendingNoteUpdatesRef.current.clear();
+    if (!mutate && pendingUpdates.size === 0) return true;
+
+    let storedNotes: Note[];
     try {
-      const nextNotes = mutate(loadNotes(principalId));
-      saveNotes(principalId, nextNotes);
-      setNotes(nextNotes);
+      storedNotes = loadNotes(principalId);
+    } catch (error) {
+      const invalidStoredNotes = error instanceof InvalidStoredNotesError;
+      const rollbackNotes = persistedNotesRef.current;
+      setNotes(rollbackNotes);
       setSelectedNoteId((currentId) =>
-        currentId && nextNotes.some((note) => note.id === currentId) ? currentId : null
+        currentId && rollbackNotes.some((note) => note.id === currentId) ? currentId : null
       );
-      setStorageError(null);
-      return true;
+      const message = invalidStoredNotes ? NOTES_LOAD_ERROR : NOTES_SAVE_ERROR;
+      setStorageError(message);
+      setHasInvalidStoredNotes(invalidStoredNotes);
+      toast("err", message);
+      return false;
+    }
+
+    const reconciledNotes = applyPendingNoteUpdates(storedNotes, pendingUpdates);
+    const nextNotes = mutate ? mutate(reconciledNotes) : reconciledNotes;
+    try {
+      saveNotes(principalId, nextNotes);
     } catch {
+      persistedNotesRef.current = storedNotes;
+      setNotes(storedNotes);
+      setSelectedNoteId((currentId) =>
+        currentId && storedNotes.some((note) => note.id === currentId) ? currentId : null
+      );
       setStorageError(NOTES_SAVE_ERROR);
+      setHasInvalidStoredNotes(false);
       toast("err", NOTES_SAVE_ERROR);
       return false;
     }
+
+    persistedNotesRef.current = nextNotes;
+    setNotes(nextNotes);
+    setSelectedNoteId((currentId) =>
+      currentId && nextNotes.some((note) => note.id === currentId) ? currentId : null
+    );
+    setStorageError(null);
+    setHasInvalidStoredNotes(false);
+    return true;
   };
 
   const createNote = () => {
@@ -90,7 +212,7 @@ export function NotesPage({ principalId, toast }: AppPageProps) {
       updatedAt: now,
     };
     if (
-      persistNotes((storedNotes) => [
+      commitNotes((storedNotes) => [
         note,
         ...storedNotes.filter((storedNote) => storedNote.id !== note.id),
       ])
@@ -100,17 +222,66 @@ export function NotesPage({ principalId, toast }: AppPageProps) {
   };
 
   const updateNote = (noteId: string, update: NoteUpdate) => {
-    persistNotes((storedNotes) =>
-      storedNotes.map((note) => (note.id === noteId ? { ...note, ...update } : note))
+    const currentUpdate = pendingNoteUpdatesRef.current.get(noteId);
+    pendingNoteUpdatesRef.current.set(noteId, {
+      ...(currentUpdate || {}),
+      ...update,
+      updatedAt: Math.max(currentUpdate?.updatedAt || 0, update.updatedAt),
+    });
+    setNotes((currentNotes) =>
+      currentNotes.map((note) => (note.id === noteId ? { ...note, ...update } : note))
     );
+    if (pendingSaveTimerRef.current !== null) {
+      window.clearTimeout(pendingSaveTimerRef.current);
+    }
+    pendingSaveTimerRef.current = window.setTimeout(() => {
+      pendingSaveTimerRef.current = null;
+      commitNotes();
+    }, NOTES_SAVE_DEBOUNCE_MS);
+  };
+
+  const flushPendingUpdates = () => {
+    commitNotes();
+  };
+
+  const selectNote = (noteId: string) => {
+    if (commitNotes()) setSelectedNoteId(noteId);
   };
 
   const deleteNote = (noteId: string) => {
+    const note = notes.find((candidate) => candidate.id === noteId);
+    const title = note?.title || "Untitled Note";
+    if (!window.confirm(`Delete "${title}"? This cannot be undone.`)) return;
+    commitNotes(
+      (storedNotes) => storedNotes.filter((storedNote) => storedNote.id !== noteId),
+      noteId
+    );
+  };
+
+  const resetLocalNotes = () => {
     if (
-      persistNotes((storedNotes) => storedNotes.filter((note) => note.id !== noteId)) &&
-      selectedNoteId === noteId
+      !window.confirm(
+        "Reset all local notes for this account? This permanently removes the corrupted data."
+      )
     ) {
+      return;
+    }
+    if (pendingSaveTimerRef.current !== null) {
+      window.clearTimeout(pendingSaveTimerRef.current);
+      pendingSaveTimerRef.current = null;
+    }
+    pendingNoteUpdatesRef.current.clear();
+    try {
+      localStorage.removeItem(notesStorageKey(principalId));
+      persistedNotesRef.current = [];
+      setNotes([]);
       setSelectedNoteId(null);
+      setStorageError(null);
+      setHasInvalidStoredNotes(false);
+    } catch {
+      setStorageError(NOTES_SAVE_ERROR);
+      setHasInvalidStoredNotes(true);
+      toast("err", NOTES_SAVE_ERROR);
     }
   };
 
@@ -121,7 +292,16 @@ export function NotesPage({ principalId, toast }: AppPageProps) {
           role="alert"
           className="rounded-lg border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100"
         >
-          {storageError}
+          <div>{storageError}</div>
+          {hasInvalidStoredNotes ? (
+            <button
+              type="button"
+              className="tcp-btn mt-2"
+              onClick={resetLocalNotes}
+            >
+              Reset local notes
+            </button>
+          ) : null}
         </div>
       ) : null}
       <SplitView
@@ -130,7 +310,7 @@ export function NotesPage({ principalId, toast }: AppPageProps) {
         asideClassName="h-full min-h-0 flex"
         main={
           selectedNote ? (
-            <NoteEditor note={selectedNote} onUpdate={updateNote} />
+            <NoteEditor note={selectedNote} onUpdate={updateNote} onFlush={flushPendingUpdates} />
           ) : (
             <div className="flex-1">
               <EmptyState
@@ -145,7 +325,7 @@ export function NotesPage({ principalId, toast }: AppPageProps) {
             notes={notes}
             selectedNoteId={selectedNoteId}
             onCreateNote={createNote}
-            onSelectNote={setSelectedNoteId}
+            onSelectNote={selectNote}
             onDeleteNote={deleteNote}
           />
         }
