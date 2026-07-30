@@ -26,6 +26,10 @@ fn accepts_timezone_after_cadence_contextual_bare_hour() {
             "Create a report every weekday at 9 America/Los_Angeles",
             "America/Los_Angeles",
         ),
+        (
+            "Summarize ET markets every weekday at 9 PT",
+            "America/Los_Angeles",
+        ),
     ] {
         let request = schedule_request(prompt);
         assert_eq!(

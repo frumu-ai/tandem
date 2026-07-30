@@ -9,11 +9,32 @@ use tandem_types::{EngineEvent, MessagePart, MessagePartInput};
 
 use super::{extract_todo_candidates_from_text, tool_result_keep_recent, truncate_text};
 
+fn plan_fallback_event_properties(
+    session_id: &str,
+    run_id: Option<&str>,
+    mut properties: Value,
+) -> Value {
+    {
+        let properties = properties
+            .as_object_mut()
+            .expect("plan fallback event properties must be an object");
+        properties.insert(
+            "sessionID".to_string(),
+            Value::String(session_id.to_string()),
+        );
+        if let Some(run_id) = run_id {
+            properties.insert("runID".to_string(), Value::String(run_id.to_string()));
+        }
+    }
+    properties
+}
+
 pub(super) async fn emit_plan_todo_fallback(
     storage: std::sync::Arc<Storage>,
     bus: &EventBus,
     session_id: &str,
     message_id: &str,
+    run_id: Option<&str>,
     completion: &str,
 ) {
     let todos = extract_todo_candidates_from_text(completion);
@@ -30,7 +51,7 @@ pub(super) async fn emit_plan_todo_fallback(
     let call_id = invoke_part.id.clone();
     bus.publish(EngineEvent::new(
         "message.part.updated",
-        json!({"part": invoke_part}),
+        plan_fallback_event_properties(session_id, run_id, json!({"part": invoke_part})),
     ));
 
     if storage.set_todos(session_id, todos.clone()).await.is_err() {
@@ -46,7 +67,7 @@ pub(super) async fn emit_plan_todo_fallback(
         failed_part.error = Some("failed to persist plan todos".to_string());
         bus.publish(EngineEvent::new(
             "message.part.updated",
-            json!({"part": failed_part}),
+            plan_fallback_event_properties(session_id, run_id, json!({"part": failed_part})),
         ));
         return;
     }
@@ -62,14 +83,11 @@ pub(super) async fn emit_plan_todo_fallback(
     result_part.id = call_id;
     bus.publish(EngineEvent::new(
         "message.part.updated",
-        json!({"part": result_part}),
+        plan_fallback_event_properties(session_id, run_id, json!({"part": result_part})),
     ));
     bus.publish(EngineEvent::new(
         "todo.updated",
-        json!({
-            "sessionID": session_id,
-            "todos": normalized
-        }),
+        plan_fallback_event_properties(session_id, run_id, json!({"todos": normalized})),
     ));
 }
 
@@ -78,6 +96,7 @@ pub(super) async fn emit_plan_question_fallback(
     bus: &EventBus,
     session_id: &str,
     message_id: &str,
+    run_id: Option<&str>,
     completion: &str,
 ) {
     let trimmed = completion.trim();
@@ -121,23 +140,26 @@ pub(super) async fn emit_plan_question_fallback(
         .ok();
     bus.publish(EngineEvent::new(
         "question.asked",
-        json!({
-            "id": request
-                .as_ref()
-                .map(|req| req.id.clone())
-                .unwrap_or_else(|| format!("q-{}", Uuid::new_v4())),
-            "sessionID": session_id,
-            "messageID": message_id,
-            "questions": question_payload,
-            "tool": request.and_then(|req| {
-                req.tool.map(|tool| {
-                    json!({
-                        "callID": tool.call_id,
-                        "messageID": tool.message_id
+        plan_fallback_event_properties(
+            session_id,
+            run_id,
+            json!({
+                "id": request
+                    .as_ref()
+                    .map(|req| req.id.clone())
+                    .unwrap_or_else(|| format!("q-{}", Uuid::new_v4())),
+                "messageID": message_id,
+                "questions": question_payload,
+                "tool": request.and_then(|req| {
+                    req.tool.map(|tool| {
+                        json!({
+                            "callID": tool.call_id,
+                            "messageID": tool.message_id
+                        })
                     })
                 })
-            })
-        }),
+            }),
+        ),
     ));
 }
 

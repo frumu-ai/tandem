@@ -15,6 +15,7 @@ fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         .expect("env test lock")
 }
 
+mod fallback_correlation;
 mod suite_a;
 mod suite_b;
 

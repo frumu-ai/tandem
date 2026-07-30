@@ -140,7 +140,7 @@ fn timezone_from_prompt_token(raw_token: &str) -> Option<String> {
     })
 }
 
-fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
+fn prompt_clock_time(prompt: &str) -> Option<(u8, u8, Option<String>)> {
     let tokens = prompt
         .split_whitespace()
         .filter_map(|raw_token| {
@@ -156,6 +156,9 @@ fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
             continue;
         };
         let suffix = tokens.get(index + 2);
+        let has_split_meridiem = suffix
+            .map(|(token, _)| token.as_str())
+            .is_some_and(|token| matches!(token, "am" | "pm"));
         let combined = match suffix.map(|(token, _)| token.as_str()) {
             Some(suffix @ ("am" | "pm")) => format!("{next}{suffix}"),
             _ => next.clone(),
@@ -169,18 +172,30 @@ fn prompt_clock_time(prompt: &str) -> Option<(u8, u8)> {
         };
         let allow_bare_hour =
             suffix_allows_bare_hour && bare_hour_has_temporal_context(&tokens, index);
-        if let Some(time) = parse_prompt_clock_time(&combined, allow_bare_hour) {
-            return Some(time);
+        if let Some((hour, minute)) = parse_prompt_clock_time(&combined, allow_bare_hour) {
+            let timezone_index = index + if has_split_meridiem { 3 } else { 2 };
+            let timezone = tokens
+                .get(timezone_index)
+                .and_then(|(_, raw_token)| timezone_from_prompt_token(raw_token));
+            return Some((hour, minute, timezone));
         }
     }
     for (index, (token, _)) in tokens.iter().enumerate() {
-        let combined = match tokens.get(index + 1).map(|(token, _)| token.as_str()) {
+        let suffix = tokens.get(index + 1);
+        let has_split_meridiem = suffix
+            .map(|(token, _)| token.as_str())
+            .is_some_and(|token| matches!(token, "am" | "pm"));
+        let combined = match suffix.map(|(token, _)| token.as_str()) {
             Some(suffix @ ("am" | "pm")) => format!("{token}{suffix}"),
             _ => token.clone(),
         };
         if combined.contains(':') || combined.ends_with("am") || combined.ends_with("pm") {
-            if let Some(time) = parse_prompt_clock_time(&combined, false) {
-                return Some(time);
+            if let Some((hour, minute)) = parse_prompt_clock_time(&combined, false) {
+                let timezone_index = index + if has_split_meridiem { 2 } else { 1 };
+                let timezone = tokens
+                    .get(timezone_index)
+                    .and_then(|(_, raw_token)| timezone_from_prompt_token(raw_token));
+                return Some((hour, minute, timezone));
             }
         }
     }
@@ -240,12 +255,12 @@ fn infer_prompt_schedule<M: Clone>(
         (false, false, true, false, false) => "*",
         _ => return None,
     };
-    let (hour, minute) = prompt_clock_time(prompt)?;
+    let (hour, minute, attached_timezone) = prompt_clock_time(prompt)?;
     Some(AutomationV2Schedule {
         schedule_type: AutomationV2ScheduleType::Cron,
         cron_expression: Some(format!("{minute} {hour} * * {day_expression}")),
         interval_seconds: None,
-        timezone: prompt_timezone(prompt, timezone),
+        timezone: attached_timezone.unwrap_or_else(|| prompt_timezone(prompt, timezone)),
         misfire_policy,
     })
 }

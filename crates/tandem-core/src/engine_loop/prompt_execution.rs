@@ -1728,6 +1728,7 @@ impl EngineLoop {
                 &self.event_bus,
                 &session_id,
                 &user_message_id,
+                run_ref,
                 &completion,
             )
             .await;
@@ -1738,6 +1739,7 @@ impl EngineLoop {
                     &self.event_bus,
                     &session_id,
                     &user_message_id,
+                    run_ref,
                     &completion,
                 )
                 .await;
