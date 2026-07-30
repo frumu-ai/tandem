@@ -193,21 +193,20 @@ impl EngineLoop {
                     active_agent.name
                 )
             } else {
-                match self
-                    .execute_tool_with_permission(
-                        &session_id,
-                        &user_message_id,
-                        run_ref,
-                        tool.clone(),
-                        args,
-                        None,
-                        active_agent.skills.as_deref(),
-                        &text,
-                        requested_write_required,
-                        None,
-                        cancel.clone(),
-                    )
-                    .await
+                match Box::pin(self.execute_tool_with_permission(
+                    &session_id,
+                    &user_message_id,
+                    run_ref,
+                    tool.clone(),
+                    args,
+                    None,
+                    active_agent.skills.as_deref(),
+                    &text,
+                    requested_write_required,
+                    None,
+                    cancel.clone(),
+                ))
+                .await
                 {
                     Ok(output) => output.unwrap_or_default(),
                     Err(err) => {

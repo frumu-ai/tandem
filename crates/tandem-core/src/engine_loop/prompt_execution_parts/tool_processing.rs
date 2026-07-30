@@ -269,21 +269,20 @@
                             Vec::new()
                         };
                         let provider_call_id = call_id.clone();
-                        let tool_output_result = self
-                            .execute_tool_with_permission(
-                                &session_id,
-                                &user_message_id,
-                                run_ref,
-                                tool,
-                                effective_args,
-                                call_id,
-                                active_agent.skills.as_deref(),
-                                &text,
-                                requested_write_required,
-                                Some(&completion),
-                                cancel.clone(),
-                            )
-                            .await;
+                        let tool_output_result = Box::pin(self.execute_tool_with_permission(
+                            &session_id,
+                            &user_message_id,
+                            run_ref,
+                            tool,
+                            effective_args,
+                            call_id,
+                            active_agent.skills.as_deref(),
+                            &text,
+                            requested_write_required,
+                            Some(&completion),
+                            cancel.clone(),
+                        ))
+                        .await;
                         let Some(output) = (match tool_output_result {
                             Ok(output) => output,
                             Err(err) => {
