@@ -1,12 +1,18 @@
 import { PanelCard } from "../../ui/index.tsx";
 import type { Note } from "./NotesList";
 
+export type NoteUpdate = {
+  title?: string;
+  content?: string;
+  updatedAt: number;
+};
+
 export function NoteEditor({
   note,
   onUpdate,
 }: {
   note: Note;
-  onUpdate: (note: Note) => void;
+  onUpdate: (noteId: string, update: NoteUpdate) => void;
 }) {
   return (
     <PanelCard title={note.title || "Untitled Note"} fullHeight>
@@ -17,8 +23,7 @@ export function NoteEditor({
           value={note.title}
           placeholder="Note title"
           onChange={(event) =>
-            onUpdate({
-              ...note,
+            onUpdate(note.id, {
               title: event.target.value,
               updatedAt: Date.now(),
             })
@@ -29,8 +34,7 @@ export function NoteEditor({
           placeholder="Start typing your note here..."
           value={note.content}
           onChange={(event) =>
-            onUpdate({
-              ...note,
+            onUpdate(note.id, {
               content: event.target.value,
               updatedAt: Date.now(),
             })

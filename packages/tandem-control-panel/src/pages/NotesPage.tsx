@@ -3,15 +3,28 @@ import { AnimatedPage, SplitView, EmptyState } from "../ui/index.tsx";
 import {
   NotesList,
   loadNotes,
+  notesStorageKey,
   saveNotes,
   type Note,
 } from "../features/notes/NotesList";
-import { NoteEditor } from "../features/notes/NoteEditor";
+import { NoteEditor, type NoteUpdate } from "../features/notes/NoteEditor";
 import type { AppPageProps } from "./pageTypes";
 
 const NOTES_LOAD_ERROR = "Notes could not be loaded for this account.";
 const NOTES_SAVE_ERROR =
   "Notes could not be saved in this browser. Check storage permissions or available space.";
+
+function createNoteId(): string {
+  const browserCrypto = globalThis.crypto as Crypto | undefined;
+  const uuid = browserCrypto?.randomUUID?.();
+  if (uuid) return uuid;
+  if (browserCrypto?.getRandomValues) {
+    const bytes = new Uint32Array(4);
+    browserCrypto.getRandomValues(bytes);
+    return `note-${Array.from(bytes, (value) => value.toString(16).padStart(8, "0")).join("")}`;
+  }
+  return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 export function NotesPage({ principalId, toast }: AppPageProps) {
   const [notes, setNotes] = useState<Note[]>([]);
@@ -21,19 +34,43 @@ export function NotesPage({ principalId, toast }: AppPageProps) {
 
   useEffect(() => {
     setSelectedNoteId(null);
+    let storageKey: string;
     try {
-      setNotes(loadNotes(principalId));
+      storageKey = notesStorageKey(principalId);
+      const storedNotes = loadNotes(principalId);
+      setNotes(storedNotes);
       setStorageError(null);
     } catch {
       setNotes([]);
       setStorageError(NOTES_LOAD_ERROR);
+      return;
     }
+
+    const syncFromStorage = (event: StorageEvent) => {
+      if (event.storageArea !== localStorage || event.key !== storageKey) return;
+      try {
+        const storedNotes = loadNotes(principalId);
+        setNotes(storedNotes);
+        setSelectedNoteId((currentId) =>
+          currentId && storedNotes.some((note) => note.id === currentId) ? currentId : null
+        );
+        setStorageError(null);
+      } catch {
+        setStorageError(NOTES_LOAD_ERROR);
+      }
+    };
+    window.addEventListener("storage", syncFromStorage);
+    return () => window.removeEventListener("storage", syncFromStorage);
   }, [principalId]);
 
-  const persistNotes = (nextNotes: Note[]): boolean => {
+  const persistNotes = (mutate: (storedNotes: Note[]) => Note[]): boolean => {
     try {
+      const nextNotes = mutate(loadNotes(principalId));
       saveNotes(principalId, nextNotes);
       setNotes(nextNotes);
+      setSelectedNoteId((currentId) =>
+        currentId && nextNotes.some((note) => note.id === currentId) ? currentId : null
+      );
       setStorageError(null);
       return true;
     } catch {
@@ -46,23 +83,33 @@ export function NotesPage({ principalId, toast }: AppPageProps) {
   const createNote = () => {
     const now = Date.now();
     const note: Note = {
-      id: crypto.randomUUID(),
+      id: createNoteId(),
       title: "New Note",
       content: "",
       createdAt: now,
       updatedAt: now,
     };
-    if (persistNotes([note, ...notes])) {
+    if (
+      persistNotes((storedNotes) => [
+        note,
+        ...storedNotes.filter((storedNote) => storedNote.id !== note.id),
+      ])
+    ) {
       setSelectedNoteId(note.id);
     }
   };
 
-  const updateNote = (updatedNote: Note) => {
-    persistNotes(notes.map((note) => (note.id === updatedNote.id ? updatedNote : note)));
+  const updateNote = (noteId: string, update: NoteUpdate) => {
+    persistNotes((storedNotes) =>
+      storedNotes.map((note) => (note.id === noteId ? { ...note, ...update } : note))
+    );
   };
 
   const deleteNote = (noteId: string) => {
-    if (persistNotes(notes.filter((note) => note.id !== noteId)) && selectedNoteId === noteId) {
+    if (
+      persistNotes((storedNotes) => storedNotes.filter((note) => note.id !== noteId)) &&
+      selectedNoteId === noteId
+    ) {
       setSelectedNoteId(null);
     }
   };

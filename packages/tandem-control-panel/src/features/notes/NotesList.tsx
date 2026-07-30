@@ -10,7 +10,7 @@ export type Note = {
 
 const STORAGE_KEY_PREFIX = "tandem-control-panel-notes";
 
-function notesStorageKey(principalId: string): string {
+export function notesStorageKey(principalId: string): string {
   const normalizedPrincipalId = principalId.trim();
   if (!normalizedPrincipalId) {
     throw new Error("A principal ID is required to access notes.");
@@ -87,25 +87,23 @@ export function NotesList({
             {notes.map((note) => (
               <div
                 key={note.id}
-                className="flex items-center justify-between gap-3 p-3 rounded-lg border border-white/6 bg-white/3 hover:bg-white/6 cursor-pointer"
-                onClick={() => onSelectNote(note.id)}
-                aria-current={selectedNoteId === note.id ? "true" : undefined}
+                className="flex items-center justify-between gap-3 rounded-lg border border-white/6 bg-white/3 p-3 hover:bg-white/6"
               >
-                <div className="min-w-0">
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 text-left"
+                  aria-label={`Open note ${note.title || "Untitled Note"}`}
+                  aria-pressed={selectedNoteId === note.id}
+                  onClick={() => onSelectNote(note.id)}
+                >
                   <div className="font-semibold truncate">
                     {note.title || "Untitled Note"}
                   </div>
                   <div className="text-xs tcp-subtle mt-0.5 truncate">
                     {note.content || "No content"}
                   </div>
-                </div>
-                <IconButton
-                  aria-label="Delete note"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onDeleteNote(note.id);
-                  }}
-                >
+                </button>
+                <IconButton aria-label="Delete note" onClick={() => onDeleteNote(note.id)}>
                   <Icon name="trash-2" />
                 </IconButton>
               </div>
