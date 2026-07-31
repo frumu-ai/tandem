@@ -6199,7 +6199,7 @@ dependencies = [
 
 [[package]]
 name = "tandem"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6262,7 +6262,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-agent-teams"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6271,7 +6271,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-core"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6298,7 +6298,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-data-boundary"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "serde",
  "sha2",
@@ -6306,7 +6306,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-document"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "calamine",
  "pdf-extract",
@@ -6317,7 +6317,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-enterprise-contract"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6330,7 +6330,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-graph-core"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6339,7 +6339,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-memory"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6368,7 +6368,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-observability"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6382,7 +6382,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-orchestrator"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6391,7 +6391,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-providers"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -6411,7 +6411,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-repo-intelligence"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "ignore",
  "serde",
@@ -6423,7 +6423,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-skills"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -6435,7 +6435,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-tools"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6465,7 +6465,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-types"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "chrono",
  "serde",
@@ -6477,7 +6477,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-wire"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "chrono",
  "serde",

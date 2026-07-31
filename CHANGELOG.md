@@ -5,6 +5,110 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-07-31
+
+### Added
+
+- Added deterministic release-security evidence: signed runtime artifact
+  manifests, per-artifact SPDX SBOMs and provenance, an 848-route policy
+  inventory, a machine-checked boundary-retest matrix, all-history secret
+  scanning, CodeQL security-extended analysis, container hardening checks, and
+  a protected-environment evidence gate for future hosted releases.
+  (#1921, #1924, #1925)
+- Added a principal-scoped local Notes workspace in the Control Panel with
+  keyboard-accessible selection, confirmed deletion, corruption recovery,
+  cross-tab reconciliation, debounced persistence, teardown flushing, and
+  visible storage-failure handling. (#1927)
+
+### Changed
+
+- Host-level operations now use a centralized authorization contract with exact
+  tenant, actor, resource, action, and argument binding; protected audit before
+  effect; short-lived grants; and final-boundary revalidation. Hosted resources
+  use opaque ids and tenant-owned leases, managed worktree operations are
+  server-resolved, direct PTY and public orphan-cleanup routes are removed, and
+  standalone-owner authority is restricted to verified loopback operation.
+  (#1915, #1916)
+- `POST /session/{id}/command` now accepts fixed command ids instead of
+  caller-selected executables, arguments, or working directories. File
+  search/read is confined to canonical workspaces with bounded traversal and
+  output; public `/global/health` exposes only `healthy` and `ready`, with
+  redacted details moved to admin-gated `/global/diagnostics`; and custom Web UI
+  prefixes are confined to `/ui`. (#1915)
+- Permission requests, standing rules, questions, workflow gates, governance
+  transitions, and approvals are now tenant-scoped and bound to the requester,
+  session/run, exact action or ordered execution plan, expiry, and one-time
+  state. High-impact decisions require an eligible independent reviewer, and
+  cross-tenant identifiers remain opaque. (#1917)
+- Hosted and enterprise context assertions now require explicit key
+  purpose/status metadata, signature-first verification, bounded lifetimes,
+  and durable cross-process replay protection. Protected audit and encrypted
+  protected-state integrity now require valid keyed authority and external
+  anchors in hosted posture; local deployments retain explicit migration
+  paths. (#1920, #1923)
+
+### Fixed
+
+- Product-authoring requests now route through the workflow/automation planner
+  even when the global tool-router rollout flag is disabled, while unrelated
+  chat intents retain their existing opt-in behavior. (#1913)
+- Workflow planning now preserves the authenticated chat model, infers
+  weekday/weekend/daily schedules with their requested time and timezone,
+  defaults provider/model selection without overriding an intentional Disabled
+  choice, supports full weekday cron names, and hides internal tenant/header/
+  channel provider records from user-facing lists. (#1914)
+- Runtime events and persisted tool results now retain trusted session/run
+  correlation across provider tools, plan fallbacks, progress, and terminal
+  stream handling. Planner fallback scheduling recognizes cadence-qualified
+  bare hours and attached timezone suffixes without confusing counts for times,
+  and large tool futures are boxed to prevent debug-build stack exhaustion.
+  (#1927)
+
+### Security
+
+- Centralized host-effect authorization and tenant-scoped approval/governance
+  state close cross-tenant, self-approval, replay, action-substitution, path,
+  symlink, lease, and audit-before-effect gaps across commands, files, browser
+  installation, storage repair, worktrees, workflows, and governance APIs.
+  (#1915, #1916, #1917)
+- Shared channel, provider, MCP, global, and pack mutations now require exact
+  tenant-bound administrative authority. Credentials stay tenant/connection
+  scoped; outbound requests enforce immutable public-HTTPS origins, DNS
+  pinning, disabled redirects, and bounded bodies; pack lifecycle operations
+  reject traversal, aliases, decompression abuse, verification bypasses,
+  partial commits, and index/file races. (#1918)
+- Webhook admission now applies pre-auth rate limits, provider body ceilings,
+  and digest-only bounded rejection telemetry. Notion setup uses one-time
+  expiring challenges, webhook secrets migrate to tenant/trigger-bound
+  encrypted storage, and Discord interactions require freshness plus durable
+  cross-process replay claims. (#1919)
+- Runtime and ACA context assertions now share fail-closed verification,
+  signature-before-claims parsing, issuer/audience/resource consistency checks,
+  immutable runtime security snapshots, authorized key reload, and a
+  crash-durable bounded SQLite replay ledger. (#1920)
+- Browser and desktop engine installation now requires a pinned-key Minisign
+  manifest, exact target metadata, bounded streaming SHA-256 verification, safe
+  archives, version probing, and atomic activation with rollback. Release
+  workflows generate and verify signed manifests, SBOMs, and provenance before
+  publication, pin third-party actions, and limit write permissions and signing
+  secrets to the jobs and steps that need them. (#1921)
+- Protected audit ledgers and encrypted-store heads now use domain-separated,
+  key-id-bound HMAC-SHA256 with rotation/revocation keyrings and independently
+  stored authenticated anchors. Keyed writes and legacy migrations publish
+  transactionally with cross-process locking and exact rollback. Local memory
+  keys and Windows key/anchor paths enforce atomic creation, ownership,
+  permissions/ACLs, type, link, and reparse-point checks. (#1923)
+- Channel enrollment, step-up grants, and Slack sender inventory now require
+  exact deployment-administrator authority in hosted mode. CI verifies the
+  complete route-policy inventory and the positive/negative security-boundary
+  retest matrix. (#1924)
+- Rust and JavaScript dependency audits, expiring exception policy, secret-file
+  history checks, hardened non-root/read-only Compose images, SBOM generation,
+  and blocking fixable high/critical image scanning strengthen the release
+  supply chain. Hosted-enterprise publication remains fail closed until a real
+  deployment supplies the required TLS, KMS/IAM, proxy, replica, and egress
+  evidence. (#1925)
+
 ## [0.7.1] - 2026-07-17
 
 ### Added
@@ -610,7 +714,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fixed channel runs surfacing expired-token `ENGINE_ERROR:
-  AUTHENTICATION_ERROR` failures to Telegram/Discord/Slack users. The engine
+AUTHENTICATION_ERROR` failures to Telegram/Discord/Slack users. The engine
   now forces Codex OAuth refresh and retries once, while channel replies hide
   genuine auth failures behind a short operator-notified message.
 - Fixed false-positive channel sanitization where a valid assistant response

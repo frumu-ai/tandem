@@ -311,6 +311,22 @@ jobs:
         shell: pwsh
         run: cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-tui -p tandem-browser --features tandem-ai/browser,tandem-ai/enterprise
 
+      - name: Verify Linux engine matches reviewed Docker pin
+        if: ${{ matrix.platform == 'ubuntu-22.04' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned_sha="$(
+            sed -nE \
+              's/^[[:space:]]*TANDEM_ENGINE_BINARY_SHA256=([0-9a-f]{64}).*$/\1/p' \
+              packages/tandem-control-panel/docker/engine.Dockerfile
+          )"
+          test "${#pinned_sha}" -eq 64
+          printf '%s  %s\n' \
+            "$pinned_sha" \
+            "target/${{ matrix.target }}/release/tandem-engine" \
+            | sha256sum -c -
+
       - name: Package standalone engine/tui/browser assets (Windows)
         if: ${{ matrix.platform == 'windows-latest' }}
         shell: pwsh

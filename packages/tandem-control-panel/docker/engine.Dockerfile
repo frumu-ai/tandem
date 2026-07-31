@@ -3,8 +3,8 @@ FROM node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe
 ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive \
-  TANDEM_ENGINE_VERSION=0.7.1 \
-  TANDEM_ENGINE_BINARY_SHA256=f07c21e94680d53d3dad96e81239a229d08573fa29305d85290ca339b7f02cae \
+  TANDEM_ENGINE_VERSION=0.7.2 \
+  TANDEM_ENGINE_BINARY_SHA256=5286e28a15aaf5e3c61b785a45fb186697ac7ef40499e4fef2c0cbc23c852846 \
   HOME=/var/lib/tandem/engine \
   XDG_CACHE_HOME=/var/lib/tandem/engine/.cache \
   npm_config_update_notifier=false \
