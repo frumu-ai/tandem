@@ -134,10 +134,14 @@ same stable Rust toolchain as `.github/workflows/release.yml`. Binary digests
 from another distribution are not interchangeable:
 
 ```bash
+# Set this once to the version being prepared. Leaving the placeholder in place
+# makes the bump script fail instead of accidentally rebuilding an old release.
+export RELEASE_VERSION="<version>"
+
 # Local-only first pass so the candidate binary embeds the new package version.
 # Never stage or commit this temporary checksum.
 TANDEM_ENGINE_BINARY_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
-  ./scripts/bump-version.sh 0.7.2
+  ./scripts/bump-version.sh "$RELEASE_VERSION"
 
 cargo build --release \
   --target x86_64-unknown-linux-gnu \
@@ -149,7 +153,7 @@ sha256sum ./target/x86_64-unknown-linux-gnu/release/tandem-engine
 
 # Finalize immediately with the real digest printed above.
 TANDEM_ENGINE_BINARY_SHA256=<extracted-binary-sha256> \
-  ./scripts/bump-version.sh 0.7.2
+  ./scripts/bump-version.sh "$RELEASE_VERSION"
 ```
 
 Before committing, verify that no temporary all-zero checksum remains. The
