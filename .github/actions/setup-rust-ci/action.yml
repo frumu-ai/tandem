@@ -13,6 +13,10 @@ inputs:
     description: Optional rustup compilation targets.
     required: false
     default: ""
+  toolchain:
+    description: Rust toolchain channel or exact version.
+    required: false
+    default: stable
   workspaces:
     description: Workspace to target-directory mappings for rust-cache.
     required: false
@@ -24,6 +28,7 @@ runs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       with:
+        toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 

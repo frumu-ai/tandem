@@ -36,6 +36,7 @@ $packages = @(
     "packages/tandem-enterprise",
     "packages/tandem-tui",
     "packages/tandem-client-ts",
+    "packages/create-tandem-panel",
     "packages/tandem-control-panel"
 )
 
