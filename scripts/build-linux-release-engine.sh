@@ -80,10 +80,10 @@ readonly BUILD_DIR="$TARGET_DIR/$TARGET/release"
 readonly OUTPUT_DIR="target/$TARGET/release"
 
 rustc --version
-cc --version | head -n 1
-ld --version | head -n 1
+cc --version
+ld --version
 pkg-config --version
-ldd --version | head -n 1
+ldd --version
 
 if [[ "$mode" == "with-enterprise" ]]; then
   readonly ORT_ARCHIVE="/cargo-home/onnxruntime-$ORT_ARCHIVE_SHA256.tgz"

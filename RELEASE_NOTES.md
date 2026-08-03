@@ -166,6 +166,11 @@ finish. A 32-byte all-hex prefix from a non-cooperating external writer is
 rejected instead of being accepted as a complete legacy raw key; persistently
 short or malformed files still fail closed.
 
+All JavaScript workspaces now force patched PostCSS resolutions (8.5.23 or
+newer), and the desktop workspace pins brace-expansion 5.0.9. These close newly
+disclosed source-map file-read and brace expansion denial-of-service advisories
+that the release lockfile audit detected.
+
 Pre-publication container assurance builds the exact local `@frumu/tandem`
 package and Linux engine candidate without depending on an npm package or
 GitHub release that does not exist until publication. PR assurance and tagged

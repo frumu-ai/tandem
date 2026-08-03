@@ -108,6 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supply chain. Hosted-enterprise publication remains fail closed until a real
   deployment supplies the required TLS, KMS/IAM, proxy, replica, and egress
   evidence. (#1925)
+- JavaScript workspace overrides now pin PostCSS 8.5.23-or-newer fixes and
+  brace-expansion 5.0.9, closing newly disclosed source-map file-read and brace
+  expansion denial-of-service advisories before release.
 - Pre-publication container assurance now builds and scans the exact local npm
   package and Linux engine candidate instead of requiring artifacts that do not
   exist until publication. PR assurance and tagged releases use the same
