@@ -169,9 +169,11 @@ short or malformed files still fail closed.
 Pre-publication container assurance builds the exact local `@frumu/tandem`
 package and Linux engine candidate without depending on an npm package or
 GitHub release that does not exist until publication. PR assurance and tagged
-releases use the same network-isolated, digest-pinned Rust/Bullseye build
-environment, statically link OpenSSL for Ubuntu 22.04-and-newer compatibility,
-and verify the reviewed SHA-256. The generated panel scaffold exact-pins the
+releases use the same network-isolated, digest-pinned Ubuntu 22.04/Rust 1.95.0
+build environment, statically link OpenSSL for Ubuntu 22.04-and-newer
+compatibility, prefetch and checksum-verify the locked ONNX Runtime archive for
+enterprise builds, and verify the reviewed engine SHA-256. The generated panel
+scaffold exact-pins the
 0.7.2 runtime and client, then refreshes their authoritative npm integrities
 after those dependencies publish and before the scaffold is packed.
 (#1928)

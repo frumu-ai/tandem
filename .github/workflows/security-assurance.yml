@@ -108,6 +108,11 @@ jobs:
             dockerfile: packages/tandem-control-panel/docker/control-panel.Dockerfile
             image: tandem-control-panel:security-assurance
             build_args: ""
+          - name: linux-release-builder
+            runner: ubuntu-22.04
+            dockerfile: scripts/linux-release-builder.Dockerfile
+            image: tandem-linux-release-builder:security-assurance
+            build_args: ""
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

@@ -133,7 +133,8 @@ Prepare the checksum in an isolated release worktree with the repository
 digest-pinned Linux x64 builder, matching the release workflow. The builder
 freezes Rust 1.95.0, glibc, GCC, binutils, and pkg-config, statically links
 OpenSSL, and requires the final engine to execute on the Ubuntu 22.04 release
-host:
+host. Enterprise mode also prefetches and checksum-verifies the locked ONNX
+Runtime archive before the network-isolated build:
 
 ```bash
 # Set this once to the version being prepared. Leaving the placeholder in place

@@ -111,9 +111,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pre-publication container assurance now builds and scans the exact local npm
   package and Linux engine candidate instead of requiring artifacts that do not
   exist until publication. PR assurance and tagged releases use the same
-  network-isolated, digest-pinned Rust/Bullseye build environment, statically
-  link OpenSSL for Ubuntu 22.04-and-newer compatibility, and verify the reviewed
-  engine SHA-256 before publication. Concurrent local encrypted-memory
+  network-isolated, digest-pinned Ubuntu 22.04/Rust 1.95.0 build environment,
+  statically link OpenSSL for Ubuntu 22.04-and-newer compatibility, prefetch and
+  checksum-verify the locked ONNX Runtime archive for enterprise builds, and
+  verify the reviewed engine SHA-256 before publication. Concurrent local
+  encrypted-memory
   startup writes unambiguous 64-character hexadecimal keys
   and rejects partial hexadecimal prefixes from non-cooperating writers.
   Release preparation also exact-pins scaffold runtime dependencies and
