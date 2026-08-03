@@ -491,7 +491,10 @@ fn local_key_path() -> PathBuf {
 /// owner-only access on first use.
 fn load_or_create_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN]> {
     match open_existing_local_key(path) {
-        Ok(file) => return read_validated_local_key(path, file),
+        // Another process can create the file between its own existence check
+        // and write. Treat an existing short file as an in-progress atomic
+        // creation instead of rejecting a valid concurrent startup.
+        Ok(_) => return read_concurrently_created_local_key(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(MemoryError::InvalidConfig(format!(
@@ -1044,6 +1047,26 @@ mod tests {
         assert_eq!(
             first.join().expect("first creator").expect("first key"),
             second.join().expect("second creator").expect("second key")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_key_reader_waits_for_concurrent_writer_to_finish() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let key_path = Arc::new(dir.path().join("local_memory.key"));
+        let mut writer = create_local_key_file(&key_path).expect("reserve key file");
+        let reader_path = key_path.clone();
+        let reader = std::thread::spawn(move || load_or_create_local_key(&reader_path));
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let expected = [42u8; KEY_LEN];
+        writer.write_all(&expected).expect("complete key file");
+        writer.sync_all().expect("sync key file");
+
+        assert_eq!(
+            reader.join().expect("reader thread").expect("reader key"),
+            expected
         );
     }
 

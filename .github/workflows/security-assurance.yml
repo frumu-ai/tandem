@@ -92,22 +92,56 @@ jobs:
 
   containers:
     name: Container ${{ matrix.name }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: engine
+            runner: ubuntu-22.04
             dockerfile: packages/tandem-control-panel/docker/engine.Dockerfile
             image: tandem-engine:security-assurance
-            build_args: ""
+            build_args: TANDEM_ENGINE_INSTALL_SOURCE=candidate
           - name: control-panel
+            runner: ubuntu-24.04
             dockerfile: packages/tandem-control-panel/docker/control-panel.Dockerfile
             image: tandem-control-panel:security-assurance
             build_args: ""
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup release Rust toolchain
+        if: matrix.name == 'engine'
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-profile: security-assurance-engine-release
+          targets: x86_64-unknown-linux-gnu
+          toolchain: 1.95.0
+
+      - name: Build exact engine container candidate
+        if: matrix.name == 'engine'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --target x86_64-unknown-linux-gnu \
+            -p tandem-ai -p tandem-tui -p tandem-browser \
+            --features tandem-ai/browser,tandem-ai/enterprise
+
+          candidate_dir=packages/tandem-control-panel/docker/release-candidate
+          cp target/x86_64-unknown-linux-gnu/release/tandem-engine \
+            "$candidate_dir/tandem-engine"
+          chmod 0555 "$candidate_dir/tandem-engine"
+          npm pack ./packages/tandem-engine --pack-destination "$candidate_dir"
+
+          pinned_sha="$(
+            sed -nE \
+              's/^[[:space:]]*TANDEM_ENGINE_BINARY_SHA256=([0-9a-f]{64}).*$/\1/p' \
+              packages/tandem-control-panel/docker/engine.Dockerfile
+          )"
+          printf '%s  %s\n' "$pinned_sha" "$candidate_dir/tandem-engine" \
+            | sha256sum -c -
+          "$candidate_dir/tandem-engine" --version | grep -F '0.7.2'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3

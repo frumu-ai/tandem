@@ -160,6 +160,14 @@ ownership and DACLs. Unsafe permissions, aliases, links, ownership, malformed
 data, missing anchors, rollback, deletion, and head substitution fail closed.
 (#1923)
 
+Concurrent local encrypted-memory startup now waits for an owner-only key file
+created by another starter to become complete before validating it. All
+starters converge on the same key, while persistently short or malformed files
+still fail closed. Pre-publication container assurance builds the exact local
+`@frumu/tandem` package and pinned Ubuntu 22.04 engine candidate, verifies its
+version and SHA-256, then scans that image without depending on an npm package
+or GitHub release that does not exist until publication. (#1928)
+
 ### Route, Supply-Chain, And Deployment Assurance
 
 CI now maintains a deterministic inventory of all 848 discovered production
