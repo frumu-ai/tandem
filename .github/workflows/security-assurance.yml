@@ -110,6 +110,35 @@ jobs:
             build_args: ""
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect reviewed engine pin change
+        id: engine-pin
+        if: matrix.name == 'engine'
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request) base_sha="$PULL_REQUEST_BASE_SHA" ;;
+            push) base_sha="$PUSH_BEFORE_SHA" ;;
+            *)
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          if [[ -z "$base_sha" || "$base_sha" == 0000000000000000000000000000000000000000 ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$base_sha" "$GITHUB_SHA" -- \
+            packages/tandem-control-panel/docker/engine.Dockerfile; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup release Rust toolchain
         if: matrix.name == 'engine'
@@ -120,6 +149,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Build exact engine container candidate
+        id: engine-candidate
         if: matrix.name == 'engine'
         shell: bash
         run: |
@@ -134,13 +164,18 @@ jobs:
           chmod 0555 "$candidate_dir/tandem-engine"
           npm pack ./packages/tandem-engine --pack-destination "$candidate_dir"
 
-          pinned_sha="$(
-            sed -nE \
-              's/^[[:space:]]*TANDEM_ENGINE_BINARY_SHA256=([0-9a-f]{64}).*$/\1/p' \
-              packages/tandem-control-panel/docker/engine.Dockerfile
-          )"
-          printf '%s  %s\n' "$pinned_sha" "$candidate_dir/tandem-engine" \
-            | sha256sum -c -
+          candidate_sha="$(sha256sum "$candidate_dir/tandem-engine" | cut -d ' ' -f 1)"
+          echo "sha256=$candidate_sha" >> "$GITHUB_OUTPUT"
+          if [[ "${{ steps.engine-pin.outputs.changed }}" == true ]]; then
+            pinned_sha="$(
+              sed -nE \
+                's/^[[:space:]]*TANDEM_ENGINE_BINARY_SHA256=([0-9a-f]{64}).*$/\1/p' \
+                packages/tandem-control-panel/docker/engine.Dockerfile
+            )"
+            printf 'Pinned SHA-256: %s\nCandidate SHA-256: %s\n' \
+              "$pinned_sha" "$candidate_sha"
+            test "$candidate_sha" = "$pinned_sha"
+          fi
           expected_version="$(node -p \
             "require('./packages/tandem-engine/package.json').version")"
           "$candidate_dir/tandem-engine" --version | grep -F "$expected_version"
@@ -153,7 +188,9 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          build-args: ${{ matrix.build_args }}
+          build-args: |
+            ${{ matrix.build_args }}
+            ${{ matrix.name == 'engine' && format('TANDEM_ENGINE_CANDIDATE_SHA256={0}', steps.engine-candidate.outputs.sha256) || '' }}
           load: true
           pull: true
           tags: ${{ matrix.image }}

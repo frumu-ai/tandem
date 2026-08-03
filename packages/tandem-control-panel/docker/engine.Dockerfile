@@ -2,10 +2,11 @@ FROM node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe
 
 ARG TARGETARCH
 ARG TANDEM_ENGINE_INSTALL_SOURCE=release
+ARG TANDEM_ENGINE_CANDIDATE_SHA256
 
 ENV DEBIAN_FRONTEND=noninteractive \
   TANDEM_ENGINE_VERSION=0.7.2 \
-  TANDEM_ENGINE_BINARY_SHA256=a079e00720261b1bd950f099e18a67129e0b5b2c347c5db4b7631056a787ec73 \
+  TANDEM_ENGINE_BINARY_SHA256=6d63c10b72a12ac10ed6c68215536c27b0be458b7319db63ae9e669f33335001 \
   HOME=/var/lib/tandem/engine \
   XDG_CACHE_HOME=/var/lib/tandem/engine/.cache \
   npm_config_update_notifier=false \
@@ -54,7 +55,13 @@ RUN --mount=type=bind,source=packages/tandem-control-panel/docker/release-candid
   && node -p \
     "require('/usr/local/lib/node_modules/@frumu/tandem/package.json').version" \
     | grep -Fx "${TANDEM_ENGINE_VERSION}" \
-  && printf '%s  %s\n' "${TANDEM_ENGINE_BINARY_SHA256}" \
+  && expected_sha="${TANDEM_ENGINE_BINARY_SHA256}" \
+  && if [ "${TANDEM_ENGINE_INSTALL_SOURCE}" = candidate ]; then \
+      expected_sha="${TANDEM_ENGINE_CANDIDATE_SHA256}"; \
+    fi \
+  && test "${#expected_sha}" -eq 64 \
+  && printf '%s' "${expected_sha}" | grep -Eq '^[0-9a-f]{64}$' \
+  && printf '%s  %s\n' "${expected_sha}" \
     /usr/local/lib/node_modules/@frumu/tandem/bin/native/tandem-engine \
     | sha256sum -c - \
   && /usr/local/lib/node_modules/@frumu/tandem/bin/native/tandem-engine --version \
