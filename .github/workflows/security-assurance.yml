@@ -93,7 +93,7 @@ jobs:
   containers:
     name: Container ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -140,11 +140,11 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Setup release Rust toolchain
+      - name: Setup release Cargo fetch toolchain
         if: matrix.name == 'engine'
         uses: ./.github/actions/setup-rust-ci
         with:
-          cache-profile: security-assurance-engine-release
+          cache-profile: security-assurance-engine-fetch
           targets: x86_64-unknown-linux-gnu
           toolchain: 1.95.0
 
@@ -154,9 +154,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --target x86_64-unknown-linux-gnu \
-            -p tandem-ai -p tandem-tui -p tandem-browser \
-            --features tandem-ai/browser,tandem-ai/enterprise
+          ./scripts/build-linux-release-engine.sh standard
 
           candidate_dir=packages/tandem-control-panel/docker/release-candidate
           cp target/x86_64-unknown-linux-gnu/release/tandem-engine \

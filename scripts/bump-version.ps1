@@ -46,6 +46,7 @@ const cargoFiles = [
   "Cargo.lock",
   "crates/tandem-agent-teams/Cargo.toml",
   "crates/tandem-automation/Cargo.toml",
+  "crates/tandem-incident-monitor/Cargo.toml",
   "crates/tandem-browser/Cargo.toml",
   "crates/tandem-channels/Cargo.toml",
   "crates/tandem-core/Cargo.toml",
@@ -53,6 +54,7 @@ const cargoFiles = [
   "crates/tandem-document/Cargo.toml",
   "crates/tandem-enterprise-contract/Cargo.toml",
   "crates/tandem-enterprise-server/Cargo.toml",
+  "crates/tandem-eval/Cargo.toml",
   "crates/tandem-graph-core/Cargo.toml",
   "crates/tandem-governance-engine/Cargo.toml",
   "crates/tandem-memory/Cargo.toml",
@@ -87,6 +89,38 @@ const updateJson = (relativePath) => {
   // versions; CI runs before the candidate release exists on npm.
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
   updatedFiles.push(relativePath);
+};
+
+const updateScaffoldTemplate = () => {
+  const dependencyNames = ["@frumu/tandem", "@frumu/tandem-client"];
+  const manifestRelativePath = "packages/create-tandem-panel/template/package.json";
+  const manifestPath = path.join(rootDir, manifestRelativePath);
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  for (const name of dependencyNames) {
+    manifest.dependencies[name] = version;
+  }
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  updatedFiles.push(manifestRelativePath);
+
+  const lockRelativePath = "packages/create-tandem-panel/template/package-lock.json";
+  const lockPath = path.join(rootDir, lockRelativePath);
+  const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  const rootPackage = lock.packages[""];
+  for (const name of dependencyNames) {
+    rootPackage.dependencies[name] = version;
+    const entry = lock.packages[`node_modules/${name}`];
+    entry.version = version;
+    entry.resolved =
+      `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`;
+    delete entry.integrity;
+  }
+  const clientManifest = JSON.parse(
+    fs.readFileSync(path.join(rootDir, "packages/tandem-client-ts/package.json"), "utf8")
+  );
+  lock.packages["node_modules/@frumu/tandem-client"].dependencies =
+    clientManifest.dependencies;
+  fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+  updatedFiles.push(lockRelativePath);
 };
 
 const updateEngineDockerPin = () => {
@@ -234,6 +268,7 @@ const stampBuslChangeDates = () => {
 
 updateEngineDockerPin();
 jsonFiles.forEach(updateJson);
+updateScaffoldTemplate();
 cargoFiles.forEach(updateCargo);
 pyprojectFiles.forEach(updatePyproject);
 stampBuslChangeDates();

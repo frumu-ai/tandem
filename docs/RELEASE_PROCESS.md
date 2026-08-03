@@ -129,29 +129,23 @@ The control-panel engine image pins the SHA-256 of the extracted Linux x64
 `tandem-engine` binary, not the compressed release archive. A new version must
 not retain the previous release's digest.
 
-Prepare the checksum in an isolated release worktree using Ubuntu 22.04 and
-Rust 1.95.0, matching `.github/workflows/release.yml`. Binary digests from
-another distribution or compiler version are not interchangeable:
+Prepare the checksum in an isolated release worktree with the repository
+digest-pinned Linux x64 builder, matching the release workflow. The builder
+freezes Rust 1.95.0, glibc, GCC, binutils, and pkg-config, statically links
+OpenSSL, and requires the final engine to execute on the Ubuntu 22.04 release
+host:
 
 ```bash
 # Set this once to the version being prepared. Leaving the placeholder in place
 # makes the bump script fail instead of accidentally rebuilding an old release.
 export RELEASE_VERSION="<version>"
-export RELEASE_RUST_TOOLCHAIN="1.95.0"
 
 # Local-only first pass so the candidate binary embeds the new package version.
 # Never stage or commit this temporary checksum.
 TANDEM_ENGINE_BINARY_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
   ./scripts/bump-version.sh "$RELEASE_VERSION"
 
-rustup toolchain install "$RELEASE_RUST_TOOLCHAIN" \
-  --profile minimal \
-  --target x86_64-unknown-linux-gnu
-
-cargo +"$RELEASE_RUST_TOOLCHAIN" build --release \
-  --target x86_64-unknown-linux-gnu \
-  -p tandem-ai -p tandem-tui -p tandem-browser \
-  --features tandem-ai/browser,tandem-ai/enterprise
+./scripts/build-linux-release-engine.sh standard
 
 ./target/x86_64-unknown-linux-gnu/release/tandem-engine --version
 sha256sum ./target/x86_64-unknown-linux-gnu/release/tandem-engine
@@ -162,10 +156,10 @@ TANDEM_ENGINE_BINARY_SHA256=<extracted-binary-sha256> \
 ```
 
 Before committing, verify that no temporary all-zero checksum remains. The
-Ubuntu 22.04 engine CI job rebuilds the standard release composition and
-compares it with the reviewed Docker pin on the release-preparation PR. The
-tagged release workflow repeats the check before packaging, so a reproducibility
-mismatch fails before any runtime asset is uploaded.
+engine CI, Security Assurance, and the tagged release workflow all invoke the
+same digest-pinned builder and compare its standard release composition with
+the reviewed Docker pin. A reproducibility mismatch fails before any runtime
+asset is uploaded.
 
 ## Release Steps
 

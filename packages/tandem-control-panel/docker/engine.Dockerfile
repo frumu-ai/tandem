@@ -6,7 +6,7 @@ ARG TANDEM_ENGINE_CANDIDATE_SHA256
 
 ENV DEBIAN_FRONTEND=noninteractive \
   TANDEM_ENGINE_VERSION=0.7.2 \
-  TANDEM_ENGINE_BINARY_SHA256=6d63c10b72a12ac10ed6c68215536c27b0be458b7319db63ae9e669f33335001 \
+  TANDEM_ENGINE_BINARY_SHA256=a477bb7abc9092fa04b4f5c5b94bfcf6881e0d5e60eb5fb1cec7c52f2688dd9e \
   HOME=/var/lib/tandem/engine \
   XDG_CACHE_HOME=/var/lib/tandem/engine/.cache \
   npm_config_update_notifier=false \

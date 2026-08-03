@@ -109,10 +109,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deployment supplies the required TLS, KMS/IAM, proxy, replica, and egress
   evidence. (#1925)
 - Pre-publication container assurance now builds and scans the exact local npm
-  package and Ubuntu 22.04 engine candidate instead of requiring artifacts that
-  do not exist until publication. Concurrent local encrypted-memory startup
-  waits for the owner-only host key to become complete, so all starters converge
-  on one key without accepting malformed key files. (#1928)
+  package and Linux engine candidate instead of requiring artifacts that do not
+  exist until publication. PR assurance and tagged releases use the same
+  network-isolated, digest-pinned Rust/Bullseye build environment, statically
+  link OpenSSL for Ubuntu 22.04-and-newer compatibility, and verify the reviewed
+  engine SHA-256 before publication. Concurrent local encrypted-memory
+  startup writes unambiguous 64-character hexadecimal keys
+  and rejects partial hexadecimal prefixes from non-cooperating writers.
+  Release preparation also exact-pins scaffold runtime dependencies and
+  refreshes their registry integrity before publishing the scaffold. (#1928)
 
 ## [0.7.1] - 2026-07-17
 

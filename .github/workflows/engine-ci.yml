@@ -11,6 +11,7 @@ on:
       - ".config/nextest.toml"
       - ".github/actions/setup-rust-ci/**"
       - ".github/workflows/engine-ci.yml"
+      - "scripts/build-linux-release-engine.sh"
       - "packages/tandem-control-panel/docker/engine.Dockerfile"
       - "scripts/bump-version.sh"
       - "scripts/ci-engine-scope.sh"
@@ -24,6 +25,7 @@ on:
       - ".config/nextest.toml"
       - ".github/actions/setup-rust-ci/**"
       - ".github/workflows/engine-ci.yml"
+      - "scripts/build-linux-release-engine.sh"
       - "packages/tandem-control-panel/docker/engine.Dockerfile"
       - "scripts/bump-version.sh"
       - "scripts/ci-engine-scope.sh"
@@ -171,26 +173,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Setup shared Rust CI
+      - name: Setup release Cargo fetch toolchain
         uses: ./.github/actions/setup-rust-ci
         with:
-          cache-profile: engine-enterprise-release
+          cache-profile: engine-enterprise-release-fetch
           targets: x86_64-unknown-linux-gnu
           toolchain: 1.95.0
 
-      - name: Build Linux release engines
+      - name: Build Linux release engines in pinned environment
         shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --release --target x86_64-unknown-linux-gnu \
-            -p tandem-ai -p tandem-tui -p tandem-browser \
-            --features tandem-ai/browser,tandem-ai/enterprise
-          cargo build --release --target x86_64-unknown-linux-gnu \
-            -p tandem-ai \
-            --features tandem-ai/browser,tandem-ai/enterprise-full
-          cargo build --release --target x86_64-unknown-linux-gnu \
-            -p tandem-ai -p tandem-tui -p tandem-browser \
-            --features tandem-ai/browser,tandem-ai/enterprise
+        run: ./scripts/build-linux-release-engine.sh with-enterprise
 
       - name: Verify standard engine matches reviewed Docker pin
         if: needs.classify-changes.outputs.docker-pin-changed == 'true'

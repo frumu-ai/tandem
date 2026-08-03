@@ -160,13 +160,21 @@ ownership and DACLs. Unsafe permissions, aliases, links, ownership, malformed
 data, missing anchors, rollback, deletion, and head substitution fail closed.
 (#1923)
 
-Concurrent local encrypted-memory startup now waits for an owner-only key file
-created by another starter to become complete before validating it. All
-starters converge on the same key, while persistently short or malformed files
-still fail closed. Pre-publication container assurance builds the exact local
-`@frumu/tandem` package and pinned Ubuntu 22.04 engine candidate, verifies its
-version and SHA-256, then scans that image without depending on an npm package
-or GitHub release that does not exist until publication. (#1928)
+Concurrent local encrypted-memory startup now writes an unambiguous
+64-character hexadecimal owner-only key and waits for cooperating creators to
+finish. A 32-byte all-hex prefix from a non-cooperating external writer is
+rejected instead of being accepted as a complete legacy raw key; persistently
+short or malformed files still fail closed.
+
+Pre-publication container assurance builds the exact local `@frumu/tandem`
+package and Linux engine candidate without depending on an npm package or
+GitHub release that does not exist until publication. PR assurance and tagged
+releases use the same network-isolated, digest-pinned Rust/Bullseye build
+environment, statically link OpenSSL for Ubuntu 22.04-and-newer compatibility,
+and verify the reviewed SHA-256. The generated panel scaffold exact-pins the
+0.7.2 runtime and client, then refreshes their authoritative npm integrities
+after those dependencies publish and before the scaffold is packed.
+(#1928)
 
 ### Route, Supply-Chain, And Deployment Assurance
 

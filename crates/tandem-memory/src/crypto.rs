@@ -518,7 +518,11 @@ fn load_or_create_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN]> {
         Ok(mut file) => {
             lock_local_key_file(path, &file)?;
             validate_open_local_key_file(path, &file)?;
-            file.write_all(&key).map_err(|error| {
+            // New files use the unambiguous 64-byte hexadecimal form. A
+            // reader can therefore reject a 32-byte all-hex prefix from an
+            // uncooperative external writer instead of mistaking it for a
+            // complete legacy raw key.
+            file.write_all(to_hex(&key).as_bytes()).map_err(|error| {
                 MemoryError::InvalidConfig(format!(
                     "failed to write local memory key file `{}`: {error}",
                     path.display()
@@ -779,6 +783,12 @@ fn read_validated_local_key(path: &Path, mut file: std::fs::File) -> MemoryResul
 
 fn decode_local_key(path: &Path, bytes: &[u8]) -> MemoryResult<[u8; KEY_LEN]> {
     if bytes.len() == KEY_LEN {
+        if bytes.iter().all(u8::is_ascii_hexdigit) {
+            return Err(MemoryError::InvalidConfig(format!(
+                "local memory key file `{}` is ambiguous: a 32-byte all-hex value must be encoded as 64 hexadecimal characters",
+                path.display()
+            )));
+        }
         let mut key = [0u8; KEY_LEN];
         key.copy_from_slice(bytes);
         return Ok(key);
@@ -953,6 +963,11 @@ mod tests {
         let key_path = dir.join("local_memory.key");
         let key1 = load_or_create_local_key(&key_path).expect("create key");
         assert!(key_path.exists());
+        assert_eq!(
+            std::fs::metadata(&key_path).expect("key metadata").len(),
+            (KEY_LEN * 2) as u64,
+            "new keys use the unambiguous hexadecimal representation"
+        );
         let key2 = load_or_create_local_key(&key_path).expect("reload key");
         assert_eq!(key1, key2, "key file must be stable across loads");
         #[cfg(unix)]
@@ -1084,6 +1099,23 @@ mod tests {
             reader.join().expect("reader thread").expect("reader key"),
             expected
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_key_rejects_unlocked_partial_hex_publication() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let key_path = dir.path().join("local_memory.key");
+        std::fs::write(&key_path, b"0123456789abcdef0123456789abcdef")
+            .expect("partial external hex fixture");
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .expect("fixture permissions");
+
+        let error = load_or_create_local_key(&key_path)
+            .expect_err("an unlocked 32-byte hex prefix must fail closed");
+        assert!(error.to_string().contains("ambiguous"));
     }
 
     #[test]

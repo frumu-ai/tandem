@@ -103,6 +103,43 @@ const updateJson = (relativePath) => {
   updatedFiles.push(relativePath);
 };
 
+const updateScaffoldTemplate = () => {
+  const dependencyNames = ["@frumu/tandem", "@frumu/tandem-client"];
+  const manifestRelativePath = "packages/create-tandem-panel/template/package.json";
+  const manifestPath = path.join(rootDir, manifestRelativePath);
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  for (const name of dependencyNames) {
+    manifest.dependencies[name] = version;
+  }
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  updatedFiles.push(manifestRelativePath);
+
+  // These packages do not exist in the registry during release preparation,
+  // so their future tarball integrities cannot be computed yet. Pin their
+  // exact version and deterministic registry URL. The publication flow
+  // refreshes these entries after the dependencies reach npm, before packing
+  // the scaffold, so the published template includes registry integrities.
+  const lockRelativePath = "packages/create-tandem-panel/template/package-lock.json";
+  const lockPath = path.join(rootDir, lockRelativePath);
+  const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  const rootPackage = lock.packages[""];
+  for (const name of dependencyNames) {
+    rootPackage.dependencies[name] = version;
+    const entry = lock.packages[`node_modules/${name}`];
+    entry.version = version;
+    entry.resolved =
+      `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`;
+    delete entry.integrity;
+  }
+  const clientManifest = JSON.parse(
+    fs.readFileSync(path.join(rootDir, "packages/tandem-client-ts/package.json"), "utf8")
+  );
+  lock.packages["node_modules/@frumu/tandem-client"].dependencies =
+    clientManifest.dependencies;
+  fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+  updatedFiles.push(lockRelativePath);
+};
+
 const updateEngineDockerPin = () => {
   const relativePath = "packages/tandem-control-panel/docker/engine.Dockerfile";
   const filePath = path.join(rootDir, relativePath);
@@ -260,6 +297,7 @@ const stampBuslChangeDates = () => {
 
 updateEngineDockerPin();
 jsonFiles.forEach(updateJson);
+updateScaffoldTemplate();
 cargoFiles.forEach(updateCargo);
 pyprojectFiles.forEach(updatePyproject);
 stampBuslChangeDates();

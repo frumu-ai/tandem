@@ -173,6 +173,19 @@ for dir in "${PACKAGES[@]}"; do
     publish_cmd+=(--ignore-scripts)
   fi
 
+  # The scaffold is published after its runtime and client. Refresh the
+  # pre-bumped future lock entries only once those exact registry tarballs
+  # exist, so the shipped lockfile includes npm's authoritative integrity.
+  if [[ "$dir" == "packages/create-tandem-panel" && "$DRY_RUN" != "true" ]]; then
+    wait_for_npm_version "@frumu/tandem" "$version"
+    wait_for_npm_version "@frumu/tandem-client" "$version"
+    echo "Refreshing scaffold lockfile integrity for $name@$version" | tee -a "$LOG_FILE"
+    (
+      cd "$dir/template" &&
+        npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+    ) 2>&1 | tee -a "$LOG_FILE"
+  fi
+
   # Control panel publish path: build static bundle explicitly, then publish without lifecycle scripts.
   if [[ "$dir" == "packages/tandem-control-panel" ]]; then
     wait_for_npm_version "@frumu/tandem" "$version"

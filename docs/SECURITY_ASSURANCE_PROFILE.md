@@ -19,9 +19,10 @@ The Compose profile is supported for local or single-host, self-managed use. Its
 - a supported Node base pinned to one multi-architecture digest;
 - OS packages resolved from the dated `20260720T000000Z` Debian snapshot with exact `ca-certificates` and `curl` versions;
 - an exact Tandem engine npm version (floating `latest`, `next`, alpha, and beta values fail the image build);
-- an exact pre-publication engine candidate built on Ubuntu 22.04 with the
-  release Rust toolchain, matched to the reviewed SHA-256, and mounted read-only
-  into the same Dockerfile path used for published artifacts;
+- an exact pre-publication engine candidate built offline with a
+  digest-pinned Rust 1.95.0/Bullseye toolchain image, static OpenSSL linkage,
+  and an Ubuntu 22.04 host execution check, matched to the reviewed SHA-256 and
+  mounted read-only into the same Dockerfile path used for published artifacts;
 - reproducible control-panel and TypeScript-client builds from the checked-in lockfile;
 - unprivileged runtime users mapped to the invoking host UID/GID so owner-only token files remain readable without broadening host permissions;
 - read-only root filesystems, all Linux capabilities dropped, `no-new-privileges`, and a constrained temporary filesystem;
