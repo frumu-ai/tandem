@@ -36,16 +36,17 @@ RUN --mount=type=bind,source=packages/tandem-control-panel/docker/release-candid
       *) echo "No verified Tandem engine release asset is available for ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
   && npm install -g npm@12.0.1 \
-  && mkdir -p /usr/local/lib/node_modules/@frumu/tandem/bin/native \
   && if [ "${TANDEM_ENGINE_INSTALL_SOURCE}" = candidate ]; then \
       candidate_package="/candidate/frumu-tandem-${TANDEM_ENGINE_VERSION}.tgz"; \
       test -f "${candidate_package}"; \
       test -f /candidate/tandem-engine; \
       npm install -g --ignore-scripts "${candidate_package}"; \
+      mkdir -p /usr/local/lib/node_modules/@frumu/tandem/bin/native; \
       install -m 0555 /candidate/tandem-engine \
         /usr/local/lib/node_modules/@frumu/tandem/bin/native/tandem-engine; \
     else \
       npm install -g --ignore-scripts @frumu/tandem@"${TANDEM_ENGINE_VERSION}"; \
+      mkdir -p /usr/local/lib/node_modules/@frumu/tandem/bin/native; \
       curl --fail --silent --show-error --location --retry 3 \
         "https://github.com/frumu-ai/tandem/releases/download/v${TANDEM_ENGINE_VERSION}/tandem-engine-linux-x64.tar.gz" \
         | tar -xz -C /usr/local/lib/node_modules/@frumu/tandem/bin/native tandem-engine; \

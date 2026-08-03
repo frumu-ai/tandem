@@ -29,6 +29,7 @@ use std::sync::Arc;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
+use fs2::FileExt;
 
 use crate::decrypt_broker::{MemoryCryptoMode, MemoryDecryptBrokerConfig, MemoryDecryptPrincipal};
 use crate::envelope::{MemoryEnvelopeAuthority, MemoryEnvelopeMetadata, MemoryKeyScope};
@@ -515,6 +516,7 @@ fn load_or_create_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN]> {
     let key = random_bytes::<KEY_LEN>()?;
     match create_local_key_file(path) {
         Ok(mut file) => {
+            lock_local_key_file(path, &file)?;
             validate_open_local_key_file(path, &file)?;
             file.write_all(&key).map_err(|error| {
                 MemoryError::InvalidConfig(format!(
@@ -713,6 +715,7 @@ fn read_concurrently_created_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN
                 path.display()
             ))
         })?;
+        lock_local_key_file(path, &file)?;
         validate_open_local_key_file(path, &file)?;
         let len = file
             .metadata()
@@ -736,6 +739,15 @@ fn read_concurrently_created_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN
         "concurrently created local memory key file `{}` did not become complete",
         path.display()
     )))
+}
+
+fn lock_local_key_file(path: &Path, file: &std::fs::File) -> MemoryResult<()> {
+    FileExt::lock_exclusive(file).map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "failed to lock local memory key file `{}`: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn read_validated_local_key(path: &Path, mut file: std::fs::File) -> MemoryResult<[u8; KEY_LEN]> {
@@ -1052,17 +1064,21 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn local_key_reader_waits_for_concurrent_writer_to_finish() {
+    fn local_key_reader_waits_for_locked_hex_writer_to_finish() {
         let dir = tempfile::tempdir().expect("temporary directory");
         let key_path = Arc::new(dir.path().join("local_memory.key"));
         let mut writer = create_local_key_file(&key_path).expect("reserve key file");
+        FileExt::lock_exclusive(&writer).expect("lock key file");
         let reader_path = key_path.clone();
         let reader = std::thread::spawn(move || load_or_create_local_key(&reader_path));
 
         std::thread::sleep(std::time::Duration::from_millis(10));
         let expected = [42u8; KEY_LEN];
-        writer.write_all(&expected).expect("complete key file");
+        writer
+            .write_all(to_hex(&expected).as_bytes())
+            .expect("complete encoded key file");
         writer.sync_all().expect("sync key file");
+        FileExt::unlock(&writer).expect("unlock key file");
 
         assert_eq!(
             reader.join().expect("reader thread").expect("reader key"),

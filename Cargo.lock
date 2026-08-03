@@ -8589,6 +8589,7 @@ dependencies = [
  "deadpool-postgres",
  "dirs 5.0.1",
  "fastembed",
+ "fs2",
  "getrandom 0.2.17",
  "ignore",
  "libc",

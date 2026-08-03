@@ -141,7 +141,9 @@ jobs:
           )"
           printf '%s  %s\n' "$pinned_sha" "$candidate_dir/tandem-engine" \
             | sha256sum -c -
-          "$candidate_dir/tandem-engine" --version | grep -F '0.7.2'
+          expected_version="$(node -p \
+            "require('./packages/tandem-engine/package.json').version")"
+          "$candidate_dir/tandem-engine" --version | grep -F "$expected_version"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
