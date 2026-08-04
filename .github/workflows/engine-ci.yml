@@ -11,6 +11,10 @@ on:
       - ".config/nextest.toml"
       - ".github/actions/setup-rust-ci/**"
       - ".github/workflows/engine-ci.yml"
+      - "scripts/build-linux-release-engine.sh"
+      - "scripts/linux-release-builder.Dockerfile"
+      - "packages/tandem-control-panel/docker/engine.Dockerfile"
+      - "scripts/bump-version.sh"
       - "scripts/ci-engine-scope.sh"
   push:
     branches: ["feat/engine"]
@@ -22,6 +26,10 @@ on:
       - ".config/nextest.toml"
       - ".github/actions/setup-rust-ci/**"
       - ".github/workflows/engine-ci.yml"
+      - "scripts/build-linux-release-engine.sh"
+      - "scripts/linux-release-builder.Dockerfile"
+      - "packages/tandem-control-panel/docker/engine.Dockerfile"
+      - "scripts/bump-version.sh"
       - "scripts/ci-engine-scope.sh"
 
 permissions:
@@ -33,6 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run-engine-jobs: ${{ steps.scope.outputs.run-engine-jobs }}
+      docker-pin-changed: ${{ steps.scope.outputs.docker-pin-changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -53,6 +62,7 @@ jobs:
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             echo "run-engine-jobs=true" >> "$GITHUB_OUTPUT"
+            echo "docker-pin-changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -65,6 +75,13 @@ jobs:
           fi
 
           printf '%s\n' "$changed_files"
+          if grep -Fxq \
+            'packages/tandem-control-panel/docker/engine.Dockerfile' \
+            <<<"$changed_files"; then
+            echo "docker-pin-changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docker-pin-changed=false" >> "$GITHUB_OUTPUT"
+          fi
           run_engine_jobs="$(printf '%s\n' "$changed_files" | bash scripts/ci-engine-scope.sh)"
           echo "run-engine-jobs=$run_engine_jobs" >> "$GITHUB_OUTPUT"
 
@@ -153,19 +170,38 @@ jobs:
     name: Linux Enterprise Release Composition
     needs: classify-changes
     if: needs.classify-changes.outputs.run-engine-jobs == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Setup shared Rust CI
+      - name: Setup release Cargo fetch toolchain
         uses: ./.github/actions/setup-rust-ci
         with:
-          cache-profile: engine-enterprise-release
+          cache-profile: engine-enterprise-release-fetch
           targets: x86_64-unknown-linux-gnu
+          toolchain: 1.95.0
 
-      - name: Build Linux enterprise-full release engine
-        run: cargo build --release --target x86_64-unknown-linux-gnu -p tandem-ai --features tandem-ai/browser,tandem-ai/enterprise-full
+      - name: Build Linux release engines in pinned environment
+        shell: bash
+        run: ./scripts/build-linux-release-engine.sh with-enterprise
+
+      - name: Verify standard engine matches reviewed Docker pin
+        if: needs.classify-changes.outputs.docker-pin-changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned_sha="$(
+            sed -nE \
+              's/^[[:space:]]*TANDEM_ENGINE_BINARY_SHA256=([0-9a-f]{64}).*$/\1/p' \
+              packages/tandem-control-panel/docker/engine.Dockerfile
+          )"
+          engine_path=target/x86_64-unknown-linux-gnu/release/tandem-engine
+          actual_sha="$(sha256sum "$engine_path" | cut -d ' ' -f 1)"
+          printf 'Pinned SHA-256: %s\nActual SHA-256: %s\n' \
+            "$pinned_sha" "$actual_sha"
+          test "${#pinned_sha}" -eq 64
+          test "$actual_sha" = "$pinned_sha"
 
   # TAN-227: one-command end-to-end health check over the governed runtime
   # path (session prompt round-trip, approval gate, policy denial + audit,

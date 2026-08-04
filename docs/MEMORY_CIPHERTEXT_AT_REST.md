@@ -28,7 +28,11 @@ On Unix, first use opens the key path with no-follow, create-new semantics and m
 `0600` in the creation syscall, so even `umask 000` has no permissive window. The
 engine fsyncs the key and parent directory. Existing files must be regular, single-link,
 owned by the effective user, mode `0600`, and exactly 32 raw bytes or 64 hexadecimal
-characters (with one optional trailing newline). Symlinks, hard links, wrong owner,
+characters (with one optional trailing newline). Tandem creates new files in the
+64-character hexadecimal form. A legacy 32-byte raw value made entirely of ASCII
+hexadecimal characters is ambiguous with a partially written encoded value and fails
+closed; encode those bytes as 64 hexadecimal characters instead. External provisioners
+must publish the complete owner-only file with an atomic rename. Symlinks, hard links, wrong owner,
 permission drift, wrong size, malformed content, and unreadable files fail closed.
 Concurrent creators atomically converge on the single winning file. Key bytes are never
 logged.

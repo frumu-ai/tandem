@@ -2,6 +2,217 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.7.2 (2026-07-31)
+
+Tandem 0.7.2 is a security and reliability release. It closes host, tenant,
+approval, webhook, context-assertion, artifact, audit-integrity, and
+supply-chain boundaries while fixing product-authoring routing and preserving
+planner models and schedules. It also adds a hardened local Notes workspace and
+preserves run correlation through runtime events, persisted tool results, and
+stream termination. The release adds deterministic evidence gates for runtime
+artifacts, routes, boundary regressions, dependencies, secrets, and containers.
+
+### Product Authoring And Planner Reliability
+
+Product-authoring requests now reach the workflow and automation planner even
+when the global tool-router rollout flag is disabled. This fixes production
+setups where workflow creation could expose the lower-level draft tool and fail
+with a missing automation id. Unrelated chat intents keep their existing opt-in
+routing behavior. (#1913)
+
+Workflow planning now inherits the authenticated chat session's selected model
+and preserves weekday, weekend, and daily cadence, time, and timezone through
+both model-generated and fallback plans. The Automation wizard initializes its
+planner provider and model without overriding an intentional Disabled choice,
+uses catalog-backed model selectors, prefers `gpt-5.6-terra` for OpenAI Codex,
+supports full weekday cron names, and hides internal tenant, MCP-header, and
+channel provider records from user-facing provider lists. (#1914)
+
+### Runtime Correlation, Scheduling, And Local Notes
+
+Provider-tool, plan-fallback, progress, and terminal events now carry trusted
+session and run correlation through both live event envelopes and persisted
+tool results. Run-specific SSE streams use the same envelope-aware identity
+when filtering and terminating, so a canonical finish event closes the matching
+stream even when correlation is carried only by its envelope. Large provider
+tool futures are boxed before joining, preventing debug-build stack exhaustion
+in tool-heavy paths. (#1927)
+
+Planner fallback scheduling now accepts cadence-qualified bare hours such as
+`every weekday at 9`, including recognized abbreviations and IANA timezone
+suffixes. A timezone attached to the selected clock takes precedence over
+incidental earlier timezone mentions, while noun/count and terminal-limit
+phrases remain manual instead of becoming accidental cron schedules. (#1927)
+
+The Control Panel now includes a principal-scoped local Notes workspace.
+Creating the first note opens it immediately; note selectors are keyboard
+accessible; deletion requires confirmation; and malformed local data offers a
+scoped reset path. Field-level updates reconcile with other tabs, persistence is
+debounced and flushed on blur, selection changes, unmount, and page teardown,
+and failed writes roll back with a visible error instead of appearing saved.
+The implementation also supports browsers without `crypto.randomUUID` and
+keeps one principal's notes isolated from another principal using the same
+browser profile. (#1927)
+
+### Centralized Host And Resource Authorization
+
+Host-level operations now pass through one server-owned authorization contract
+that binds the verified tenant and actor to the exact resource, action, and
+arguments. Consequential operations require protected audit before effect,
+short-lived grants, and revalidation at the final boundary. This contract now
+covers bounded file search/read, fixed structured commands, browser
+installation and smoke tests, global disposal and storage repair, and managed
+worktree creation, listing, deletion, and reset. Hosted resources resolve from
+opaque ids to tenant-owned active leases, while internal workers use explicit
+audited grants. Direct PTY routes and the public orphan-worktree cleanup route
+have been removed. (#1915, #1916)
+
+`POST /session/{id}/command` no longer accepts a caller-selected executable,
+arguments, or working directory; it accepts fixed Git command ids and runs with
+a cleared environment, timeout, and output cap. File operations stay inside a
+canonical workspace and reject absolute or symlink escapes. Host APIs reject
+hosted/enterprise callers and local servers that are not truly loopback.
+Anonymous `/global/health` now returns only `healthy` and `ready`; redacted
+details live at authenticated `/global/diagnostics`. Custom Web UI paths must
+remain under the reserved `/ui` namespace. (#1915)
+
+### Tenant-Scoped Approvals And Governance
+
+Permission requests, standing rules, decisions, question queues, workflow
+gates, and governance state are tenant-scoped. Decisions bind the tenant,
+requester, session/run, exact action digest or complete ordered execution plan,
+expiry, and one-time state. High-impact permission, workflow, and governance
+decisions require an eligible independent reviewer, preventing the same human
+or agent from approving its own request. Cross-tenant and wrong-session access
+fails closed without revealing whether an id exists. Audit or persistence
+failure leaves pending state intact and performs no outbound effect, and unsafe
+legacy hosted state is quarantined or explicitly migrated. (#1917)
+
+### Administrative, Outbound, Pack, And Webhook Hardening
+
+Shared channel, provider, MCP, global, and pack mutations now require exact
+tenant-bound administrative authority while direct-loopback standalone
+ownership remains available. Credentials stay scoped to the tenant and
+connection, privileged changes are protected-audited without raw secrets, and
+secret-bearing config patches are rejected. Provider and MCP outbound requests
+pin DNS, keep origins immutable, require public HTTPS, disable redirects, and
+bound response bodies; private endpoints remain an explicit standalone-only
+choice. Pack install/uninstall rejects traversal, symlink and duplicate-path
+aliases, decompression abuse, signature/checksum bypasses, partial commits, and
+index/file races. (#1918)
+
+Unauthenticated webhook rejection work is now bounded before full request
+processing with capability/network rate limits, provider-specific body
+ceilings, and digest-only rejection telemetry. Notion verification capture is
+replaced by a one-time setup challenge that expires after 15 minutes and can be
+rotated or reset only through authenticated operations. Webhook secrets migrate
+immediately from legacy plaintext into tenant/trigger-bound encrypted records
+and hosted plaintext mode fails closed. Discord interactions require timestamp
+freshness plus durable tenant/application/body-bound replay claims before any
+approval effect. The TypeScript client and Control Panel webhook workflow
+reflect the new setup and rotation contract. (#1919)
+
+### Context Assertion Trust And Replay
+
+Runtime and ACA context assertions now use one fail-closed verifier. JWS
+signatures are checked before untrusted claims are deserialized; issuer,
+audience, identity, deployment, resource, key purpose/status/scope, and checked
+time constraints are enforced with a 15-minute default lifetime and a one-hour
+hard ceiling.
+
+Replay tracking is now a bounded, crash-durable, cross-process SQLite ledger
+with atomic bound and one-shot semantics, strict schema and quota validation,
+hashed identifiers, owner-only non-symlink storage, and path-identity checks
+around each transaction. Runtime security configuration is loaded into an
+immutable snapshot before bind. Key rotation is an explicit authorized reload
+with complete-generation validation, last-known-good retention, metrics, and
+protected audit evidence. Hosted/enterprise mode requires explicit key metadata
+and rejects replay mode `off`; local posture retains a warned migration path.
+(#1920)
+
+### Runtime Artifact, Audit, And Key Integrity
+
+Browser and desktop engine installation now requires a pinned-key Minisign
+manifest and an exact platform target. Downloads use bounded streaming SHA-256
+verification and reject untrusted URLs, metadata mismatches, duplicate targets,
+unsafe archives, symlinks, oversized payloads, and version-probe failures.
+Binaries are staged and activated atomically with rollback. Release workflows
+generate deterministic signed manifests, per-artifact SPDX SBOMs, and GitHub
+provenance before publication; third-party Actions are pinned to immutable
+commits and signing authority is isolated to the signing step. (#1921)
+
+Protected audit ledgers and encrypted protected-store heads now use
+domain-separated, key-id-bound HMAC-SHA256 and independently stored
+authenticated anchors. Keyrings support active, verify-only, and revoked states
+so rotation stays verifiable. Normal writes, key rotation, protected
+collections, and legacy migrations publish data, heads, and anchors as one
+cross-process-locked transaction and restore the exact prior state on failure.
+Hosted/enterprise startup requires valid key authority and an external anchor;
+`TANDEM_AUDIT_HMAC_KEY`, `TANDEM_AUDIT_HMAC_KEY_FILE`, and
+`TANDEM_AUDIT_HMAC_KEYRING_FILE` are the supported authority sources. Local
+deployments retain an explicit legacy migration path. (#1923)
+
+Local memory keys are created atomically with no-follow semantics and mode
+`0600`. Existing Unix keys must be regular, single-link, effective-user-owned,
+exact-mode files with a supported size and format. Windows validates opened
+key, keyring, lock, and anchor handles as non-reparse objects with restricted
+ownership and DACLs. Unsafe permissions, aliases, links, ownership, malformed
+data, missing anchors, rollback, deletion, and head substitution fail closed.
+(#1923)
+
+Concurrent local encrypted-memory startup now writes an unambiguous
+64-character hexadecimal owner-only key and waits for cooperating creators to
+finish. A 32-byte all-hex prefix from a non-cooperating external writer is
+rejected instead of being accepted as a complete legacy raw key; persistently
+short or malformed files still fail closed.
+
+All JavaScript workspaces now force patched PostCSS resolutions (8.5.23 or
+newer), and the desktop workspace pins brace-expansion 5.0.9. These close newly
+disclosed source-map file-read and brace expansion denial-of-service advisories
+that the release lockfile audit detected.
+
+Pre-publication container assurance builds the exact local `@frumu/tandem`
+package and Linux engine candidate without depending on an npm package or
+GitHub release that does not exist until publication. PR assurance and tagged
+releases use the same network-isolated, digest-pinned Ubuntu 22.04/Rust 1.95.0
+build environment, statically link OpenSSL for Ubuntu 22.04-and-newer
+compatibility, prefetch and checksum-verify the locked ONNX Runtime archive for
+enterprise builds, and verify the reviewed engine SHA-256. The generated panel
+scaffold exact-pins the
+0.7.2 runtime and client, then refreshes their authoritative npm integrities
+after those dependencies publish and before the scaffold is packed.
+(#1928)
+
+### Route, Supply-Chain, And Deployment Assurance
+
+CI now maintains a deterministic inventory of all 848 discovered production
+listener/method/path policies, including implicit HEAD handling and the
+loopback OAuth listener. A machine-checked TA-01 through TA-17 matrix requires
+the intended positive and negative boundary tests to be discovered and
+executed. Hosted channel enrollment, step-up grants, and Slack sender inventory
+require deployment-administrator authority and resolve tenant scope from
+server-owned pending state. Outbound test fixtures cover private and metadata
+addresses, DNS changes, redirects, and streamed-body budgets. (#1924)
+
+The release pipeline audits Rust and all JavaScript lockfiles, reconciles
+RustSec exceptions into an owned and expiring policy, scans complete Git history
+and sensitive-file paths for secrets, runs CodeQL security-extended analysis,
+and hardens the local Compose profile with pinned bases, non-root users,
+read-only roots, dropped capabilities, `no-new-privileges`, named state
+volumes, a private read-only token file, and no host-published engine port.
+Runtime images emit SPDX SBOMs and fail on fixable high or critical findings.
+The documentation guide moves to Astro 7, and CI now executes all intended
+desktop blackboard tests. (#1925)
+
+### Deployment Scope
+
+This release is suitable to advance for standalone and self-managed
+deployments after the normal release gates pass. It does not claim that a
+hosted enterprise deployment exists or is release-ready. Hosted-enterprise
+publication remains fail closed until a real deployment supplies fresh,
+exact-commit evidence for PostgreSQL TLS, KMS/IAM, reverse-proxy headers and
+TLS, multi-replica behavior, and default-deny egress. (#1925)
+
 ## v0.7.1 (2026-07-17)
 
 Tandem 0.7.1 delivers the Slack Channel Hardening & Convergence project:
@@ -11,26 +222,6 @@ Channel Connections panel page. The release also redesigns the Runs view,
 hardens generic webhook workflow execution end to end, and removes an
 unintended CI enforcement gate and internal process language that shipped
 with 0.7.0.
-
-### Audit Integrity And Local-Key Hardening
-
-Hosted and enterprise protected audit ledgers and encrypted protected-store heads
-now use key-ID-bound HMAC-SHA256 and an independently stored authenticated head.
-Keyrings support explicit active, verify-only, and revoked states so rotations remain
-verifiable without silently accepting missing, wrong-purpose, duplicated, or revoked
-keys. Schema-v3 manifests expose keyed/legacy migration counts and verify the external
-anchor; public-hash recomputation, rollback, deletion, and head substitution fail
-closed. Local posture retains an explicit legacy migration path. Operator guidance
-covers retention, recovery, verification, alerting, and WORM export boundaries.
-
-Local memory-key creation now uses atomic create-new/no-follow semantics with mode
-0600 in the creation syscall. Existing Unix keys must be regular, single-link,
-effective-user-owned, exact-mode files with a supported size and format; unsafe
-permissions, links, ownership, malformed data, and concurrent races fail closed.
-Windows validates opened key-parent and key-file handles as non-reparse objects owned
-by the process identity, with granting DACL entries restricted to that owner, LocalSystem,
-or built-in Administrators. External audit-anchor directories and files enforce the same
-opened-handle DACL boundary. Hosted Windows deployments should still prefer KMS.
 
 ### Multi-Channel Slack Connections
 
@@ -279,9 +470,8 @@ truncation reasons, and deployment-scoped HMAC digests for the expression,
 selector, and permitted selected values. Raw request arguments, operands,
 selected values, paths, repository URLs, and email local parts are not copied
 into evidence, and low-cardinality values omit their digest. Hosted and
-enterprise deployments must configure `TANDEM_AUDIT_HMAC_KEY`,
-`TANDEM_AUDIT_HMAC_KEY_FILE`, or `TANDEM_AUDIT_HMAC_KEYRING_FILE`;
-predicate decisions and enterprise-authored
+enterprise deployments must configure `TANDEM_AUDIT_HMAC_KEY` or
+`TANDEM_AUDIT_HMAC_KEY_FILE`; predicate decisions and enterprise-authored
 exact-action approvals fail closed without that authority.
 
 ### Automation Wizard Reliability And Live Progress

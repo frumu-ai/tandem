@@ -29,6 +29,7 @@ use std::sync::Arc;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
+use fs2::FileExt;
 
 use crate::decrypt_broker::{MemoryCryptoMode, MemoryDecryptBrokerConfig, MemoryDecryptPrincipal};
 use crate::envelope::{MemoryEnvelopeAuthority, MemoryEnvelopeMetadata, MemoryKeyScope};
@@ -491,7 +492,10 @@ fn local_key_path() -> PathBuf {
 /// owner-only access on first use.
 fn load_or_create_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN]> {
     match open_existing_local_key(path) {
-        Ok(file) => return read_validated_local_key(path, file),
+        // Another process can create the file between its own existence check
+        // and write. Treat an existing short file as an in-progress atomic
+        // creation instead of rejecting a valid concurrent startup.
+        Ok(_) => return read_concurrently_created_local_key(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(MemoryError::InvalidConfig(format!(
@@ -512,8 +516,13 @@ fn load_or_create_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN]> {
     let key = random_bytes::<KEY_LEN>()?;
     match create_local_key_file(path) {
         Ok(mut file) => {
+            lock_local_key_file(path, &file)?;
             validate_open_local_key_file(path, &file)?;
-            file.write_all(&key).map_err(|error| {
+            // New files use the unambiguous 64-byte hexadecimal form. A
+            // reader can therefore reject a 32-byte all-hex prefix from an
+            // uncooperative external writer instead of mistaking it for a
+            // complete legacy raw key.
+            file.write_all(to_hex(&key).as_bytes()).map_err(|error| {
                 MemoryError::InvalidConfig(format!(
                     "failed to write local memory key file `{}`: {error}",
                     path.display()
@@ -710,6 +719,7 @@ fn read_concurrently_created_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN
                 path.display()
             ))
         })?;
+        lock_local_key_file(path, &file)?;
         validate_open_local_key_file(path, &file)?;
         let len = file
             .metadata()
@@ -733,6 +743,15 @@ fn read_concurrently_created_local_key(path: &Path) -> MemoryResult<[u8; KEY_LEN
         "concurrently created local memory key file `{}` did not become complete",
         path.display()
     )))
+}
+
+fn lock_local_key_file(path: &Path, file: &std::fs::File) -> MemoryResult<()> {
+    FileExt::lock_exclusive(file).map_err(|error| {
+        MemoryError::InvalidConfig(format!(
+            "failed to lock local memory key file `{}`: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn read_validated_local_key(path: &Path, mut file: std::fs::File) -> MemoryResult<[u8; KEY_LEN]> {
@@ -764,6 +783,12 @@ fn read_validated_local_key(path: &Path, mut file: std::fs::File) -> MemoryResul
 
 fn decode_local_key(path: &Path, bytes: &[u8]) -> MemoryResult<[u8; KEY_LEN]> {
     if bytes.len() == KEY_LEN {
+        if bytes.iter().all(u8::is_ascii_hexdigit) {
+            return Err(MemoryError::InvalidConfig(format!(
+                "local memory key file `{}` is ambiguous: a 32-byte all-hex value must be encoded as 64 hexadecimal characters",
+                path.display()
+            )));
+        }
         let mut key = [0u8; KEY_LEN];
         key.copy_from_slice(bytes);
         return Ok(key);
@@ -938,6 +963,11 @@ mod tests {
         let key_path = dir.join("local_memory.key");
         let key1 = load_or_create_local_key(&key_path).expect("create key");
         assert!(key_path.exists());
+        assert_eq!(
+            std::fs::metadata(&key_path).expect("key metadata").len(),
+            (KEY_LEN * 2) as u64,
+            "new keys use the unambiguous hexadecimal representation"
+        );
         let key2 = load_or_create_local_key(&key_path).expect("reload key");
         assert_eq!(key1, key2, "key file must be stable across loads");
         #[cfg(unix)]
@@ -1045,6 +1075,47 @@ mod tests {
             first.join().expect("first creator").expect("first key"),
             second.join().expect("second creator").expect("second key")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_key_reader_waits_for_locked_hex_writer_to_finish() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let key_path = Arc::new(dir.path().join("local_memory.key"));
+        let mut writer = create_local_key_file(&key_path).expect("reserve key file");
+        FileExt::lock_exclusive(&writer).expect("lock key file");
+        let reader_path = key_path.clone();
+        let reader = std::thread::spawn(move || load_or_create_local_key(&reader_path));
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let expected = [42u8; KEY_LEN];
+        writer
+            .write_all(to_hex(&expected).as_bytes())
+            .expect("complete encoded key file");
+        writer.sync_all().expect("sync key file");
+        FileExt::unlock(&writer).expect("unlock key file");
+
+        assert_eq!(
+            reader.join().expect("reader thread").expect("reader key"),
+            expected
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_key_rejects_unlocked_partial_hex_publication() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let key_path = dir.path().join("local_memory.key");
+        std::fs::write(&key_path, b"0123456789abcdef0123456789abcdef")
+            .expect("partial external hex fixture");
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .expect("fixture permissions");
+
+        let error = load_or_create_local_key(&key_path)
+            .expect_err("an unlocked 32-byte hex prefix must fail closed");
+        assert!(error.to_string().contains("ambiguous"));
     }
 
     #[test]

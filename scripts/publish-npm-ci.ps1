@@ -36,6 +36,7 @@ $packages = @(
     "packages/tandem-enterprise",
     "packages/tandem-tui",
     "packages/tandem-client-ts",
+    "packages/create-tandem-panel",
     "packages/tandem-control-panel"
 )
 
@@ -130,6 +131,20 @@ Then retry:
             throw "Failed declaration build for $name@$version"
         }
         $publishCommand += " --ignore-scripts"
+    }
+
+    if ($dir -eq "packages/create-tandem-panel" -and -not $DryRun) {
+        Wait-NpmPackageVersion -Name "@frumu/tandem" -Version $version
+        Wait-NpmPackageVersion -Name "@frumu/tandem-client" -Version $version
+
+        "Refreshing scaffold lockfile integrity for $name@$version" | Tee-Object -FilePath $logFile -Append
+        $refreshScaffold = Invoke-NpmText `
+            -WorkingDirectory "$dir/template" `
+            -Command "npm install --package-lock-only --ignore-scripts --no-audit --no-fund"
+        $refreshScaffold.Output | Tee-Object -FilePath $logFile -Append | Out-Null
+        if ($refreshScaffold.ExitCode -ne 0) {
+            throw "Failed scaffold lockfile integrity refresh for $name@$version"
+        }
     }
 
     if ($dir -eq "packages/tandem-control-panel") {

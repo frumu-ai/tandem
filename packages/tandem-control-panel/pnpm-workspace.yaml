@@ -7,7 +7,8 @@ allowBuilds:
   esbuild: true
 overrides:
   'esbuild@>=0.27.3 <0.28.1': 0.28.1
-  'postcss@<=8.5.17': 8.5.22
+  'nanoid@>=3.3.0 <3.3.17': 3.3.16
+  'postcss@<=8.5.22': 8.5.23
   'vite@>=8.0.0 <=8.0.15': 8.1.5
   'yaml@>=2.0.0 <2.8.3': 2.9.0
 minimumReleaseAgeExclude:

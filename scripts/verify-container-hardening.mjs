@@ -8,6 +8,7 @@ const EXPECTED_DEPLOYMENT_ASSETS = new Set([
   "packages/tandem-control-panel/docker-compose.yml",
   "packages/tandem-control-panel/docker/control-panel.Dockerfile",
   "packages/tandem-control-panel/docker/engine.Dockerfile",
+  "scripts/linux-release-builder.Dockerfile",
 ]);
 const PINNED_NODE_BASE =
   "node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573";

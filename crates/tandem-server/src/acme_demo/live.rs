@@ -409,53 +409,61 @@ async fn verify_receipt_approval_evidence(
     receipt_ids: &[String],
     decision_ids: &[String],
 ) -> anyhow::Result<Vec<String>> {
-    let mut matching_runs = Vec::new();
-    for run_id in receipt_ids {
-        let response = client
-            .get(format!(
-                "{server_url}/context/runs/{run_id}/governance-evidence"
-            ))
-            .header("x-tandem-org-id", DEMO_ORG_ID)
-            .header("x-tandem-workspace-id", DEMO_WORKSPACE_ID)
-            .header("x-tandem-actor-id", "acme-demo-receipt-reader")
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            bail!(
-                "governance evidence for {run_id} returned {}",
-                response.status()
-            );
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let mut matching_runs = Vec::new();
+            for run_id in receipt_ids {
+                let response = client
+                    .get(format!(
+                        "{server_url}/context/runs/{run_id}/governance-evidence"
+                    ))
+                    .header("x-tandem-org-id", DEMO_ORG_ID)
+                    .header("x-tandem-workspace-id", DEMO_WORKSPACE_ID)
+                    .header("x-tandem-actor-id", "acme-demo-receipt-reader")
+                    .send()
+                    .await?;
+                if !response.status().is_success() {
+                    bail!(
+                        "governance evidence for {run_id} returned {}",
+                        response.status()
+                    );
+                }
+                let payload: Value = response.json().await?;
+                let package = payload.get("evidence_package").unwrap_or(&Value::Null);
+                let has_decision = package
+                    .get("policy_decisions")
+                    .and_then(Value::as_array)
+                    .is_some_and(|decisions| {
+                        decisions.iter().any(|decision| {
+                            decision
+                                .get("decision_id")
+                                .and_then(Value::as_str)
+                                .is_some_and(|id| {
+                                    decision_ids.iter().any(|expected| expected == id)
+                                })
+                        })
+                    });
+                let has_audit = package
+                    .pointer("/audit/protected_events")
+                    .and_then(Value::as_array)
+                    .is_some_and(|events| {
+                        events.iter().any(|event| {
+                            event.get("event_type").and_then(Value::as_str)
+                                == Some("approval.gate.approval_required")
+                        })
+                    });
+                if has_decision && has_audit {
+                    matching_runs.push(run_id.clone());
+                }
+            }
+            if !matching_runs.is_empty() {
+                return Ok(matching_runs);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        let payload: Value = response.json().await?;
-        let package = payload.get("evidence_package").unwrap_or(&Value::Null);
-        let has_decision = package
-            .get("policy_decisions")
-            .and_then(Value::as_array)
-            .is_some_and(|decisions| {
-                decisions.iter().any(|decision| {
-                    decision
-                        .get("decision_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|id| decision_ids.iter().any(|expected| expected == id))
-                })
-            });
-        let has_audit = package
-            .pointer("/audit/protected_events")
-            .and_then(Value::as_array)
-            .is_some_and(|events| {
-                events.iter().any(|event| {
-                    event.get("event_type").and_then(Value::as_str)
-                        == Some("approval.gate.approval_required")
-                })
-            });
-        if has_decision && has_audit {
-            matching_runs.push(run_id.clone());
-        }
-    }
-    if matching_runs.is_empty() {
-        bail!("no persisted receipt correlated the Finance approval decision and protected audit");
-    }
-    Ok(matching_runs)
+    })
+    .await
+    .context("no persisted receipt correlated the Finance approval decision and protected audit")?
 }
 
 async fn wait_for_approval_evidence(

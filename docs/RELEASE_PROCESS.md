@@ -106,7 +106,9 @@ Before creating a release, ensure:
       bullets for long releases
 - [ ] Workflow-runtime fixes since the previous release have replay coverage
 - [ ] Workflow fast gate and deep gate are green for release-relevant workflow changes
-- [ ] Version numbers are updated with `./scripts/bump-version.sh <version>`
+- [ ] Version numbers and the reviewed Linux x64 engine binary checksum are
+      updated with
+      `TANDEM_ENGINE_BINARY_SHA256=<extracted-binary-sha256> ./scripts/bump-version.sh <version>`
 - [ ] Desktop version numbers are updated when desktop bundles will be published:
   - `apps/tandem-desktop/package.json`
   - `apps/tandem-desktop/src-tauri/tauri.conf.json` - this is what the app reports as its version
@@ -120,6 +122,45 @@ Before creating a release, ensure:
 > grep '"version"' apps/tandem-desktop/src-tauri/tauri.conf.json
 > grep '^version' apps/tandem-desktop/src-tauri/Cargo.toml
 > ```
+
+### Engine Docker Pin For A New Version
+
+The control-panel engine image pins the SHA-256 of the extracted Linux x64
+`tandem-engine` binary, not the compressed release archive. A new version must
+not retain the previous release's digest.
+
+Prepare the checksum in an isolated release worktree with the repository
+digest-pinned Linux x64 builder, matching the release workflow. The builder
+freezes Rust 1.95.0, glibc, GCC, binutils, and pkg-config, statically links
+OpenSSL, and requires the final engine to execute on the Ubuntu 22.04 release
+host. Enterprise mode also prefetches and checksum-verifies the locked ONNX
+Runtime archive before the network-isolated build:
+
+```bash
+# Set this once to the version being prepared. Leaving the placeholder in place
+# makes the bump script fail instead of accidentally rebuilding an old release.
+export RELEASE_VERSION="<version>"
+
+# Local-only first pass so the candidate binary embeds the new package version.
+# Never stage or commit this temporary checksum.
+TANDEM_ENGINE_BINARY_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+  ./scripts/bump-version.sh "$RELEASE_VERSION"
+
+./scripts/build-linux-release-engine.sh standard
+
+./target/x86_64-unknown-linux-gnu/release/tandem-engine --version
+sha256sum ./target/x86_64-unknown-linux-gnu/release/tandem-engine
+
+# Finalize immediately with the real digest printed above.
+TANDEM_ENGINE_BINARY_SHA256=<extracted-binary-sha256> \
+  ./scripts/bump-version.sh "$RELEASE_VERSION"
+```
+
+Before committing, verify that no temporary all-zero checksum remains. The
+engine CI, Security Assurance, and the tagged release workflow all invoke the
+same digest-pinned builder and compare its standard release composition with
+the reviewed Docker pin. A reproducibility mismatch fails before any runtime
+asset is uploaded.
 
 ## Release Steps
 

@@ -207,7 +207,7 @@ version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "435a87a52755b8f27fcf321ac4f04b2802e337c8c4872923137471ec39c37532"
 dependencies = [
- "event-listener 5.4.1",
+ "event-listener 5.4.2",
  "event-listener-strategy",
  "futures-core",
  "pin-project-lite",
@@ -304,7 +304,7 @@ version = "3.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "290f7f2596bd5b78a9fec8088ccd89180d7f9f55b94b0576823bbbdc72ee8311"
 dependencies = [
- "event-listener 5.4.1",
+ "event-listener 5.4.2",
  "event-listener-strategy",
  "pin-project-lite",
 ]
@@ -339,7 +339,7 @@ dependencies = [
  "async-task",
  "blocking",
  "cfg-if",
- "event-listener 5.4.1",
+ "event-listener 5.4.2",
  "futures-lite 2.6.1",
  "rustix 1.1.4",
 ]
@@ -1773,11 +1773,10 @@ dependencies = [
 
 [[package]]
 name = "event-listener"
-version = "5.4.1"
+version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
- "concurrent-queue",
  "parking",
  "pin-project-lite",
 ]
@@ -1788,7 +1787,7 @@ version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
- "event-listener 5.4.1",
+ "event-listener 5.4.2",
  "pin-project-lite",
 ]
 
@@ -6199,7 +6198,7 @@ dependencies = [
 
 [[package]]
 name = "tandem"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6262,7 +6261,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-agent-teams"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6271,7 +6270,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-core"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6298,7 +6297,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-data-boundary"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "serde",
  "sha2",
@@ -6306,7 +6305,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-document"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "calamine",
  "pdf-extract",
@@ -6317,7 +6316,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-enterprise-contract"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6330,7 +6329,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-graph-core"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6339,7 +6338,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-memory"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6348,6 +6347,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "fastembed",
+ "fs2",
  "getrandom 0.2.17",
  "ignore",
  "once_cell",
@@ -6368,7 +6368,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-observability"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6382,7 +6382,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-orchestrator"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6391,7 +6391,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-providers"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -6411,7 +6411,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-repo-intelligence"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "ignore",
  "serde",
@@ -6423,7 +6423,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-skills"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -6435,7 +6435,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-tools"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6465,7 +6465,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-types"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "chrono",
  "serde",
@@ -6477,7 +6477,7 @@ dependencies = [
 
 [[package]]
 name = "tandem-wire"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "chrono",
  "serde",
@@ -8922,7 +8922,7 @@ dependencies = [
  "async-trait",
  "blocking",
  "enumflags2",
- "event-listener 5.4.1",
+ "event-listener 5.4.2",
  "futures-core",
  "futures-lite 2.6.1",
  "hex",
