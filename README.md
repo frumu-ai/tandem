@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/ac.tandem%2Fdocs-mcp.svg)](https://mcptoplist.com/server/ac.tandem%2Fdocs-mcp)
+
 <div align="center">
   <img src=".github/assets/logo.png" alt="Tandem Logo" width="500">
   
