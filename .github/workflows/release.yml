@@ -551,10 +551,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          MANIFEST_PATH="$GITHUB_WORKSPACE/release-artifacts/tandem-artifacts-v1.json"
           pnpm -C apps/tandem-desktop exec tauri signer sign \
             -k "$TAURI_SIGNING_PRIVATE_KEY" \
             -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
-            release-artifacts/tandem-artifacts-v1.json
+            "$MANIFEST_PATH"
           base64 --decode \
             release-artifacts/tandem-artifacts-v1.json.sig \
             > release-artifacts/tandem-artifacts-v1.json.minisig
