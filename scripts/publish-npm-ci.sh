@@ -56,17 +56,19 @@ mkdir -p "$(dirname "$LOG_FILE")"
 : > "$LOG_FILE"
 
 echo "Publishing npm wrappers..." | tee -a "$LOG_FILE"
-if [[ "${PUBLISH_NPM_ENTERPRISE:-false}" != "true" ]]; then
-  FILTERED_PACKAGES=()
-  for package_dir in "${PACKAGES[@]}"; do
-    if [[ "$package_dir" == "packages/tandem-enterprise" ]]; then
-      echo "SKIP packages/tandem-enterprise (set PUBLISH_NPM_ENTERPRISE=true to publish)" | tee -a "$LOG_FILE"
-      continue
-    fi
-    FILTERED_PACKAGES+=("$package_dir")
-  done
-  PACKAGES=("${FILTERED_PACKAGES[@]}")
-fi
+FILTERED_PACKAGES=()
+for package_dir in "${PACKAGES[@]}"; do
+  if [[ "$package_dir" == "packages/tandem-enterprise" && "${PUBLISH_NPM_ENTERPRISE:-false}" != "true" ]]; then
+    echo "SKIP packages/tandem-enterprise (set PUBLISH_NPM_ENTERPRISE=true to publish)" | tee -a "$LOG_FILE"
+    continue
+  fi
+  if [[ "$package_dir" == "packages/create-tandem-panel" && "${PUBLISH_NPM_SCAFFOLD:-false}" != "true" ]]; then
+    echo "SKIP packages/create-tandem-panel (set PUBLISH_NPM_SCAFFOLD=true to publish)" | tee -a "$LOG_FILE"
+    continue
+  fi
+  FILTERED_PACKAGES+=("$package_dir")
+done
+PACKAGES=("${FILTERED_PACKAGES[@]}")
 if [[ -n "$OTP" && ! "$OTP" =~ ^[0-9]{6,8}$ ]]; then
   echo "Invalid OTP. Use the numeric authenticator code, usually 6 digits." >&2
   exit 1
