@@ -421,6 +421,7 @@ jobs:
       - name: Publish npm wrappers (or dry-run)
         shell: bash
         env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           PUBLISH_NPM_LOG: publish-npm.log
           PUBLISH_NPM_ENTERPRISE: ${{ needs.preflight.outputs.npm_enterprise_enabled }}
         run: |
