@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.7.2 (2026-07-31)
+## v0.7.2 (2026-08-05)
 
 Tandem 0.7.2 is a security and reliability release. It closes host, tenant,
 approval, webhook, context-assertion, artifact, audit-integrity, and
