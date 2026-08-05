@@ -236,7 +236,7 @@ BUSL applies separately to each version, so this licensing correction is
 prospective. The corrected grant is intended to first ship in **0.7.0**;
 earlier releases retain the licenses distributed with them.
 
-**Current source-tree BUSL Change Date:** `2030-07-31`.
+**Current source-tree BUSL Change Date:** `2030-08-05`.
 
 The `Change Date` in the shipped 0.6.9 license files is `2030-07-12`, and in
 the shipped 0.7.0 license files `2030-07-15` — each release date plus four
