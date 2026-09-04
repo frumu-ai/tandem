@@ -17,6 +17,7 @@ const protectedBuslPackages = [
   "tandem-enterprise-server",
   "tandem-incident-monitor",
   "tandem-server",
+  "tandem-solutions",
 ];
 const expectedChangeLicense = "GPL-2.0-or-later OR MIT OR Apache-2.0";
 const requiredGrantFragments = [

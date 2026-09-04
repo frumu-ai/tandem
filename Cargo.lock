@@ -8801,6 +8801,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tandem-solutions"
+version = "0.7.2"
+dependencies = [
+ "schemars 0.8.22",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tandem-enterprise-contract",
+ "tandem-orchestrator",
+]
+
+[[package]]
 name = "tandem-tools"
 version = "0.7.2"
 dependencies = [
