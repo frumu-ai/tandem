@@ -84,3 +84,8 @@ e64795105ba26d08348f26d8cbcc0d6d615976da:guide/src/content/docs/engine-authentic
 e64795105ba26d08348f26d8cbcc0d6d615976da:guide/src/content/docs/engine-authentication-for-agents.md:curl-auth-header:81
 e64795105ba26d08348f26d8cbcc0d6d615976da:guide/src/content/docs/engine-authentication-for-agents.md:curl-auth-header:90
 e64795105ba26d08348f26d8cbcc0d6d615976da:guide/src/content/docs/engine-authentication-for-agents.md:curl-auth-header:99
+
+# Reviewed 2026-09-04: this exact historical fixture used a literal dummy token
+# for a loopback-only fake engine. The current test uses a short test placeholder.
+# Keep all-history scanning enabled; other commits and findings remain blocking.
+6689c1dc3c6a3332fedde925ff2deac33ad0e9aa:packages/tandem-control-panel/tests/hosted-session-integration.test.mjs:tandem-token-assignment:77
