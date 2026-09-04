@@ -123,5 +123,9 @@ Existing audit gates and severity thresholds remain unchanged.
 Engine and panel runtime images now use the 2026-09-04 Debian snapshots and
 explicitly pin OpenSSL 3.5.7-1~deb13u2. Package availability was checked against
 both snapshot indexes; the [Debian security tracker](https://security-tracker.debian.org/tracker/source-package/openssl)
-identifies this as the patched trixie-security package. Images retain their
-base digests, non-root users, artifact verification and vulnerability gates.
+identifies this as the patched trixie-security package. Runtime and migration
+images use the official Node 24.20.0 trixie-slim multi-architecture digest
+`sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0`,
+verified against [Docker's image inventory](https://github.com/docker-library/repo-info/blob/master/repos/node/remote/24.20.0-trixie-slim.md).
+This replaces the Node 24.18.0 binary flagged by the second container scanner.
+Non-root users, artifact verification and vulnerability gates remain enforced.
