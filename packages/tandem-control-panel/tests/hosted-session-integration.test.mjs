@@ -18,7 +18,9 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-async function setup(t, { refresh = "valid", invalidExchange = false } = {}) {
+async function setup(t, { refresh = "valid", invalidExchange = false,
+  unsafeExchange = false, unsafeRefresh = false, redirectExchange = false, redirectRefresh = false,
+  publicUrl = "https://private.example.test", role = "member" } = {}) {
   const root = await mkdtemp(join(tmpdir(), "tandem-hosted-identity-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const requests = [];
@@ -28,7 +30,7 @@ async function setup(t, { refresh = "valid", invalidExchange = false } = {}) {
     send(res, 200, { ready: true, healthy: true, version: "identity-fixture" });
   });
   const envelope = (user, { fresh = false } = {}) => ({
-    deployment_id: "deployment-a", user: { id: user }, role: "member",
+    deployment_id: "deployment-a", user: { id: user }, role,
     roles: ["workspace:user"], org_units: [fresh ? "finance" : "engineering"],
     policy_version: fresh ? 2 : 1,
     panel_session_token: `server-session-${user}`,
@@ -42,12 +44,20 @@ async function setup(t, { refresh = "valid", invalidExchange = false } = {}) {
     const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
     if (req.headers.authorization !== "Bearer host-fixture-token") return send(res, 401, {});
     if (req.url === "/exchange") {
+      if (redirectExchange) {
+        res.writeHead(307, { location: `${engine}/stolen-exchange` });
+        return res.end();
+      }
       const payload = envelope(body.code);
       if (invalidExchange) delete payload.user;
       return send(res, 200, payload);
     }
     if (req.url === "/refresh") {
       refreshCalls.push(body.panel_session_token);
+      if (redirectRefresh) {
+        res.writeHead(307, { location: `${engine}/stolen-refresh` });
+        return res.end();
+      }
       if (refresh === "revoked") return send(res, 403, { error: "fixture revocation" });
       const user = refresh === "changed-user" ? "mallory" : "alice";
       return send(res, 200, envelope(user, { fresh: true }));
@@ -60,9 +70,10 @@ async function setup(t, { refresh = "valid", invalidExchange = false } = {}) {
   await writeFile(configPath, JSON.stringify({
     version: 1,
     hosted: {
-      managed: true, deployment_id: "deployment-a", public_url: "https://private.example.test",
+      managed: true, deployment_id: "deployment-a", public_url: publicUrl,
       control_plane_url: controlPlane,
-      auth: { mode: "hosted", panel_exchange_url: `${controlPlane}/exchange`, panel_refresh_url: `${controlPlane}/refresh`, host_agent_token_file: tokenPath },
+      auth: { mode: "hosted", panel_exchange_url: `${unsafeExchange ? engine : controlPlane}/exchange`,
+        panel_refresh_url: `${unsafeRefresh ? engine : controlPlane}/refresh`, host_agent_token_file: tokenPath },
     },
   }));
   // Reserve and release a port without fixed-port cross-test collisions.
@@ -142,6 +153,13 @@ test("hosted requests use only the server identity and refreshed memberships", a
   assert.equal(forwarded.headers.authorization, "Bearer test-token");
 });
 
+test("a mixed-case HTTPS public URL still sets a Secure session cookie", async (t) => {
+  const app = await setup(t, { publicUrl: "HTTPS://private.example.test" });
+  const response = await app.login("bob");
+  assert.equal(response.status, 200);
+  assert.match(response.setCookie, /; Secure(?:;|$)/);
+});
+
 test("failed refresh removes only the affected user's panel session", async (t) => {
   const app = await setup(t, { refresh: "revoked" });
   const alice = await app.login("alice");
@@ -175,6 +193,26 @@ test("hosted members cannot change deployment auth or reach shared administrativ
   assert.equal(valid.status, 200);
 });
 
+test("hosted workspace owners cannot replace server auth configuration or drop it with a partial save", async (t) => {
+  const app = await setup(t, { role: "owner" });
+  const owner = await app.login("bob");
+  const headers = { cookie: owner.cookie, "content-type": "application/json" };
+  const configUrl = `${app.url}/api/control-panel/config`;
+  const before = await (await fetch(configUrl, { headers })).json();
+  for (const hosted of [{ managed: false }, { ...before.config.hosted, control_plane_url: "https://other.example.test" },
+    { ...before.config.hosted, auth: { host_agent_token_file: "/another/file" } }]) {
+    const response = await fetch(configUrl, { method: "PATCH", headers, body: JSON.stringify({ hosted }) });
+    assert.equal(response.status, 403);
+  }
+  const saved = await fetch(configUrl, { method: "PATCH", headers,
+    body: JSON.stringify({ control_panel: { aca_compact_nav: false } }) });
+  assert.equal(saved.status, 200);
+  assert.deepEqual((await saved.json()).config.hosted, before.config.hosted);
+  const me = await fetch(`${app.url}/api/auth/me`, { headers });
+  assert.equal(me.status, 200);
+  assert.equal((await me.json()).principal_id, "bob");
+});
+
 test("refresh cannot replace a signed-in user with another user", async (t) => {
   const app = await setup(t, { refresh: "changed-user" });
   const alice = await app.login("alice");
@@ -190,4 +228,32 @@ test("incomplete control-plane exchange cannot create a token-backed fallback se
   assert.equal(response.cookie, "");
   const me = await fetch(`${app.url}/api/auth/me`);
   assert.equal(me.status, 401);
+});
+
+test("login rejects an off-origin endpoint and never follows a credential-bearing redirect", async (t) => {
+  for (const options of [{ unsafeExchange: true }, { redirectExchange: true }]) {
+    await t.test(JSON.stringify(options), async (t) => {
+      const app = await setup(t, options);
+      const response = await app.login("alice");
+      assert.equal(response.status, 401);
+      assert.equal(response.cookie, "");
+      assert.equal(app.requests.some(({ path }) => path === "/exchange" || path === "/stolen-exchange"), false);
+    });
+  }
+});
+
+test("refresh fails closed without sending credentials to another origin or redirect target", async (t) => {
+  for (const options of [{ unsafeRefresh: true }, { redirectRefresh: true }]) {
+    await t.test(JSON.stringify(options), async (t) => {
+      const app = await setup(t, options);
+      const alice = await app.login("alice");
+      const bob = await app.login("bob");
+      assert.equal(alice.status, 200);
+      const response = await fetch(`${app.url}/api/auth/me`, { headers: { cookie: alice.cookie } });
+      assert.equal(response.status, 401);
+      assert.equal(app.requests.some(({ path }) => path === "/refresh" || path === "/stolen-refresh"), false);
+      const other = await fetch(`${app.url}/api/auth/me`, { headers: { cookie: bob.cookie } });
+      assert.equal(other.status, 200);
+    });
+  }
 });

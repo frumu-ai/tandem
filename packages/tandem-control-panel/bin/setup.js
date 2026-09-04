@@ -21,6 +21,7 @@ import {
 import { resolveControlPanelPrincipalIdentity } from "../lib/setup/control-panel-principal.js";
 import { isEngineIdentityHeader, sessionEngineHeaders } from "../lib/setup/engine-identity-headers.js";
 import { hostedSessionFields, hostedSessionExpired, assertSameHostedIdentity, hostedPanelRouteAllowed } from "../lib/setup/hosted-session.js";
+import { hostedAuthEndpoint } from "../lib/setup/hosted-auth-endpoint.js";
 import { resolveControlPanelPreferencesPath } from "../lib/setup/control-panel-preferences.js";
 import { classifyStatusOnlyWorkspaceChange } from "../lib/setup/workspace-change-status.js";
 import { createSwarmApiHandler, getOrchestratorMetrics } from "../server/routes/swarm.js";
@@ -1101,7 +1102,11 @@ function setSessionCookie(res, sid) {
     "Path=/",
     `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
   ];
-  if (controlPanelPublicBaseUrl().startsWith("https://")) attrs.push("Secure");
+  try {
+    if (new URL(controlPanelPublicBaseUrl()).protocol === "https:") attrs.push("Secure");
+  } catch {
+    // A panel without a configured public URL may be served on local HTTP.
+  }
   res.setHeader("Set-Cookie", attrs.join("; "));
 }
 
@@ -1412,6 +1417,8 @@ function hostedPanelAuthAvailable() {
   }
   if (!auth.hostAgentTokenFile) return false;
   try {
+    hostedAuthEndpoint(auth, "exchange");
+    hostedAuthEndpoint(auth, "refresh");
     return !!readFileSync(resolve(auth.hostAgentTokenFile), "utf8").trim();
   } catch {
     return false;
@@ -1468,8 +1475,8 @@ function hostedPanelAuthorizeUrl() {
   }
 }
 
-function readHostAgentToken() {
-  const tokenFile = getHostedPanelAuthConfig().hostAgentTokenFile;
+function readHostAgentToken(auth) {
+  const tokenFile = auth.hostAgentTokenFile;
   if (!tokenFile) return "";
   try {
     return readFileSync(resolve(tokenFile), "utf8").trim();
@@ -2589,17 +2596,20 @@ async function exchangeHostedPanelCode(code) {
   if (!auth.managed || !auth.panelExchangeUrl) {
     throw new Error("Hosted panel auth is not configured.");
   }
-  const hostAgentToken = readHostAgentToken();
+  const endpoint = hostedAuthEndpoint(auth, "exchange");
+  const hostAgentToken = readHostAgentToken(auth);
   if (!hostAgentToken) {
     throw new Error("Hosted agent token is not available on this server.");
   }
-  const upstream = await fetch(auth.panelExchangeUrl, {
+  const upstream = await fetch(endpoint, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${hostAgentToken}`,
     },
     body: JSON.stringify({ code }),
+    redirect: "error",
+    signal: AbortSignal.timeout(8000),
   });
   const text = await upstream.text();
   let payload = {};
@@ -2609,7 +2619,7 @@ async function exchangeHostedPanelCode(code) {
     payload = {};
   }
   if (!upstream.ok) {
-    throw new Error(payload?.error || text || `Hosted panel login failed (${upstream.status})`);
+    throw new Error(`Hosted panel login failed (${upstream.status}).`);
   }
   return payload;
 }
@@ -2630,12 +2640,14 @@ async function refreshHostedPanelSession(session) {
   let pending = hostedSessionRefreshes.get(session.sid);
   if (!pending) {
     pending = (async () => {
-      const hostAgentToken = readHostAgentToken();
+      const endpoint = hostedAuthEndpoint(auth, "refresh");
+      const hostAgentToken = readHostAgentToken(auth);
       if (!hostAgentToken) throw new Error("Hosted agent token is not available on this server.");
-      const upstream = await fetch(auth.panelRefreshUrl, {
+      const upstream = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${hostAgentToken}` },
         body: JSON.stringify({ panel_session_token: current.panel_session_token }),
+        redirect: "error",
         signal: AbortSignal.timeout(8000),
       });
       if (!upstream.ok) throw new Error("Hosted panel session is no longer valid.");

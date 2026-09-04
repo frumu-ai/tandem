@@ -39,7 +39,8 @@ ignored. A malformed response cannot fall back to a root-token-only session.
 - Failed refresh removes the affected session and returns 401. Other users'
   panel sessions remain independent. Configuring another deployment invalidates
   a session even while its previous assertion remains unexpired.
-- Cookies use `Secure` when the configured public URL is HTTPS. HttpOnly and
+- Cookies use `Secure` when the configured public URL is HTTPS, including
+  mixed-case URL schemes. HttpOnly and
   SameSite protection remain in place; configure the actual HTTPS public URL.
 - Hosted members/viewers cannot reach deployment-wide settings, raw shared
   file/workspace routes, knowledgebase administration or ACA/swarm/orchestrator
@@ -47,6 +48,15 @@ ignored. A malformed response cannot fall back to a root-token-only session.
   credentials. Existing owner/admin roles or hosted administrative capabilities
   are required until a verified per-user implementation exists. Personal
   preferences and engine-governed routes retain their existing access paths.
+- Hosted identity settings, credential-file paths and control-plane endpoints
+  are server-operator configuration. Browser-authenticated workspace admins
+  cannot change them or remove them by saving a partial configuration.
+- Login and refresh validate their destination against the configured control
+  plane, require HTTPS outside literal loopback, reject URL credentials/query
+  strings/fragments, use an eight-second timeout and refuse redirects. The
+  host token is read only after destination validation. This is an intentional
+  credential-file-to-control-plane authentication flow, not a general file
+  forwarding operation. The server operator remains a trusted actor.
 
 This last restriction is intentional: authenticating a user does not authorize
 deployment-wide configuration edits or global files. Existing local operator
@@ -60,13 +70,15 @@ After installing locked panel dependencies and building its existing frontend:
 cd packages/tandem-control-panel
 pnpm install --frozen-lockfile
 pnpm build
-node --test --test-concurrency=1 tests/hosted-session.test.mjs tests/hosted-session-integration.test.mjs tests/engine-proxy-header-strip.test.mjs tests/smoke.test.mjs
+node --test --test-concurrency=1 tests/hosted-auth-endpoint.test.mjs tests/hosted-session.test.mjs tests/hosted-session-integration.test.mjs tests/engine-proxy-header-strip.test.mjs tests/smoke.test.mjs
 ```
 
-The 22 tests cover the envelope and expiry boundary, identity/header spoofing,
+The 33 tests cover the envelope and expiry boundary, identity/header spoofing,
 refresh concurrency, changed-user rejection, removal of one affected session,
 admin-route denial, scaffold parity, public callback/webhook behavior and existing
-local auth/proxy/swarm behavior. The integration tests start the real panel with
+local auth/proxy/swarm behavior, mixed-case HTTPS cookies, off-origin endpoint
+rejection, redirect rejection and immutable hosted authentication settings.
+The integration tests start the real panel with
 synthetic control-plane and engine services. They test the panel seam; they do
 not prove cryptographic verification or private memory isolation end to end.
 

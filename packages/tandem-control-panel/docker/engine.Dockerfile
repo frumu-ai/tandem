@@ -15,13 +15,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN rm -f /etc/apt/sources.list.d/debian.sources \
   && printf '%s\n' \
-    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260720T000000Z trixie main' \
-    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260720T000000Z trixie-security main' \
+    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260904T000000Z trixie main' \
+    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260904T000000Z trixie-security main' \
     > /etc/apt/sources.list \
   && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y --no-install-recommends \
     ca-certificates=20250419 \
     curl=8.14.1-2+deb13u4 \
+    libssl3t64=3.5.7-1~deb13u2 \
+    openssl=3.5.7-1~deb13u2 \
+    openssl-provider-legacy=3.5.7-1~deb13u2 \
   && rm -rf /var/lib/apt/lists/* /etc/apt/sources.list
 
 RUN --mount=type=bind,source=packages/tandem-control-panel/docker/release-candidate,target=/candidate,readonly \

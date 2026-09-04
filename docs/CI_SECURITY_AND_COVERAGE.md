@@ -69,11 +69,9 @@ future expiry. Each ID maps to `https://rustsec.org/advisories/<ID>.html`.
 | Advisory IDs | Crate family | Owner | Reachability / compensating control | Expires |
 | --- | --- | --- | --- | --- |
 | `RUSTSEC-2024-0411`, `RUSTSEC-2024-0412`, `RUSTSEC-2024-0413`, `RUSTSEC-2024-0414`, `RUSTSEC-2024-0415`, `RUSTSEC-2024-0416`, `RUSTSEC-2024-0417`, `RUSTSEC-2024-0418`, `RUSTSEC-2024-0419`, `RUSTSEC-2024-0420`, `RUSTSEC-2024-0429` | GTK3/Tauri Linux stack | Desktop runtime | Reachable only in the Linux desktop GTK runtime. Tandem does not directly call the affected archived APIs or `VariantStrIter`; keep Tauri patched, exercise Linux desktop CI, and replace this stack before expiry. | 2026-09-30 |
-| `RUSTSEC-2024-0320`, `RUSTSEC-2025-0141` | `yaml-rust`, `bincode` via `syntect`/`ppt-rs` | Desktop document preview | Reachable only while parsing local document-preview input. The preview remains local/user-initiated; replace or isolate PowerPoint preview parsing before expiry. | 2026-09-30 |
 | `RUSTSEC-2024-0370`, `RUSTSEC-2024-0388` | `proc-macro-error`, `derivative` | Desktop runtime | Compile-time/macro or generated helper paths through GTK/D-Bus; no attacker-controlled runtime entry was identified. Remove through upstream desktop dependency refresh. | 2026-09-30 |
 | `RUSTSEC-2024-0384`, `RUSTSEC-2024-0436`, `RUSTSEC-2025-0057`, `RUSTSEC-2025-0119` | Utility transitive crates | Runtime dependencies | Unmaintained helpers with no identified Tandem call path that crosses an untrusted boundary. CI pins the lockfile and will reject any new advisory; prefer upstream removal over a direct fork. | 2026-09-30 |
 | `RUSTSEC-2025-0075`, `RUSTSEC-2025-0080`, `RUSTSEC-2025-0081`, `RUSTSEC-2025-0098`, `RUSTSEC-2025-0100` | `rust-unic` via Tauri `urlpattern` | Desktop runtime | Limited to Tauri URL-pattern parsing; application navigation and deep links remain allowlisted. Remove through upstream Tauri/urlpattern replacement. | 2026-09-30 |
-| `RUSTSEC-2025-0134` | `rustls-pemfile` 1.x | Runtime dependencies | Transitive through the legacy `reqwest` 0.11 chain. TLS-sensitive Tandem paths use the newer pinned reqwest/rustls clients; replace the legacy dependency before expiry. | 2026-09-30 |
 | `RUSTSEC-2026-0097` | `rand` 0.7 via `selectors` code generation | Desktop build | Build-time-only path through Tauri HTML selector code generation. The advisory requires a custom logger that re-enters `rand::thread_rng()` during reseed; that precondition is absent from the generator. | 2026-09-30 |
 | `RUSTSEC-2026-0192` | `ttf-parser` via `lopdf`/`pdf-extract` | Desktop document preview | Reachable only for local document-preview font parsing. Updated parser parents remain pinned; preview input is local/user-initiated and the parser must be replaced before expiry. | 2026-09-30 |
 
@@ -109,3 +107,21 @@ egress evidence can be collected. `.github/workflows/security-release-environmen
 therefore fails closed unless fresh, exact-commit evidence is supplied through
 the protected `hosted-production-security` environment. This gate applies to a
 future hosted-enterprise deployment, not to standalone engines.
+
+### Foundation dependency repair (TAN-843)
+
+The unused `ppt-rs` dependency was removed; the desktop presentation exporter
+already writes its OOXML ZIP directly. This removes the legacy reqwest 0.11 /
+h2 0.3 chain and the obsolete yaml-rust, bincode and rustls-pemfile exceptions.
+The remaining h2 is pinned to 0.4.16 for
+[RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258.html).
+The lockfile also updates lru to 0.18.2 for
+[RUSTSEC-2026-0253](https://rustsec.org/advisories/RUSTSEC-2026-0253.html)
+and replaces the yanked chacha20 0.10.1 with 0.10.2.
+Existing audit gates and severity thresholds remain unchanged.
+
+Engine and panel runtime images now use the 2026-09-04 Debian snapshots and
+explicitly pin OpenSSL 3.5.7-1~deb13u2. Package availability was checked against
+both snapshot indexes; the [Debian security tracker](https://security-tracker.debian.org/tracker/source-package/openssl)
+identifies this as the patched trixie-security package. Images retain their
+base digests, non-root users, artifact verification and vulnerability gates.
