@@ -1,4 +1,4 @@
-FROM node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573 AS build
+FROM node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0 AS build
 
 ENV PNPM_HOME=/pnpm \
   PATH=/pnpm:$PATH
@@ -20,7 +20,7 @@ COPY packages/tandem-control-panel ./packages/tandem-control-panel
 RUN pnpm -C packages/tandem-client-ts build \
   && pnpm -C packages/tandem-control-panel build
 
-FROM node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573
+FROM node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0
 
 ENV DEBIAN_FRONTEND=noninteractive \
   HOME=/var/lib/tandem/panel \
