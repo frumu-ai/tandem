@@ -12,6 +12,7 @@ import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { homedir } from "os";
 import { ensureBootstrapEnv, resolveEnvLoadOrder } from "../lib/setup/env.js";
+import { isEngineIdentityHeader } from "../lib/setup/engine-identity-headers.js";
 import { createSwarmApiHandler } from "../server/routes/swarm.js";
 
 function parseDotEnv(content) {
@@ -1508,6 +1509,7 @@ async function proxyPublicEngineOAuthCallback(req, res) {
   for (const [key, value] of Object.entries(req.headers)) {
     if (!value) continue;
     const lower = key.toLowerCase();
+    if (isEngineIdentityHeader(lower)) continue;
     if (
       ["host", "content-length", "cookie", "authorization", "x-tandem-token", "x-forwarded-prefix"].includes(
         lower
@@ -1596,6 +1598,7 @@ async function proxyPublicEngineAutomationWebhook(req, res) {
   for (const [key, value] of Object.entries(req.headers)) {
     if (!value) continue;
     const lower = key.toLowerCase();
+    if (isEngineIdentityHeader(lower)) continue;
     if (
       [
         "host",
@@ -1693,6 +1696,7 @@ async function proxyEngineRequest(req, res, session) {
   for (const [key, value] of Object.entries(req.headers)) {
     if (!value) continue;
     const lower = key.toLowerCase();
+    if (isEngineIdentityHeader(lower)) continue;
     if (
       ["host", "content-length", "cookie", "authorization", "x-tandem-token", "x-forwarded-prefix"].includes(
         lower
