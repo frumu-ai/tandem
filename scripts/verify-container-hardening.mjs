@@ -107,9 +107,13 @@ export async function verifyContainerHardening(
       errors.push(`${name} contains a floating latest dependency`);
     }
     for (const marker of [
-      "snapshot.debian.org/archive/debian/20260720T000000Z",
+      "snapshot.debian.org/archive/debian/20260904T000000Z",
+      "snapshot.debian.org/archive/debian-security/20260904T000000Z",
       "ca-certificates=20250419",
       "curl=8.14.1-2+deb13u4",
+      "libssl3t64=3.5.7-1~deb13u2",
+      "openssl=3.5.7-1~deb13u2",
+      "openssl-provider-legacy=3.5.7-1~deb13u2",
     ]) {
       if (!source.includes(marker)) errors.push(`${name} is missing immutable OS input ${marker}`);
     }

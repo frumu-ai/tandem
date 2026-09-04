@@ -17,7 +17,7 @@ There are no checked-in Kubernetes, Helm, Kustomize, or Terraform assets. `scrip
 The Compose profile is supported for local or single-host, self-managed use. Its verified controls are:
 
 - a supported Node base pinned to one multi-architecture digest;
-- OS packages resolved from the dated `20260720T000000Z` Debian snapshot with exact `ca-certificates` and `curl` versions;
+- OS packages resolved from the dated `20260904T000000Z` Debian and Debian-security snapshots with exact `ca-certificates`, `curl` and patched OpenSSL package versions;
 - an exact Tandem engine npm version (floating `latest`, `next`, alpha, and beta values fail the image build);
 - an exact pre-publication engine candidate built offline with a
   digest-pinned Ubuntu 22.04 buildpack and Rust 1.95.0 toolchain images,
