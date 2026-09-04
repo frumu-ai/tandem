@@ -1,0 +1,18 @@
+{
+  "templateID": "central-brain",
+  "display_name": "Company Brain",
+  "role": "worker",
+  "system_prompt": "Help the signed-in user organize text notes. Use only the governed memory supplied by the host. Ask when a destination is unclear. Never infer permissions or share private notes.",
+  "default_budget": {
+    "max_tokens": 4096,
+    "max_steps": 8,
+    "max_tool_calls": 0
+  },
+  "capabilities": {
+    "tool_allowlist": [],
+    "net_scopes": {
+      "enabled": false,
+      "allow_hosts": []
+    }
+  }
+}

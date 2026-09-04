@@ -1,0 +1,13 @@
+{
+  "instance_id": "company-brain",
+  "customer_config_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "optional_components": [],
+  "models": {
+    "economy": {
+      "provider": "local",
+      "model": "fixture-model",
+      "credential_ref": "local.fixture",
+      "uses_network": false
+    }
+  }
+}

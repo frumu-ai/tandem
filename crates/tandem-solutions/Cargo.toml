@@ -1,0 +1,19 @@
+[package]
+name = "tandem-solutions"
+version = "0.7.2"
+edition = "2021"
+publish = false
+license-file = "../../LICENSE"
+description = "Versioned, deterministic solution planning for Tandem"
+
+[dependencies]
+schemars = "0.8.22"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+tandem-enterprise-contract = { path = "../tandem-enterprise-contract" }
+
+[dev-dependencies]
+tandem-orchestrator = { path = "../tandem-orchestrator" }

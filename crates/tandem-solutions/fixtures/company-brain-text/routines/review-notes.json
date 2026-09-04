@@ -1,0 +1,17 @@
+{
+  "name": "Review notes",
+  "status": "paused",
+  "schedule": {
+    "interval_seconds": {
+      "seconds": 86400
+    }
+  },
+  "timezone": "UTC",
+  "misfire_policy": "skip",
+  "entrypoint": "mission.default",
+  "args": {},
+  "allowed_tools": [],
+  "output_targets": [],
+  "requires_approval": true,
+  "external_integrations_allowed": false
+}
