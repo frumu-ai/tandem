@@ -203,7 +203,7 @@ jobs:
         run: cargo fmt --manifest-path apps/tandem-desktop/src-tauri/Cargo.toml -- --check
 
       - name: Run clippy
-        run: cargo clippy --manifest-path apps/tandem-desktop/src-tauri/Cargo.toml -- -D warnings || true
+        run: cargo clippy --locked --manifest-path apps/tandem-desktop/src-tauri/Cargo.toml -- -D warnings
 
       - name: Run desktop Rust tests
         run: cargo test --manifest-path apps/tandem-desktop/src-tauri/Cargo.toml
