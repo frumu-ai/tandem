@@ -64,6 +64,10 @@ test("control panel engine proxy strips browser agent headers", async (t) => {
         auth: String(req.headers.authorization || ""),
         xToken: String(req.headers["x-tandem-token"] || ""),
         forwardedPrefix: String(req.headers["x-forwarded-prefix"] || ""),
+        identityHeaders: Object.keys(req.headers).filter((name) =>
+          ["x-tandem-context-assertion", "x-tandem-context-jws", "x-tandem-tenant-context-jws",
+            "x-tandem-org-id", "x-tenant-org-id", "x-tandem-workspace-id", "x-tenant-workspace-id",
+            "x-tandem-actor-id", "x-user-id", "x-tandem-roles"].includes(name)),
       });
 
       if (url.pathname === "/global/health") {
@@ -108,6 +112,16 @@ test("control panel engine proxy strips browser agent headers", async (t) => {
     cookie,
     headers: {
       "x-tandem-agent-id": "agent-should-not-forward",
+      "x-tandem-context-assertion": "forged",
+      "x-tandem-context-jws": "forged-alias",
+      "x-tandem-tenant-context-jws": "forged-tenant-alias",
+      "x-tandem-org-id": "other-org",
+      "x-tenant-org-id": "other-org-alias",
+      "x-tandem-workspace-id": "other-workspace",
+      "x-tenant-workspace-id": "other-workspace-alias",
+      "x-tandem-actor-id": "other-actor",
+      "x-user-id": "other-user",
+      "x-tandem-roles": "admin",
     },
   });
   assert.equal(response.status, 200);
@@ -119,6 +133,7 @@ test("control panel engine proxy strips browser agent headers", async (t) => {
   assert.equal(forwarded?.agentId, "");
   assert.equal(forwarded?.requestSource, "control_panel");
   assert.equal(forwarded?.forwardedPrefix, "/api/engine");
+  assert.deepEqual(forwarded?.identityHeaders, []);
 });
 
 test("control panel engine proxy forwards public origin for MCP OAuth", async (t) => {
@@ -205,6 +220,7 @@ test("control panel proxies OAuth callbacks without a panel session", async (t) 
         auth: String(req.headers.authorization || ""),
         xToken: String(req.headers["x-tandem-token"] || ""),
         cookie: String(req.headers.cookie || ""),
+        identity: String(req.headers["x-tandem-context-jws"] || ""),
       });
 
       if (url.pathname === "/global/health") {
@@ -250,6 +266,7 @@ test("control panel proxies OAuth callbacks without a panel session", async (t) 
     {
       headers: {
         cookie: "tcp_sid=browser-session-should-not-forward",
+        "x-tandem-context-jws": "forged-callback-context",
       },
     }
   );
@@ -261,6 +278,7 @@ test("control panel proxies OAuth callbacks without a panel session", async (t) 
   assert.equal(forwarded?.auth, `Bearer ${engineToken}`);
   assert.equal(forwarded?.xToken, engineToken);
   assert.equal(forwarded?.cookie, "");
+  assert.equal(forwarded?.identity, "");
 });
 
 test("control panel proxies automation webhooks without a panel session", async (t) => {
@@ -283,6 +301,7 @@ test("control panel proxies automation webhooks without a panel session", async 
         auth: String(req.headers.authorization || ""),
         xToken: String(req.headers["x-tandem-token"] || ""),
         cookie: String(req.headers.cookie || ""),
+        identity: String(req.headers["x-tandem-context-jws"] || ""),
         signature: String(req.headers["x-tandem-webhook-signature"] || ""),
         eventId: String(req.headers["x-tandem-webhook-event-id"] || ""),
         forwardedHost: String(req.headers["x-forwarded-host"] || ""),
@@ -355,6 +374,7 @@ test("control panel proxies automation webhooks without a panel session", async 
         "x-forwarded-prefix": "/caller-controlled",
         "x-tandem-webhook-signature": "t=123,v1=abc",
         "x-tandem-webhook-event-id": "evt-public-proxy",
+        "x-tandem-context-jws": "forged-webhook-context",
       },
       body: { ok: true },
     }
@@ -367,6 +387,7 @@ test("control panel proxies automation webhooks without a panel session", async 
   assert.equal(forwarded?.auth, "");
   assert.equal(forwarded?.xToken, "");
   assert.equal(forwarded?.cookie, "");
+  assert.equal(forwarded?.identity, "");
   assert.equal(forwarded?.signature, "t=123,v1=abc");
   assert.equal(forwarded?.eventId, "evt-public-proxy");
   assert.equal(forwarded?.forwardedHost, "testing.tandem.ac");

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   readControlPanelConfig,
   resolveControlPanelConfigPath,
@@ -103,7 +104,18 @@ export function createControlPanelConfigHandler(deps) {
     if (incoming.pathname === "/api/control-panel/config" && req.method === "PATCH") {
       const configPath = getConfigPath();
       const payload = await deps.readJsonBody(req);
-      const saved = await writeControlPanelConfig(configPath, payload?.config || payload);
+      const current = readControlPanelConfig(configPath);
+      let next = payload?.config || payload;
+      if (current.hosted?.managed === true) {
+        // Hosted identity, credential paths and credential recipients belong
+        // to the server operator, not a browser-authenticated workspace admin.
+        if (Object.hasOwn(next || {}, "hosted") && !isDeepStrictEqual(next.hosted, current.hosted)) {
+          sendJson(res, 403, { ok: false, error: "Hosted deployment configuration is managed by the server operator." });
+          return true;
+        }
+        next = { ...next, hosted: current.hosted };
+      }
+      const saved = await writeControlPanelConfig(configPath, next);
       sendJson(res, 200, {
         ok: true,
         path: saved.path,

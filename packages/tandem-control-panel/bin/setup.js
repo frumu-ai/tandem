@@ -19,6 +19,9 @@ import {
   summarizeControlPanelConfig,
 } from "../lib/setup/control-panel-config.js";
 import { resolveControlPanelPrincipalIdentity } from "../lib/setup/control-panel-principal.js";
+import { isEngineIdentityHeader, sessionEngineHeaders } from "../lib/setup/engine-identity-headers.js";
+import { hostedSessionFields, hostedSessionExpired, assertSameHostedIdentity, hostedPanelRouteAllowed } from "../lib/setup/hosted-session.js";
+import { hostedAuthEndpoint } from "../lib/setup/hosted-auth-endpoint.js";
 import { resolveControlPanelPreferencesPath } from "../lib/setup/control-panel-preferences.js";
 import { classifyStatusOnlyWorkspaceChange } from "../lib/setup/workspace-change-status.js";
 import { createSwarmApiHandler, getOrchestratorMetrics } from "../server/routes/swarm.js";
@@ -350,6 +353,7 @@ const FILE_BUCKET_PHYSICAL_NAMES = {
 const MAX_PREVIEW_BYTES = Math.max(1, Math.min(MAX_UPLOAD_BYTES, 2 * 1024 * 1024));
 
 const sessions = new Map();
+const hostedSessionRefreshes = new Map();
 let engineProcess = null;
 let server = null;
 let managedEngineToken = "";
@@ -1063,7 +1067,7 @@ function isLocalEngineUrl(url) {
 function pruneExpiredSessions() {
   const now = Date.now();
   for (const [sid, rec] of sessions.entries()) {
-    if (now - rec.lastSeenAt > SESSION_TTL_MS) sessions.delete(sid);
+    if (now - rec.lastSeenAt > SESSION_TTL_MS || hostedSessionExpired(rec, now)) sessions.delete(sid);
   }
 }
 
@@ -1098,6 +1102,11 @@ function setSessionCookie(res, sid) {
     "Path=/",
     `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
   ];
+  try {
+    if (new URL(controlPanelPublicBaseUrl()).protocol === "https:") attrs.push("Secure");
+  } catch {
+    // A panel without a configured public URL may be served on local HTTP.
+  }
   res.setHeader("Set-Cookie", attrs.join("; "));
 }
 
@@ -1408,6 +1417,8 @@ function hostedPanelAuthAvailable() {
   }
   if (!auth.hostAgentTokenFile) return false;
   try {
+    hostedAuthEndpoint(auth, "exchange");
+    hostedAuthEndpoint(auth, "refresh");
     return !!readFileSync(resolve(auth.hostAgentTokenFile), "utf8").trim();
   } catch {
     return false;
@@ -1464,8 +1475,8 @@ function hostedPanelAuthorizeUrl() {
   }
 }
 
-function readHostAgentToken() {
-  const tokenFile = getHostedPanelAuthConfig().hostAgentTokenFile;
+function readHostAgentToken(auth) {
+  const tokenFile = auth.hostAgentTokenFile;
   if (!tokenFile) return "";
   try {
     return readFileSync(resolve(tokenFile), "utf8").trim();
@@ -2585,17 +2596,20 @@ async function exchangeHostedPanelCode(code) {
   if (!auth.managed || !auth.panelExchangeUrl) {
     throw new Error("Hosted panel auth is not configured.");
   }
-  const hostAgentToken = readHostAgentToken();
+  const endpoint = hostedAuthEndpoint(auth, "exchange");
+  const hostAgentToken = readHostAgentToken(auth);
   if (!hostAgentToken) {
     throw new Error("Hosted agent token is not available on this server.");
   }
-  const upstream = await fetch(auth.panelExchangeUrl, {
+  const upstream = await fetch(endpoint, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${hostAgentToken}`,
     },
     body: JSON.stringify({ code }),
+    redirect: "error",
+    signal: AbortSignal.timeout(8000),
   });
   const text = await upstream.text();
   let payload = {};
@@ -2605,64 +2619,52 @@ async function exchangeHostedPanelCode(code) {
     payload = {};
   }
   if (!upstream.ok) {
-    throw new Error(payload?.error || text || `Hosted panel login failed (${upstream.status})`);
+    throw new Error(`Hosted panel login failed (${upstream.status}).`);
   }
   return payload;
 }
 
 async function refreshHostedPanelSession(session) {
+  if (session?.hosted !== true) return session;
+  const current = sessions.get(session.sid);
+  if (!current || hostedSessionExpired(current)) throw new Error("Hosted panel session expired.");
   const auth = getHostedPanelAuthConfig();
-  if (!session?.hosted || !auth.managed || !auth.panelRefreshUrl) return session;
-  const currentExpiry = Date.parse(String(session.context_assertion_expires_at || ""));
-  if (Number.isFinite(currentExpiry) && currentExpiry - Date.now() > 60000) return session;
-  const hostAgentToken = readHostAgentToken();
-  if (!hostAgentToken) throw new Error("Hosted agent token is not available on this server.");
-  const upstream = await fetch(auth.panelRefreshUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${hostAgentToken}`,
-    },
-    body: JSON.stringify({ panel_session_token: session.panel_session_token }),
-  });
-  const text = await upstream.text();
-  let payload = {};
+  if (!auth.managed || !auth.panelRefreshUrl) throw new Error("Hosted session refresh is not configured.");
+  if (current.principal_scope !== auth.deploymentId) throw new Error("Hosted deployment changed. Sign in again.");
+  const currentExpiry = Date.parse(String(current.context_assertion_expires_at || ""));
+  if (current.context_assertion && Number.isFinite(currentExpiry) && currentExpiry - Date.now() > 60000) {
+    return { sid: session.sid, ...current };
+  }
+  // Concurrent browser requests share one refresh, including rotating session
+  // tokens. A late response must never recreate a session removed by logout.
+  let pending = hostedSessionRefreshes.get(session.sid);
+  if (!pending) {
+    pending = (async () => {
+      const endpoint = hostedAuthEndpoint(auth, "refresh");
+      const hostAgentToken = readHostAgentToken(auth);
+      if (!hostAgentToken) throw new Error("Hosted agent token is not available on this server.");
+      const upstream = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${hostAgentToken}` },
+        body: JSON.stringify({ panel_session_token: current.panel_session_token }),
+        redirect: "error",
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!upstream.ok) throw new Error("Hosted panel session is no longer valid.");
+      const next = hostedSessionFields(await upstream.json(), { deploymentId: auth.deploymentId });
+      assertSameHostedIdentity(current, next);
+      const rec = sessions.get(session.sid);
+      if (!rec || hostedSessionExpired(rec)) throw new Error("Hosted panel session expired.");
+      Object.assign(rec, next);
+      return { sid: session.sid, ...rec };
+    })();
+    hostedSessionRefreshes.set(session.sid, pending);
+  }
   try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = {};
+    return await pending;
+  } finally {
+    if (hostedSessionRefreshes.get(session.sid) === pending) hostedSessionRefreshes.delete(session.sid);
   }
-  if (!upstream.ok) {
-    throw new Error(payload?.error || text || `Hosted panel session refresh failed (${upstream.status})`);
-  }
-  const rec = sessions.get(session.sid);
-  if (!rec) return session;
-  Object.assign(rec, hostedSessionFields(payload));
-  return { sid: session.sid, ...rec };
-}
-
-function hostedSessionFields(payload) {
-  return {
-    hosted: true,
-    panel_session_token: String(payload?.panel_session_token || ""),
-    context_assertion: String(payload?.context_assertion || ""),
-    context_assertion_expires_at: String(payload?.context_assertion_expires_at || ""),
-    session_expires_at: String(payload?.session_expires_at || ""),
-    hosted_role: String(payload?.role || ""),
-    hosted_roles: Array.isArray(payload?.roles) ? payload.roles.map((role) => String(role)) : [],
-    hosted_org_units: Array.isArray(payload?.org_units) ? payload.org_units : [],
-    hosted_capabilities: Array.isArray(payload?.capabilities)
-      ? payload.capabilities.map((capability) => String(capability))
-      : [],
-    hosted_policy_version:
-      payload?.policy_version === null || payload?.policy_version === undefined
-        ? null
-        : Number(payload.policy_version),
-    hosted_user: payload?.user || null,
-    principal_id: String(payload?.user?.id || ""),
-    principal_source: "tandem-hosted",
-    principal_scope: String(payload?.deployment_id || ""),
-  };
 }
 
 async function handleHostedAuthExchange(req, res) {
@@ -2684,7 +2686,7 @@ async function handleHostedAuthExchange(req, res) {
       token: engineToken,
       createdAt: Date.now(),
       lastSeenAt: Date.now(),
-      ...hostedSessionFields(payload),
+      ...hostedSessionFields(payload, { deploymentId: getHostedPanelAuthConfig().deploymentId }),
     });
     setSessionCookie(res, sid);
     sendJson(res, 200, {
@@ -2702,13 +2704,27 @@ async function handleHostedAuthExchange(req, res) {
   }
 }
 
-function requireSession(req, res) {
+async function requireSession(req, res) {
   const session = getSession(req);
   if (!session) {
+    clearSessionCookie(res);
     sendJson(res, 401, { ok: false, error: "Unauthorized" });
     return null;
   }
-  return session;
+  try {
+    const refreshed = await refreshHostedPanelSession(session);
+    const pathname = new URL(req.url, "http://127.0.0.1").pathname;
+    if (!hostedPanelRouteAllowed(refreshed, pathname)) {
+      sendJson(res, 403, { ok: false, error: "This deployment administration route requires an owner or administrator." });
+      return null;
+    }
+    return refreshed;
+  } catch {
+    sessions.delete(session.sid);
+    clearSessionCookie(res);
+    sendJson(res, 401, { ok: false, error: "Hosted panel session expired. Sign in again." });
+    return null;
+  }
 }
 
 function isPublicEngineOAuthCallbackPath(pathname) {
@@ -2743,6 +2759,7 @@ async function proxyPublicEngineOAuthCallback(req, res) {
   for (const [key, value] of Object.entries(req.headers)) {
     if (!value) continue;
     const lower = key.toLowerCase();
+    if (isEngineIdentityHeader(lower)) continue;
     if (["host", "content-length", "cookie", "authorization", "x-tandem-token"].includes(lower)) {
       continue;
     }
@@ -2825,6 +2842,7 @@ async function proxyPublicEngineAutomationWebhook(req, res) {
   for (const [key, value] of Object.entries(req.headers)) {
     if (!value) continue;
     const lower = key.toLowerCase();
+    if (isEngineIdentityHeader(lower)) continue;
     if (
       [
         "host",
@@ -2962,7 +2980,7 @@ async function proxyEngineRequest(req, res, session) {
   const forwardedProto = forwarded.proto;
   const requestedSource = String(req.headers["x-tandem-request-source"] || "").trim();
   const requestedAgentId = String(req.headers["x-tandem-agent-id"] || "").trim();
-  const agentTestMode = (() => {
+  const agentTestMode = session?.hosted !== true && (() => {
     const raw = String(
       req.headers["x-tandem-agent-test-mode"] || req.headers["x-tandem-control-panel-agent-mode"] || ""
     ).trim()
@@ -2977,6 +2995,7 @@ async function proxyEngineRequest(req, res, session) {
   for (const [key, value] of Object.entries(req.headers)) {
     if (!value) continue;
     const lower = key.toLowerCase();
+    if (isEngineIdentityHeader(lower)) continue;
     if (
       [
         "host",
@@ -3157,15 +3176,10 @@ async function engineRequestJson(session, path, options = {}) {
     try {
       response = await fetch(`${ENGINE_URL}${path}`, {
         method,
-        headers: {
-          authorization: `Bearer ${session.token}`,
-          "x-tandem-token": session.token,
-          ...(session.context_assertion
-            ? { "x-tandem-context-assertion": String(session.context_assertion) }
-            : {}),
+        headers: sessionEngineHeaders(session, {
           ...(body ? { "content-type": "application/json" } : {}),
           ...(options.headers || {}),
-        },
+        }),
         body: body ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(options.timeoutMs || 8000),
       });
@@ -6192,14 +6206,14 @@ async function handleApi(req, res) {
   }
 
   if (pathname === "/api/system/search-settings" && req.method === "GET") {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     sendJson(res, 200, readManagedSearchSettings());
     return true;
   }
 
   if (pathname === "/api/system/search-settings" && req.method === "PATCH") {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     try {
       const payload = await readJsonBody(req);
@@ -6215,7 +6229,7 @@ async function handleApi(req, res) {
   }
 
   if (pathname === "/api/system/search-settings/test" && req.method === "POST") {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     try {
       const payload = await readJsonBody(req);
@@ -6258,14 +6272,14 @@ async function handleApi(req, res) {
   }
 
   if (pathname === "/api/system/scheduler-settings" && req.method === "GET") {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     sendJson(res, 200, getManagedSchedulerSettings());
     return true;
   }
 
   if (pathname === "/api/system/scheduler-settings" && req.method === "PATCH") {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     try {
       const payload = await readJsonBody(req);
@@ -6303,7 +6317,7 @@ async function handleApi(req, res) {
 
   if (pathname === "/api/auth/me" && req.method === "GET") {
     res.setHeader("cache-control", "no-store, max-age=0");
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     const probe = await probeEngineHealth(session.token);
     if (!probe.ok) {
@@ -6358,7 +6372,7 @@ async function handleApi(req, res) {
     pathname === "/api/control-panel/preferences" &&
     (req.method === "GET" || req.method === "PATCH")
   ) {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     return handleControlPanelPreferences(req, res, session);
   }
@@ -6367,37 +6381,37 @@ async function handleApi(req, res) {
     pathname === "/api/control-panel/config" &&
     (req.method === "GET" || req.method === "PATCH")
   ) {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     return handleControlPanelConfig(req, res);
   }
 
   if (pathname.startsWith("/api/knowledgebase")) {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     return handleKnowledgebaseApi(req, res);
   }
 
   if (pathname.startsWith("/api/swarm") || pathname.startsWith("/api/orchestrator")) {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     return handleSwarmApi(req, res, session);
   }
 
   if (pathname.startsWith("/api/aca")) {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     return handleAcaApi(req, res);
   }
 
   if (pathname.startsWith("/api/files")) {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     return handleFilesApi(req, res, session);
   }
 
   if (pathname.startsWith("/api/workspace/files")) {
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     return handleWorkspaceFilesApi(req, res, session);
   }
@@ -6415,7 +6429,7 @@ async function handleApi(req, res) {
       await proxyPublicEngineOAuthCallback(req, res);
       return true;
     }
-    const session = requireSession(req, res);
+    const session = await requireSession(req, res);
     if (!session) return true;
     await proxyEngineRequest(req, res, session);
     return true;
