@@ -16,6 +16,9 @@ on:
       - "packages/tandem-control-panel/docker/engine.Dockerfile"
       - "scripts/bump-version.sh"
       - "scripts/ci-engine-scope.sh"
+      - "scripts/ci-engine-pin-scope.mjs"
+      - "scripts/ci-engine-pin-scope.test.mjs"
+      - "scripts/verify-container-hardening.mjs"
   push:
     branches: ["feat/engine"]
     paths:
@@ -31,6 +34,14 @@ on:
       - "packages/tandem-control-panel/docker/engine.Dockerfile"
       - "scripts/bump-version.sh"
       - "scripts/ci-engine-scope.sh"
+      - "scripts/ci-engine-pin-scope.mjs"
+      - "scripts/ci-engine-pin-scope.test.mjs"
+      - "scripts/verify-container-hardening.mjs"
+
+# Superseded PR commits share a group; pushes, schedules and manual runs are independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -47,6 +58,9 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+
+      - name: Test release pin classification
+        run: node --test scripts/ci-engine-pin-scope.test.mjs
 
       - name: Determine engine CI scope
         id: scope
@@ -68,20 +82,21 @@ jobs:
 
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             changed_files="$(git diff --name-only "$PR_BASE_SHA" "$PR_HEAD_SHA")"
+            pin_base="$PR_BASE_SHA"
+            pin_head="$PR_HEAD_SHA"
           elif [[ "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
             changed_files="$(git diff-tree --no-commit-id --name-only -r "$CURRENT_SHA")"
+            pin_base="$PUSH_BEFORE_SHA"
+            pin_head="$CURRENT_SHA"
           else
             changed_files="$(git diff --name-only "$PUSH_BEFORE_SHA" "$CURRENT_SHA")"
+            pin_base="$PUSH_BEFORE_SHA"
+            pin_head="$CURRENT_SHA"
           fi
 
           printf '%s\n' "$changed_files"
-          if grep -Fxq \
-            'packages/tandem-control-panel/docker/engine.Dockerfile' \
-            <<<"$changed_files"; then
-            echo "docker-pin-changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "docker-pin-changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          pin_changed="$(node scripts/ci-engine-pin-scope.mjs "$pin_base" "$pin_head")"
+          echo "docker-pin-changed=$pin_changed" >> "$GITHUB_OUTPUT"
           run_engine_jobs="$(printf '%s\n' "$changed_files" | bash scripts/ci-engine-scope.sh)"
           echo "run-engine-jobs=$run_engine_jobs" >> "$GITHUB_OUTPUT"
 

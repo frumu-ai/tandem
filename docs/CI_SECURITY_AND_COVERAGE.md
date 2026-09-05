@@ -129,3 +129,17 @@ images use the official Node 24.20.0 trixie-slim multi-architecture digest
 verified against [Docker's image inventory](https://github.com/docker-library/repo-info/blob/master/repos/node/remote/24.20.0-trixie-slim.md).
 This replaces the Node 24.18.0 binary flagged by the second container scanner.
 Non-root users, artifact verification and vulnerability gates remain enforced.
+
+### Pull request release-pin checks
+
+Engine and container CI share `scripts/ci-engine-pin-scope.mjs` to compare only
+the engine release version and binary SHA-256. Updating the Node base, Debian
+snapshot or OS packages does not require a newly built candidate to match a
+previously published engine binary. Version or binary-pin changes still enable
+that comparison; missing, malformed or duplicate pins fail classification.
+Candidate images verify their computed candidate digest, and tagged releases
+retain their unconditional release-pin verification.
+
+The main PR workflows cancel superseded runs for the same PR. Push, scheduled
+and manually dispatched runs use independent groups. This reduces stale work
+without removing test suites, advisory gates or release checks.
