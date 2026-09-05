@@ -851,7 +851,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
     ) -> BoxFuture<'static, anyhow::Result<()>> {
         let state = self.state.clone();
         Box::pin(async move {
-            state.enterprise.hosted_policy.authorize(verified.as_ref()).map_err(anyhow::Error::msg)
+            state.enterprise.hosted_policy.authorize_execution(verified.as_ref()).map_err(anyhow::Error::msg)
         })
     }
 
@@ -861,7 +861,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
     ) -> BoxFuture<'static, anyhow::Result<ToolPolicyDecision>> {
         let state = self.state.clone();
         Box::pin(async move {
-            state.enterprise.hosted_policy.authorize(ctx.verified_tenant_context.as_ref())
+            state.enterprise.hosted_policy.authorize_execution(ctx.verified_tenant_context.as_ref())
                 .map_err(anyhow::Error::msg)?;
             let tool = normalize_tool_name(&ctx.tool);
             let mut enterprise_allow_decision = None;

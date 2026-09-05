@@ -9,6 +9,9 @@ use anyhow::Context;
 use tandem_enterprise_contract::hosted_policy::{
     HostedPolicyBundle, HostedPolicyRevision, ValidatedHostedPolicy, MAX_POLICY_BYTES,
 };
+use tandem_enterprise_contract::{
+    AccessDecision, AccessPermission, DataClass, OrganizationUnitMembership,
+};
 use tandem_types::{RuntimeAuthMode, TenantContext, VerifiedTenantContext};
 
 use crate::governance_store::{for_state, GovernanceStoreFile};
@@ -34,6 +37,61 @@ pub(crate) struct HostedPolicyRuntime {
 }
 
 impl HostedPolicyRuntime {
+    fn current(&self) -> Result<Option<Arc<ValidatedHostedPolicy>>, &'static str> {
+        if self
+            .source
+            .read()
+            .map_err(|_| "hosted_policy_lock_failed")?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        self.snapshot
+            .read()
+            .map_err(|_| "hosted_policy_lock_failed")?
+            .clone()
+            .map(Some)
+            .ok_or("hosted_policy_not_synchronized")
+    }
+
+    pub(crate) fn project(
+        &self,
+        verified: &mut VerifiedTenantContext,
+    ) -> Result<Option<Vec<OrganizationUnitMembership>>, &'static str> {
+        let Some(policy) = self.current()? else {
+            return Ok(None);
+        };
+        let now = crate::now_ms();
+        let memberships = policy.memberships_for_identity(verified, now)?;
+        verified.strict_projection = Some(policy.project_identity(verified, now)?);
+        Ok(Some(memberships))
+    }
+
+    pub(crate) fn authorize_execution(
+        &self,
+        verified: Option<&VerifiedTenantContext>,
+    ) -> Result<(), &'static str> {
+        let Some(policy) = self.current()? else {
+            return Ok(());
+        };
+        let now = crate::now_ms();
+        let projection =
+            policy.project_identity(verified.ok_or("hosted_policy_identity_required")?, now)?;
+        if projection
+            .evaluate_access(
+                &policy.deployment_resource(),
+                AccessPermission::HostedUse,
+                DataClass::Internal,
+                now,
+            )
+            .decision
+            != AccessDecision::Allow
+        {
+            return Err("hosted_use_required");
+        }
+        Ok(())
+    }
+
     pub(crate) fn is_ready(&self) -> bool {
         let Ok(source) = self.source.read() else {
             return false;

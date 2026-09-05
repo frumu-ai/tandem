@@ -227,6 +227,8 @@ pub fn enterprise_scope_ids_match(left: &str, right: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
+    /// Hosted operation surface; never an ancestor of tenant data resources.
+    HostedDeployment,
     Organization,
     Workspace,
     OrganizationUnit,
@@ -465,6 +467,15 @@ impl ResourceScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessPermission {
+    HostedView,
+    HostedUse,
+    HostedAdmin,
+    HostedAutomationRead,
+    HostedAutomationExecute,
+    HostedAutomationWrite,
+    HostedAutomationShare,
+    HostedWorkflowRead,
+    HostedWorkflowShare,
     View,
     Read,
     Edit,

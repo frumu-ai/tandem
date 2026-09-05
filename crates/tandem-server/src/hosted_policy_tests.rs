@@ -3,6 +3,51 @@ use tandem_enterprise_contract::{
     AuthorityChain, HumanActor, RequestPrincipal, TenantContextAssertionClaims,
 };
 
+#[tokio::test]
+async fn hosted_policy_execution_requires_current_use_grant_and_replaces_projection() {
+    let state = crate::test_support::test_state().await;
+    assert!(state
+        .enterprise
+        .hosted_policy
+        .authorize_execution(None)
+        .is_ok());
+    *state.enterprise.hosted_policy.source.write().unwrap() = Some(PolicySource {
+        organization_id: "org-a".into(),
+        deployment_id: "dep-a".into(),
+        path: PathBuf::from("unused"),
+        started_at_ms: 0,
+    });
+    let runtime = &state.enterprise.hosted_policy;
+    assert!(runtime.authorize_execution(Some(&identity(4))).is_err());
+    let now = crate::now_ms();
+    let policy = HostedPolicyBundle::from_json(&policy_json(4, now, true))
+        .unwrap()
+        .validate("org-a", "dep-a", now, None)
+        .unwrap();
+    *runtime.snapshot.write().unwrap() = Some(Arc::new(policy));
+    let mut verified = identity(4);
+    assert!(runtime.project(&mut verified).unwrap().unwrap().is_empty());
+    assert!(verified.strict_projection.is_some());
+    assert!(runtime.authorize_execution(Some(&verified)).is_ok());
+    let mut changed = HostedPolicyBundle::from_json(&policy_json(5, now, true)).unwrap();
+    changed.users[0].role = "viewer".into();
+    changed.users[0].capabilities = vec!["hosted.view".into()];
+    *runtime.snapshot.write().unwrap() = Some(Arc::new(
+        changed.validate("org-a", "dep-a", now, None).unwrap(),
+    ));
+    assert!(runtime.authorize_execution(Some(&verified)).is_err());
+    verified.policy_version = Some(5);
+    verified.roles = vec!["hosted:role:viewer".into()];
+    verified.capabilities = vec!["hosted.view".into()];
+    assert!(runtime.authorize(Some(&verified)).is_ok());
+    assert!(runtime.authorize_execution(Some(&verified)).is_err());
+    runtime.project(&mut verified).unwrap();
+    assert!(!verified
+        .strict_projection
+        .unwrap()
+        .has_permission(AccessPermission::HostedUse));
+}
+
 fn policy_json(version: u64, generated_at_ms: u64, active: bool) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "schema_version": 1, "policy_version": version,

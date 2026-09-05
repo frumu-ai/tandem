@@ -5,6 +5,126 @@ use crate::{
 
 const NOW: u64 = 1_800_000_000_000;
 
+#[test]
+fn hosted_policy_projection_does_not_confer_data_or_generic_administration() {
+    use crate::{AccessDecision, AccessPermission, DataClass, ResourceKind, ResourceRef};
+    let mut input = bundle();
+    input.deployment_grants[0].permissions = vec!["hosted.admin".into(), "automation.write".into()];
+    let policy = input.validate("org-a", "dep-a", NOW, None).unwrap();
+    let projection = policy.project_identity(&identity(), NOW).unwrap();
+    for permission in [
+        AccessPermission::HostedUse,
+        AccessPermission::HostedAdmin,
+        AccessPermission::HostedAutomationWrite,
+    ] {
+        assert_eq!(
+            projection
+                .evaluate_access(
+                    &policy.deployment_resource(),
+                    permission,
+                    DataClass::Internal,
+                    NOW
+                )
+                .decision,
+            AccessDecision::Allow
+        );
+    }
+    let document = ResourceRef::new("org-a", "dep-a", ResourceKind::Document, "private-bob");
+    for permission in [
+        AccessPermission::View,
+        AccessPermission::Read,
+        AccessPermission::Edit,
+        AccessPermission::Execute,
+        AccessPermission::Admin,
+        AccessPermission::Delegate,
+    ] {
+        assert!(!projection.has_permission(permission));
+        assert_ne!(
+            projection
+                .evaluate_access(&document, permission, DataClass::Internal, NOW)
+                .decision,
+            AccessDecision::Allow
+        );
+    }
+    assert_ne!(
+        projection
+            .evaluate_access(
+                &document,
+                AccessPermission::HostedAdmin,
+                DataClass::Internal,
+                NOW
+            )
+            .decision,
+        AccessDecision::Allow
+    );
+    assert_eq!(projection.assertion.expires_at_ms, NOW + MAX_POLICY_AGE_MS);
+    assert!(policy
+        .project_identity(&identity(), NOW + MAX_POLICY_AGE_MS)
+        .is_err());
+}
+
+#[test]
+fn hosted_policy_projection_replaces_supplied_grants_and_removed_memberships() {
+    use crate::{AccessPermission, GrantSource, PrincipalRef, ScopedGrant};
+    let policy = bundle().validate("org-a", "dep-a", NOW, None).unwrap();
+    let mut verified = identity();
+    let mut supplied = policy.project_identity(&verified, NOW).unwrap();
+    supplied.grants.push(
+        ScopedGrant::new(
+            "injected-admin",
+            PrincipalRef::human_user("alice"),
+            policy.deployment_resource(),
+            GrantSource::Direct,
+        )
+        .with_permissions(vec![AccessPermission::Admin]),
+    );
+    verified.strict_projection = Some(supplied);
+    assert!(!policy
+        .project_identity(&verified, NOW)
+        .unwrap()
+        .has_permission(AccessPermission::Admin));
+    assert_eq!(
+        policy
+            .memberships_for_identity(&verified, NOW)
+            .unwrap()
+            .len(),
+        1
+    );
+    let mut next = bundle();
+    next.policy_version += 1;
+    next.org_unit_memberships.clear();
+    let next = next
+        .validate("org-a", "dep-a", NOW, Some(policy.revision()))
+        .unwrap();
+    assert!(next.project_identity(&verified, NOW).is_err());
+    verified.policy_version = Some(5);
+    verified.org_units.clear();
+    assert!(next
+        .memberships_for_identity(&verified, NOW)
+        .unwrap()
+        .is_empty());
+    assert!(next
+        .project_identity(&verified, NOW)
+        .unwrap()
+        .grants
+        .iter()
+        .all(|grant| grant.source_principal.is_none()));
+}
+
+#[test]
+fn hosted_policy_projection_cannot_share_another_members_direct_grant() {
+    use crate::AccessPermission;
+    let mut input = bundle();
+    input.deployment_grants[0].principal_kind = "member".into();
+    input.deployment_grants[0].principal_id = "bob".into();
+    input.deployment_grants[0].permissions = vec!["hosted.admin".into()];
+    let policy = input.validate("org-a", "dep-a", NOW, None).unwrap();
+    assert!(!policy
+        .project_identity(&identity(), NOW)
+        .unwrap()
+        .has_permission(AccessPermission::HostedAdmin));
+}
+
 fn bundle() -> HostedPolicyBundle {
     HostedPolicyBundle::from_json(serde_json::json!({
         "schema_version": 1, "policy_version": 4,

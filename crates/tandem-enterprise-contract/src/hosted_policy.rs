@@ -8,6 +8,8 @@ use sha2::{Digest, Sha256};
 
 use crate::VerifiedTenantContext;
 
+mod projection;
+
 pub const MAX_POLICY_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_POLICY_AGE_MS: u64 = 120_000;
 const FUTURE_SKEW_MS: u64 = 5_000;
