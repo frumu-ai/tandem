@@ -815,7 +815,9 @@ impl AppState {
         if !hosted_governance_required {
             let _ = self.load_enterprise_org_units().await;
             let _ = self.load_enterprise_org_unit_memberships().await;
-            let _ = self.load_enterprise_org_unit_access_grants().await;
+            let grants_loaded = self.load_enterprise_org_unit_access_grants().await;
+            tracing::debug!(target: "tandem_memory::governed_read", loaded = grants_loaded.is_ok(),
+                grants = self.enterprise.org_unit_access_grants.read().await.len(), "startup data grant registry");
             let _ = self.load_enterprise_cross_tenant_grants().await;
             let _ = self.load_enterprise_source_bindings().await;
             let _ = self.load_policy_decisions().await;

@@ -304,6 +304,8 @@ async fn enrich_verified_context_with_org_unit_grants(
         .values()
         .cloned()
         .collect::<Vec<_>>();
+    tracing::debug!(target: "tandem_memory::governed_read", memberships = memberships.len(),
+        stored_grants = access_grants.len(), "data grant projection inputs");
     project_org_unit_grants_into_verified_context(
         verified,
         memberships.iter(),
@@ -344,6 +346,8 @@ fn project_org_unit_grants_into_verified_context<'a>(
         })
         .cloned()
         .collect::<Vec<_>>();
+    tracing::debug!(target: "tandem_memory::governed_read", memberships = memberships.len(),
+        scoped_grants = access_grants.len(), "data grant projection eligible inputs");
 
     let Some(strict_projection) = verified.strict_projection.as_mut() else {
         return;
