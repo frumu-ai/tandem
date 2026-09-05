@@ -8,6 +8,7 @@ pub mod cross_tenant;
 mod delegation;
 pub use delegation::*;
 pub mod governance;
+pub mod hosted_policy;
 pub mod policy_inheritance;
 pub mod policy_predicates;
 pub mod policy_templates;

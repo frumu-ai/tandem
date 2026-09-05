@@ -1,0 +1,30 @@
+name: Hosted policy authority
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - '.github/workflows/hosted-policy.yml'
+  push:
+    branches: ['codex/tan-834-hosted-policy']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: hosted-policy-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-profile: hosted-policy
+          components: rustfmt
+      - name: Validate hosted policy contract
+        run: cargo test -p tandem-enterprise-contract hosted_policy --lib
+      - name: Validate current runtime authority and persisted revision
+        run: cargo test -p tandem-server hosted_policy --lib
+      - name: Check formatting
+        run: cargo fmt --check

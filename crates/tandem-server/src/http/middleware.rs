@@ -203,6 +203,15 @@ async fn attach_enterprise_request_context_for_mode(
         return Ok(false);
     }
 
+    if let Err(reason) = state
+        .enterprise
+        .hosted_policy
+        .authorize(resolved.verified_tenant_context.as_ref())
+    {
+        tracing::warn!(target: "tandem_server::hosted_policy", reason, "hosted request authority denied");
+        append_authorization_denial_audit_event(state, &resolved).await?;
+        return Ok(false);
+    }
     if let Some(mut verified_tenant_context) = resolved.verified_tenant_context {
         enrich_verified_context_with_org_unit_grants(state, &mut verified_tenant_context).await;
         super::cross_tenant_grants::enrich_verified_context_with_inbound_cross_tenant_grants(

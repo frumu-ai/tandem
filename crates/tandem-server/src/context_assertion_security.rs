@@ -429,7 +429,7 @@ fn read_optional_material(
     Ok(Some(value))
 }
 
-fn open_keyring_file(path: &Path, strict: bool) -> Result<File, String> {
+pub(crate) fn open_keyring_file(path: &Path, strict: bool) -> Result<File, String> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]

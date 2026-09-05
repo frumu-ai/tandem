@@ -502,6 +502,7 @@ pub async fn serve_with_route_extensions(
             anyhow::anyhow!("context assertion security startup validation failed: {error}")
         })?;
     let memory_context_policy = apply_strict_tenant_enforcement_defaults()?;
+    state.start_hosted_policy_sync(runtime_auth_mode)?;
     if memory_context_policy.strict_required {
         if let Some(runtime) = state.runtime.get() {
             runtime.mcp.set_strict_tenant_enforcement(true);

@@ -193,6 +193,7 @@ enum AuthoritySource {
 
 #[derive(Debug, Clone)]
 pub struct AuthorizedHostEffect {
+    verified: Option<VerifiedTenantContext>,
     request_digest: String,
     tenant_context: TenantContext,
     capability: &'static str,
@@ -206,6 +207,13 @@ impl AuthorizedHostEffect {
         state: &AppState,
         request: &HostEffectRequest,
     ) -> Result<(), HostAuthorizationError> {
+        if self.source == AuthoritySource::VerifiedCapability {
+            state
+                .enterprise
+                .hosted_policy
+                .authorize(self.verified.as_ref())
+                .map_err(|_| HostAuthorizationError::PolicyRevoked)?;
+        }
         if crate::now_ms() > self.expires_at_ms {
             return Err(HostAuthorizationError::GrantExpired);
         }
@@ -250,6 +258,7 @@ pub enum HostAuthorizationError {
     AuditPersistenceFailed,
     GrantExpired,
     GrantMismatch,
+    PolicyRevoked,
 }
 
 impl HostAuthorizationError {
@@ -266,6 +275,7 @@ impl HostAuthorizationError {
             Self::AuditPersistenceFailed => "audit_persistence_failed",
             Self::GrantExpired => "authorization_grant_expired",
             Self::GrantMismatch => "authorization_grant_mismatch",
+            Self::PolicyRevoked => "hosted_policy_revoked",
         }
     }
 }
@@ -277,6 +287,17 @@ pub async fn authorize_host_effect(
     direct_loopback_request: bool,
     request: &HostEffectRequest,
 ) -> Result<AuthorizedHostEffect, HostAuthorizationError> {
+    if state.enterprise.hosted_policy.authorize(verified).is_err() {
+        audit_denial(
+            state,
+            tenant,
+            verified,
+            request,
+            HostAuthorizationError::PolicyRevoked,
+        )
+        .await;
+        return Err(HostAuthorizationError::PolicyRevoked);
+    }
     if !same_tenant(&request.resource.tenant_context, tenant) {
         audit_denial(
             state,
@@ -405,6 +426,7 @@ pub async fn authorize_host_effect(
     Ok(AuthorizedHostEffect {
         request_digest,
         tenant_context: tenant.clone(),
+        verified: verified.cloned(),
         capability,
         source,
         expires_at_ms,
@@ -460,6 +482,7 @@ pub async fn authorize_internal_host_effect(
     Ok(AuthorizedHostEffect {
         request_digest,
         tenant_context: request.resource.tenant_context.clone(),
+        verified: None,
         capability: request.action.capability(),
         source: AuthoritySource::InternalRuntime,
         expires_at_ms,

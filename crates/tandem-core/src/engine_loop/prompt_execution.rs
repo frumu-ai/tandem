@@ -1074,6 +1074,7 @@ impl EngineLoop {
                     streamed_tool_calls.clear();
                     provider_usage = None;
                     accepted_tool_calls_in_cycle = 0;
+                    self.revalidate_session_authority(&session_id).await?;
                     let stream_result = tokio::time::timeout(
                         provider_connect_timeout,
                         self.providers.stream_with_egress_permit(

@@ -79,6 +79,7 @@ pub mod eval_support;
 pub mod failures;
 pub mod goal_capability_learning;
 pub(crate) mod governance_store;
+pub(crate) mod hosted_policy;
 pub mod http;
 pub mod incident_monitor;
 pub mod incident_monitor_github;

@@ -845,12 +845,24 @@ fn receipt_matches_tenant(
 }
 
 impl ToolPolicyHook for ServerToolPolicyHook {
+    fn revalidate_session(
+        &self,
+        verified: Option<tandem_types::VerifiedTenantContext>,
+    ) -> BoxFuture<'static, anyhow::Result<()>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            state.enterprise.hosted_policy.authorize(verified.as_ref()).map_err(anyhow::Error::msg)
+        })
+    }
+
     fn evaluate_tool(
         &self,
         ctx: ToolPolicyContext,
     ) -> BoxFuture<'static, anyhow::Result<ToolPolicyDecision>> {
         let state = self.state.clone();
         Box::pin(async move {
+            state.enterprise.hosted_policy.authorize(ctx.verified_tenant_context.as_ref())
+                .map_err(anyhow::Error::msg)?;
             let tool = normalize_tool_name(&ctx.tool);
             let mut enterprise_allow_decision = None;
             if session_allowlist_would_deny_non_automation_tool(&state, &ctx, &tool).await {
