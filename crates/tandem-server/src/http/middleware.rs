@@ -1852,6 +1852,10 @@ mod tests;
 mod hosted_policy_tests;
 
 #[cfg(test)]
+#[path = "middleware_hosted_signed_tests.rs"]
+mod hosted_signed_tests;
+
+#[cfg(test)]
 mod slack_events_bypass_tests {
     use super::is_public_slack_events_path;
 

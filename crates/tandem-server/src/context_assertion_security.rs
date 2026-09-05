@@ -31,6 +31,22 @@ pub(crate) struct RuntimeContextAssertionSecurity {
 }
 
 impl RuntimeContextAssertionSecurity {
+    #[cfg(test)]
+    pub(crate) fn from_test_metadata_keyring(raw: &str, replay_path: &Path) -> Self {
+        let keyring = parse_runtime_keyring(raw, true).unwrap();
+        let key_count = keyring.len();
+        let keyring_fingerprint = keyring_fingerprint(&keyring).unwrap();
+        let policy =
+            ContextAssertionPolicy::new("tandem-web", "tandem-runtime", 5_000, 300_000).unwrap();
+        Self {
+            verifier: ContextAssertionVerifier::new(keyring, policy).unwrap(),
+            replay_store: ContextAssertionReplayStore::persistent(replay_path).unwrap(),
+            replay_mode: ContextAssertionReplayMode::Bound,
+            key_count,
+            keyring_fingerprint,
+        }
+    }
+
     pub(crate) fn load_from_env(mode: RuntimeAuthMode) -> Result<Option<Self>, String> {
         let hosted = mode != RuntimeAuthMode::LocalSingleTenant
             || crate::config::env::hosted_control_plane_configured();

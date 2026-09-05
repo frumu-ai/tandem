@@ -37,6 +37,21 @@ pub(crate) struct HostedPolicyRuntime {
 }
 
 impl HostedPolicyRuntime {
+    #[cfg(test)]
+    pub(crate) fn configure_test_source(
+        &self,
+        organization_id: &str,
+        deployment_id: &str,
+        path: PathBuf,
+    ) {
+        *self.source.write().unwrap() = Some(PolicySource {
+            organization_id: organization_id.into(),
+            deployment_id: deployment_id.into(),
+            path,
+            started_at_ms: 0,
+        });
+    }
+
     fn current(&self) -> Result<Option<Arc<ValidatedHostedPolicy>>, &'static str> {
         if self
             .source
