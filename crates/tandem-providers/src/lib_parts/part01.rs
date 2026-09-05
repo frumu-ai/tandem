@@ -1157,6 +1157,7 @@ impl ProviderRegistry {
         let auth_override = self
             .auth_override_for_provider(resolved_provider_id.as_str())
             .await;
+        dispatch_authority::revalidate().await?;
         match provider
             .complete_with_auth_override(prompt, model_id, auth_override)
             .await
@@ -1170,6 +1171,7 @@ impl ProviderRegistry {
                 let auth_override = self
                     .auth_override_for_provider(resolved_provider_id.as_str())
                     .await;
+                dispatch_authority::revalidate().await?;
                 provider
                     .complete_with_auth_override(prompt, model_id, auth_override)
                     .await
@@ -1299,6 +1301,7 @@ impl ProviderRegistry {
         let retry_messages = messages.clone();
         let retry_tools = tools.clone();
         let retry_cancel = cancel.clone();
+        dispatch_authority::revalidate().await?;
         match provider
             .stream_with_auth_override(
                 messages,
@@ -1320,6 +1323,7 @@ impl ProviderRegistry {
                 let auth_override = self
                     .auth_override_for_provider(resolved_provider_id.as_str())
                     .await;
+                dispatch_authority::revalidate().await?;
                 provider
                     .stream_with_auth_override(
                         retry_messages,

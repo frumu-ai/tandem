@@ -46,6 +46,22 @@ impl ToolDispatchLedger for EngineToolDispatchLedger {
 }
 
 impl EngineLoop {
+    pub(super) async fn scope_provider_authority<F: std::future::Future>(
+        &self,
+        session_id: &str,
+        future: F,
+    ) -> F::Output {
+        let engine = self.clone();
+        let session_id = session_id.to_owned();
+        tandem_providers::ProviderDispatchAuthority::new(move || {
+            let engine = engine.clone();
+            let session_id = session_id.clone();
+            async move { engine.revalidate_session_authority(&session_id).await }
+        })
+        .scope(future)
+        .await
+    }
+
     pub(super) async fn record_tool_preflight_denial(
         &self,
         session_id: &str,
@@ -668,16 +684,18 @@ impl EngineLoop {
         };
         self.revalidate_session_authority(session_id).await?;
         let stream = match self
-            .providers
-            .stream_with_egress_permit(
-                &provider_egress_permit,
-                Some(route.provider_id.as_str()),
-                route.model_id.as_deref(),
-                messages,
-                ToolMode::None,
-                None,
-                sampling,
-                cancel.clone(),
+            .scope_provider_authority(
+                session_id,
+                self.providers.stream_with_egress_permit(
+                    &provider_egress_permit,
+                    Some(route.provider_id.as_str()),
+                    route.model_id.as_deref(),
+                    messages,
+                    ToolMode::None,
+                    None,
+                    sampling,
+                    cancel.clone(),
+                ),
             )
             .await
         {

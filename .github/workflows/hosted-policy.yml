@@ -30,3 +30,5 @@ jobs:
         run: cargo test -p tandem-core hosted_policy --lib
       - name: Check formatting
         run: cargo fmt --check
+      - name: Verify provider retry revocation and request isolation
+        run: cargo test -p tandem-providers hosted_policy --lib

@@ -1077,22 +1077,25 @@ impl EngineLoop {
                     self.revalidate_session_authority(&session_id).await?;
                     let stream_result = tokio::time::timeout(
                         provider_connect_timeout,
-                        self.providers.stream_with_egress_permit(
-                            &provider_egress_permit,
-                            Some(provider_id.as_str()),
-                            Some(model_id_value.as_str()),
-                            messages.clone(),
-                            provider_tool_mode_for_selected_tools(
-                                &requested_tool_mode,
-                                tool_schemas.len(),
+                        self.scope_provider_authority(
+                            &session_id,
+                            self.providers.stream_with_egress_permit(
+                                &provider_egress_permit,
+                                Some(provider_id.as_str()),
+                                Some(model_id_value.as_str()),
+                                messages.clone(),
+                                provider_tool_mode_for_selected_tools(
+                                    &requested_tool_mode,
+                                    tool_schemas.len(),
+                                ),
+                                if tool_schemas.is_empty() {
+                                    None
+                                } else {
+                                    Some(tool_schemas.clone())
+                                },
+                                sampling,
+                                cancel.clone(),
                             ),
-                            if tool_schemas.is_empty() {
-                                None
-                            } else {
-                                Some(tool_schemas.clone())
-                            },
-                            sampling,
-                            cancel.clone(),
                         ),
                     )
                     .await
