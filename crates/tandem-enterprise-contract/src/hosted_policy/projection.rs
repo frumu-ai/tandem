@@ -1,7 +1,7 @@
 //! Translate hosted operation grants without manufacturing data or admin ACLs.
 use super::ValidatedHostedPolicy;
 use crate::{
-    AccessPermission, AssertionMetadata, GrantSource, OrganizationUnitMembership,
+    AccessPermission, AssertionMetadata, DataClass, GrantSource, OrganizationUnitMembership,
     OrganizationUnitMembershipSource, PrincipalRef, ResourceKind, ResourceRef, ResourceScope,
     ScopedGrant, StrictTenantContext, VerifiedTenantContext,
 };
@@ -94,6 +94,7 @@ impl ValidatedHostedPolicy {
                 .filter_map(|cap| permission(cap))
                 .collect(),
         )
+        .with_data_classes(vec![DataClass::Internal])
         .with_expires_at_ms(expires)];
         for grant in &self.bundle.deployment_grants {
             let source = match grant.principal_kind.as_str() {
@@ -124,6 +125,7 @@ impl ValidatedHostedPolicy {
                     .filter_map(|p| permission(p))
                     .collect(),
             )
+            .with_data_classes(vec![DataClass::Internal])
             .with_expires_at_ms(expires);
             projected.source_principal = source;
             grants.push(projected);
