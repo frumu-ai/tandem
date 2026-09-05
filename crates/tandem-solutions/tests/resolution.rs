@@ -13,6 +13,7 @@ const FIXTURE: &str = include_str!("../fixtures/company-brain-text/solution.json
 struct Fixture {
     blueprint: SolutionBlueprint,
     request: InstallRequest,
+    approved_models: BTreeMap<String, ModelBinding>,
     context: VerifiedTenantContext,
     policy: Constraints,
     artifacts: BTreeMap<String, Vec<u8>>,
@@ -46,6 +47,10 @@ impl Fixture {
                 "../fixtures/company-brain-text/request.json"
             ))
             .unwrap(),
+            approved_models: serde_json::from_str(include_str!(
+                "../fixtures/company-brain-text/host-models.json"
+            ))
+            .unwrap(),
             context,
             artifacts: BTreeMap::from([
                 (
@@ -66,6 +71,7 @@ impl Fixture {
             &self.blueprint,
             ResolutionInput {
                 request: &self.request,
+                approved_models: &self.approved_models,
                 verified_context: &self.context,
                 now_ms: 1500,
                 engine_version: "0.7.2",
@@ -265,16 +271,14 @@ fn effective_policy_can_only_narrow_and_preferences_cannot_raise_authority() {
     assert_eq!(fixture.plan().unwrap_err().code, "unknown_preference");
     fixture.request.preferences.clear();
     fixture
-        .request
-        .models
-        .get_mut("economy")
+        .approved_models
+        .get_mut("local.fixture")
         .unwrap()
         .uses_network = true;
     assert_eq!(fixture.plan().unwrap_err().code, "provider_denied");
     fixture
-        .request
-        .models
-        .get_mut("economy")
+        .approved_models
+        .get_mut("local.fixture")
         .unwrap()
         .uses_network = false;
     fixture.policy.allowed_providers.clear();
@@ -348,7 +352,11 @@ fn lock_identity_covers_configuration_authority_bindings_and_versions() {
     fixture.context.policy_version = Some(2);
     assert_ne!(original, fixture.hash());
     let mut fixture = Fixture::new();
-    fixture.request.models.get_mut("economy").unwrap().model = "replacement-model".into();
+    fixture
+        .approved_models
+        .get_mut("local.fixture")
+        .unwrap()
+        .model = "replacement-model".into();
     assert_ne!(original, fixture.hash());
     let mut fixture = Fixture::new();
     fixture.blueprint.solution.version = "0.1.1".into();
@@ -406,6 +414,7 @@ fn incompatible_engine_and_missing_host_readiness_fail_before_planning() {
     let fixture = Fixture::new();
     let mut input = ResolutionInput {
         request: &fixture.request,
+        approved_models: &fixture.approved_models,
         verified_context: &fixture.context,
         now_ms: 1500,
         engine_version: "0.6.0",
@@ -420,6 +429,7 @@ fn incompatible_engine_and_missing_host_readiness_fail_before_planning() {
     let empty = Default::default();
     input = ResolutionInput {
         request: &fixture.request,
+        approved_models: &fixture.approved_models,
         verified_context: &fixture.context,
         now_ms: 1500,
         engine_version: "0.7.2",
@@ -443,6 +453,86 @@ fn unsupported_memory_stores_cannot_be_introduced_by_labels() {
             "invalid_schema"
         );
     }
+}
+
+#[test]
+fn customer_model_metadata_is_rejected() {
+    let mut request = serde_json::to_value(Fixture::new().request).unwrap();
+    request["models"]["economy"] = serde_json::json!({
+        "provider": "remote",
+        "model": "network-model",
+        "credential_ref": "remote.account",
+        "uses_network": false
+    });
+    assert!(serde_json::from_value::<InstallRequest>(request).is_err());
+}
+
+#[test]
+fn model_references_require_current_host_approval() {
+    let mut fixture = Fixture::new();
+    let plan = fixture.plan().unwrap();
+    assert_eq!(plan.models["economy"].binding_id, "local.fixture");
+    assert_eq!(
+        plan.models["economy"].binding,
+        fixture.approved_models["local.fixture"]
+    );
+    fixture
+        .request
+        .models
+        .insert("economy".into(), "unapproved".into());
+    assert_eq!(fixture.plan().unwrap_err().code, "model_binding_unapproved");
+    fixture
+        .request
+        .models
+        .insert("economy".into(), "local.fixture".into());
+    fixture.approved_models.clear();
+    assert_eq!(fixture.plan().unwrap_err().code, "model_binding_unapproved");
+}
+
+#[test]
+fn host_metadata_controls_network_and_provider_policy() {
+    let mut fixture = Fixture::new();
+    // Even a reference named "local" must use the actual host metadata.
+    let binding = fixture.approved_models.get_mut("local.fixture").unwrap();
+    binding.provider = "remote".into();
+    binding.uses_network = true;
+    fixture
+        .blueprint
+        .constraints
+        .allowed_providers
+        .insert("remote".into());
+    fixture.policy.allowed_providers.insert("remote".into());
+    assert_eq!(fixture.plan().unwrap_err().code, "provider_denied");
+    fixture.blueprint.constraints.allow_network_egress = true;
+    assert_eq!(fixture.plan().unwrap_err().code, "provider_denied");
+    fixture.policy.allow_network_egress = true;
+    assert!(
+        fixture.plan().unwrap().models["economy"]
+            .binding
+            .uses_network
+    );
+    fixture.blueprint.constraints.allow_network_egress = false;
+    assert_eq!(fixture.plan().unwrap_err().code, "provider_denied");
+    fixture.blueprint.constraints.allow_network_egress = true;
+    fixture.policy.allowed_providers.remove("remote");
+    assert_eq!(fixture.plan().unwrap_err().code, "provider_denied");
+}
+
+#[test]
+fn lock_tracks_selected_binding_id_but_not_unused_host_bindings() {
+    let mut fixture = Fixture::new();
+    let before = fixture.hash();
+    fixture.approved_models.insert(
+        "replacement".into(),
+        fixture.approved_models["local.fixture"].clone(),
+    );
+    assert_eq!(before, fixture.hash());
+    fixture
+        .request
+        .models
+        .insert("economy".into(), "replacement".into());
+    assert_ne!(before, fixture.hash());
+    assert_eq!(fixture.plan().unwrap().models.len(), 1);
 }
 
 #[test]

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const SCHEMA_VERSION: &str = "1";
-pub const RESOLVER_VERSION: &str = "1.0.0";
+pub const RESOLVER_VERSION: &str = "1.0.1";
 pub const MAX_BLUEPRINT_BYTES: usize = 1024 * 1024;
 pub const MAX_ARTIFACT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_COMPONENTS: usize = 256;

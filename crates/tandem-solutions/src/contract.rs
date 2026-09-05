@@ -156,8 +156,10 @@ pub struct InstallRequest {
     pub preferences: BTreeMap<String, PreferenceValue>,
     #[serde(default)]
     pub connectors: BTreeMap<String, ConnectorBinding>,
+    /// Model class -> opaque binding ID approved by the host for this caller.
+    /// Provider, credential and network metadata cannot come from the request.
     #[serde(default)]
-    pub models: BTreeMap<String, ModelBinding>,
+    pub models: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,11 +172,18 @@ pub struct ConnectorBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Model metadata from the trusted host registry, never an install request.
 pub struct ModelBinding {
     pub provider: String,
     pub model: String,
     pub credential_ref: String,
     pub uses_network: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedModelBinding {
+    pub binding_id: String,
+    pub binding: ModelBinding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,7 +223,7 @@ pub struct ResolvedPlan {
     pub optional_capabilities: BTreeSet<String>,
     pub unresolved_optional_capabilities: BTreeSet<String>,
     pub connectors: BTreeMap<String, ConnectorBinding>,
-    pub models: BTreeMap<String, ModelBinding>,
+    pub models: BTreeMap<String, LockedModelBinding>,
     pub preferences: BTreeMap<String, PreferenceValue>,
     pub memory_spaces: BTreeMap<String, MemorySpace>,
     pub constraints: Constraints,
