@@ -1,9 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    mod hosted_policy_tests {
-        include!("../hosted_policy_tests.rs");
-    }
+    include!("../hosted_policy_tests.rs");
     use futures::StreamExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
