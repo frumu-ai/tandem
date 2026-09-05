@@ -52,7 +52,7 @@ impl HostedPolicyRuntime {
         });
     }
 
-    fn current(&self) -> Result<Option<Arc<ValidatedHostedPolicy>>, &'static str> {
+    pub(crate) fn current(&self) -> Result<Option<Arc<ValidatedHostedPolicy>>, &'static str> {
         if self
             .source
             .read()

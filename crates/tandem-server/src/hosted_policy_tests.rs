@@ -87,6 +87,129 @@ fn write_input(path: &std::path::Path, bytes: &[u8]) {
 }
 
 #[tokio::test]
+async fn hosted_policy_registry_view_replaces_human_memberships_without_persisting_imports() {
+    use tandem_enterprise_contract::{
+        hosted_policy::{hosted_unit_principal, HOSTED_TAXONOMY_ID},
+        OrganizationUnit, OrganizationUnitAccessGrant, OrganizationUnitKind,
+        OrganizationUnitMembership, OrganizationUnitMembershipSource, PrincipalKind, PrincipalRef,
+        ResourceKind, ResourceRef,
+    };
+    let state = crate::test_support::test_state().await;
+    let tenant = identity(4).tenant_context;
+    let now = crate::now_ms();
+    let local = OrganizationUnit::active(
+        "local",
+        tenant.clone(),
+        "Local",
+        OrganizationUnitKind::Team,
+        PrincipalRef::human_user("operator"),
+        now,
+    );
+    state
+        .enterprise
+        .org_units
+        .write()
+        .await
+        .insert("local".into(), local.clone());
+    for (id, member) in [
+        ("old-human", PrincipalRef::human_user("alice")),
+        (
+            "service",
+            PrincipalRef::new(PrincipalKind::ServiceAccount, "automation"),
+        ),
+    ] {
+        state.enterprise.org_unit_memberships.write().await.insert(
+            id.into(),
+            OrganizationUnitMembership::active(
+                id,
+                tenant.clone(),
+                local.principal_ref(),
+                member,
+                OrganizationUnitMembershipSource::Direct,
+                now,
+            ),
+        );
+    }
+    let native_grant = OrganizationUnitAccessGrant::active(
+        "data",
+        tenant.clone(),
+        hosted_unit_principal("eng"),
+        ResourceRef::new("org-a", "dep-a", ResourceKind::Document, "engineering"),
+        now,
+    )
+    .with_permissions(vec![AccessPermission::Read]);
+    state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .insert("data".into(), native_grant.clone());
+    assert_eq!(
+        state
+            .enterprise_org_unit_view(&tenant)
+            .await
+            .unwrap()
+            .memberships
+            .len(),
+        2
+    );
+    *state.enterprise.hosted_policy.source.write().unwrap() = Some(PolicySource {
+        organization_id: "org-a".into(),
+        deployment_id: "dep-a".into(),
+        path: PathBuf::from("unused"),
+        started_at_ms: 0,
+    });
+    assert!(state.enterprise_org_unit_view(&tenant).await.is_err());
+    let mut input = HostedPolicyBundle::from_json(&policy_json(4, now, true)).unwrap();
+    input.org_units = serde_json::from_value(serde_json::json!([
+        {"id":"eng", "slug":"eng", "display_name":"Engineering", "kind":"department", "state":"active"}])).unwrap();
+    input.org_unit_memberships =
+        serde_json::from_value(serde_json::json!([{"unit_id":"eng", "user_id":"alice"}])).unwrap();
+    *state.enterprise.hosted_policy.snapshot.write().unwrap() = Some(Arc::new(
+        input.clone().validate("org-a", "dep-a", now, None).unwrap(),
+    ));
+    let view = state.enterprise_org_unit_view(&tenant).await.unwrap();
+    assert_eq!(view.hosted_policy_revision.unwrap().version, 4);
+    assert_eq!(view.units.len(), 2);
+    assert_eq!(view.memberships.len(), 2);
+    assert!(!view
+        .memberships
+        .iter()
+        .any(|row| row.membership_id == "old-human"));
+    let hosted_member = view
+        .memberships
+        .iter()
+        .find(|row| row.source == OrganizationUnitMembershipSource::HostedControlPlane)
+        .unwrap();
+    assert!(view.access_grants[0]
+        .to_scoped_grant_for_membership(hosted_member, now)
+        .is_some());
+    input.policy_version = 5;
+    input.org_unit_memberships.clear();
+    *state.enterprise.hosted_policy.snapshot.write().unwrap() = Some(Arc::new(
+        input.validate("org-a", "dep-a", now, None).unwrap(),
+    ));
+    let removed = state.enterprise_org_unit_view(&tenant).await.unwrap();
+    assert_eq!(removed.hosted_policy_revision.unwrap().version, 5);
+    assert_eq!(removed.memberships.len(), 1);
+    assert_eq!(removed.memberships[0].membership_id, "service");
+    assert_eq!(removed.access_grants, vec![native_grant]);
+    assert_eq!(state.enterprise.org_units.read().await.len(), 1);
+    assert_eq!(state.enterprise.org_unit_memberships.read().await.len(), 2);
+    let other =
+        TenantContext::explicit_user_workspace("other", "dep-a", Some("dep-a".into()), "alice");
+    assert!(state.enterprise_org_unit_view(&other).await.is_err());
+    state.enterprise.org_units.write().await.insert(
+        "conflict".into(),
+        local.with_taxonomy_id(HOSTED_TAXONOMY_ID),
+    );
+    assert!(matches!(
+        state.enterprise_org_unit_view(&tenant).await,
+        Err("hosted_registry_ownership_conflict")
+    ));
+}
+
+#[tokio::test]
 async fn hosted_policy_persists_high_water_and_requires_fresh_restart_fetch() {
     let state = crate::test_support::test_state().await;
     let temp = tempfile::tempdir().unwrap();

@@ -6,6 +6,66 @@ use crate::{
 const NOW: u64 = 1_800_000_000_000;
 
 #[test]
+fn hosted_policy_registry_rows_follow_one_revision_and_expire() {
+    use crate::{OrganizationUnitMembershipSource, OrganizationUnitState, ResourceKind};
+    let mut input = bundle();
+    let accepted = input.clone().validate("org-a", "dep-a", NOW, None).unwrap();
+    let view = accepted.registry_projection(NOW).unwrap();
+    assert_eq!(view.units.len(), 1);
+    assert_eq!(view.memberships.len(), 1);
+    assert_eq!(view.access_grants.len(), 1);
+    assert_eq!(view.units[0].principal_ref(), view.memberships[0].unit);
+    assert_eq!(view.access_grants[0].unit, view.memberships[0].unit);
+    assert_eq!(
+        view.memberships[0].source,
+        OrganizationUnitMembershipSource::HostedControlPlane
+    );
+    assert_eq!(
+        view.access_grants[0].resource.resource_kind,
+        ResourceKind::HostedDeployment
+    );
+    assert!(view.access_grants[0]
+        .to_scoped_grant_for_membership(&view.memberships[0], NOW)
+        .is_some());
+    assert!(accepted
+        .registry_projection(NOW + MAX_POLICY_AGE_MS)
+        .is_err());
+    input.policy_version += 1;
+    input.users[0].is_active = false;
+    let disabled = input
+        .clone()
+        .validate("org-a", "dep-a", NOW, None)
+        .unwrap()
+        .registry_projection(NOW)
+        .unwrap();
+    assert_eq!(
+        disabled.memberships[0].state,
+        OrganizationUnitState::Disabled
+    );
+    assert!(disabled.access_grants[0]
+        .to_scoped_grant_for_membership(&disabled.memberships[0], NOW)
+        .is_none());
+    input.org_unit_memberships.clear();
+    input.deployment_grants.clear();
+    input.org_units.clear();
+    let removed = input
+        .validate("org-a", "dep-a", NOW, None)
+        .unwrap()
+        .registry_projection(NOW)
+        .unwrap();
+    assert!(
+        removed.units.is_empty()
+            && removed.memberships.is_empty()
+            && removed.access_grants.is_empty()
+    );
+    // Previously captured data has no ownership over the accepted revision.
+    assert_eq!(
+        accepted.registry_projection(NOW).unwrap().memberships.len(),
+        1
+    );
+}
+
+#[test]
 fn hosted_policy_membership_uses_existing_enterprise_taxonomy_identity() {
     use crate::{
         AccessPermission, OrganizationUnit, OrganizationUnitAccessGrant, OrganizationUnitKind,

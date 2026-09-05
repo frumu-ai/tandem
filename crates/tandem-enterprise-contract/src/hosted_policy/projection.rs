@@ -6,7 +6,7 @@ use crate::{
     ScopedGrant, StrictTenantContext, VerifiedTenantContext,
 };
 
-fn permission(value: &str) -> Option<AccessPermission> {
+pub(super) fn permission(value: &str) -> Option<AccessPermission> {
     Some(match value {
         "hosted.view" => AccessPermission::HostedView,
         "hosted.use" => AccessPermission::HostedUse,

@@ -32,6 +32,8 @@ jobs:
         run: cargo fmt --check
       - name: Check enterprise server compatibility
         run: cargo check -p tandem-enterprise-server
+      - name: Verify hosted registry ownership boundary
+        run: cargo test -p tandem-enterprise-server hosted_policy --lib
       - name: Verify provider retry revocation and request isolation
         run: cargo test -p tandem-providers --lib
       - name: Verify MCP revocation after readiness and before network dispatch

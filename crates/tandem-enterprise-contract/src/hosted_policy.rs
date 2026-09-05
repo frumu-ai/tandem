@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use crate::VerifiedTenantContext;
 
 mod projection;
+mod registry;
+pub use registry::HostedRegistryProjection;
 
 /// Reserved ownership namespace for control-plane-managed unit identities.
 pub const HOSTED_TAXONOMY_ID: &str = "hosted-control-plane";
