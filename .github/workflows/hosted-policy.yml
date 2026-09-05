@@ -31,4 +31,6 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
       - name: Verify provider retry revocation and request isolation
-        run: cargo test -p tandem-providers hosted_policy --lib
+        run: cargo test -p tandem-providers --lib
+      - name: Verify MCP revocation after readiness and before network dispatch
+        run: cargo test -p tandem-runtime mcp --lib
