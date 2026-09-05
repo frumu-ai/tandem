@@ -28,6 +28,10 @@ provider key or customer data. `--schema` emits the schema checked into
 semantic constraints that JSON Schema cannot express, including reference
 compatibility, graph cycles, preference bounds and artifact paths.
 
+The dedicated `Solution Contract` workflow runs this test suite for crate,
+lockfile and `specs/solutions/**` edits, including schema-only changes. It does
+not require a schema edit to trigger the full engine OS matrix.
+
 ## Current code seams
 
 Inventory against main `c628546a480dbdd94356fcbb94ab1a9fd2cabed4`:
@@ -80,6 +84,13 @@ enforce its archive and expansion limits before supplying any bytes.
 `InstallRequest` contains an instance ID, SHA-256 customer configuration revision,
 optional selections, declared preference overrides and connector/model references.
 It contains no identity claims, roles, policies or account-provisioning requests.
+`models` maps each requested class to an opaque host-approved binding ID, for
+example `{"economy":"local.fixture"}`. Model/provider/credential/network fields
+are rejected in customer request JSON. The separate `ResolutionInput.approved_models`
+registry must come from current host model/account readiness checks scoped to
+the verified caller. Missing or revoked binding IDs fail closed; there is no
+fallback to client-supplied metadata. `host-models.json` is a synthetic registry
+used only by the offline fixture, not part of customer configuration.
 Preference types are bounded integers, booleans and declared choices. Unknown
 preferences, disallowed overrides and invalid values are rejected. There is no
 arbitrary customer-content or raw-secret payload field. This structural boundary
@@ -92,6 +103,10 @@ token/concurrency/cost ceilings take the lower limit. Empty provider sets allow
 no providers. Cost uses integer micro-US dollars. The trusted host must obtain
 these limits and model/account metadata itself; browser-supplied
 `uses_network: false` is never evidence that a provider is local.
+The resolver reads those properties exclusively from the approved host registry
+and locks both the selected binding ID and its resolved metadata. Resolver
+version 1.0.1 identifies this stricter contract. This crate remains unpublished;
+the previous inline model-binding request shape is deliberately rejected.
 
 The lock includes exact entry versions/digests, schema/resolver/engine versions,
 manifest hash, instance and configuration revision, tenant/workspace/deployment,

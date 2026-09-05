@@ -17,6 +17,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let blueprint = parse_blueprint(include_str!("../fixtures/company-brain-text/solution.json"))?;
     let request: InstallRequest =
         serde_json::from_str(include_str!("../fixtures/company-brain-text/request.json"))?;
+    // Separate synthetic host registry; customer JSON contains only binding IDs.
+    let approved_models = serde_json::from_str(include_str!(
+        "../fixtures/company-brain-text/host-models.json"
+    ))?;
     let principal = RequestPrincipal::authenticated_user("fixture-owner", "fixture");
     let context = TenantContextAssertionClaims::new_v1(
         "fixture",
@@ -55,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             engine_version: "0.7.2",
             deployment_policy: &blueprint.constraints,
             available_deployment_requirements: &requirements,
+            approved_models: &approved_models,
             artifacts: &artifacts,
         },
     )?;

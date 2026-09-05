@@ -17,6 +17,9 @@ pub struct ResolutionInput<'a> {
     pub engine_version: &'a str,
     pub deployment_policy: &'a Constraints,
     pub available_deployment_requirements: &'a BTreeSet<String>,
+    /// Binding ID -> current model/account metadata, approved for the verified
+    /// caller by the host. Never deserialize this registry from InstallRequest.
+    pub approved_models: &'a BTreeMap<String, ModelBinding>,
     /// Exact bytes obtained by PackManager, keyed by component ID.
     pub artifacts: &'a BTreeMap<String, Vec<u8>>,
 }
@@ -190,7 +193,8 @@ pub fn resolve(
             ));
         }
     }
-    for (class, binding) in &request.models {
+    let mut models = BTreeMap::new();
+    for (class, binding_id) in &request.models {
         if !model_classes.contains(class) {
             return Err(SolutionError::new(
                 "undeclared_binding",
@@ -198,6 +202,14 @@ pub fn resolve(
                 "Selected components do not request this model class",
             ));
         }
+        nonsecret_reference(binding_id, &format!("models.{class}"))?;
+        let binding = input.approved_models.get(binding_id).ok_or_else(|| {
+            SolutionError::new(
+                "model_binding_unapproved",
+                format!("models.{class}"),
+                "Select a current model binding approved by the host for this caller",
+            )
+        })?;
         if !constraints.allowed_providers.contains(&binding.provider)
             || (binding.uses_network && !constraints.allow_network_egress)
         {
@@ -212,6 +224,13 @@ pub fn resolve(
             &binding.credential_ref,
             &format!("models.{class}.credential_ref"),
         )?;
+        models.insert(
+            class.clone(),
+            LockedModelBinding {
+                binding_id: binding_id.clone(),
+                binding: binding.clone(),
+            },
+        );
     }
     let mut preferences: BTreeMap<_, _> = blueprint
         .preferences
@@ -249,7 +268,7 @@ pub fn resolve(
         optional_capabilities,
         unresolved_optional_capabilities,
         connectors: request.connectors.clone(),
-        models: request.models.clone(),
+        models,
         preferences,
         memory_spaces: blueprint.memory_spaces.clone(),
         constraints,
