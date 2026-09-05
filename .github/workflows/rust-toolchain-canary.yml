@@ -1,0 +1,32 @@
+name: Rust Toolchain Canary
+
+on:
+  schedule:
+    - cron: "43 5 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stable-canary:
+    name: New stable Rust compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install current stable Rust
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-profile: engine-minimal-canary
+          toolchain: stable
+          components: clippy
+
+      # This scheduled job fails visibly on compiler/lint drift. PR quality
+      # gates continue using the reviewed exact version until an upgrade lands.
+      - name: Check engine against new stable Rust
+        run: cargo clippy --locked -p tandem-ai --no-default-features -- -D warnings
+
+      - name: Test minimal engine
+        run: cargo test --locked -p tandem-ai --no-default-features

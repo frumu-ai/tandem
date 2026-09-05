@@ -31,21 +31,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Setup shared Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          workspaces: |
-            crates/tandem-eval
+          cache-profile: eval-release
 
       # The gate must fail when the eval-runner cannot be built. A broken build
       # previously fell back to hardcoded stub results, which let governance
       # regressions pass CI with a plausible-looking green check (TAN-219).
       - name: Build evaluation binaries
         run: |
-          if ! cargo build --release -p tandem-eval \
+          if ! cargo build --locked --release -p tandem-eval \
             --bin eval-runner \
             --bin agentic-authoring-acceptance; then
             echo "::error::Evaluation binaries failed to build - the gate cannot run and has no stub fallback."

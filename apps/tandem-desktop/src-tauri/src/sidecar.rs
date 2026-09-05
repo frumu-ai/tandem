@@ -7097,10 +7097,8 @@ fn parse_sse_event(buffer: &mut String) -> Option<StreamEvent> {
     // Find event delimiter (\n\n or \r\n\r\n)
     let (end_idx, delim_len) = if let Some(i) = buffer.find("\r\n\r\n") {
         (i, 4)
-    } else if let Some(i) = buffer.find("\n\n") {
-        (i, 2)
     } else {
-        return None;
+        (buffer.find("\n\n")?, 2)
     };
 
     let event_str = buffer[..end_idx].to_string();

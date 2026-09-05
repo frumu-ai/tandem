@@ -7,6 +7,7 @@ on:
       - ".github/workflows/acme-slack-governance.yml"
       - "Cargo.lock"
       - "Cargo.toml"
+      - ".github/actions/setup-rust-ci/**"
       - "engine/**"
       - "crates/tandem-server/**"
       - "packages/tandem-control-panel/**"
@@ -29,13 +30,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Setup shared Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          shared-key: acme-slack-governance
+          cache-profile: acme-demo
 
       - name: Run ACME governance tests
         run: |
