@@ -33,6 +33,8 @@ jobs:
           cargo test -p tandem-server session_run_retry --lib
           cargo test -p tandem-server workflow_planner_transport --lib
           cargo test -p tandem-server mission_builder_host --lib
+      - name: Verify production approval route with scoped dispatch
+        run: cargo test -p tandem-server acme_slack_demo --lib
       - name: Check formatting
         run: cargo fmt --check
       - name: Check enterprise server compatibility

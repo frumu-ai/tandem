@@ -27,8 +27,10 @@ impl ProviderDispatchAuthority {
 
     /// Scope the guard to this future, like the registry's tenant credentials.
     /// Spawned tasks must explicitly carry their own authority scope.
-    pub async fn scope<F: Future>(self, future: F) -> F::Output {
-        DISPATCH_AUTHORITY.scope(self, future).await
+    pub fn scope<F: Future>(self, future: F) -> impl Future<Output = F::Output> {
+        // Engine prompts can have large futures. Keep them off the nested
+        // task-local wrapper's stack while preserving the same polling scope.
+        DISPATCH_AUTHORITY.scope(self, Box::pin(future))
     }
 }
 
