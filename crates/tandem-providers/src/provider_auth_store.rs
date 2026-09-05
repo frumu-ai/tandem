@@ -296,12 +296,12 @@ fn strip_tenant_scoped_provider_id(
 }
 
 fn decode_tenant_scope_component(encoded: &str) -> Option<String> {
-    if !encoded.len().is_multiple_of(2) {
+    if encoded.len() & 1 != 0 {
         return None;
     }
     let bytes = encoded
         .as_bytes()
-        .chunks_exact(2)
+        .chunks(2)
         .map(|pair| {
             let pair = std::str::from_utf8(pair).ok()?;
             u8::from_str_radix(pair, 16).ok()

@@ -11,7 +11,7 @@ const EXPECTED_DEPLOYMENT_ASSETS = new Set([
   "scripts/linux-release-builder.Dockerfile",
 ]);
 const PINNED_NODE_BASE =
-  "node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573";
+  "node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0";
 const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
 const SEMVER_PRERELEASE_IDENTIFIER =
   "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
@@ -107,9 +107,13 @@ export async function verifyContainerHardening(
       errors.push(`${name} contains a floating latest dependency`);
     }
     for (const marker of [
-      "snapshot.debian.org/archive/debian/20260720T000000Z",
+      "snapshot.debian.org/archive/debian/20260904T000000Z",
+      "snapshot.debian.org/archive/debian-security/20260904T000000Z",
       "ca-certificates=20250419",
       "curl=8.14.1-2+deb13u4",
+      "libssl3t64=3.5.7-1~deb13u2",
+      "openssl=3.5.7-1~deb13u2",
+      "openssl-provider-legacy=3.5.7-1~deb13u2",
     ]) {
       if (!source.includes(marker)) errors.push(`${name} is missing immutable OS input ${marker}`);
     }

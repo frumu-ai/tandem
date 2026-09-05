@@ -1,0 +1,74 @@
+{
+  "schema_version": "1",
+  "solution": {
+    "id": "tandem.company-brain",
+    "version": "0.1.0"
+  },
+  "engine_version": ">=0.7.2, <0.8.0",
+  "components": {
+    "central-brain": {
+      "kind": "agent_template",
+      "required": true,
+      "artifact": {
+        "pack_id": "tandem.company-brain",
+        "version": "0.1.0",
+        "sha256": "bfeced8baf61986ffeba15b4c29fbf5101e5037331bc2968faa7ebd492471de8",
+        "path": "agents/central-brain.json"
+      },
+      "model_classes": [
+        "economy"
+      ]
+    },
+    "review-notes": {
+      "kind": "routine",
+      "required": false,
+      "artifact": {
+        "pack_id": "tandem.company-brain",
+        "version": "0.1.0",
+        "sha256": "b473c6b875eea99b61a57d72fe775f4a35ec5d0761f91bda7a47a5bf174dd55b",
+        "path": "routines/review-notes.json"
+      },
+      "depends_on": {
+        "central-brain": "=0.1.0"
+      }
+    }
+  },
+  "memory_spaces": {
+    "private": "private_user",
+    "shared": "tenant_shared",
+    "projects": "project"
+  },
+  "preferences": {
+    "reply-language": {
+      "type": "choice",
+      "default": "en",
+      "choices": [
+        "en",
+        "fr"
+      ],
+      "overridable": true
+    },
+    "review-required": {
+      "type": "boolean",
+      "default": true,
+      "overridable": false
+    }
+  },
+  "constraints": {
+    "allowed_providers": [
+      "local"
+    ],
+    "allow_network_egress": false,
+    "max_tokens_per_run": 4096,
+    "max_concurrent_runs": 1,
+    "max_daily_cost_microusd": 0
+  },
+  "deployment_requirements": [
+    "governed-memory",
+    "verified-user-context"
+  ],
+  "ui_features": [
+    "chat",
+    "memory"
+  ]
+}

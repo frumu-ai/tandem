@@ -1,0 +1,51 @@
+name: Solution Contract
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "specs/solutions/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/actions/setup-rust-ci/**"
+      - ".github/workflows/solution-contract.yml"
+  push:
+    branches: [main, "feat/engine"]
+    paths:
+      - "crates/**"
+      - "specs/solutions/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/actions/setup-rust-ci/**"
+      - ".github/workflows/solution-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  contract:
+    name: Solution planning contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup shared Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-profile: solutions-contract
+          toolchain: 1.98.0
+          components: clippy
+
+      # Covers generated schema drift as well as the resolver. A schema-only
+      # edit must run this check without triggering the full engine matrix.
+      - name: Test solution planning contract
+        run: cargo test -p tandem-solutions --locked
+
+      - name: Lint solution contract and fixture
+        run: cargo clippy -p tandem-solutions --all-targets --locked -- -D warnings

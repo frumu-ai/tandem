@@ -1,0 +1,8 @@
+{
+  "instance_id": "company-brain",
+  "customer_config_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "optional_components": [],
+  "models": {
+    "economy": "local.fixture"
+  }
+}

@@ -228,12 +228,7 @@ fn memory_linkage_from_parts(
 }
 
 fn memory_kind_label(source_type: &str) -> &str {
-    match source_type {
-        "solution_capsule" => "solution_capsule",
-        "note" => "note",
-        "fact" => "fact",
-        other => other,
-    }
+    source_type
 }
 
 fn memory_linkage_detail(linkage: &Value) -> String {

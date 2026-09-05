@@ -1,0 +1,8 @@
+{
+  "local.fixture": {
+    "provider": "local",
+    "model": "fixture-model",
+    "credential_ref": "local.fixture",
+    "uses_network": false
+  }
+}

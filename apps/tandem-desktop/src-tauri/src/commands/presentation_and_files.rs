@@ -1,4 +1,4 @@
-// Presentation Export (ppt-rs)
+// Presentation Export (OOXML ZIP)
 // ============================================================================
 
 const SLIDE_WIDTH: i32 = 12192000; // 13.33 inches in EMUs
@@ -45,7 +45,7 @@ fn to_emu(percent: f64, total: i32) -> i32 {
     ((percent / 100.0) * total as f64) as i32
 }
 
-/// Export a .tandem.ppt.json file to a binary .pptx file using ppt-rs
+/// Export a .tandem.ppt.json file to an OOXML .pptx ZIP archive
 #[tauri::command]
 pub async fn export_presentation(json_path: String, output_path: String) -> Result<String> {
     use crate::presentation::{ElementContent, Presentation, SlideLayout};

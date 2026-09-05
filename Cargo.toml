@@ -30,6 +30,7 @@ members = [
     "crates/tandem-governance-engine",
     "crates/tandem-graph-core",
     "crates/tandem-repo-intelligence",
+    "crates/tandem-solutions",
 ]
 resolver = "2"
 
