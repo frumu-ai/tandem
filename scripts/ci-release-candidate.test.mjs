@@ -89,5 +89,5 @@ test("rejects symlinked artifact files before the executable can be used", (t) =
   const file = join(f.directory, "tandem-engine");
   rmSync(file);
   symlinkSync(join(f.root, "Cargo.lock"), file);
-  assert.throws(f.verify, /regular file/);
+  assert.throws(f.verify, /ELOOP|regular file/);
 });

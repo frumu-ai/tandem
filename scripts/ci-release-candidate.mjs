@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,8 +21,15 @@ function digest(value) {
 }
 
 function regularFile(path) {
-  assert(lstatSync(path).isFile(), `Expected a regular file: ${path}`);
-  return readFileSync(path);
+  // Open without following symlinks, then inspect/read that same descriptor.
+  // A pathname check followed by a separate open permits a replacement race.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    assert(fstatSync(fd).isFile(), `Expected a regular file: ${path}`);
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function context(root, env) {
