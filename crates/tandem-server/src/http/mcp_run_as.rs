@@ -102,9 +102,7 @@ pub(crate) async fn call_mcp_tool_for_tenant_with_audit(
         tool_name,
         args,
         tenant_context,
-        verified_context
-            .as_ref()
-            .and_then(|context| context.strict_projection.as_ref()),
+        verified_context.as_ref(),
     )
     .await
 }
@@ -123,7 +121,7 @@ pub(crate) async fn call_mcp_tool_for_tenant_with_verified_context(
         tool_name,
         args,
         tenant_context,
-        verified_context.and_then(|context| context.strict_projection.as_ref()),
+        verified_context,
     )
     .await
 }
@@ -134,8 +132,14 @@ async fn call_mcp_tool_for_tenant_with_trusted_context(
     tool_name: &str,
     args: Value,
     tenant_context: &TenantContext,
-    strict_context: Option<&StrictTenantContext>,
+    verified_context: Option<&VerifiedTenantContext>,
 ) -> Result<ToolResult, String> {
+    let strict_context = verified_context.and_then(|context| context.strict_projection.as_ref());
+    let authority = tandem_runtime::McpRequestAuthority::new({
+        let policy = state.enterprise.hosted_policy.clone();
+        let verified = verified_context.cloned();
+        move || policy.authorize(verified.as_ref()).map_err(str::to_owned)
+    });
     let phase_authority = extract_mcp_phase_tool_authority(&args);
     let run_as = resolve_mcp_run_as(state, server_name, tool_name, args, tenant_context).await?;
     let context_preflight = enforce_mcp_context_assertion_preflight(
@@ -156,11 +160,12 @@ async fn call_mcp_tool_for_tenant_with_trusted_context(
     .await?;
     let result = state
         .mcp
-        .call_tool_for_tenant(
+        .call_tool_for_tenant_with_authority(
             server_name,
             tool_name,
             run_as.args.clone(),
             &run_as.effective_tenant_context,
+            Some(authority),
         )
         .await;
     if result

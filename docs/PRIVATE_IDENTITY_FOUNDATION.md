@@ -117,3 +117,41 @@ passed. This environment result is not a passing remote-host deployment gate.
 TAN-824's pure solution planner receives the verified context from this trusted
 host boundary. Planning never provisions accounts; apply must reauthorize the
 current user and recheck memberships, grants and bindings before every mutation.
+
+## Hosted policy synchronization
+
+The opt-in runtime security v2 profile consumes the existing control plane's
+authenticated policy bundle. One complete, validated snapshot owns hosted human
+memberships and deployment-operation grants. The engine rejects mismatched
+organization/deployment scope, rollback, conflicting content at the same
+revision, and snapshots at least 120 seconds old. The timestamp check permits
+at most five seconds of future clock skew. Failed fetches do not extend trust.
+Every process restart requires a fetch generated after startup; the durable
+high-water record prevents rollback but cannot restore live authority itself.
+
+An accepted revision invalidates assertions from older revisions, including
+those belonging to unaffected users; those users must obtain fresh assertions.
+Current authority is checked at HTTP ingress and again at governed execution
+boundaries after approval, provider credential recovery and MCP readiness waits.
+This bounds future dispatch; it cannot undo an external effect already sent.
+
+Hosted permissions use a distinct deployment resource and typed operations.
+For example, `hosted.use` permits runtime execution without granting generic
+document Read or Admin. Automation operations additionally retain their existing
+resource-owner/audience checks. Administrative routes require their existing
+independent authorization until individually integrated.
+
+The existing enterprise registry APIs expose imported units under the reserved
+`hosted-control-plane` taxonomy. Their principal IDs are
+`hosted-control-plane/{unit_id}`. Imported rows are ephemeral, and local API
+writes cannot claim that namespace or membership source. Local data grants can
+target these units, but apply only through current hosted memberships. Retained
+local human memberships cannot restore removed hosted authority. The readiness
+view uses one hosted revision and does not count deployment-operation grants as
+proof of governed data access.
+
+Focused tests live in the contract's `hosted_policy` module and the server,
+core, provider and MCP hosted-policy tests. Cross-repository process acceptance
+uses the source-pinned enterprise engine and copied authenticated policy agent
+in `tandem-agents`. Release-image verification, clean-host encrypted recovery
+and full two-user/two-department governed-memory acceptance remain required.

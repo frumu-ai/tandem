@@ -1,0 +1,49 @@
+name: Hosted policy authority
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - '.github/workflows/hosted-policy.yml'
+  push:
+    branches: ['codex/tan-834-hosted-policy']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: hosted-policy-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-profile: hosted-policy
+          components: rustfmt
+      - name: Validate hosted policy contract
+        run: cargo test -p tandem-enterprise-contract hosted_policy --lib
+      - name: Validate current runtime authority and persisted revision
+        run: cargo test -p tandem-server hosted_policy --lib
+      - name: Verify revocation after approval and before provider dispatch
+        run: cargo test -p tandem-core hosted_policy --lib
+      - name: Verify direct provider and recovery compatibility
+        run: |
+          cargo test -p tandem-server session_run_retry --lib
+          cargo test -p tandem-server workflow_planner_transport --lib
+          cargo test -p tandem-server mission_builder_host --lib
+      - name: Verify production approval route with scoped dispatch
+        run: cargo test -p tandem-server --features acme-demo acme_slack_demo --lib
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Check enterprise server compatibility
+        run: cargo check -p tandem-enterprise-server
+      - name: Verify hosted registry ownership boundary
+        run: cargo test -p tandem-enterprise-server hosted_policy --lib
+      - name: Verify native organization registry HTTP compatibility
+        run: cargo test -p tandem-enterprise-server --test enterprise_http enterprise_org_unit
+      - name: Verify provider retry revocation and request isolation
+        run: cargo test -p tandem-providers --lib
+      - name: Verify MCP revocation after readiness and before network dispatch
+        run: cargo test -p tandem-runtime mcp --lib

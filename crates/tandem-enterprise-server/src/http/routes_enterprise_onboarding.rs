@@ -16,7 +16,7 @@ use tandem_enterprise_contract::{
 };
 
 use tandem_server::automation_v2::governance::GovernanceApprovalStatus;
-use tandem_server::AppState;
+use tandem_server::{now_ms, AppState};
 
 use super::routes_enterprise::{
     ingestion_quarantine_tenant_matches, storage_base, validate_enterprise_id,
@@ -223,45 +223,13 @@ async fn get_enterprise_readiness(
 ) -> EnterpriseResult<EnterpriseReadinessResponse> {
     require_enterprise_read_access(&request_principal, verified_tenant_context.as_deref())?;
 
-    let org_units = state
-        .enterprise
-        .org_units
-        .read()
+    let view = state
+        .enterprise_org_unit_view(&tenant_context)
         .await
-        .values()
-        .filter(|unit| {
-            unit.tenant_context.org_id == tenant_context.org_id
-                && unit.tenant_context.workspace_id == tenant_context.workspace_id
-                && unit.tenant_context.deployment_id == tenant_context.deployment_id
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let memberships = state
-        .enterprise
-        .org_unit_memberships
-        .read()
-        .await
-        .values()
-        .filter(|membership| {
-            membership.tenant_context.org_id == tenant_context.org_id
-                && membership.tenant_context.workspace_id == tenant_context.workspace_id
-                && membership.tenant_context.deployment_id == tenant_context.deployment_id
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let grants = state
-        .enterprise
-        .org_unit_access_grants
-        .read()
-        .await
-        .values()
-        .filter(|grant| {
-            grant.tenant_context.org_id == tenant_context.org_id
-                && grant.tenant_context.workspace_id == tenant_context.workspace_id
-                && grant.tenant_context.deployment_id == tenant_context.deployment_id
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+        .map_err(super::routes_enterprise_org_units::registry_error)?;
+    let org_units = view.units;
+    let memberships = view.memberships;
+    let grants = view.access_grants;
     let connectors = state
         .enterprise
         .connectors
@@ -323,6 +291,15 @@ async fn get_enterprise_readiness(
         .iter()
         .filter(|unit| unit.state == OrganizationUnitState::Active)
         .count();
+    // Deployment operation permissions do not establish governed data access.
+    let has_data_membership_grant = memberships.iter().any(|membership| {
+        grants.iter().any(|grant| {
+            grant.resource.resource_kind != ResourceKind::HostedDeployment
+                && grant
+                    .to_scoped_grant_for_membership(membership, now_ms())
+                    .is_some()
+        })
+    });
     let active_connectors = connectors
         .iter()
         .filter(|connector| connector.state == ConnectorLifecycleState::Active)
@@ -348,7 +325,7 @@ async fn get_enterprise_readiness(
         ),
         readiness_check(
             "governance_skeleton",
-            if active_org_units > 0 && !memberships.is_empty() && !grants.is_empty() {
+            if active_org_units > 0 && has_data_membership_grant {
                 "ready"
             } else {
                 "attention"

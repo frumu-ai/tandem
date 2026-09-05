@@ -1176,6 +1176,20 @@ impl McpRegistry {
         args: Value,
         current_tenant: &TenantContext,
     ) -> Result<ToolResult, String> {
+        self.call_tool_for_tenant_with_authority(server_name, tool_name, args, current_tenant, None).await
+    }
+
+    pub async fn call_tool_for_tenant_with_authority(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        args: Value,
+        current_tenant: &TenantContext,
+        request_authority: Option<crate::McpRequestAuthority>,
+    ) -> Result<ToolResult, String> {
+        if let Some(authority) = &request_authority {
+            authority.revalidate()?;
+        }
         if current_tenant.is_local_implicit()
             && self
                 .strict_tenant_enforcement
@@ -1210,8 +1224,18 @@ impl McpRegistry {
             ));
         }
 
+        let dispatch_binding = McpToolDispatchBinding {
+            registry: self.clone(), server_name: server_name.into(), tool_name: tool_name.into(),
+            server_policy: server_dispatch_policy(&server), tenant: current_tenant.clone(),
+            connection_generation: self.connection_for_tenant(server_name, current_tenant).await
+                .map(|connection| connection.connection_generation),
+            request_authority,
+        };
+        if !current_tenant.is_local_implicit() && dispatch_binding.connection_generation.is_none() {
+            return Err("MCP tenant connection is missing or was revoked before dispatch".into());
+        }
         // Single readiness gate (Invariant 2 of `docs/SPINE.md`): one
-        // attempt, no backoff — same shape as the previous inline check.
+        // attempt, no backoff. Recheck authority after its network waits.
         let server = match self
             .ensure_ready_for_tenant(server_name, current_tenant, EnsureReadyPolicy::default())
             .await
@@ -1288,8 +1312,9 @@ impl McpRegistry {
                 "arguments": normalized_args
             }
         });
-        let endpoint_authorization =
+        let mut endpoint_authorization =
             McpEndpointAuthorization::for_registry(self, current_tenant);
+        endpoint_authorization.tool_dispatch = Some(dispatch_binding);
         let (response, session_id) = match post_json_rpc_with_session(
             &endpoint,
             &request_headers,
