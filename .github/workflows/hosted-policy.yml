@@ -30,6 +30,8 @@ jobs:
         run: cargo test -p tandem-core hosted_policy --lib
       - name: Check formatting
         run: cargo fmt --check
+      - name: Check enterprise server compatibility
+        run: cargo check -p tandem-enterprise-server
       - name: Verify provider retry revocation and request isolation
         run: cargo test -p tandem-providers --lib
       - name: Verify MCP revocation after readiness and before network dispatch

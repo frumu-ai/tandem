@@ -1780,6 +1780,7 @@ fn resource_kind_scope_label(kind: ResourceKind) -> &'static str {
         ResourceKind::SourceObject => "source_object",
         ResourceKind::IngestionJob => "ingestion_job",
         ResourceKind::ExternalIntegrationAccount => "external_integration_account",
+        ResourceKind::HostedDeployment => "hosted_deployment",
     }
 }
 
