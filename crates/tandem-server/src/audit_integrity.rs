@@ -1381,11 +1381,11 @@ fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if text.len() & 1 != 0 {
         return None;
     }
     text.as_bytes()
-        .chunks_exact(2)
+        .chunks(2)
         .map(|pair| {
             let high = (pair[0] as char).to_digit(16)?;
             let low = (pair[1] as char).to_digit(16)?;

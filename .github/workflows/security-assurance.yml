@@ -138,11 +138,9 @@ jobs:
           esac
           if [[ -z "$base_sha" || "$base_sha" == 0000000000000000000000000000000000000000 ]]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "$base_sha" "$GITHUB_SHA" -- \
-            packages/tandem-control-panel/docker/engine.Dockerfile; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            pin_changed="$(node scripts/ci-engine-pin-scope.mjs "$base_sha" "$GITHUB_SHA")"
+            echo "changed=$pin_changed" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup release Cargo fetch toolchain
