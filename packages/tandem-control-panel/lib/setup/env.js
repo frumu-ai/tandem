@@ -128,11 +128,11 @@ async function ensureBootstrapEnv(options = {}) {
   const defaults = { ...bootstrapDefaults(paths), ...example };
   const merged = { ...defaults, ...cwdEnv, ...existing };
 
-  if (
+  if (!options.readOnly && (
     overwrite ||
     !merged.TANDEM_CONTROL_PANEL_ENGINE_TOKEN ||
     merged.TANDEM_CONTROL_PANEL_ENGINE_TOKEN === "tk_change_me"
-  ) {
+  )) {
     merged.TANDEM_CONTROL_PANEL_ENGINE_TOKEN = `tk_${randomBytes(16).toString("hex")}`;
   }
 
@@ -163,11 +163,13 @@ async function ensureBootstrapEnv(options = {}) {
     if (!preferredOrder.includes(key)) ordered.push([key, value]);
   }
 
-  await mkdir(dirname(envPath), { recursive: true });
-  await mkdir(paths.logsDir, { recursive: true });
-  await mkdir(paths.engineStateDir, { recursive: true });
-  await mkdir(paths.controlPanelStateDir, { recursive: true });
-  writeFileSync(envPath, serializeEnv(ordered), "utf8");
+  if (!options.readOnly) {
+    await mkdir(dirname(envPath), { recursive: true });
+    await mkdir(paths.logsDir, { recursive: true });
+    await mkdir(paths.engineStateDir, { recursive: true });
+    await mkdir(paths.controlPanelStateDir, { recursive: true });
+    writeFileSync(envPath, serializeEnv(ordered), "utf8");
+  }
 
   return {
     envPath,
