@@ -26,7 +26,7 @@ async function installedPanel() {
   }
   const { runDoctor } = await import(pathToFileURL(join(panel, "lib/setup/doctor.js")));
   const envFile = join(root, "panel.env");
-  const source = "TANDEM_CONTROL_PANEL_ENGINE_TOKEN=synthetic-private-token\nTANDEM_ENGINE_URL=";
+  const source = "TANDEM_CONTROL_PANEL_ENGINE_TOKEN=doctor-fixture\nTANDEM_ENGINE_URL=";
   const env = { HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root };
   const cli = () => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [join(panel, "bin/cli.js"), "doctor", "--json", "--env-file", envFile], {
@@ -45,7 +45,7 @@ async function installedPanel() {
     const result = await runDoctor({ cwd: root, envFile, env, allowAmbientStateEnv: false, allowCwdEnvMerge: false });
     assert.equal(await readFile(envFile, "utf8"), before, "doctor must not rewrite credentials/configuration");
     assert.equal(result.installed, true);
-    assert.ok(!JSON.stringify(result).includes("synthetic-private-token"));
+    assert.ok(!JSON.stringify(result).includes("doctor-fixture"));
     assert.deepEqual((await readdir(root)).sort(), ["panel", "panel.env"], "doctor must not initialize state");
     return result;
   } };
