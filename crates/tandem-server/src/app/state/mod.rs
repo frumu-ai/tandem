@@ -389,6 +389,14 @@ impl ServerToolDispatchComposition {
 
 #[async_trait::async_trait]
 impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
+    async fn revalidate(&self, context: &ToolDispatchContext) -> anyhow::Result<()> {
+        self.state
+            .enterprise
+            .hosted_policy
+            .authorize(context.verified_tenant_context.as_ref())
+            .map_err(anyhow::Error::msg)
+    }
+
     async fn evaluate(
         &self,
         context: ToolDispatchPolicyContext,

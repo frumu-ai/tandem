@@ -6,16 +6,26 @@ use tandem_tools::{
     ToolDispatchReceiptPhase, ToolDispatchSource, ToolDispatchStatus,
 };
 
-#[derive(Debug)]
-struct EnginePreauthorizedDispatchPolicy(ToolDispatchDecision);
+struct EnginePreauthorizedDispatchPolicy {
+    decision: ToolDispatchDecision,
+    authority: Option<Arc<dyn ToolPolicyHook>>,
+}
 
 #[async_trait::async_trait]
 impl ToolDispatchPolicy for EnginePreauthorizedDispatchPolicy {
+    async fn revalidate(&self, context: &ToolDispatchContext) -> anyhow::Result<()> {
+        if let Some(hook) = &self.authority {
+            hook.revalidate_session(context.verified_tenant_context.clone())
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn evaluate(
         &self,
         _context: ToolDispatchPolicyContext,
     ) -> anyhow::Result<ToolDispatchDecision> {
-        Ok(self.0.clone())
+        Ok(self.decision.clone())
     }
 }
 
@@ -127,10 +137,11 @@ impl EngineLoop {
                     .message(message_id),
             )
             .with_scope_allowlist(scope_allowlist)
-            .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy(
-                preauthorized_decision
+            .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy {
+                decision: preauthorized_decision
                     .unwrap_or_else(|| ToolDispatchDecision::allow_with_id("engine_preflight")),
-            )))
+                authority: self.tool_policy_hook.read().await.clone(),
+            }))
             .with_ledger(tool_dispatch_ledger);
         if let Some(verified_tenant_context) = verified_tenant_context {
             dispatch_context =

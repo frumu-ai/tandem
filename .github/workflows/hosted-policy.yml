@@ -26,5 +26,7 @@ jobs:
         run: cargo test -p tandem-enterprise-contract hosted_policy --lib
       - name: Validate current runtime authority and persisted revision
         run: cargo test -p tandem-server hosted_policy --lib
+      - name: Verify revocation after approval and before provider dispatch
+        run: cargo test -p tandem-core hosted_policy --lib
       - name: Check formatting
         run: cargo fmt --check
