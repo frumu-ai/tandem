@@ -10,6 +10,13 @@ use crate::VerifiedTenantContext;
 
 mod projection;
 
+/// Reserved ownership namespace for control-plane-managed unit identities.
+pub const HOSTED_TAXONOMY_ID: &str = "hosted-control-plane";
+
+pub fn hosted_unit_principal(unit_id: &str) -> crate::PrincipalRef {
+    crate::PrincipalRef::organization_unit(format!("{HOSTED_TAXONOMY_ID}/{unit_id}"))
+}
+
 pub const MAX_POLICY_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_POLICY_AGE_MS: u64 = 120_000;
 const FUTURE_SKEW_MS: u64 = 5_000;

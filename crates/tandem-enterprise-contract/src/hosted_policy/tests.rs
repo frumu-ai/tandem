@@ -6,6 +6,52 @@ use crate::{
 const NOW: u64 = 1_800_000_000_000;
 
 #[test]
+fn hosted_policy_membership_uses_existing_enterprise_taxonomy_identity() {
+    use crate::{
+        AccessPermission, OrganizationUnit, OrganizationUnitAccessGrant, OrganizationUnitKind,
+        PrincipalRef, ResourceKind, ResourceRef,
+    };
+    let verified = identity();
+    let policy = bundle().validate("org-a", "dep-a", NOW, None).unwrap();
+    let unit = OrganizationUnit::active(
+        "eng",
+        verified.tenant_context.clone(),
+        "Engineering",
+        OrganizationUnitKind::Department,
+        PrincipalRef::human_user("operator"),
+        NOW,
+    )
+    .with_taxonomy_id(HOSTED_TAXONOMY_ID);
+    let membership = policy
+        .memberships_for_identity(&verified, NOW)
+        .unwrap()
+        .remove(0);
+    assert_eq!(membership.unit, unit.principal_ref());
+    let grant = OrganizationUnitAccessGrant::active(
+        "native-grant",
+        verified.tenant_context.clone(),
+        unit.principal_ref(),
+        ResourceRef::new(
+            "org-a",
+            "dep-a",
+            ResourceKind::Document,
+            "engineering-document",
+        ),
+        NOW,
+    )
+    .with_permissions(vec![AccessPermission::Read]);
+    assert!(grant
+        .to_scoped_grant_for_membership(&membership, NOW)
+        .is_some());
+    assert!(policy
+        .project_identity(&verified, NOW)
+        .unwrap()
+        .grants
+        .iter()
+        .any(|grant| grant.source_principal.as_ref() == Some(&unit.principal_ref())));
+}
+
+#[test]
 fn hosted_policy_projection_does_not_confer_data_or_generic_administration() {
     use crate::{AccessDecision, AccessPermission, DataClass, ResourceKind, ResourceRef};
     let mut input = bundle();

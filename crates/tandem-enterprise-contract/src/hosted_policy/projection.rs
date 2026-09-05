@@ -1,5 +1,5 @@
 //! Translate hosted operation grants without manufacturing data or admin ACLs.
-use super::ValidatedHostedPolicy;
+use super::{hosted_unit_principal, ValidatedHostedPolicy};
 use crate::{
     AccessPermission, AssertionMetadata, DataClass, GrantSource, OrganizationUnitMembership,
     OrganizationUnitMembershipSource, PrincipalRef, ResourceKind, ResourceRef, ResourceScope,
@@ -60,7 +60,7 @@ impl ValidatedHostedPolicy {
                         self.bundle.deployment_id, row.unit_id, row.user_id
                     ),
                     verified.tenant_context.clone(),
-                    PrincipalRef::organization_unit(&row.unit_id),
+                    hosted_unit_principal(&row.unit_id),
                     PrincipalRef::human_user(&row.user_id),
                     OrganizationUnitMembershipSource::HostedControlPlane,
                     self.bundle.generated_at.timestamp_millis() as u64,
@@ -102,9 +102,9 @@ impl ValidatedHostedPolicy {
                 "org_unit"
                     if memberships
                         .iter()
-                        .any(|row| row.unit.id == grant.principal_id) =>
+                        .any(|row| row.unit == hosted_unit_principal(&grant.principal_id)) =>
                 {
-                    Some(PrincipalRef::organization_unit(&grant.principal_id))
+                    Some(hosted_unit_principal(&grant.principal_id))
                 }
                 _ => continue,
             };

@@ -55,7 +55,7 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
             OrganizationUnitAccessGrant::active(
                 "grant-eng",
                 tenant,
-                PrincipalRef::organization_unit("eng"),
+                tandem_enterprise_contract::hosted_policy::hosted_unit_principal("eng"),
                 document.clone(),
                 now,
             )
