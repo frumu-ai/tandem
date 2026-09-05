@@ -4,6 +4,166 @@ use tandem_enterprise_contract::{
 };
 
 #[tokio::test]
+#[serial_test::serial(data_boundary_env)]
+async fn hosted_policy_direct_provider_rechecks_after_real_approval() {
+    use crate::http::session_run_retry::{
+        provider_auth_test_support::install_capturing_codex_provider,
+        scope_provider_auth_for_tenant, PromptExecutionSurface,
+    };
+    use crate::provider_egress::{prepare_chat_messages, ServerProviderEgressKind};
+    struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+    let values = [
+        ("TANDEM_DATA_BOUNDARY_MODE", "enforce"),
+        ("TANDEM_DATA_BOUNDARY_STRICT", "1"),
+        (
+            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+            "openai-codex=approved_external",
+        ),
+        ("TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES", "customer_data"),
+    ];
+    let _restore = Restore(
+        values
+            .iter()
+            .map(|(name, _)| (*name, std::env::var_os(name)))
+            .collect(),
+    );
+    for (name, value) in values {
+        std::env::set_var(name, value);
+    }
+    for revoked in [false, true] {
+        let state = crate::test_support::test_state().await;
+        let verified = identity(4);
+        let tenant = verified.tenant_context.clone();
+        let now = crate::now_ms();
+        let policy = HostedPolicyBundle::from_json(&policy_json(4, now, true)).unwrap();
+        *state.enterprise.hosted_policy.source.write().unwrap() = Some(PolicySource {
+            organization_id: "org-a".into(),
+            deployment_id: "dep-a".into(),
+            path: PathBuf::from("unused"),
+            started_at_ms: 0,
+        });
+        *state.enterprise.hosted_policy.snapshot.write().unwrap() = Some(Arc::new(
+            policy.validate("org-a", "dep-a", now, None).unwrap(),
+        ));
+        let sends = install_capturing_codex_provider(
+            &state,
+            "synthetic output",
+            &[(&tenant, "synthetic-access-token")],
+        )
+        .await;
+        let mut events = state.event_bus.subscribe();
+        let permissions = state.runtime.wait().permissions.clone();
+        let reply_state = state.clone();
+        let reply_tenant = tenant.clone();
+        let responder = tokio::spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async move {
+                loop {
+                    let event = events.recv().await.unwrap();
+                    if event.event_type != "permission.asked" {
+                        continue;
+                    }
+                    if revoked {
+                        let changed =
+                            HostedPolicyBundle::from_json(&policy_json(5, crate::now_ms(), false))
+                                .unwrap();
+                        *reply_state
+                            .enterprise
+                            .hosted_policy
+                            .snapshot
+                            .write()
+                            .unwrap() = Some(Arc::new(
+                            changed
+                                .validate("org-a", "dep-a", crate::now_ms(), None)
+                                .unwrap(),
+                        ));
+                    }
+                    assert!(permissions
+                        .reply_with_provenance_for_tenant(
+                            &reply_tenant,
+                            Some("session-direct"),
+                            event.properties["requestID"].as_str().unwrap(),
+                            "allow",
+                            Some("independent-reviewer".into()),
+                            Some("hosted-policy-test".into())
+                        )
+                        .await
+                        .unwrap()
+                        .is_some());
+                    break;
+                }
+            })
+            .await
+            .unwrap();
+        });
+        let dispatch = async {
+            let messages = [tandem_providers::ChatMessage {
+                role: "user".into(),
+                content: "ordinary mission content".into(),
+                attachments: vec![],
+            }];
+            let prepared = prepare_chat_messages(
+                &state,
+                Some(&tenant),
+                Some(&verified),
+                Some("run-direct"),
+                "session-direct",
+                "operation-direct",
+                "server.mission_builder",
+                ServerProviderEgressKind::MissionBuilder,
+                "openai-codex",
+                Some("codex-test"),
+                &messages,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+            state
+                .providers
+                .stream_with_egress_permit(
+                    &prepared.permit,
+                    Some("openai-codex"),
+                    Some("codex-test"),
+                    prepared.messages,
+                    tandem_types::ToolMode::None,
+                    None,
+                    tandem_types::SamplingParams::default(),
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+                .map(|_| ())
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            scope_provider_auth_for_tenant(
+                &state,
+                &tenant,
+                Some(&verified),
+                PromptExecutionSurface::MissionBuilder,
+                Some("session-direct"),
+                Some("run-direct"),
+                Some("openai-codex"),
+                dispatch,
+            ),
+        )
+        .await
+        .unwrap();
+        responder.await.unwrap();
+        assert_eq!(result.is_ok(), !revoked, "{result:?}");
+        assert_eq!(sends.lock().unwrap().len(), usize::from(!revoked));
+    }
+}
+
+#[tokio::test]
 async fn hosted_policy_execution_requires_current_use_grant_and_replaces_projection() {
     let state = crate::test_support::test_state().await;
     assert!(state
