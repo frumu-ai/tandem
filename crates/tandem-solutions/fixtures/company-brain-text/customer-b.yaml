@@ -1,0 +1,30 @@
+schema_version: "1"
+scope:
+  org_id: org-b
+  workspace_id: workspace-b
+  deployment_id: deployment-b
+  instance_id: company-brain
+profile_ref: profile-ref:synthetic-company-b
+timezone: America/New_York
+locale: fr
+models:
+  economy: local.fixture
+preferences:
+  reply-language: fr
+data_refs:
+  notes: data-ref:synthetic-notes-b
+memory_spaces:
+  private:
+    kind: private_user
+    subject_id: owner-b
+  shared:
+    kind: tenant_shared
+  projects:
+    kind: project
+    project_id: project-b
+constraints:
+  allowed_providers: [local]
+  allow_network_egress: false
+  max_tokens_per_run: 1024
+  max_concurrent_runs: 1
+  max_daily_cost_microusd: 0

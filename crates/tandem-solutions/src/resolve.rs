@@ -277,7 +277,7 @@ pub fn resolve(
     })
 }
 
-fn intersect_constraints(blueprint: &Constraints, policy: &Constraints) -> Constraints {
+pub(crate) fn intersect_constraints(blueprint: &Constraints, policy: &Constraints) -> Constraints {
     Constraints {
         allowed_providers: blueprint
             .allowed_providers
@@ -311,7 +311,7 @@ fn nonsecret_reference(value: &str, path: &str) -> Result<(), SolutionError> {
     Ok(())
 }
 
-fn authority_binding(
+pub(crate) fn authority_binding(
     context: &VerifiedTenantContext,
     now_ms: u64,
 ) -> Result<AuthorityBinding, SolutionError> {
