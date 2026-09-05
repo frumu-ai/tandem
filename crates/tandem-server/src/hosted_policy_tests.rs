@@ -146,4 +146,47 @@ fn snapshot_expiry_is_checked_at_effect_time_without_polling() {
     *runtime.snapshot.write().unwrap() = Some(Arc::new(policy));
     assert!(runtime.authorize(Some(&identity(4))).is_err());
     assert!(runtime.authorize(None).is_err());
+    assert!(!runtime.is_ready());
+}
+
+#[tokio::test]
+async fn hosted_policy_public_health_reports_unavailable_until_a_fresh_snapshot() {
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let state = crate::test_support::test_state().await;
+    let app = crate::build_router_with_extensions(state.clone(), &[]);
+    *state.enterprise.hosted_policy.source.write().unwrap() = Some(PolicySource {
+        organization_id: "org-a".into(),
+        deployment_id: "dep-a".into(),
+        path: "/unused/policy.json".into(),
+        started_at_ms: 0,
+    });
+    for fresh in [false, true, false] {
+        if fresh {
+            let now = crate::now_ms();
+            let policy = HostedPolicyBundle::from_json(&policy_json(4, now, true))
+                .unwrap()
+                .validate("org-a", "dep-a", now, None)
+                .unwrap();
+            *state.enterprise.hosted_policy.snapshot.write().unwrap() = Some(Arc::new(policy));
+        } else {
+            *state.enterprise.hosted_policy.snapshot.write().unwrap() = None;
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/global/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value, serde_json::json!({"healthy": fresh, "ready": fresh}));
+    }
 }

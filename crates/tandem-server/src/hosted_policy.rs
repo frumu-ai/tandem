@@ -34,6 +34,20 @@ pub(crate) struct HostedPolicyRuntime {
 }
 
 impl HostedPolicyRuntime {
+    pub(crate) fn is_ready(&self) -> bool {
+        let Ok(source) = self.source.read() else {
+            return false;
+        };
+        if source.is_none() {
+            return true;
+        }
+        self.snapshot.read().is_ok_and(|snapshot| {
+            snapshot
+                .as_ref()
+                .is_some_and(|policy| policy.expires_at_ms() > crate::now_ms())
+        })
+    }
+
     pub(crate) fn authorize(
         &self,
         verified: Option<&VerifiedTenantContext>,

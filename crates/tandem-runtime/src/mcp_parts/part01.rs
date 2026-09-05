@@ -1231,6 +1231,9 @@ impl McpRegistry {
                 .map(|connection| connection.connection_generation),
             request_authority,
         };
+        if !current_tenant.is_local_implicit() && dispatch_binding.connection_generation.is_none() {
+            return Err("MCP tenant connection is missing or was revoked before dispatch".into());
+        }
         // Single readiness gate (Invariant 2 of `docs/SPINE.md`): one
         // attempt, no backoff. Recheck authority after its network waits.
         let server = match self
