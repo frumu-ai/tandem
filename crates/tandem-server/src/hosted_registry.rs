@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Read-through view over local authoring and one immutable hosted revision.
 use crate::AppState;
 use tandem_enterprise_contract::{

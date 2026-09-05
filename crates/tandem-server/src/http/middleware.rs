@@ -1863,7 +1863,7 @@ mod tests;
 mod hosted_policy_tests;
 
 #[cfg(test)]
-#[path = "middleware_hosted_signed_tests.rs"]
+#[path = "tests/middleware_hosted_signed_tests.rs"]
 mod hosted_signed_tests;
 
 #[cfg(test)]

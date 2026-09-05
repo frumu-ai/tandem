@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Current hosted authority is one immutable snapshot. The host policy agent
 //! owns the input file; the engine never receives its control-plane credential.
 use std::collections::BTreeMap;

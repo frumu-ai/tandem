@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Signed HTTP ingress with the actual key verifier, durable replay store and
 //! file-backed policy reload. Uses disposable state; no environment overrides.
 use super::*;
