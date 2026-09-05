@@ -81,6 +81,7 @@ mod goals_api;
 mod goals_projection;
 pub(crate) mod governance;
 pub(crate) mod host_authority;
+mod hosted_route_authority;
 pub(crate) mod incident_monitor;
 mod marketplace;
 pub(crate) mod mcp;

@@ -89,6 +89,61 @@ async fn request(app: &Router, assertion: &str) -> Response {
         .unwrap()
 }
 
+fn private_automation(owner: &str) -> crate::AutomationV2Spec {
+    let mut automation = crate::AutomationV2Spec {
+        automation_id: format!("private-{owner}"),
+        name: format!("Private {owner} automation"),
+        description: None,
+        status: crate::AutomationV2Status::Paused,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".into(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: crate::AutomationFlowSpec { nodes: Vec::new() },
+        execution: crate::AutomationExecutionPolicy::default(),
+        output_targets: Vec::new(),
+        created_at_ms: crate::now_ms(),
+        updated_at_ms: crate::now_ms(),
+        creator_id: owner.into(),
+        workspace_root: None,
+        metadata: Some(
+            json!({"resource_access": {"visibility": "private", "owner_principal": {"kind": "human_user", "id": owner}}}),
+        ),
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    automation.set_tenant_context(&TenantContext::explicit_user_workspace(
+        "org-a",
+        "dep-a",
+        Some("dep-a".into()),
+        owner,
+    ));
+    automation
+}
+
+async fn automation_request(app: &Router, assertion: &str, method: &str, path: &str) -> Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("x-tandem-context-assertion", assertion)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh() {
     let state = crate::test_support::test_state().await;
@@ -104,9 +159,10 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
         .enterprise
         .hosted_policy
         .configure_test_source("org-a", "dep-a", path.clone());
-    let app = Router::new()
+    let app = super::super::routes_routines_automations::apply(Router::new())
         .route("/probe", get(probe))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), ingress));
+        .layer(axum::middleware::from_fn_with_state(state.clone(), ingress))
+        .with_state(state.clone());
     let now = crate::now_ms();
     let sign = |actor, role, version| {
         super::tests::sign_test_context_assertion(&key, "key-a", claims(actor, role, version, now))
@@ -161,4 +217,69 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
     );
     assert_eq!(request(&app, &forged).await.status(), StatusCode::FORBIDDEN);
     assert!(temp.path().join("replay.json").is_file());
+
+    for owner in ["alice", "bob"] {
+        state
+            .put_automation_v2(private_automation(owner))
+            .await
+            .unwrap();
+    }
+    write_policy(&path, 4, Some("viewer"), now);
+    state.reload_hosted_policy().await.unwrap();
+    assert_eq!(
+        automation_request(&app, &sign("alice", "viewer", 4), "GET", "/automations/v2")
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    // Explicit operation grants unlock only the corresponding surface. The
+    // existing per-resource ownership check must still hide Bob's private row.
+    write_policy(&path, 5, Some("viewer"), now);
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    policy["deployment_grants"] = json!([{"id": "grant-alice", "deployment_id": "dep-a",
+        "principal_kind": "member", "principal_id": "alice", "resource_kind": "deployment", "resource_id": "dep-a",
+        "permissions": ["automation.read", "automation.write"]}]);
+    std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    state.reload_hosted_policy().await.unwrap();
+    let fresh = sign("alice", "viewer", 5);
+    let response = automation_request(&app, &fresh, "GET", "/automations/v2").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
+    assert_eq!(value["count"], 1);
+    assert_eq!(value["automations"][0]["automation_id"], "private-alice");
+    assert_eq!(
+        automation_request(&app, &fresh, "GET", "/automations/v2/private-bob")
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        automation_request(&app, &fresh, "DELETE", "/automations/v2/private-bob")
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    for action in ["run_now", "share"] {
+        assert_eq!(
+            automation_request(
+                &app,
+                &fresh,
+                "POST",
+                &format!("/automations/v2/private-alice/{action}")
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        automation_request(&app, &fresh, "DELETE", "/automations/v2/private-alice")
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert!(state.get_automation_v2("private-alice").await.is_none());
+    assert!(state.get_automation_v2("private-bob").await.is_some());
 }

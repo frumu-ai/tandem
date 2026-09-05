@@ -86,6 +86,14 @@ impl HostedPolicyRuntime {
         &self,
         verified: Option<&VerifiedTenantContext>,
     ) -> Result<(), &'static str> {
+        self.authorize_permission(verified, AccessPermission::HostedUse)
+    }
+
+    pub(crate) fn authorize_permission(
+        &self,
+        verified: Option<&VerifiedTenantContext>,
+        permission: AccessPermission,
+    ) -> Result<(), &'static str> {
         let Some(policy) = self.current()? else {
             return Ok(());
         };
@@ -95,14 +103,14 @@ impl HostedPolicyRuntime {
         if projection
             .evaluate_access(
                 &policy.deployment_resource(),
-                AccessPermission::HostedUse,
+                permission,
                 DataClass::Internal,
                 now,
             )
             .decision
             != AccessDecision::Allow
         {
-            return Err("hosted_use_required");
+            return Err("hosted_operation_permission_required");
         }
         Ok(())
     }

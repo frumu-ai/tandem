@@ -224,6 +224,17 @@ async fn attach_enterprise_request_context_for_mode(
     } else {
         None
     };
+    if let Some(permission) = super::hosted_route_authority::required_permission(request) {
+        if let Err(reason) = state
+            .enterprise
+            .hosted_policy
+            .authorize_permission(resolved.verified_tenant_context.as_ref(), permission)
+        {
+            tracing::warn!(target: "tandem_server::hosted_policy", reason, "hosted operation denied");
+            append_authorization_denial_audit_event(state, &resolved).await?;
+            return Ok(false);
+        }
+    }
     if let Some(mut verified_tenant_context) = resolved.verified_tenant_context {
         enrich_verified_context_with_org_unit_grants(
             state,
