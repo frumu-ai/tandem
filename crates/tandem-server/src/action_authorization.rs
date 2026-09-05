@@ -52,6 +52,7 @@ pub enum HostAction {
     ChannelConfigUpdate,
     ChannelConfigDelete,
     ChannelReload,
+    ContextAssertionReload,
     McpServerManage,
 }
 
@@ -88,6 +89,7 @@ impl HostAction {
             Self::ChannelConfigUpdate => "deployment.channels.manage",
             Self::ChannelConfigDelete => "deployment.channels.manage",
             Self::ChannelReload => "deployment.channels.reload",
+            Self::ContextAssertionReload => "hosted.admin",
             Self::McpServerManage => "deployment.mcp.manage",
         }
     }

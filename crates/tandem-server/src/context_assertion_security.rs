@@ -213,6 +213,95 @@ impl RuntimeContextAssertionSecurity {
     pub(crate) fn keyring_fingerprint(&self) -> &str {
         &self.keyring_fingerprint
     }
+
+    pub(crate) fn load_hosted_keyring_for_reload(&self) -> Result<Self, String> {
+        let raw = read_optional_material(
+            "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+            "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS_FILE",
+            true,
+        )?
+        .ok_or("hosted context assertion keyring is not configured")?;
+        let keyring = parse_runtime_keyring(&raw, true)?;
+        let key_count = keyring.len();
+        let keyring_fingerprint = keyring_fingerprint(&keyring)?;
+        let verifier = ContextAssertionVerifier::new(keyring, self.verifier.policy().clone())
+            .map_err(|error| error.to_string())?;
+        self.replay_store
+            .readiness_check()
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            verifier,
+            replay_store: self.replay_store.clone(),
+            replay_mode: self.replay_mode,
+            key_count,
+            keyring_fingerprint,
+        })
+    }
+
+    pub(crate) fn validate_hosted_key_transition(
+        &self,
+        previous: &Self,
+        tenant: &tandem_types::TenantContext,
+    ) -> Result<(), String> {
+        let entries = |snapshot: &Self| -> Result<BTreeMap<String, VerifierKeyEntry>, String> {
+            serde_json::from_str(
+                &snapshot
+                    .verifier
+                    .keyring()
+                    .to_json()
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+        };
+        let before = entries(previous)?;
+        let after = entries(self)?;
+        let now = crate::now_ms();
+        let mut usable = false;
+        for entry in after.values() {
+            if entry.purpose != SigningKeyPurpose::ContextAssertion
+                || entry.organization_id.as_deref() != Some(tenant.org_id.as_str())
+                || entry.deployment_id.as_deref() != tenant.deployment_id.as_deref()
+                || entry.allowed_audiences != vec![self.verifier.policy().expected_audience.clone()]
+            {
+                return Err("keyring scope does not match this deployment".into());
+            }
+            entry.verifying_key().map_err(|e| e.as_str().to_string())?;
+            usable |= entry.status == KeyStatus::Active
+                && entry.not_before_ms.is_none_or(|start| start <= now)
+                && entry.not_after_ms.is_none_or(|end| now < end);
+        }
+        if !usable {
+            return Err("keyring has no currently valid active key".into());
+        }
+        for (kid, old) in before {
+            let new = after.get(&kid).ok_or("retain retired key metadata")?;
+            let status = |value| match value {
+                KeyStatus::Active => 0,
+                KeyStatus::Retired => 1,
+                KeyStatus::Revoked => 2,
+            };
+            let mut old_scope = old.clone();
+            let mut new_scope = new.clone();
+            old_scope.public_key = String::new();
+            new_scope.public_key = String::new();
+            old_scope.status = KeyStatus::Active;
+            new_scope.status = KeyStatus::Active;
+            old_scope.not_before_ms = None;
+            new_scope.not_before_ms = None;
+            old_scope.not_after_ms = None;
+            new_scope.not_after_ms = None;
+            if old_scope != new_scope
+                || old.verifying_key().map_err(|e| e.as_str())?
+                    != new.verifying_key().map_err(|e| e.as_str())?
+                || status(new.status) < status(old.status)
+                || new.not_before_ms.unwrap_or(0) < old.not_before_ms.unwrap_or(0)
+                || new.not_after_ms.unwrap_or(u64::MAX) > old.not_after_ms.unwrap_or(u64::MAX)
+            {
+                return Err("key lifecycle rollback or scope replacement rejected".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 fn keyring_fingerprint(keyring: &VerifierKeyring) -> Result<String, String> {

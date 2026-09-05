@@ -24,6 +24,10 @@ jobs:
           components: rustfmt
       - name: Validate hosted policy contract
         run: cargo test -p tandem-enterprise-contract hosted_policy --lib
+      - name: Validate scoped key lifecycle and administrative authority
+        run: |
+          cargo test -p tandem-server context_assertion_security --lib
+          cargo test -p tandem-server action_authorization --lib
       - name: Validate current runtime authority and persisted revision
         run: cargo test -p tandem-server hosted_policy --lib
       - name: Verify revocation after approval and before provider dispatch

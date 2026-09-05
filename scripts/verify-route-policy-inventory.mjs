@@ -377,6 +377,15 @@ function assertProductionRouteCoverage(files) {
 
 export function classifyRoute(route) {
   const { method, path: routePath } = route;
+  if (method === "POST" && routePath === "/admin/context-assertions/reload") {
+    return {
+      ingress_policy: "runtime_auth_gate",
+      authorization_policy: "verified_hosted_administrator_and_current_policy",
+      capability: "hosted.admin",
+      resolver: "operator_keyring_current_snapshot_and_protected_audit",
+      policy_origin: "admin.context_assertion_keyring",
+    };
+  }
   if (route.listener === "loopback_oauth_callback") {
     return {
       ingress_policy: "loopback_listener",

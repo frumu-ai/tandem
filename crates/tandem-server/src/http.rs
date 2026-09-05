@@ -64,6 +64,7 @@ pub(crate) mod channel_automation_drafts;
 mod channel_enrollment;
 mod channel_interaction_audit;
 mod channels_api;
+mod context_key_reload;
 mod coder;
 pub(crate) mod config_providers;
 pub(crate) mod context_packs;
