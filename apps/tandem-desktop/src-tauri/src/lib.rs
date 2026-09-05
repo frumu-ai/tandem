@@ -267,10 +267,7 @@ fn init_memory_manager_with_recovery(
                         }
                     }
 
-                    match tauri::async_runtime::block_on(memory::MemoryManager::new(db_path)) {
-                        Ok(manager) => return Ok(manager),
-                        Err(final_err) => return Err(final_err),
-                    }
+                    return tauri::async_runtime::block_on(memory::MemoryManager::new(db_path));
                 }
                 return Err(err);
             }

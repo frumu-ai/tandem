@@ -105,6 +105,11 @@ The `@frumu/tandem-desktop` app package (`apps/tandem-desktop/package.json`) is
 | `tandem-enterprise-server` | `crates/tandem-enterprise-server/Cargo.toml` | `BUSL-1.1` |
 | `tandem-incident-monitor`  | `crates/tandem-incident-monitor/Cargo.toml`  | `BUSL-1.1` |
 | `tandem-server`            | `crates/tandem-server/Cargo.toml`            | `BUSL-1.1` |
+| `tandem-solutions`         | `crates/tandem-solutions/Cargo.toml`         | `BUSL-1.1` |
+
+`tandem-solutions` is an unpublished solution-planning crate. Its package-local
+license uses the existing Frumu LTD BUSL grant. It is not yet linked into the
+distributed engine binaries described below.
 
 ## Open-core boundary
 
@@ -114,6 +119,8 @@ The following components are source-available and are not OSI-approved open sour
 - `crates/tandem-governance-engine`
 - `crates/tandem-enterprise-server`
 - `crates/tandem-incident-monitor`
+- `crates/tandem-server`
+- `crates/tandem-solutions`
 
 All other packages listed above are intended to be used under their stated
 permissive open-source licenses unless a package-local manifest or license file
@@ -175,12 +182,13 @@ Current source-available license files:
 - `crates/tandem-enterprise-server/LICENSE`
 - `crates/tandem-incident-monitor/LICENSE`
 - `crates/tandem-server/LICENSE`
+- `crates/tandem-solutions/LICENSE`
 
 The source-available governance layer authorizes recursive and Self-Operator behavior such as agent-authored automation creation, approval-bound capability requests, lineage enforcement, and spend/review guardrails.
 
 ### Additional Use Grant (what is free vs. licensed)
 
-The authoritative legal terms are in the five package-local `LICENSE` files.
+The authoritative legal terms are in the package-local `LICENSE` files.
 In plain language, the grant permits without charge:
 
 - evaluation, source inspection, security review, development, testing,

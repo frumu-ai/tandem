@@ -14,9 +14,9 @@ inputs:
     required: false
     default: ""
   toolchain:
-    description: Rust toolchain channel or exact version.
+    description: Exact PR toolchain version; only the scheduled canary overrides with stable.
     required: false
-    default: stable
+    default: "1.98.0"
   workspaces:
     description: Workspace to target-directory mappings for rust-cache.
     required: false

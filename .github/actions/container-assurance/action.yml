@@ -1,0 +1,63 @@
+name: Container assurance
+description: Build a candidate image, emit its SBOM, and enforce the vulnerability gate.
+inputs:
+  name:
+    description: Fixed image/evidence label from the workflow.
+    required: true
+  dockerfile:
+    description: Dockerfile to build.
+    required: true
+  image:
+    description: Local image tag to scan.
+    required: true
+  build_args:
+    description: Additional Docker build arguments.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+    - name: Build immutable test image
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      with:
+        context: .
+        file: ${{ inputs.dockerfile }}
+        build-args: |
+          ${{ inputs.build_args }}
+        load: true
+        pull: true
+        tags: ${{ inputs.image }}
+
+    - name: Generate SPDX JSON SBOM
+      uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      with:
+        image: ${{ inputs.image }}
+        format: spdx-json
+        syft-version: v1.42.3
+        output-file: ${{ inputs.name }}.sbom.spdx.json
+        upload-artifact: false
+
+    - name: Fail on fixable high or critical vulnerabilities
+      uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+      with:
+        image: ${{ inputs.image }}
+        output-format: table
+        output-file: ${{ inputs.name }}.grype.txt
+        grype-version: v0.110.0
+        severity-cutoff: high
+        only-fixed: true
+        fail-build: true
+
+    - name: Upload image assurance evidence
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: ${{ inputs.name }}-security-assurance
+        path: |
+          ${{ inputs.name }}.sbom.spdx.json
+          ${{ inputs.name }}.grype.txt
+        if-no-files-found: warn
+        retention-days: 30

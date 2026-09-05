@@ -12,6 +12,8 @@ on:
       - "engine/**"
       - "crates/**"
       - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/actions/setup-rust-ci/**"
 
 # Superseded PR commits share a group; pushes, schedules and manual runs are independent.
 concurrency:
@@ -30,18 +32,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Setup shared Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-profile: engine-default
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-        with:
-          shared-key: email-approval-demo
 
       - name: Build tandem-engine
         run: cargo build -p tandem-ai --bin tandem-engine

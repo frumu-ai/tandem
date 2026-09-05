@@ -41,17 +41,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Setup shared Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          workspaces: |
-            crates/tandem-eval
+          cache-profile: eval-release
 
       - name: Build eval-runner binary
-        run: cargo build --release --bin eval-runner -p tandem-eval
+        run: cargo build --locked --release --bin eval-runner -p tandem-eval
 
       - name: Resolve dataset path
         id: dataset

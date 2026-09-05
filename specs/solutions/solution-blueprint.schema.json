@@ -1,0 +1,334 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SolutionBlueprint",
+  "type": "object",
+  "required": [
+    "components",
+    "constraints",
+    "engine_version",
+    "schema_version",
+    "solution"
+  ],
+  "properties": {
+    "components": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/Component"
+      }
+    },
+    "constraints": {
+      "$ref": "#/definitions/Constraints"
+    },
+    "deployment_requirements": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "engine_version": {
+      "description": "Semver requirement, checked against the target engine, not this crate.",
+      "type": "string"
+    },
+    "memory_spaces": {
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/MemorySpace"
+      }
+    },
+    "preferences": {
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/Preference"
+      }
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1"
+      ]
+    },
+    "solution": {
+      "$ref": "#/definitions/SolutionIdentity"
+    },
+    "ui_features": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "ArtifactRef": {
+      "description": "References existing pack contents. This is not a second archive format.",
+      "type": "object",
+      "required": [
+        "pack_id",
+        "path",
+        "sha256",
+        "version"
+      ],
+      "properties": {
+        "pack_id": {
+          "type": "string"
+        },
+        "path": {
+          "description": "Portable relative pack entry path, never a URL or a host path.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase SHA-256 of the entry's exact bytes.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Component": {
+      "type": "object",
+      "required": [
+        "artifact",
+        "kind",
+        "required"
+      ],
+      "properties": {
+        "artifact": {
+          "$ref": "#/definitions/ArtifactRef"
+        },
+        "conflicts_with": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "depends_on": {
+          "description": "Component ID -> compatible exact artifact version requirement.",
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "kind": {
+          "$ref": "#/definitions/ComponentKind"
+        },
+        "model_classes": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "optional_capabilities": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "required_capabilities": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "ComponentKind": {
+      "type": "string",
+      "enum": [
+        "agent_template",
+        "agent_preset",
+        "worker_profile",
+        "routine",
+        "workflow",
+        "goal",
+        "policy",
+        "ontology",
+        "connector_recipe",
+        "model_profile",
+        "onboarding",
+        "ui",
+        "evaluation"
+      ]
+    },
+    "Constraints": {
+      "description": "Non-overridable ceilings. Deployment policy can only narrow these values. No allow-all sentinel: an empty provider set permits no model providers.",
+      "type": "object",
+      "required": [
+        "allow_network_egress",
+        "allowed_providers",
+        "max_concurrent_runs",
+        "max_daily_cost_microusd",
+        "max_tokens_per_run"
+      ],
+      "properties": {
+        "allow_network_egress": {
+          "type": "boolean"
+        },
+        "allowed_providers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "max_concurrent_runs": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_daily_cost_microusd": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_tokens_per_run": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "MemorySpace": {
+      "description": "All v1 spaces use governed memory_records. They are labels over supported columns, not new team/curated stores. Writers resolve subjects/partitions.",
+      "type": "string",
+      "enum": [
+        "private_user",
+        "department_shared",
+        "tenant_shared",
+        "project"
+      ]
+    },
+    "Preference": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "default",
+            "overridable",
+            "type"
+          ],
+          "properties": {
+            "default": {
+              "type": "boolean"
+            },
+            "overridable": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "boolean"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "default",
+            "max",
+            "min",
+            "overridable",
+            "type"
+          ],
+          "properties": {
+            "default": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "max": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "min": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "overridable": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "integer"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "choices",
+            "default",
+            "overridable",
+            "type"
+          ],
+          "properties": {
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "default": {
+              "type": "string"
+            },
+            "overridable": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "choice"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SolutionIdentity": {
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

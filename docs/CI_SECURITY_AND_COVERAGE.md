@@ -132,7 +132,7 @@ Non-root users, artifact verification and vulnerability gates remain enforced.
 
 ### Pull request release-pin checks
 
-Engine and container CI share `scripts/ci-engine-pin-scope.mjs` to compare only
+The shared release producer uses `scripts/ci-engine-pin-scope.mjs` to compare only
 the engine release version and binary SHA-256. Updating the Node base, Debian
 snapshot or OS packages does not require a newly built candidate to match a
 previously published engine binary. Version or binary-pin changes still enable
@@ -143,3 +143,69 @@ retain their unconditional release-pin verification.
 The main PR workflows cancel superseded runs for the same PR. Push, scheduled
 and manually dispatched runs use independent groups. This reduces stale work
 without removing test suites, advisory gates or release checks.
+
+
+### Shared CI builds and enforcing gates (TAN-843)
+
+`Security Assurance` owns the `Linux Enterprise Release Composition` job. It
+invokes the existing network-isolated, pinned Rust 1.95.0 builder once for the
+standard and enterprise-full compositions. `Engine CI` no longer duplicates
+this release build. Run `Security Assurance` manually when validating release
+composition; manual `Engine CI` covers runtime checks and workspace tests.
+
+`Container engine` downloads the producer's immutable artifact ID from the
+same workflow run. Before copying or executing the binary, it checks the
+producer-supplied manifest and binary SHA-256 values, checkout SHA (the merge
+commit on a PR), workflow run, producer attempt, target/features, Cargo.lock,
+Docker builder definition and build script. It then passes that same binary
+SHA-256 into the existing Docker verification. A consumer-only rerun may use
+the successful producer attempt from that same run; it cannot select another
+run or a mutable artifact name. Missing artifacts, mismatched provenance and
+failed producer jobs stop validation. This is CI artifact integrity evidence,
+not a production release signature or permission to publish an artifact.
+
+The panel and builder scans run independently of the Rust producer. All three
+images use `.github/actions/container-assurance` for the same SBOM generation
+and fixable high/critical vulnerability enforcement. `Security Assurance
+Result` fails when any assurance job fails, is cancelled, or is skipped. It is
+an aggregate check available for branch protection; this change does not edit
+repository protection settings or remove the existing named checks.
+
+PR quality jobs use Rust 1.98.0, the compiler on the verified foundation runs.
+The default is in `.github/actions/setup-rust-ci/action.yml`; direct installs
+in Rust Security, Enforcement Model Drift and generated coverage are pinned
+to the same version. The scheduled/manual `Rust Toolchain Canary` deliberately
+uses current stable and fails visibly on new compiler/lint problems without
+changing a PR gate overnight. Upgrade the quality pins in a reviewed PR after
+the canary and full quality suites pass. This does not change the documented
+minimum supported Rust version or the separate tagged-release toolchains.
+
+Eval jobs now cache the workspace's actual `target` directory through the
+shared `eval-release` profile. The email approval demo and runtime smoke use
+`engine-default`; the ACME feature composition has its own `acme-demo` cache.
+Caches remain an optimization, never a substitute for executing a check.
+Desktop Clippy now enforces `-D warnings`; the three existing lint errors were
+fixed before removing its `|| true` fallback.
+
+The verified baseline before this cleanup was:
+
+| Foundation PR | Checks | Sum of reported check durations | Enterprise build | Engine build + scan |
+| --- | --- | --- | --- | --- |
+| #1931 at `4b37048e` | 31 passed, 3 intentionally skipped | 209 minutes | 34m 55s | 22m 10s |
+| #1932 at `2f1676dc` | 31 passed, 3 intentionally skipped | 192 minutes | 27m 50s | 20m 33s |
+
+These are observed check durations, including review checks, not wall-clock
+latency or a billing estimate. Compare the cleanup run against these numbers,
+especially release/container execution and queue time; do not claim measured
+savings before the shared artifact has been built and scanned successfully.
+The engine scan now waits for the shared producer, which can slightly extend
+that path even while removing a complete duplicate release build.
+
+The first cleanup slice keeps conservative execution: standard and
+enterprise-full builds run on every Security Assurance invocation (all PRs,
+main/feat-engine pushes and manual runs). This expands enterprise coverage for
+changes that previously only built the standard image. Component-based
+selection and separating fast PR checks from expensive full-platform checks
+remain TAN-843 follow-ups; they need an explicit, tested result gate before
+any security or runtime suite may be skipped. The full workspace, migration,
+isolation, approvals, browser and advisory suites remain in place.
