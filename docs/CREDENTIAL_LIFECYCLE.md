@@ -39,8 +39,8 @@ fallback merely because the keychain is unavailable.
 
 Regression coverage exercises A→B→A replacement, identical reconnect,
 disconnect/re-add, restart reads, same-account refresh, account changes, stale
-refresh, compensation, process exit before/after secret persistence, corrupt/missing metadata, and actual
-cross-process API-key and OAuth writers. Existing server tests check successful
+refresh, compensation, process exit at both persistence boundaries, invalid
+metadata, and actual cross-process API-key and OAuth writers. Existing server tests check successful
 refresh and protected-audit failure against persisted revisions. These are
 synthetic credential tests; no live provider account or billing is involved.
 
