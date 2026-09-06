@@ -838,6 +838,9 @@ pub struct TokenUsage {
 }
 #[async_trait]
 pub trait Provider: Send + Sync {
+    /// Only adapters with admission on every actual send may run in a budget scope.
+    fn supports_attempt_accounting(&self) -> bool { false }
+
     /// Unknown adapters remain usable by legacy callers, but cannot be
     /// approved for solution installation until they describe their route.
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
@@ -1166,6 +1169,7 @@ impl ProviderRegistry {
         model_id: Option<&str>,
     ) -> anyhow::Result<String> {
         let provider = self.select_provider(provider_id).await?;
+        attempt_accounting::ensure_supported(provider.as_ref())?;
         let resolved_provider_id = provider.info().id;
         let auth_override = self
             .auth_override_for_provider(resolved_provider_id.as_str())
@@ -1225,6 +1229,7 @@ impl ProviderRegistry {
         model_id: Option<&str>,
     ) -> anyhow::Result<ResolvedProviderRoute> {
         let provider = self.select_provider(provider_id).await?;
+        attempt_accounting::ensure_supported(provider.as_ref())?;
         Ok(ResolvedProviderRoute {
             provider_id: provider.info().id,
             model_id: model_id.map(str::to_string),
@@ -1307,6 +1312,7 @@ impl ProviderRegistry {
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let provider = self.select_provider(provider_id).await?;
+        attempt_accounting::ensure_supported(provider.as_ref())?;
         let resolved_provider_id = provider.info().id;
         let auth_override = self
             .auth_override_for_provider(resolved_provider_id.as_str())

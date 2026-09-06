@@ -2,7 +2,7 @@
 mod provider_attempt_tests {
     use super::*;
 
-    fn responses(base_url: String) -> OpenAIResponsesProvider {
+    pub(super) fn responses(base_url: String) -> OpenAIResponsesProvider {
         OpenAIResponsesProvider {
             id: "openai-codex".into(),
             name: "Synthetic Responses".into(),
@@ -14,7 +14,7 @@ mod provider_attempt_tests {
         }
     }
 
-    fn compatible(base_url: String) -> OpenAICompatibleProvider {
+    pub(super) fn compatible(base_url: String) -> OpenAICompatibleProvider {
         OpenAICompatibleProvider {
             id: "ollama".into(),
             name: "Synthetic local transport".into(),
@@ -62,7 +62,7 @@ mod provider_attempt_tests {
         })
     }
 
-    async fn reply(socket: &mut tokio::net::TcpStream, status: &str, body: &str) {
+    pub(super) async fn reply(socket: &mut tokio::net::TcpStream, status: &str, body: &str) {
         let response = format!(
             "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
