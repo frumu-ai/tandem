@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use tandem_solutions::{sha256, validate_customer_config_scope, CustomerScope};
 use tandem_types::VerifiedTenantContext;
 
-use super::{solution_budget_records as records, solution_installations, OrchestrationStateStore};
+use super::{
+    customer_configs, solution_budget_records as records, solution_installations,
+    OrchestrationStateStore,
+};
 use crate::stateful_runtime::backend::TransactionBehavior;
 
 const DAY_MS: u64 = 86_400_000;
@@ -145,6 +148,13 @@ impl OrchestrationStateStore {
             ensure!(
                 installation.composition_sha256 == input.composition_sha256,
                 "solution composition changed before budget reservation"
+            );
+            let configuration = customer_configs::load(&transaction, tenant, input.scope)?
+                .context("solution customer configuration missing")?;
+            ensure!(
+                configuration.version == installation.config_version
+                    && configuration.blueprint_sha256 == installation.plan.blueprint_sha256,
+                "solution configuration changed before budget reservation"
             );
             let policy = &installation.plan.constraints;
             let reservation_key = key("attempt", &intent.reservation_id);

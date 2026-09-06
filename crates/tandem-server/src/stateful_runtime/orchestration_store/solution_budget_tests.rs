@@ -407,6 +407,51 @@ pub(crate) struct TransferBudget {
     reserved: SolutionChargeIntent,
 }
 
+#[test]
+#[serial]
+fn solution_budget_rechecks_configuration_generation_but_can_settle_existing_charge() {
+    encrypted(|| {
+        for_each_backend(|_, store| {
+            let fixture = BudgetFixture::new(store, "a", "config-change", 2);
+            let charge = BudgetFixture::charge("already-dispatched", "root", 30, 10);
+            store
+                .reserve_solution_charge(fixture.input(1500), charge.clone())
+                .unwrap();
+            let customer = &fixture.installation.customer;
+            let original = store
+                .customer_configuration(&customer.context, &customer.config.scope, 1500)
+                .unwrap()
+                .unwrap();
+            let mut edited = customer.config.clone();
+            edited.timezone = "UTC".into();
+            let changed = customer
+                .save(store, &edited, Some(&original.version))
+                .unwrap();
+            assert!(store
+                .reserve_solution_charge(
+                    fixture.input(1500),
+                    BudgetFixture::charge("stale", "root", 30, 10)
+                )
+                .is_err());
+            // Billing receipts still settle old attempts after configuration changes.
+            store
+                .settle_solution_charge(fixture.input(1500), &charge, 5, 20)
+                .unwrap();
+            let restored = customer
+                .save(store, &customer.config, Some(&changed.version))
+                .unwrap();
+            assert_eq!(restored.version.sha256, original.version.sha256);
+            assert_ne!(restored.version.generation, original.version.generation);
+            assert!(store
+                .reserve_solution_charge(
+                    fixture.input(1500),
+                    BudgetFixture::charge("stale-after-aba", "root", 30, 10)
+                )
+                .is_err());
+        })
+    });
+}
+
 #[cfg(feature = "storage-postgres")]
 pub(crate) fn seed_budget_for_transfer(store: &OrchestrationStateStore) -> TransferBudget {
     encrypted(|| {

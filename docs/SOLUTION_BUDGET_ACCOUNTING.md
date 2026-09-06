@@ -11,6 +11,10 @@ A trusted runtime caller supplies a verified tenant context, installation scope,
 current composition, an authoritative root run, a unique physical-attempt ID,
 reviewed route revision, bounded token/cost reservation and finite root-run
 limits. None of these approval inputs come from a browser, pack or model output.
+Admission also compares the current protected customer configuration generation
+and digest with the installation, in the same transaction. Saving a changed
+configuration blocks the old installation even after an A-to-B-to-A edit. Existing
+charge receipts can still settle after a configuration change.
 The store loads the current installation and intersects limits with its reviewed
 token, concurrency and daily cost ceilings. A root's limits can narrow but cannot
 grow during retries, escalation or child execution.
