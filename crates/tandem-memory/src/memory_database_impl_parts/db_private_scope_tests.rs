@@ -65,7 +65,15 @@ async fn global_sharing_migration_does_not_broaden_legacy_department_records() {
     db.conn
         .lock()
         .await
-        .execute("ALTER TABLE memory_records DROP COLUMN tenant_shared", [])
+        .execute_batch("DROP INDEX idx_memory_records_dedup;
+            ALTER TABLE memory_records DROP COLUMN tenant_shared;
+            DELETE FROM schema_migrations WHERE version = 6;
+            CREATE UNIQUE INDEX idx_memory_records_dedup
+            ON memory_records(tenant_org_id, tenant_workspace_id,
+                IFNULL(tenant_deployment_id, ''), user_id, source_type, content_hash,
+                run_id, IFNULL(session_id, ''), IFNULL(message_id, ''),
+                IFNULL(tool_name, ''), IFNULL(owner_org_unit_id, ''), private,
+                IFNULL(owner_subject, ''));")
         .unwrap();
     drop(db);
     let migrated = MemoryDatabase::new(&temp.path().join("test_memory.db"))
