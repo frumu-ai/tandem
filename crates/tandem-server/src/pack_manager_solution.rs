@@ -192,7 +192,11 @@ fn verify_snapshot(snapshot: &Snapshot) -> anyhow::Result<String> {
     // Verify exactly the in-memory bytes returned/exported, not a second tree
     // read which could change between signature verification and artifact use.
     let mut hasher = Sha256::new();
-    for (path, bytes) in &snapshot.files {
+    let mut ordered = snapshot.files.iter().collect::<Vec<_>>();
+    // Match pack_content_digest's existing Path ordering exactly. Changing
+    // this to flat string ordering would change some nested-file signatures.
+    ordered.sort_by(|(left, _), (right, _)| Path::new(left).cmp(Path::new(right)));
+    for (path, bytes) in ordered {
         if path == PACK_SIGNATURE_FILE {
             continue;
         }

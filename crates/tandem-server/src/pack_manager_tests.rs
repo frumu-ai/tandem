@@ -21,7 +21,7 @@ pub(super) fn write_signed_zip(path: &Path, entries: &[(&str, &str)]) -> String 
         .iter()
         .map(|(name, body)| ((*name).to_string(), body.as_bytes().to_vec()))
         .collect::<Vec<_>>();
-    ordered.sort_by(|left, right| left.0.cmp(&right.0));
+    ordered.sort_by(|left, right| Path::new(&left.0).cmp(Path::new(&right.0)));
     let mut hasher = Sha256::new();
     for (name, body) in &ordered {
         hasher.update((name.len() as u64).to_be_bytes());

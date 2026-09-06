@@ -62,6 +62,34 @@ fn export_request(name: &str) -> PackExportRequest {
 
 #[tokio::test]
 #[serial_test::serial(pack_signature_env)]
+async fn solution_pack_snapshot_preserves_existing_nested_path_signature_order() {
+    let root = tempfile::tempdir().unwrap();
+    let mut entries = fixture();
+    let mut blueprint: Value = serde_json::from_str(&entries[1].1).unwrap();
+    entries[2].0 = "artifacts.json".into();
+    entries[3].0 = "artifacts/review.json".into();
+    blueprint["components"]["central-brain"]["artifact"]["path"] = entries[2].0.clone().into();
+    blueprint["components"]["review-notes"]["artifact"]["path"] = entries[3].0.clone().into();
+    entries[1].1 = serde_json::to_string(&blueprint).unwrap();
+    let archive = root.path().join("ordered.zip");
+    let key = signed(&archive, &entries);
+    let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+    let manager = PackManager::new(root.path().join("packs"));
+    manager.install(request(&archive)).await.unwrap();
+    assert_eq!(
+        manager
+            .solution_artifacts("tandem.company-brain")
+            .await
+            .unwrap()
+            .artifacts
+            .len(),
+        2
+    );
+    manager.export(export_request("ordered.zip")).await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn solution_pack_signed_artifacts_feed_existing_resolver_and_round_trip() {
     use std::collections::{BTreeMap, BTreeSet};
     use tandem_enterprise_contract::{
