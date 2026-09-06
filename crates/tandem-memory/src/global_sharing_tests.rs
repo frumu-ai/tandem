@@ -378,13 +378,14 @@ async fn sqlite_global_sharing_survives_department_change_and_reopen() {
     };
     let db = crate::db::MemoryDatabase::new(&path).await.unwrap();
     exercise(&db, &tenant).await;
-    // The LIKE fallback must enforce the same scope when FTS is unavailable.
-    rusqlite::Connection::open(&path)
-        .unwrap()
-        .execute("DROP TABLE memory_records_fts", [])
-        .unwrap();
-    assert_after_reopen(&db, &tenant).await;
     drop(db);
     let reopened = crate::db::MemoryDatabase::new(&path).await.unwrap();
+    assert_after_reopen(&reopened, &tenant).await;
+    // No FTS hits invokes the existing LIKE fallback. Keep the schema intact:
+    // dropping it through another connection is a different corruption case.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute("DELETE FROM memory_records_fts", [])
+        .unwrap();
     assert_after_reopen(&reopened, &tenant).await;
 }

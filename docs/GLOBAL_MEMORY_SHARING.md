@@ -28,7 +28,7 @@ this change is not a bulk reclassification tool.
 The shared backend regression exercises initial and changed-department reads,
 anonymous/cross-user/cross-tenant exclusion, explicit-department precedence,
 normal/atomic writes and updates, deduplication and reopen. SQLite also tests
-the LIKE fallback without FTS; both backends test a conservative schema upgrade.
+the LIKE fallback with no FTS hits; both backends test a conservative schema upgrade.
 The hosted integration in tandem-agents PR64 supplies actual authenticated
 membership-change/restart acceptance. Green storage tests alone do not prove
 that end-to-end acceptance, encrypted key recovery or off-site restore.
