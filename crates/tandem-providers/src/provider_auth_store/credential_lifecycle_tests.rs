@@ -296,6 +296,66 @@ fn lifecycle_worker() {
     let label = std::env::var("TANDEM_TEST_LIFECYCLE_LABEL").unwrap();
     let tenant = TenantContext::explicit(label, "workspace", None);
     key(Path::new(&dir), &tenant, "synthetic-process-key");
+    if let Ok(phase) = std::env::var("TANDEM_TEST_LIFECYCLE_CRASH_PHASE") {
+        let dir = Path::new(&dir);
+        let _lock = ProviderCredentialMutationFileLock::acquire_blocking(dir).unwrap();
+        let id = tenant_scoped_provider_id(&tenant, "openai-codex");
+        let kind = ProviderCredentialKind::ApiKey;
+        let _mutation = Mutation::begin(
+            dir,
+            kind,
+            &id,
+            Some(json!("synthetic-crash-key")),
+            false,
+            false,
+        )
+        .unwrap();
+        if phase == "after-material" {
+            let mut material = strict_json(&kind.fallback(dir)).unwrap();
+            material[&id] = json!("synthetic-crash-key");
+            write_secure_json(&kind.fallback(dir), &material).unwrap();
+        }
+        // Deliberately bypass destructors, as a terminated process would. The
+        // parent must reacquire the OS lock and still reject this pending write.
+        std::process::exit(0);
+    }
+}
+
+#[test]
+fn process_exit_before_commit_never_exposes_an_active_revision() {
+    for phase in ["before-material", "after-material"] {
+        let dir = tempdir().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "provider_auth_store::credential_lifecycle::tests::lifecycle_worker",
+            ])
+            .env("TANDEM_TEST_LIFECYCLE_DIR", dir.path())
+            .env("TANDEM_TEST_LIFECYCLE_LABEL", "crash-worker")
+            .env("TANDEM_TEST_LIFECYCLE_CRASH_PHASE", phase)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let tenant = TenantContext::explicit("crash-worker", "workspace", None);
+        assert!(provider_credential_revision_for_tenant_in_dir(
+            dir.path(),
+            &tenant,
+            ProviderCredentialKind::ApiKey,
+            "openai-codex",
+        )
+        .is_err());
+        let actual = load_provider_auth_for_tenant_in_dir(dir.path(), &tenant);
+        assert_eq!(
+            actual["openai-codex"],
+            if phase == "after-material" {
+                "synthetic-crash-key"
+            } else {
+                "synthetic-process-key"
+            }
+        );
+        key(dir.path(), &tenant, "synthetic-explicit-reconnect");
+        revision(dir.path(), &tenant, ProviderCredentialKind::ApiKey);
+    }
 }
 
 #[test]

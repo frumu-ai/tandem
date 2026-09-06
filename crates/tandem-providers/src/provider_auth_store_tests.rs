@@ -336,6 +336,32 @@ fn cross_process_credential_mutation_worker() {
                 provider_id,
             )
             .expect("keychain-backed revision agrees with persisted material");
+            // A stale fallback with identical bytes is not proof that the
+            // recorded keychain account is still present.
+            let persisted_refreshed = credential_with_provider_id(
+                ProviderCredential::OAuth(refreshed),
+                scoped_provider_id.clone(),
+            );
+            save_credential_fallback_map_to_dir(
+                &security_dir,
+                &HashMap::from([(scoped_provider_id.clone(), persisted_refreshed.clone())]),
+            )
+            .expect("seed stale fallback");
+            let entry = credential_keyring_entry(&scoped_provider_id).unwrap();
+            entry.delete_password().unwrap();
+            assert!(
+                provider_credential_revision_for_tenant_in_dir(
+                    &security_dir,
+                    &tenant,
+                    ProviderCredentialKind::Credential,
+                    provider_id,
+                )
+                .is_err(),
+                "a deleted keychain binding cannot inherit stale fallback approval"
+            );
+            entry
+                .set_password(&serde_json::to_string(&persisted_refreshed).unwrap())
+                .unwrap();
             assert_eq!(
                 set_provider_oauth_credential_for_tenant_in_dir(
                     &security_dir,

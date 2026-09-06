@@ -10,10 +10,13 @@ fresh authorization and material UUIDs, including replacement with identical
 bytes and compensation that restores earlier bytes. Before changing a secret,
 the writer persists a pending record. It marks the record active only after the
 credential and index writes succeed and the selected stored material matches.
-Deletion leaves an absent tombstone. An interrupted or failed mutation cannot
-provide an active revision. JSON writes use a private temporary file, sync the
+Deletion leaves an absent tombstone. A mutation interrupted before its final
+record cannot provide an active revision. JSON writes use a private temporary file, sync the
 contents, atomically replace the destination, and sync the parent directory on
-Unix. Durability ultimately depends on the filesystem and keychain backend.
+Unix. Durability ultimately depends on the filesystem and keychain backend. If
+the final record reaches disk but its acknowledgement fails, a subsequent read
+can observe that completed revision; it still verifies the selected material and
+cannot restore an earlier authorization revision.
 
 The dedicated OAuth refresh CAS can retain the authorization revision only when
 the prior record is active, its material matches, and both credentials identify
@@ -33,7 +36,7 @@ fallback merely because the keychain is unavailable.
 
 Regression coverage exercises A→B→A replacement, identical reconnect,
 disconnect/re-add, restart reads, same-account refresh, account changes, stale
-refresh, compensation, interrupted writes, corrupt/missing metadata, and actual
+refresh, compensation, process exit before/after secret persistence, corrupt/missing metadata, and actual
 cross-process API-key and OAuth writers. Existing server tests check successful
 refresh and protected-audit failure against persisted revisions. These are
 synthetic credential tests; no live provider account or billing is involved.
