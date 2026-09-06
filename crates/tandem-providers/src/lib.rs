@@ -16,3 +16,8 @@ pub use attempt_accounting::{
     ConfirmedProviderUsage, ProviderAttempt, ProviderAttemptOutcome, ProviderAttemptPolicy,
     ProviderAttemptReceipt, ProviderProtocol,
 };
+
+mod runtime_binding;
+pub use runtime_binding::{
+    ProviderCredentialSource, ProviderRuntimeBinding, ProviderTransportBinding,
+};
