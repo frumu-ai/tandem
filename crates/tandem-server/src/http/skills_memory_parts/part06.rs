@@ -545,8 +545,8 @@ pub(super) async fn memory_put_impl_with_verified(
     let trust_label = memory_trust_label_for_put(&request);
     // Authoritatively stamp the collector's active department (TAN-646). A
     // client-supplied department already survived the membership check above and
-    // is preserved; otherwise the verified context's active department is written
-    // so attributable data is never persisted without a department.
+    // is preserved. Explicit tenant-sharing without a department stays tenant-
+    // scoped; all other writes inherit the verified context's active department.
     let active_org_unit = crate::memory::subject::active_org_unit(verified_tenant_context);
     // Per-user opt-in (TAN-648): a `private` write additionally restricts the
     // record to the collecting subject (`user_id`), stamped as `owner_subject`
@@ -825,6 +825,39 @@ mod retrieval_gateway_subject_tests {
         assert_eq!(
             owner_org_unit_id_from_metadata(created.as_ref()).as_deref(),
             Some("department/eng")
+        );
+    }
+
+    #[test]
+    fn tenant_shared_stamp_keeps_private_owner_and_explicit_department() {
+        use tandem_memory::types::{owner_org_unit_id_from_metadata, owner_subject_from_metadata};
+        for private in [false, true] {
+            let metadata = memory_metadata_with_owner_subject(
+                memory_metadata_with_owner_org_unit(
+                    Some(json!({"tenant_shared": true, "owner_subject": "forged"})),
+                    Some("eng"),
+                ),
+                private.then_some("bob"),
+            );
+            assert_eq!(owner_org_unit_id_from_metadata(metadata.as_ref()), None);
+            assert_eq!(
+                owner_subject_from_metadata(metadata.as_ref()).as_deref(),
+                private.then_some("bob")
+            );
+        }
+        let explicit = memory_metadata_with_owner_org_unit(
+            Some(json!({"tenant_shared": true, "owner_org_unit_id": "eng"})),
+            Some("ops"),
+        );
+        assert_eq!(
+            owner_org_unit_id_from_metadata(explicit.as_ref()).as_deref(),
+            Some("eng")
+        );
+        let invalid =
+            memory_metadata_with_owner_org_unit(Some(json!({"tenant_shared": "true"})), Some("eng"));
+        assert_eq!(
+            owner_org_unit_id_from_metadata(invalid.as_ref()).as_deref(),
+            Some("eng")
         );
     }
 

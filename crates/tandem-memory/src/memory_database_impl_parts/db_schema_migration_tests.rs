@@ -10,7 +10,7 @@ async fn schema_migration_ledger_records_bootstrap_once() {
         )
         .unwrap()
     };
-    assert_eq!(migration_count, 5);
+    assert_eq!(migration_count, 6);
 
     let db_path = temp.path().join("test_memory.db");
     drop(db);
@@ -24,7 +24,7 @@ async fn schema_migration_ledger_records_bootstrap_once() {
         )
         .unwrap()
     };
-    assert_eq!(reopened_migration_count, 5);
+    assert_eq!(reopened_migration_count, 6);
 
     let private_migration_count: i64 = {
         let conn = reopened.conn.lock().await;

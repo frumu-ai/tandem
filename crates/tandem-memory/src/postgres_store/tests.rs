@@ -20,6 +20,92 @@ fn test_url() -> Option<String> {
     std::env::var("TANDEM_TEST_POSTGRES_URL").ok()
 }
 
+#[tokio::test]
+async fn postgres_global_sharing_survives_department_change_and_reopen() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let store = PostgresMemoryStore::connect(config(url.clone(), 4))
+        .await
+        .unwrap();
+    let tenant = tenant(&format!("global-sharing-{}", uuid::Uuid::new_v4()));
+    crate::global_sharing_tests::exercise(&store, &tenant).await;
+    drop(store);
+    let reopened = PostgresMemoryStore::connect(config(url, 4)).await.unwrap();
+    crate::global_sharing_tests::assert_after_reopen(&reopened, &tenant).await;
+}
+
+#[tokio::test]
+async fn postgres_global_sharing_migration_preserves_legacy_scope() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let store = PostgresMemoryStore::connect(config(url.clone(), 4))
+        .await
+        .unwrap();
+    store
+        .recover_backend(MemoryBackendRecoveryRequest {
+            action: MemoryBackendRecoveryAction::ResetAllData,
+            confirm_data_loss: true,
+        })
+        .await
+        .unwrap();
+    let tenant = tenant(&format!("sharing-migration-{}", uuid::Uuid::new_v4()));
+    let mut record = global_record(&tenant.org_id, &tenant);
+    record.metadata = Some(
+        serde_json::json!({"owner_org_unit_id": "eng", "owner_subject": "bob", "tenant_shared": true}),
+    );
+    store
+        .write(MemoryStoreWriteRequest::GlobalRecord {
+            scope: MemoryWriteScope {
+                tenant: tenant.clone(),
+                org_unit: Some("eng".into()),
+                subject: Some("bob".into()),
+            },
+            record: record.clone(),
+        })
+        .await
+        .unwrap();
+    store
+        .client()
+        .await
+        .unwrap()
+        .batch_execute("ALTER TABLE tandem_memory_global_records DROP COLUMN tenant_shared CASCADE")
+        .await
+        .unwrap();
+    drop(store);
+    let migrated = PostgresMemoryStore::connect(config(url, 4)).await.unwrap();
+    let shared: bool = migrated
+        .client()
+        .await
+        .unwrap()
+        .query_one(
+            "SELECT tenant_shared FROM tandem_memory_global_records WHERE id=$1",
+            &[&record.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(!shared);
+    for (unit, visible) in [("eng", true), ("ops", false)] {
+        let result = migrated
+            .read(MemoryStoreReadRequest::GlobalRecord {
+                scope: MemoryReadScope {
+                    tenant: tenant.clone(),
+                    org_unit: Some(unit.into()),
+                    subject: Some("bob".into()),
+                    access: MemoryReadAccess::Scoped,
+                },
+                id: record.id.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, MemoryStoreReadResult::GlobalRecord(row) if row.is_some() == visible)
+        );
+    }
+}
+
 fn tenant(org: &str) -> MemoryTenantScope {
     MemoryTenantScope {
         org_id: org.to_string(),
