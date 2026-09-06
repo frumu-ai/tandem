@@ -11,6 +11,9 @@ use super::customer_config_tests::Fixture;
 use super::*;
 use crate::stateful_runtime::backend::{params, Executor, ExecutorRaw};
 
+#[path = "solution_budget_tests.rs"]
+pub(super) mod budget_tests;
+
 #[derive(Clone)]
 struct InstallationFixture {
     customer: Fixture,
@@ -64,8 +67,8 @@ pub(super) fn assert_protected_installation_after_transfer(
             store
                 .with_connection(|connection| {
                     let count: i64 = connection.query_row(
-                        "SELECT COUNT(*) FROM solution_installation_versions WHERE org_id='org-b'",
-                        [],
+                        "SELECT COUNT(*) FROM solution_installation_versions WHERE org_id='org-b' AND instance_id=?1",
+                        [&expected.plan.instance_id],
                         |row| row.get(0),
                     )?;
                     assert_eq!(count, 2);
@@ -540,7 +543,9 @@ fn solution_installation_schema_upgrade_preserves_configuration() {
             .with_connection(|connection| {
                 connection.execute_batch(
                     "DROP TABLE solution_installation_versions;
-                DROP TABLE solution_installations; UPDATE schema_metadata SET schema_version=6;",
+                DROP TABLE solution_installations;
+                DROP TABLE solution_budget_records; DROP TABLE solution_budget_versions;
+                UPDATE schema_metadata SET schema_version=6;",
                 )?;
                 Ok(())
             })
