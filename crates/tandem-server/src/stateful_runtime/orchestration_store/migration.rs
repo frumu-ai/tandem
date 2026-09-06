@@ -1420,7 +1420,7 @@ mod tests {
                     [],
                     |row| row.get(0),
                 )?;
-                assert_eq!(version, super::super::SCHEMA_VERSION);
+                assert_eq!(version, super::super::SCHEMA_VERSION as u64);
                 assert_eq!(table, "legacy_handoff_quarantine");
                 assert_eq!(deployment_key_columns, 1);
                 assert_eq!(attempts_table, "stateful_migration_attempts");
