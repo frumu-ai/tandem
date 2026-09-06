@@ -984,7 +984,8 @@ impl MemoryDatabase {
                 created_at_ms INTEGER NOT NULL,
                 updated_at_ms INTEGER NOT NULL,
                 expires_at_ms INTEGER,
-                owner_org_unit_id TEXT
+                owner_org_unit_id TEXT,
+                tenant_shared INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -993,6 +994,14 @@ impl MemoryDatabase {
             let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
             rows.collect::<Result<HashSet<_>, _>>()?
         };
+        // Existing rows retain their established scope. In particular, an old
+        // shared label must not erase an explicit department or private owner.
+        if !memory_record_cols.contains("tenant_shared") {
+            conn.execute(
+                "ALTER TABLE memory_records ADD COLUMN tenant_shared INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
         if !memory_record_cols.contains("tenant_org_id") {
             conn.execute(
                 "ALTER TABLE memory_records ADD COLUMN tenant_org_id TEXT NOT NULL DEFAULT 'local'",

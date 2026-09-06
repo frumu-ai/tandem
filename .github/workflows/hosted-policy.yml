@@ -24,6 +24,10 @@ jobs:
           components: rustfmt
       - name: Validate hosted policy contract
         run: cargo test -p tandem-enterprise-contract hosted_policy --lib
+      - name: Verify global memory sharing and conservative schema upgrade
+        run: |
+          cargo test -p tandem-memory global_sharing --lib
+          cargo test -p tandem-server tenant_shared_stamp_keeps_private_owner_and_explicit_department --lib
       - name: Validate scoped key lifecycle and administrative authority
         run: |
           cargo test -p tandem-server context_assertion_security --lib

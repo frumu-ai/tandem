@@ -280,31 +280,7 @@ impl MemoryAccessFilter {
     }
 
     pub fn allows_global_record(&self, record: &GlobalMemoryRecord) -> bool {
-        let decision = self.decision_for_global_record(record);
-        // Operator diagnostics carry only fixed codes and counts. Never log
-        // record content, metadata parse errors, principals or grant identifiers.
-        let code = match decision.reason.as_deref() {
-            Some(
-                code @ ("context_expired"
-                | "data_class_denied_by_boundary"
-                | "resource_explicitly_denied_by_scope"
-                | "matching_deny_grant"
-                | "resource_outside_projected_scope"
-                | "no_matching_allow_grant"
-                | "missing_strict_projection"
-                | "tenant_scope_mismatch"
-                | "org_unit_scope_mismatch"
-                | "subject_scope_mismatch"
-                | "org_unit_absent_fail_closed"),
-            ) => code,
-            _ if decision.allowed => "allowed",
-            _ => "other_policy_denial",
-        };
-        tracing::debug!(target: "tandem_memory::governed_read", code,
-            allowed = decision.allowed,
-            projected_grants = self.strict_context.as_ref().map(|c| c.grants.len()).unwrap_or(0),
-            "governed memory record decision");
-        decision.allowed
+        self.decision_for_global_record(record).allowed
     }
 
     pub fn decision_for_chunk(&self, chunk: &MemoryChunk) -> GovernedReadDecision {

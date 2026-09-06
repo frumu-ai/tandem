@@ -918,8 +918,6 @@ pub(super) async fn memory_search(
             tandem_memory::MemoryStoreQueryResult::GlobalSearchHits(hits) => hits,
             _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
         };
-        tracing::debug!(target: "tandem_memory::governed_read", candidates = hits.len(),
-            "memory search candidates before governance filter");
         let filtered = hits
             .into_iter()
             .filter(|hit| {
