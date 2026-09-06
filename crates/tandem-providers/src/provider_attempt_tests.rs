@@ -112,7 +112,10 @@ mod provider_attempt_tests {
         )
         .await
         .expect("fallback must finish without another unauthorized send");
-        let listener = server.await.unwrap();
+        let listener = tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .expect("synthetic fallback server must finish")
+            .unwrap();
         if revoke {
             assert!(result
                 .unwrap_err()
@@ -223,9 +226,16 @@ mod provider_attempt_tests {
     async fn hosted_policy_adapter_redirect_cannot_bypass_dispatch_boundary() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let mut config = cfg(&["openai-codex"], Some("openai-codex"), false);
-        config.providers.get_mut("openai-codex").unwrap().url = Some(format!("http://{addr}"));
-        let registry = ProviderRegistry::new(config);
+        // The production Codex constructor deliberately ignores configured URL
+        // overrides. Use the existing fixture replacement with the production
+        // client factory, never a config field that could reach the Internet.
+        let registry = ProviderRegistry::new(cfg(&[], None, false));
+        registry
+            .replace_for_test(
+                vec![Arc::new(responses(format!("http://{addr}")))],
+                Some("openai-codex".into()),
+            )
+            .await;
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             read_single_http_request(&mut socket).await;
@@ -247,7 +257,10 @@ mod provider_attempt_tests {
         .await
         .expect("redirect must return without following Location");
         assert!(result.is_err());
-        let listener = server.await.unwrap();
+        let listener = tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .expect("synthetic redirect server must finish")
+            .unwrap();
         assert!(
             tokio::time::timeout(Duration::from_millis(50), listener.accept())
                 .await
