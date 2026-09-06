@@ -197,25 +197,34 @@ async fn reply(socket: &mut tokio::net::TcpStream, with_usage: bool) {
     socket.shutdown().await.unwrap();
 }
 
-fn account(
+async fn account_row(
+    store: &OrchestrationStateStore,
+    fixture: &BudgetFixture,
+    key: &str,
+) -> Option<serde_json::Value> {
+    let store = store.clone();
+    let tenant = fixture.installation.customer.context.tenant_context.clone();
+    let scope = fixture.installation.customer.config.scope.clone();
+    let key = key.to_string();
+    crate::encrypted_file_store::spawn_protected_blocking(move || {
+        store.with_connection(|connection| {
+            crate::stateful_runtime::orchestration_store::solution_budget_records::load::<
+                serde_json::Value,
+            >(connection, &tenant, &scope, &key)
+        })
+    })
+    .await
+    .unwrap()
+    .unwrap()
+    .map(|(_, value)| value)
+}
+
+async fn account(
     store: &OrchestrationStateStore,
     fixture: &BudgetFixture,
     key: &str,
 ) -> serde_json::Value {
-    store
-        .with_connection(|connection| {
-            crate::stateful_runtime::orchestration_store::solution_budget_records::load::<
-                serde_json::Value,
-            >(
-                connection,
-                &fixture.installation.customer.context.tenant_context,
-                &fixture.installation.customer.config.scope,
-                key,
-            )
-        })
-        .unwrap()
-        .unwrap()
-        .1
+    account_row(store, fixture, key).await.unwrap()
 }
 
 #[test]
@@ -250,13 +259,13 @@ fn solution_budget_provider_actual_sends_share_the_durable_ceiling() {
             }
             let error = complete(&registry, policy.clone()).await.unwrap_err();
             assert!(error.to_string().contains("budget"));
-            assert_eq!(account(store, &fixture, "global")["outstanding"], 1);
+            assert_eq!(account(store, &fixture, "global").await["outstanding"], 1);
             release.send(()).unwrap();
             assert_eq!(first.await.unwrap(), "ok");
             assert_eq!(complete(&registry, policy).await.unwrap(), "ok");
             tokio::time::timeout(std::time::Duration::from_secs(3), server).await.unwrap().unwrap();
-            assert_eq!(account(store, &fixture, "global")["outstanding"], 0);
-            let root = account(store, &fixture, &format!("root:{}", sha256(b"actual-root")));
+            assert_eq!(account(store, &fixture, "global").await["outstanding"], 0);
+            let root = account(store, &fixture, &format!("root:{}", sha256(b"actual-root"))).await;
             assert_eq!(root["requests"], 2, "repeated policy checks must not double-charge");
             assert_eq!(root["committed_cost"], 10);
         });
@@ -282,7 +291,13 @@ fn solution_budget_provider_missing_usage_survives_reopen_and_blocks_overspend()
                 });
                 let policy = policy(store, approved, Arc::new(AtomicU64::new(1500)));
                 assert_eq!(complete(&registry, policy.clone()).await.unwrap(), "ok");
-                store.initialize().unwrap();
+                let reopened = store.clone();
+                crate::encrypted_file_store::spawn_protected_blocking(move || {
+                    reopened.initialize()
+                })
+                .await
+                .unwrap()
+                .unwrap();
                 assert!(complete(&registry, policy)
                     .await
                     .unwrap_err()
@@ -298,7 +313,7 @@ fn solution_budget_provider_missing_usage_survives_reopen_and_blocks_overspend()
                 )
                 .await
                 .is_err());
-                assert_eq!(account(store, &fixture, "global")["outstanding"], 1);
+                assert_eq!(account(store, &fixture, "global").await["outstanding"], 1);
             });
         })
     });
@@ -330,9 +345,9 @@ fn solution_budget_provider_confirmed_receipt_settles_after_user_assertion_expir
                     complete(&registry, policy).await.is_err(),
                     "old assertion cannot authorize another send"
                 );
-                assert_eq!(account(store, &fixture, "global")["outstanding"], 0);
+                assert_eq!(account(store, &fixture, "global").await["outstanding"], 0);
                 assert_eq!(
-                    account(store, &fixture, &format!("root:{}", sha256(b"actual-root")))
+                    account(store, &fixture, &format!("root:{}", sha256(b"actual-root"))).await
                         ["committed_cost"],
                     5
                 );
@@ -383,8 +398,9 @@ fn solution_budget_provider_rechecks_binding_after_reservation_without_sending()
                     .to_string()
                     .contains("changed during"));
                 assert_eq!(checks.load(Ordering::SeqCst), 2);
-                assert_eq!(account(store, &fixture, "global")["outstanding"], 0);
-                let root = account(store, &fixture, &format!("root:{}", sha256(b"actual-root")));
+                assert_eq!(account(store, &fixture, "global").await["outstanding"], 0);
+                let root =
+                    account(store, &fixture, &format!("root:{}", sha256(b"actual-root"))).await;
                 assert_eq!(root["committed_cost"], 0);
                 assert_eq!(root["requests"], 1);
                 assert!(tokio::time::timeout(
@@ -425,16 +441,7 @@ fn solution_budget_provider_rejects_stale_model_and_unknown_price_before_network
                 )
                 .await
                 .is_err());
-                let global = store
-                    .with_connection(|connection| {
-                        super::super::solution_budget_records::load::<serde_json::Value>(
-                            connection,
-                            &approved.verified.tenant_context,
-                            &approved.scope,
-                            "global",
-                        )
-                    })
-                    .unwrap();
+                let global = account_row(store, &fixture, "global").await;
                 assert!(
                     global.is_none(),
                     "rejected admission must not consume budget"
