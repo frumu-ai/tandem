@@ -308,8 +308,8 @@ fn solution_installation_concurrent_claims_have_exactly_one_winner() {
                     )
                     .is_ok()
             };
-            let first = scope.spawn(|| run("first"));
-            let second = scope.spawn(|| run("second"));
+            let first = scope.spawn(move || run("first"));
+            let second = scope.spawn(move || run("second"));
             [first.join().unwrap(), second.join().unwrap()]
         });
         assert_eq!(results.into_iter().filter(|result| *result).count(), 1);
