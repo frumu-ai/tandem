@@ -26,6 +26,7 @@ mod runtime_records;
 pub(crate) mod solution_budget_records;
 mod solution_budgets;
 mod solution_execution;
+mod solution_goals;
 pub(crate) mod solution_installations;
 mod transfer;
 mod transition;
@@ -45,6 +46,7 @@ pub use solution_budgets::{
     SolutionRunBudget,
 };
 pub use solution_execution::SolutionRunExecution;
+pub use solution_goals::SolutionGoalStart;
 pub use solution_installations::{
     SolutionComponentProgress, SolutionInstallation, SolutionInstallationInput,
     SolutionInstallationTransition, SOLUTION_INSTALLATION_CONFLICT,
@@ -760,7 +762,13 @@ impl OrchestrationStateStore {
     }
 
     pub fn put_goal(&self, goal: &LongRunningGoal) -> anyhow::Result<()> {
-        self.with_connection(|connection| upsert_goal(connection, goal))
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            upsert_goal(&transaction, goal)?;
+            transaction.commit()?;
+            Ok(())
+        })
     }
 
     pub fn get_goal(&self, goal_id: &str) -> anyhow::Result<Option<LongRunningGoal>> {
@@ -1429,7 +1437,19 @@ fn table_has_column(
     Ok(false)
 }
 
-fn upsert_goal(connection: &impl Executor, goal: &LongRunningGoal) -> anyhow::Result<()> {
+fn upsert_goal(
+    connection: &backend::Transaction<'_>,
+    goal: &LongRunningGoal,
+) -> anyhow::Result<()> {
+    upsert_goal_record(connection, goal, false)
+}
+
+fn upsert_goal_record(
+    connection: &backend::Transaction<'_>,
+    goal: &LongRunningGoal,
+    allow_initial_solution: bool,
+) -> anyhow::Result<()> {
+    solution_goals::preserve(connection, goal, allow_initial_solution)?;
     let status = serde_json::to_value(&goal.status)?;
     connection.execute(
         "INSERT INTO long_running_goals

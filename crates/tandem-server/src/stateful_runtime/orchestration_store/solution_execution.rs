@@ -80,7 +80,7 @@ pub(super) fn validate(
     execution: &SolutionRunExecution,
     expected_root: &str,
     now_ms: u64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<LongRunningGoal> {
     ensure!(
         !tenant.is_local_implicit(),
         "solution execution requires explicit tenant scope"
@@ -165,7 +165,7 @@ pub(super) fn validate(
         );
         current = parent;
     }
-    Ok(())
+    Ok(goal)
 }
 
 impl OrchestrationStateStore {
@@ -173,15 +173,33 @@ impl OrchestrationStateStore {
     /// dispatch. A later settlement remains permitted after a goal stops.
     pub(super) fn validate_solution_execution(
         &self,
-        tenant: &TenantContext,
-        execution: &SolutionRunExecution,
-        expected_root: &str,
+        approval: &super::ApprovedSolutionProviderCharge,
         clock: impl Fn() -> u64,
     ) -> anyhow::Result<()> {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            validate(&transaction, tenant, execution, expected_root, clock())?;
+            let now_ms = clock();
+            let goal = validate(
+                &transaction,
+                &approval.verified.tenant_context,
+                &approval.execution,
+                &approval.root_run_id,
+                now_ms,
+            )?;
+            super::solution_goals::validate(
+                &transaction,
+                &goal,
+                &super::SolutionGoalStart {
+                    verified: &approval.verified,
+                    scope: &approval.scope,
+                    configuration: &approval.configuration,
+                    installation_generation: approval.installation_generation,
+                    composition_sha256: &approval.composition_sha256,
+                    now_ms,
+                },
+                &approval.root_run_id,
+            )?;
             transaction.commit()?;
             Ok(())
         })

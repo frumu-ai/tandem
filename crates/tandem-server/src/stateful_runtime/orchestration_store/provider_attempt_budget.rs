@@ -167,16 +167,11 @@ impl OrchestrationStateStore {
                         );
                         let execution_store = store.clone();
                         let execution_clock = clock.clone();
-                        let tenant = current.verified.tenant_context.clone();
-                        let execution = current.execution.clone();
-                        let root = current.root_run_id.clone();
+                        let execution_approval = current.clone();
                         crate::encrypted_file_store::spawn_protected_blocking(move || {
-                            execution_store.validate_solution_execution(
-                                &tenant,
-                                &execution,
-                                &root,
-                                || execution_clock(),
-                            )
+                            execution_store.validate_solution_execution(&execution_approval, || {
+                                execution_clock()
+                            })
                         })
                         .await??;
                         // The final writer transaction can itself wait. Do not
