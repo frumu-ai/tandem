@@ -93,6 +93,36 @@ pub fn solution_routine_from_artifact(
 }
 
 impl AppState {
+    /// Read the native primary file without recreating a missing staged
+    /// resource. Generic in-memory getters cannot establish a durable receipt.
+    pub async fn observe_solution_routine(
+        &self,
+        identity: &RoutineIdentity,
+        owner: &SolutionRoutineOwner,
+    ) -> Result<String, RoutineStoreError> {
+        let _operation = self.routine_persistence.lock().await;
+        let raw = tokio::fs::read(&self.routines_path)
+            .await
+            .map_err(managed)?;
+        let rows: HashMap<String, RoutineSpec> = serde_json::from_slice(&raw).map_err(managed)?;
+        let count = rows.len();
+        let rows = routine_store_index(rows);
+        if count != rows.len() {
+            return Err(managed("duplicate routine identities"));
+        }
+        let routine = rows
+            .get(&identity.storage_key())
+            .ok_or_else(|| managed("staged routine missing"))?;
+        if routine.solution_owner.as_ref() != Some(owner)
+            || !routine.installation_disabled()
+            || routine.status != RoutineStatus::Paused
+            || routine.next_fire_at_ms.is_some()
+        {
+            return Err(managed("solution routine ownership or activation conflict"));
+        }
+        Ok(sha256(&bytes(routine)?))
+    }
+
     /// Stage an actual tenant-scoped native routine, returning its observed
     /// fingerprint for the installation journal. This never activates it.
     pub async fn stage_solution_routine(

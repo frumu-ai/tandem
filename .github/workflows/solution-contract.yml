@@ -46,6 +46,8 @@ jobs:
       # edit must run this check without triggering the full engine matrix.
       - name: Test solution planning contract
         run: cargo test -p tandem-solutions --locked
+      - name: Verify concrete provider installation routing metadata
+        run: cargo test -p tandem-providers --locked installation_metadata --lib
 
       - name: Lint solution contract and fixture
         run: cargo clippy -p tandem-solutions --all-targets --locked -- -D warnings
@@ -86,6 +88,10 @@ jobs:
         run: cargo test -p tandem-server --locked --features storage-postgres agent_teams::solution_templates --lib
       - name: Verify native routine staging and execution barriers
         run: cargo test -p tandem-server --locked --features storage-postgres solution_routines::tests --lib
+      - name: Verify authorized solution service from signed pack through native restart
+        run: cargo test -p tandem-server --locked --features storage-postgres solution_service_ --lib -- --test-threads=1
+      - name: Verify enterprise solution HTTP identity boundary
+        run: cargo test -p tandem-enterprise-server --locked routes_enterprise_solutions --lib
       - name: Verify disabled template cannot request spawn approval
         run: cargo test -p tandem-orchestrator --locked disabled_template_cannot --lib
       - name: Lint the PostgreSQL and SQLite store adapter

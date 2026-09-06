@@ -15,6 +15,52 @@ use tandem_solutions::{canonical_json, sha256, MAX_ARTIFACT_BYTES};
 use super::AgentTeamRuntime;
 
 impl AgentTeamRuntime {
+    /// Observe an already staged receipt without recreating a missing file or
+    /// trusting a stale cache. Ownership is checked before exposing a digest.
+    pub async fn observe_solution_template(
+        &self,
+        workspace_root: &str,
+        resource_id: &str,
+        owner: &SolutionTemplateOwner,
+    ) -> anyhow::Result<String> {
+        ensure!(
+            resource_id.starts_with("solution-")
+                && resource_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte)),
+            "invalid solution resource ID"
+        );
+        let _operation = self.template_persistence.lock().await;
+        let path = PathBuf::from(workspace_root)
+            .join(".tandem/agent-team/templates")
+            .join(Self::template_filename(resource_id));
+        let owner = owner.clone();
+        let resource_id = resource_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            ensure!(
+                std::fs::symlink_metadata(&path)?.file_type().is_file(),
+                "solution template is not a regular file"
+            );
+            let mut raw = Vec::new();
+            std::fs::File::open(path)?
+                .take(MAX_ARTIFACT_BYTES as u64 + 1)
+                .read_to_end(&mut raw)?;
+            ensure!(
+                raw.len() <= MAX_ARTIFACT_BYTES,
+                "solution template is too large"
+            );
+            let observed: AgentTemplate = serde_yaml::from_slice(&raw)?;
+            ensure!(
+                !observed.enabled
+                    && observed.template_id == resource_id
+                    && observed.solution_owner.as_ref() == Some(&owner),
+                "solution template ownership or activation conflict"
+            );
+            Ok(sha256(&canonical_json(&observed)?))
+        })
+        .await?
+    }
+
     /// Create or reconcile an exact disabled template without replacing a
     /// pre-existing resource. Generic template mutation cannot activate it.
     pub async fn stage_solution_template(

@@ -1,5 +1,8 @@
 #[async_trait]
 impl Provider for OpenAICompatibleProvider {
+    fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
+        Some(ProviderInstallationMetadata::network(&self.id, &self.base_url))
+    }
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: self.id.clone(),
@@ -474,6 +477,9 @@ fn codex_supported_models(context_window: usize) -> Vec<ModelInfo> {
 
 #[async_trait]
 impl Provider for OpenAIResponsesProvider {
+    fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
+        Some(ProviderInstallationMetadata::network(&self.id, &self.base_url))
+    }
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: self.id.clone(),
@@ -1344,6 +1350,9 @@ struct CohereProvider {
 
 #[async_trait]
 impl Provider for AnthropicProvider {
+    fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
+        Some(ProviderInstallationMetadata::network("anthropic", "https://api.anthropic.com/v1/messages"))
+    }
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: "anthropic".to_string(),
@@ -1474,6 +1483,9 @@ impl Provider for AnthropicProvider {
 
 #[async_trait]
 impl Provider for CohereProvider {
+    fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
+        Some(ProviderInstallationMetadata::network("cohere", &self.base_url))
+    }
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: "cohere".to_string(),

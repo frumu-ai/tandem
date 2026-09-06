@@ -209,6 +209,9 @@ pub struct AuthorityBinding {
 /// recheck current identities, bindings, policies, digests and ownership.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedPlan {
+    /// Current host facts are part of the reviewed composition, not authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_facts_sha256: Option<String>,
     pub schema_version: String,
     pub resolver_version: String,
     pub engine_version: String,

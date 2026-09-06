@@ -26,6 +26,7 @@ pub const SOLUTION_INSTALLATION_CONFLICT: &str =
 /// Host-owned inputs, never deserialized from an HTTP install request. Every
 /// transition resolves again against the configuration read in its transaction.
 pub struct SolutionInstallationInput<'a> {
+    pub host_facts_sha256: Option<&'a str>,
     pub configuration: CustomerConfigInput<'a>,
     pub expected_config: &'a CustomerConfigVersion,
     pub blueprint: &'a SolutionBlueprint,
@@ -165,6 +166,7 @@ impl OrchestrationStateStore {
                 ..config_input
             })?;
             let plan = resolve(input.blueprint, ResolutionInput {
+                host_facts_sha256: input.host_facts_sha256,
                 request: &prepared.request, verified_context: context, now_ms,
                 engine_version: input.engine_version, deployment_policy: &prepared.deployment_policy,
                 available_deployment_requirements: input.available_deployment_requirements,
