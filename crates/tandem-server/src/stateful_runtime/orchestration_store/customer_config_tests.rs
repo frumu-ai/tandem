@@ -14,19 +14,20 @@ use super::backend_conformance_tests::for_each_backend;
 use super::{CustomerConfigVersion, OrchestrationStateStore, StoredCustomerConfig};
 use crate::stateful_runtime::backend::{params, Executor, ExecutorRaw};
 
-struct Fixture {
-    blueprint: SolutionBlueprint,
-    config: CustomerConfig,
-    context: VerifiedTenantContext,
-    refs: BTreeSet<String>,
-    subjects: BTreeSet<String>,
-    projects: BTreeSet<String>,
-    units: BTreeSet<String>,
-    connectors: BTreeMap<String, ConnectorBinding>,
+#[derive(Clone)]
+pub(super) struct Fixture {
+    pub(super) blueprint: SolutionBlueprint,
+    pub(super) config: CustomerConfig,
+    pub(super) context: VerifiedTenantContext,
+    pub(super) refs: BTreeSet<String>,
+    pub(super) subjects: BTreeSet<String>,
+    pub(super) projects: BTreeSet<String>,
+    pub(super) units: BTreeSet<String>,
+    pub(super) connectors: BTreeMap<String, ConnectorBinding>,
 }
 
 impl Fixture {
-    fn new(customer: &str) -> Self {
+    pub(super) fn new(customer: &str) -> Self {
         let document = match customer {
             "a" => include_str!(
                 "../../../../tandem-solutions/fixtures/company-brain-text/customer-a.yaml"
@@ -76,7 +77,7 @@ impl Fixture {
         }
     }
 
-    fn save(
+    pub(super) fn save(
         &self,
         store: &OrchestrationStateStore,
         config: &CustomerConfig,
@@ -337,7 +338,9 @@ fn customer_config_protected_payload_rejects_tenant_substitution() {
 fn customer_config_schema_upgrade_keeps_existing_runtime_records() {
     for_each_backend(|_, store| {
         store.with_connection(|connection| {
-            connection.execute_batch("DROP TABLE solution_customer_config_versions;
+            connection.execute_batch("DROP TABLE solution_installation_versions;
+                DROP TABLE solution_installations;
+                DROP TABLE solution_customer_config_versions;
                 DROP TABLE solution_customer_configs;
                 UPDATE schema_metadata SET schema_version=5;
                 INSERT INTO orchestration_tool_requests
