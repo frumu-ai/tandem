@@ -28,7 +28,7 @@ const GOOGLE_DRIVE_PROVIDER: &str = "google_drive";
 const GOOGLE_DRIVE_SOURCE_TYPE: &str = "google_drive";
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
-    router
+    super::routes_enterprise_solutions::apply(router)
         .route("/enterprise/readiness", get(get_enterprise_readiness))
         .route(
             "/enterprise/onboarding-plans/preview",

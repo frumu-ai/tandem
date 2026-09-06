@@ -17,6 +17,7 @@ struct InstallationFixture {
     models: BTreeMap<String, ModelBinding>,
     artifacts: BTreeMap<String, Vec<u8>>,
     readiness: BTreeSet<String>,
+    host_facts: Option<String>,
 }
 
 #[cfg(feature = "storage-postgres")]
@@ -84,6 +85,7 @@ impl InstallationFixture {
             .insert("review-notes".into());
         Self {
             customer: fixture,
+            host_facts: None,
             models: [("local.fixture".into(), ModelBinding {
                 provider: "local".into(), model: "synthetic-model".into(),
                 credential_ref: "secret-ref:local-fixture".into(), uses_network: false,
@@ -129,6 +131,7 @@ impl InstallationFixture {
         let plan = resolve(
             &self.customer.blueprint,
             ResolutionInput {
+                host_facts_sha256: self.host_facts.as_deref(),
                 request: &prepared.request,
                 verified_context: &self.customer.context,
                 now_ms: 1500,
@@ -149,6 +152,7 @@ impl InstallationFixture {
         digest: &'a str,
     ) -> SolutionInstallationInput<'a> {
         SolutionInstallationInput {
+            host_facts_sha256: self.host_facts.as_deref(),
             configuration: self.configuration(),
             expected_config: &config.version,
             blueprint: &self.customer.blueprint,
@@ -562,5 +566,40 @@ fn solution_installation_schema_upgrade_preserves_configuration() {
             .unwrap();
         store.initialize().unwrap();
         assert_eq!(fixture.read(store), record);
+    });
+}
+
+#[test]
+#[serial]
+fn solution_installation_rejects_host_rebinding_before_claim_or_receipt() {
+    for_each_backend(|_, store| {
+        let mut fixture = InstallationFixture::new("a");
+        fixture.host_facts = Some(sha256(b"approved endpoint and source revision 1"));
+        let (config, digest) = fixture.seed(store);
+        let begin = store.transition_solution_installation(
+            fixture.input(&config, &digest), None, SolutionInstallationTransition::Begin,
+        ).unwrap();
+        let mut rebound = fixture.clone();
+        rebound.host_facts = Some(sha256(b"same IDs, changed endpoint or source"));
+        assert!(store.transition_solution_installation(
+            rebound.input(&config, &digest), Some(begin.generation),
+            SolutionInstallationTransition::Claim { component_id: "central-brain", attempt_id: "one" },
+        ).unwrap_err().to_string().contains("preview is stale"));
+        assert_eq!(fixture.read(store), begin);
+        let claimed = store.transition_solution_installation(
+            fixture.input(&config, &digest), Some(begin.generation),
+            SolutionInstallationTransition::Claim { component_id: "central-brain", attempt_id: "one" },
+        ).unwrap();
+        let receipt = sha256(b"disabled native component");
+        for host_facts in [rebound.host_facts.clone(), None] {
+            rebound.host_facts = host_facts;
+            assert!(store.transition_solution_installation(
+                rebound.input(&config, &digest), Some(claimed.generation),
+                SolutionInstallationTransition::RecordStaged {
+                    component_id: "central-brain", attempt_id: "one", resource_sha256: &receipt,
+                },
+            ).unwrap_err().to_string().contains("preview is stale"));
+            assert_eq!(fixture.read(store), claimed);
+        }
     });
 }

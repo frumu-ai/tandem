@@ -97,6 +97,7 @@ impl Fixture {
         resolve(
             &self.blueprint,
             ResolutionInput {
+                host_facts_sha256: None,
                 request: &prepared.request,
                 verified_context: &self.context,
                 now_ms: 1500,

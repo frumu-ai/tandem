@@ -838,6 +838,11 @@ pub struct TokenUsage {
 }
 #[async_trait]
 pub trait Provider: Send + Sync {
+    /// Unknown adapters remain usable by legacy callers, but cannot be
+    /// approved for solution installation until they describe their route.
+    fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
+        None
+    }
     fn info(&self) -> ProviderInfo;
     async fn complete(&self, prompt: &str, model_override: Option<&str>) -> anyhow::Result<String>;
     async fn complete_with_auth_override(
@@ -1139,6 +1144,14 @@ impl ProviderRegistry {
             .await
             .iter()
             .map(|p| p.info())
+            .collect()
+    }
+
+    pub async fn installation_models(
+        &self,
+    ) -> Vec<(ProviderInfo, Option<ProviderInstallationMetadata>)> {
+        self.providers.read().await.iter()
+            .map(|provider| (provider.info(), provider.installation_metadata()))
             .collect()
     }
 
@@ -1789,6 +1802,9 @@ struct LocalEchoProvider;
 
 #[async_trait]
 impl Provider for LocalEchoProvider {
+    fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
+        Some(ProviderInstallationMetadata::local_echo())
+    }
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: "local".to_string(),

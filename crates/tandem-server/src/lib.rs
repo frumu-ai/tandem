@@ -109,6 +109,7 @@ pub mod runtime_event_log;
 pub mod shared_resources;
 pub mod signal_triage;
 pub mod stateful_runtime;
+pub mod solution_installation;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod util;

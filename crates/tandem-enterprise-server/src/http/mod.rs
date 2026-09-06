@@ -6,6 +6,7 @@ mod routes_enterprise_cross_tenant;
 mod routes_enterprise_google_drive;
 mod routes_enterprise_lifecycle;
 mod routes_enterprise_onboarding;
+mod routes_enterprise_solutions;
 mod routes_enterprise_org_units;
 mod routes_enterprise_policies;
 
