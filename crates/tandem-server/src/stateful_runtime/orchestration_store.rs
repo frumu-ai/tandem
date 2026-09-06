@@ -25,6 +25,7 @@ mod provider_attempt_budget;
 mod runtime_records;
 pub(crate) mod solution_budget_records;
 mod solution_budgets;
+mod solution_execution;
 pub(crate) mod solution_installations;
 mod transfer;
 mod transition;
@@ -43,6 +44,7 @@ pub use solution_budgets::{
     SolutionChargeIntent, SolutionChargeKind, SolutionChargeReservation, SolutionChargeStatus,
     SolutionRunBudget,
 };
+pub use solution_execution::SolutionRunExecution;
 pub use solution_installations::{
     SolutionComponentProgress, SolutionInstallation, SolutionInstallationInput,
     SolutionInstallationTransition, SOLUTION_INSTALLATION_CONFLICT,

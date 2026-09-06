@@ -27,11 +27,17 @@ fn network_fixture(store: &OrchestrationStateStore, name: &str) -> BudgetFixture
             SolutionInstallationTransition::Begin,
         )
         .unwrap();
-    BudgetFixture {
+    let fixture = BudgetFixture {
         installation,
         digest,
-    }
+    };
+    seed_execution(store, &fixture);
+    fixture
 }
+
+#[path = "solution_execution_tests.rs"]
+mod execution_tests;
+use execution_tests::{root_id, seed_execution};
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -79,7 +85,13 @@ fn approval(
         installation_generation: installed.generation,
         model_class: "economy".into(),
         binding: installed.plan.models["economy"].clone(),
-        root_run_id: "actual-root".into(),
+        root_run_id: root_id(fixture),
+        execution: crate::stateful_runtime::orchestration_store::SolutionRunExecution {
+            run_id: root_id(fixture),
+            claim_id: "claim-1".into(),
+            claimant_id: "executor-1".into(),
+            lease_epoch: 1,
+        },
         kind: SolutionChargeKind::Model,
         route_revision: sha256(b"synthetic-approved-account-model-price"),
         provider_id: "llama_cpp".into(),
@@ -108,8 +120,8 @@ async fn current(
     registry: &ProviderRegistry,
 ) -> anyhow::Result<ApprovedSolutionProviderCharge> {
     let mut result = approved.clone();
-    // Model/root authorization remains a synthetic fixture; transport/account
-    // facts now come independently from the actual configured registry.
+    // Model/user authorization remains synthetic. Transport/account facts come
+    // from the registry; run/claim/root facts are checked in protected storage.
     let binding = registry
         .runtime_binding_for_tenant(
             &approved.verified.tenant_context,
@@ -282,7 +294,7 @@ fn solution_budget_provider_actual_sends_share_the_durable_ceiling() {
             assert_eq!(complete(&registry, policy).await.unwrap(), "ok");
             tokio::time::timeout(std::time::Duration::from_secs(3), server).await.unwrap().unwrap();
             assert_eq!(account(store, &fixture, "global").await["outstanding"], 0);
-            let root = account(store, &fixture, &format!("root:{}", sha256(b"actual-root"))).await;
+            let root = account(store, &fixture, &format!("root:{}", sha256(root_id(&fixture).as_bytes()))).await;
             assert_eq!(root["requests"], 2, "repeated policy checks must not double-charge");
             assert_eq!(root["committed_cost"], 10);
         });
@@ -364,8 +376,12 @@ fn solution_budget_provider_confirmed_receipt_settles_after_user_assertion_expir
                 );
                 assert_eq!(account(store, &fixture, "global").await["outstanding"], 0);
                 assert_eq!(
-                    account(store, &fixture, &format!("root:{}", sha256(b"actual-root"))).await
-                        ["committed_cost"],
+                    account(
+                        store,
+                        &fixture,
+                        &format!("root:{}", sha256(root_id(&fixture).as_bytes()))
+                    )
+                    .await["committed_cost"],
                     5
                 );
                 let listener = tokio::time::timeout(std::time::Duration::from_secs(3), server)
@@ -427,8 +443,12 @@ fn solution_budget_provider_rechecks_binding_after_reservation_without_sending()
                     .contains("changed during"));
                 assert_eq!(checks.load(Ordering::SeqCst), 2);
                 assert_eq!(account(store, &fixture, "global").await["outstanding"], 0);
-                let root =
-                    account(store, &fixture, &format!("root:{}", sha256(b"actual-root"))).await;
+                let root = account(
+                    store,
+                    &fixture,
+                    &format!("root:{}", sha256(root_id(&fixture).as_bytes())),
+                )
+                .await;
                 assert_eq!(root["committed_cost"], 0);
                 assert_eq!(root["requests"], 1);
                 assert!(tokio::time::timeout(
@@ -618,8 +638,12 @@ fn solution_budget_provider_binds_persisted_revision_to_loaded_material_after_re
                     };
                     assert_eq!(checks.load(Ordering::SeqCst), 2);
                     assert_eq!(account(store, &fixture, "global").await["outstanding"], 0);
-                    let root =
-                        account(store, &fixture, &format!("root:{}", sha256(b"actual-root"))).await;
+                    let root = account(
+                        store,
+                        &fixture,
+                        &format!("root:{}", sha256(root_id(&fixture).as_bytes())),
+                    )
+                    .await;
                     assert_eq!(root["requests"], 1);
                     assert_eq!(
                         root["committed_cost"],
