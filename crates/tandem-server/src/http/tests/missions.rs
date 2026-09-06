@@ -288,6 +288,8 @@ async fn agent_standup_compose_builds_workflow_automation_from_templates() {
         .upsert_template(
             &workspace_root,
             tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "frontend-ui".to_string(),
                 display_name: Some("Alice (Frontend UI)".to_string()),
                 avatar_url: None,
@@ -489,6 +491,8 @@ async fn agent_standup_compose_uses_global_saved_agents_across_workspaces() {
         .upsert_template(
             &default_workspace_root,
             tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "shared-copywriter".to_string(),
                 display_name: Some("Shared Copywriter".to_string()),
                 avatar_url: None,
@@ -580,6 +584,8 @@ async fn mission_started_triggers_orchestrator_runtime_spawn_for_assigned_agent(
                 skill_sources: Default::default(),
             }),
             vec![tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "worker-default".to_string(),
                 display_name: None,
                 avatar_url: None,
@@ -726,6 +732,8 @@ async fn mission_total_budget_exhaustion_blocks_followup_spawn() {
                 skill_sources: Default::default(),
             }),
             vec![tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "worker-default".to_string(),
                 display_name: None,
                 avatar_url: None,
@@ -848,6 +856,8 @@ async fn mission_canceled_triggers_orchestrator_runtime_instance_cancellation() 
                 skill_sources: Default::default(),
             }),
             vec![tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "worker-default".to_string(),
                 display_name: None,
                 avatar_url: None,
