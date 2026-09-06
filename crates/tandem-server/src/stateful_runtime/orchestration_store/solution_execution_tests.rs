@@ -387,12 +387,7 @@ fn solution_budget_provider_parent_chain_rejects_missing_cyclic_and_foreign_root
                 let mut approved = approval(&fixture, store);
                 approved.execution.run_id = seed_child(store, &fixture);
                 store
-                    .validate_solution_execution(
-                        &approved.verified.tenant_context,
-                        &approved.execution,
-                        &approved.root_run_id,
-                        || 1500,
-                    )
+                    .validate_solution_execution(&approved, || 1500)
                     .unwrap();
                 store.with_connection(|connection| {
                 let raw: String = connection.query_row(
@@ -413,12 +408,7 @@ fn solution_budget_provider_parent_chain_rejects_missing_cyclic_and_foreign_root
             }).unwrap();
                 assert!(
                     store
-                        .validate_solution_execution(
-                            &approved.verified.tenant_context,
-                            &approved.execution,
-                            &approved.root_run_id,
-                            || 1500
-                        )
+                        .validate_solution_execution(&approved, || 1500)
                         .is_err(),
                     "{fault}"
                 );
