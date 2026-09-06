@@ -10,7 +10,7 @@ mod runtime_binding_tests {
     fn configured(url: &str, key: Option<&str>) -> AppConfig {
         AppConfig {
             providers: [(
-                "ollama".into(),
+                "llama_cpp".into(),
                 ProviderConfig {
                     url: Some(url.into()),
                     api_key: key.map(str::to_string),
@@ -18,7 +18,7 @@ mod runtime_binding_tests {
                 },
             )]
             .into(),
-            default_provider: Some("ollama".into()),
+            default_provider: Some("llama_cpp".into()),
         }
     }
 
@@ -30,7 +30,7 @@ mod runtime_binding_tests {
         ));
         let scope = tenant("org-a");
         let first = registry
-            .runtime_binding_for_tenant(&scope, "ollama", "synthetic-model")
+            .runtime_binding_for_tenant(&scope, "llama_cpp", "synthetic-model")
             .await
             .unwrap();
         assert_eq!(
@@ -47,7 +47,7 @@ mod runtime_binding_tests {
             ))
             .await;
         let route = registry
-            .runtime_binding_for_tenant(&scope, "ollama", "synthetic-model")
+            .runtime_binding_for_tenant(&scope, "llama_cpp", "synthetic-model")
             .await
             .unwrap();
         assert_ne!(first.endpoint_sha256, route.endpoint_sha256);
@@ -59,7 +59,7 @@ mod runtime_binding_tests {
             ))
             .await;
         let key = registry
-            .runtime_binding_for_tenant(&scope, "ollama", "synthetic-model")
+            .runtime_binding_for_tenant(&scope, "llama_cpp", "synthetic-model")
             .await
             .unwrap();
         assert_ne!(route.credential_sha256, key.credential_sha256);
@@ -67,7 +67,7 @@ mod runtime_binding_tests {
             .reload(configured("https://two.invalid/v1", None))
             .await;
         let no_key = registry
-            .runtime_binding_for_tenant(&scope, "ollama", "synthetic-model")
+            .runtime_binding_for_tenant(&scope, "llama_cpp", "synthetic-model")
             .await
             .unwrap();
         assert_eq!(
@@ -75,7 +75,7 @@ mod runtime_binding_tests {
             ProviderCredentialSource::Unauthenticated
         );
         assert!(registry
-            .runtime_binding_for_tenant(&scope, "ollama", "missing-model")
+            .runtime_binding_for_tenant(&scope, "llama_cpp", "missing-model")
             .await
             .is_err());
         assert!(registry

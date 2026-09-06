@@ -10,14 +10,14 @@ fn network_fixture(store: &OrchestrationStateStore, name: &str) -> BudgetFixture
         &mut installation.customer.blueprint.constraints,
         &mut installation.customer.config.constraints,
     ] {
-        policy.allowed_providers = ["ollama".into()].into();
+        policy.allowed_providers = ["llama_cpp".into()].into();
         policy.allow_network_egress = true;
         policy.max_daily_cost_microusd = 50;
         policy.max_tokens_per_run = 100;
         policy.max_concurrent_runs = 4;
     }
     let model = installation.models.get_mut("local.fixture").unwrap();
-    model.provider = "ollama".into();
+    model.provider = "llama_cpp".into();
     model.uses_network = true;
     let (config, digest) = installation.seed(store);
     store
@@ -43,7 +43,7 @@ fn runtime() -> tokio::runtime::Runtime {
 fn configuration(address: std::net::SocketAddr, key: Option<&str>) -> AppConfig {
     AppConfig {
         providers: [(
-            "ollama".into(),
+            "llama_cpp".into(),
             ProviderConfig {
                 url: Some(format!("http://{address}/v1")),
                 api_key: key.map(str::to_string),
@@ -51,7 +51,7 @@ fn configuration(address: std::net::SocketAddr, key: Option<&str>) -> AppConfig 
             },
         )]
         .into(),
-        default_provider: Some("ollama".into()),
+        default_provider: Some("llama_cpp".into()),
     }
 }
 
@@ -82,7 +82,7 @@ fn approval(
         root_run_id: "actual-root".into(),
         kind: SolutionChargeKind::Model,
         route_revision: sha256(b"synthetic-approved-account-model-price"),
-        provider_id: "ollama".into(),
+        provider_id: "llama_cpp".into(),
         model_id: "synthetic-model".into(),
         protocol: tandem_providers::ProviderProtocol::ChatCompletions,
         endpoint_sha256: String::new(),
@@ -157,7 +157,11 @@ async fn complete(
             ),
             ProviderAuthRecovery::new(|_| async { Ok(false) }),
             true,
-            policy.scope(registry.complete_for_provider(Some("ollama"), "synthetic request", None)),
+            policy.scope(registry.complete_for_provider(
+                Some("llama_cpp"),
+                "synthetic request",
+                None,
+            )),
         )
         .await
 }
