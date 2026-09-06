@@ -459,7 +459,9 @@ tokio::task_local! {
 /// Run synchronous protected storage off the async executor. Production uses
 /// its configured crypto provider as usual; tests carry their isolated crypto
 /// context into the blocking thread instead of silently falling back to env.
-pub(crate) async fn spawn_protected_blocking<F, T>(operation: F) -> Result<T, tokio::task::JoinError>
+pub(crate) async fn spawn_protected_blocking<F, T>(
+    operation: F,
+) -> Result<T, tokio::task::JoinError>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
@@ -472,7 +474,8 @@ where
             return TEST_CRYPTO.sync_scope(crypto, operation);
         }
         operation()
-    }).await
+    })
+    .await
 }
 
 #[cfg(test)]

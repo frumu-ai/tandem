@@ -576,29 +576,54 @@ fn solution_installation_rejects_host_rebinding_before_claim_or_receipt() {
         let mut fixture = InstallationFixture::new("a");
         fixture.host_facts = Some(sha256(b"approved endpoint and source revision 1"));
         let (config, digest) = fixture.seed(store);
-        let begin = store.transition_solution_installation(
-            fixture.input(&config, &digest), None, SolutionInstallationTransition::Begin,
-        ).unwrap();
+        let begin = store
+            .transition_solution_installation(
+                fixture.input(&config, &digest),
+                None,
+                SolutionInstallationTransition::Begin,
+            )
+            .unwrap();
         let mut rebound = fixture.clone();
         rebound.host_facts = Some(sha256(b"same IDs, changed endpoint or source"));
-        assert!(store.transition_solution_installation(
-            rebound.input(&config, &digest), Some(begin.generation),
-            SolutionInstallationTransition::Claim { component_id: "central-brain", attempt_id: "one" },
-        ).unwrap_err().to_string().contains("preview is stale"));
+        assert!(store
+            .transition_solution_installation(
+                rebound.input(&config, &digest),
+                Some(begin.generation),
+                SolutionInstallationTransition::Claim {
+                    component_id: "central-brain",
+                    attempt_id: "one"
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("preview is stale"));
         assert_eq!(fixture.read(store), begin);
-        let claimed = store.transition_solution_installation(
-            fixture.input(&config, &digest), Some(begin.generation),
-            SolutionInstallationTransition::Claim { component_id: "central-brain", attempt_id: "one" },
-        ).unwrap();
+        let claimed = store
+            .transition_solution_installation(
+                fixture.input(&config, &digest),
+                Some(begin.generation),
+                SolutionInstallationTransition::Claim {
+                    component_id: "central-brain",
+                    attempt_id: "one",
+                },
+            )
+            .unwrap();
         let receipt = sha256(b"disabled native component");
         for host_facts in [rebound.host_facts.clone(), None] {
             rebound.host_facts = host_facts;
-            assert!(store.transition_solution_installation(
-                rebound.input(&config, &digest), Some(claimed.generation),
-                SolutionInstallationTransition::RecordStaged {
-                    component_id: "central-brain", attempt_id: "one", resource_sha256: &receipt,
-                },
-            ).unwrap_err().to_string().contains("preview is stale"));
+            assert!(store
+                .transition_solution_installation(
+                    rebound.input(&config, &digest),
+                    Some(claimed.generation),
+                    SolutionInstallationTransition::RecordStaged {
+                        component_id: "central-brain",
+                        attempt_id: "one",
+                        resource_sha256: &receipt,
+                    },
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("preview is stale"));
             assert_eq!(fixture.read(store), claimed);
         }
     });

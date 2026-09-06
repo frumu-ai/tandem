@@ -1,8 +1,8 @@
 mod dispatch_authority;
 mod guarded_dispatch;
 mod installation_metadata;
-pub use installation_metadata::ProviderInstallationMetadata;
 pub use dispatch_authority::ProviderDispatchAuthority;
+pub use installation_metadata::ProviderInstallationMetadata;
 pub mod provider_auth_store;
 
 pub use provider_auth_store::*;
