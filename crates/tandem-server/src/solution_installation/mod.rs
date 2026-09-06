@@ -3,6 +3,8 @@
 //! pack, credential or memory registry is introduced here.
 
 mod host_facts;
+mod model_accounts;
+pub use model_accounts::SolutionModelAccount;
 mod staging;
 pub use staging::SolutionStagingRequest;
 

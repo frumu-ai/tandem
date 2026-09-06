@@ -6,6 +6,8 @@ use crate::stateful_runtime::orchestration_store::{
     OrchestrationStateStore, SolutionComponentProgress,
 };
 use crate::AppState;
+#[path = "pack_manager_model_account_tests.rs"]
+mod model_account_tests;
 use tandem_enterprise_contract::{
     hosted_policy::hosted_unit_principal, AccessPermission, AuthorityChain, ConnectorInstance,
     DataClass, HumanActor, OrganizationUnitAccessGrant, PrincipalRef, RequestPrincipal,

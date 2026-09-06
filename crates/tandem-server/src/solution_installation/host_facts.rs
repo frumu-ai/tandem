@@ -30,6 +30,10 @@ pub(super) struct HostModel {
     /// Local echo is a diagnostic, never an implicit production fallback.
     #[serde(default)]
     pub allow_test_provider: bool,
+    /// Optional runtime account-use binding. Existing installation metadata
+    /// alone must never authorize access to a provider credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<super::model_accounts::HostAccountBinding>,
 }
 
 pub(super) struct HostFacts {
