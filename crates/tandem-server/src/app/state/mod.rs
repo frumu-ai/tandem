@@ -122,6 +122,8 @@ mod prompt_context_blocks;
 mod prompt_context_hook;
 mod prompt_memory_context;
 mod slack_event_runtime;
+mod solution_routines;
+pub use solution_routines::solution_routine_from_artifact;
 mod tool_dispatch_outbox;
 
 pub(crate) use automation_v2_orchestration_goals::StartGoalRequest;
@@ -1286,6 +1288,11 @@ pub fn evaluate_routine_execution_policy(
     routine: &RoutineSpec,
     trigger_type: &str,
 ) -> RoutineExecutionDecision {
+    if routine.installation_disabled() {
+        return RoutineExecutionDecision::Blocked {
+            reason: "solution routine requires installation activation".to_string(),
+        };
+    }
     if !routine_uses_external_integrations(routine) {
         return RoutineExecutionDecision::Allowed;
     }

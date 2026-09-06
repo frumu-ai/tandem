@@ -47,6 +47,7 @@ pub(super) fn automation_create_to_routine(
             (Vec::new(), false, true)
         };
     Ok(RoutineSpec {
+        solution_owner: None,
         routine_id: input
             .automation_id
             .unwrap_or_else(|| format!("automation-{}", uuid::Uuid::new_v4().simple())),

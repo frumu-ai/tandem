@@ -141,8 +141,18 @@ impl AppState {
             let _ = fs::copy(&self.routines_path, &backup_path).await;
         }
         let tmp_path = config::paths::sibling_tmp_path(&self.routines_path);
-        fs::write(&tmp_path, payload).await?;
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut file = fs::File::create(&tmp_path).await?;
+            file.write_all(payload.as_bytes()).await?;
+            file.sync_all().await?;
+        }
         fs::rename(&tmp_path, &self.routines_path).await?;
+        #[cfg(unix)]
+        if let Some(parent) = self.routines_path.parent() {
+            let parent = parent.to_path_buf();
+            tokio::task::spawn_blocking(move || std::fs::File::open(parent)?.sync_all()).await??;
+        }
         Ok(())
     }
 
@@ -173,10 +183,14 @@ impl AppState {
         &self,
         routine: RoutineSpec,
     ) -> Result<RoutineSpec, RoutineStoreError> {
+        solution_routines::require_unmanaged(&routine)?;
         let routine = normalize_routine(routine)?;
         let identity = RoutineIdentity::new(&routine.routine_id, &routine.tenant_context);
         let storage_key = identity.storage_key();
         let _operation = self.routine_persistence.lock().await;
+        if let Some(existing) = self.routines.read().await.get(&storage_key) {
+            solution_routines::require_unmanaged(existing)?;
+        }
         let previous = self
             .routines
             .write()
@@ -211,8 +225,10 @@ impl AppState {
         let Some(previous) = self.routines.read().await.get(&storage_key).cloned() else {
             return Ok(None);
         };
+        solution_routines::require_unmanaged(&previous)?;
         let mut routine = previous.clone();
         update(&mut routine);
+        solution_routines::require_unmanaged(&routine)?;
         routine.routine_id = previous.routine_id.clone();
         routine.tenant_context = previous.tenant_context.clone();
         let routine = normalize_routine(routine)?;
@@ -310,6 +326,9 @@ impl AppState {
         let identity = RoutineIdentity::new(routine_id, tenant_context);
         let storage_key = identity.storage_key();
         let _operation = self.routine_persistence.lock().await;
+        if let Some(existing) = self.routines.read().await.get(&storage_key) {
+            solution_routines::require_unmanaged(existing)?;
+        }
         let removed = self.routines.write().await.remove(&storage_key);
         let allow_empty_overwrite = self.routines.read().await.is_empty();
         if let Err(error) = self.persist_routines_inner(allow_empty_overwrite).await {
@@ -328,7 +347,7 @@ impl AppState {
         let mut plans = Vec::new();
         let mut guard = self.routines.write().await;
         for routine in guard.values_mut() {
-            if routine.status != RoutineStatus::Active {
+            if routine.status != RoutineStatus::Active || routine.installation_disabled() {
                 continue;
             }
             let Some(next_fire_at_ms) = routine.next_fire_at_ms else {
@@ -449,6 +468,11 @@ impl AppState {
         status: RoutineRunStatus,
         detail: Option<String>,
     ) -> RoutineRunRecord {
+        let status = if routine.installation_disabled() {
+            RoutineRunStatus::BlockedPolicy
+        } else {
+            status
+        };
         let now = now_ms();
         let record = RoutineRunRecord {
             run_id: format!("routine-run-{}", uuid::Uuid::new_v4()),
@@ -552,7 +576,21 @@ impl AppState {
     }
 
     pub async fn claim_next_queued_routine_run(&self) -> Option<RoutineRunRecord> {
+        let routines = self.routines.read().await.clone();
         let mut guard = self.routine_runs.write().await;
+        let mut blocked = false;
+        for row in guard.values_mut().filter(|row| row.status == RoutineRunStatus::Queued) {
+            let identity = RoutineIdentity::new(&row.routine_id, &row.tenant_context);
+            let routine = routines.get(&identity.storage_key());
+            if routine.is_some_and(RoutineSpec::installation_disabled)
+                || (crate::routines::types::solution_routine_id(&row.routine_id) && routine.is_none())
+            {
+                row.status = RoutineRunStatus::BlockedPolicy;
+                row.updated_at_ms = now_ms();
+                row.detail = Some("solution routine requires installation activation".to_string());
+                blocked = true;
+            }
+        }
         let next_run_id = guard
             .values()
             .filter(|row| row.status == RoutineRunStatus::Queued)
@@ -561,7 +599,14 @@ impl AppState {
                     .cmp(&b.created_at_ms)
                     .then_with(|| a.run_id.cmp(&b.run_id))
             })
-            .map(|row| row.run_id.clone())?;
+            .map(|row| row.run_id.clone());
+        let Some(next_run_id) = next_run_id else {
+            drop(guard);
+            if blocked {
+                let _ = self.persist_routine_runs().await;
+            }
+            return None;
+        };
         let now = now_ms();
         let row = guard.get_mut(&next_run_id)?;
         row.status = RoutineRunStatus::Running;
