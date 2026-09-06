@@ -31,6 +31,87 @@ fn execution_run(fixture: &BudgetFixture, id: &str) -> AutomationV2RunRecord {
 }
 
 pub(super) fn seed_execution(store: &OrchestrationStateStore, fixture: &BudgetFixture) {
+    let installed = staged_installation(store, fixture);
+    let (goal, root, link) = execution_records(fixture);
+    store
+        .start_solution_goal(
+            &goal,
+            &root,
+            &link,
+            &tandem_types::PrincipalRef::human_user(
+                &fixture.installation.customer.context.human_actor.actor_id,
+            ),
+            goal_start(fixture, &installed),
+            || 1500,
+        )
+        .unwrap();
+}
+
+fn goal_start<'a>(
+    fixture: &'a BudgetFixture,
+    installed: &'a SolutionInstallation,
+) -> SolutionGoalStart<'a> {
+    SolutionGoalStart {
+        verified: &fixture.installation.customer.context,
+        scope: &fixture.installation.customer.config.scope,
+        configuration: &installed.config_version,
+        installation_generation: installed.generation,
+        composition_sha256: &fixture.digest,
+        now_ms: 1500,
+    }
+}
+
+fn staged_installation(
+    store: &OrchestrationStateStore,
+    fixture: &BudgetFixture,
+) -> SolutionInstallation {
+    let config = store
+        .customer_configuration(
+            &fixture.installation.customer.context,
+            &fixture.installation.customer.config.scope,
+            1500,
+        )
+        .unwrap()
+        .unwrap();
+    let mut installed = fixture.installation.read(store);
+    // Storage fixtures exercise the real journal transition protocol with
+    // synthetic receipts. They do not establish native activation readiness.
+    for component in installed.plan.install_order.clone() {
+        if matches!(
+            installed.components[&component],
+            SolutionComponentProgress::Staged { .. }
+        ) {
+            continue;
+        }
+        let attempt = format!("synthetic-stage-{component}");
+        installed = store
+            .transition_solution_installation(
+                fixture.installation.input(&config, &fixture.digest),
+                Some(installed.generation),
+                SolutionInstallationTransition::Claim {
+                    component_id: &component,
+                    attempt_id: &attempt,
+                },
+            )
+            .unwrap();
+        installed = store
+            .transition_solution_installation(
+                fixture.installation.input(&config, &fixture.digest),
+                Some(installed.generation),
+                SolutionInstallationTransition::RecordStaged {
+                    component_id: &component,
+                    attempt_id: &attempt,
+                    resource_sha256: &sha256(component.as_bytes()),
+                },
+            )
+            .unwrap();
+    }
+    installed
+}
+
+fn execution_records(
+    fixture: &BudgetFixture,
+) -> (LongRunningGoal, AutomationV2RunRecord, GoalRunLink) {
     let root = execution_run(fixture, &root_id(fixture));
     let goal: LongRunningGoal = serde_json::from_value(serde_json::json!({
         "schema_version": 1, "goal_id": goal_id(fixture), "orchestration_id": "synthetic-orchestration",
@@ -50,18 +131,11 @@ pub(super) fn seed_execution(store: &OrchestrationStateStore, fixture: &BudgetFi
         triggering_handoff_id: None,
         created_at_ms: 1000,
     };
-    store
-        .start_goal(
-            &goal,
-            &root,
-            &link,
-            &tandem_types::PrincipalRef::new(
-                tandem_types::PrincipalKind::HumanUser,
-                &fixture.installation.customer.context.human_actor.actor_id,
-            ),
-        )
-        .unwrap();
+    (goal, root, link)
 }
+
+#[path = "solution_goal_binding_tests.rs"]
+mod binding_tests;
 
 fn seed_child(store: &OrchestrationStateStore, fixture: &BudgetFixture) -> String {
     let child_id = format!("child-{}", root_id(fixture));
@@ -314,12 +388,7 @@ fn solution_budget_provider_parent_chain_rejects_missing_cyclic_and_foreign_root
                 let mut approved = approval(&fixture, store);
                 approved.execution.run_id = seed_child(store, &fixture);
                 store
-                    .validate_solution_execution(
-                        &approved.verified.tenant_context,
-                        &approved.execution,
-                        &approved.root_run_id,
-                        || 1500,
-                    )
+                    .validate_solution_execution(&approved, || 1500)
                     .unwrap();
                 store.with_connection(|connection| {
                 let raw: String = connection.query_row(
@@ -340,12 +409,7 @@ fn solution_budget_provider_parent_chain_rejects_missing_cyclic_and_foreign_root
             }).unwrap();
                 assert!(
                     store
-                        .validate_solution_execution(
-                            &approved.verified.tenant_context,
-                            &approved.execution,
-                            &approved.root_run_id,
-                            || 1500
-                        )
+                        .validate_solution_execution(&approved, || 1500)
                         .is_err(),
                     "{fault}"
                 );
