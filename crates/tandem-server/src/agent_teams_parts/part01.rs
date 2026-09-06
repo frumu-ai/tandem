@@ -1460,6 +1460,23 @@ impl AgentTeamRuntime {
                 .and_then(|id| templates.get(id).cloned())
         };
 
+        // A reserved solution ID may have been durably published by another
+        // process (or not yet inserted into this cache). Never substitute the
+        // generic default agent for a missing managed resource.
+        if template.is_none() && req.template_id.as_deref().is_some_and(|id| {
+            Self::template_filename(id).to_ascii_lowercase().starts_with("solution-")
+        }) {
+            return SpawnResult {
+                decision: SpawnDecision {
+                    allowed: false,
+                    code: Some(SpawnDenyCode::SpawnTemplateDisabled),
+                    reason: Some("solution template is unavailable or not active".to_string()),
+                    requires_user_approval: false,
+                },
+                instance: None,
+            };
+        }
+
         if req.parent_role.is_none() {
             if let Some(parent_id) = req.parent_instance_id.as_deref() {
                 let instances = self.instances.read().await;

@@ -22,8 +22,9 @@ process-restart tests.
 
 Old template documents default to enabled. Disabled templates cannot pass spawn
 policy, including the approval override path, and are excluded from automatic
-role selection. Generic template upsert/delete cannot mutate managed templates
-or the reserved `solution-` ID namespace. Existing manually created IDs in that
+role selection. Spawn never substitutes a default agent for an uncached solution
+template. Generic upsert/delete reject managed templates and the reserved
+`solution-` ID filename namespace. Existing manually created IDs in that
 namespace therefore require an operator-reviewed migration before editing;
 the adapter does not take them over. Installed IDs must also be portable under
 the existing template filename mapping (ASCII letters, digits, hyphen, underscore).

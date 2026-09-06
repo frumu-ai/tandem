@@ -272,16 +272,21 @@ mod tests {
             justification: "approved request".into(),
             budget_override: None,
         };
-        for override_approval in [false, true] {
-            let result = runtime
-                .spawn_with_approval_override(&state, request.clone(), override_approval)
-                .await;
-            assert!(!result.decision.allowed);
-            assert_eq!(
-                result.decision.code,
-                Some(tandem_orchestrator::SpawnDenyCode::SpawnTemplateDisabled)
-            );
-            assert!(result.instance.is_none());
+        for missing_from_cache in [false, true] {
+            if missing_from_cache {
+                runtime.templates.write().await.clear();
+            }
+            for override_approval in [false, true] {
+                let result = runtime
+                    .spawn_with_approval_override(&state, request.clone(), override_approval)
+                    .await;
+                assert!(!result.decision.allowed);
+                assert_eq!(
+                    result.decision.code,
+                    Some(tandem_orchestrator::SpawnDenyCode::SpawnTemplateDisabled)
+                );
+                assert!(result.instance.is_none());
+            }
         }
         assert!(runtime.list_spawn_approvals().await.is_empty());
         assert!(runtime.list_instances(None, None, None).await.is_empty());
