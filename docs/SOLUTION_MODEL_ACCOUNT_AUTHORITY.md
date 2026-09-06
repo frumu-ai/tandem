@@ -59,3 +59,8 @@ explicit sharing, native grant revocation and hosted-user removal. A second test
 checks reconnect with unchanged material, operator revision review and a mismatch
 between loaded and persisted material. The endpoint is never called; availability
 and provider billing are not claimed by these tests.
+
+A deterministic race test observes the initial successful grant check, holds the
+actual credential mutation lock, revokes the grant and releases the lock. The
+pending lookup must reject the user after its credential read completes. Its
+observation hook exists only in test builds and does not alter production checks.

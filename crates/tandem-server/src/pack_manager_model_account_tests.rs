@@ -227,3 +227,45 @@ async fn solution_service_model_account_reconnect_requires_a_new_operator_revisi
         .await
         .is_err());
 }
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_service_model_account_revokes_while_credential_lookup_waits() {
+    let mut f = Fixture::new().await;
+    f.state.memory_db_path = f.root.path().join("memory.sqlite");
+    let revision = stored_key(&f, TOKEN).await;
+    configure(&mut f, &revision, TOKEN).await;
+    grant(&f, "model-eng", "eng").await;
+    let directory = crate::http::config_providers::provider_auth_security_dir_for_state(&f.state);
+    let guard = tandem_providers::provider_auth_mutation_in_dir(&directory)
+        .await
+        .unwrap();
+    let observed = Arc::new(tokio::sync::Notify::new());
+    let lookup = crate::solution_installation::scope_model_account_observation(
+        observed.clone(),
+        f.state.authorize_solution_model_account(
+            &f.verified,
+            &f.configuration.configuration.scope,
+            BINDING,
+        ),
+    );
+    tokio::pin!(lookup);
+    // A test-only notification proves that the initiating grant check allowed
+    // this operation. The actual credential file lock still prevents completion.
+    tokio::select! {
+        result = &mut lookup => panic!("lookup completed while mutation lock held: {result:?}"),
+        _ = observed.notified() => {},
+        _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => panic!("initial account grant check was not reached"),
+    }
+    f.state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .remove("model-eng");
+    drop(guard);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), lookup)
+        .await
+        .unwrap();
+    assert!(result.unwrap_err().to_string().contains("current user"));
+}

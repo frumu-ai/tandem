@@ -14,6 +14,19 @@ use tandem_solutions::{canonical_json, sha256, validate_customer_config_scope, C
 use super::host_facts::{HostModel, HostSettings};
 use crate::AppState;
 
+#[cfg(test)]
+tokio::task_local! {
+    static MODEL_ACCOUNT_CHECKED: std::sync::Arc<tokio::sync::Notify>;
+}
+
+#[cfg(test)]
+pub(crate) async fn scope_model_account_observation<F: std::future::Future>(
+    observed: std::sync::Arc<tokio::sync::Notify>,
+    future: F,
+) -> F::Output {
+    MODEL_ACCOUNT_CHECKED.scope(observed, future).await
+}
+
 /// Operator-managed configuration, not an HTTP account grant or secret value.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -118,6 +131,8 @@ impl AppState {
                 == AccessDecision::Allow,
             "current user is not permitted to use the model credential"
         );
+        #[cfg(test)]
+        let _ = MODEL_ACCOUNT_CHECKED.try_with(|observed| observed.notify_one());
         Ok(context)
     }
 
