@@ -224,7 +224,7 @@ mod provider_attempt_tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let mut config = cfg(&["openai-codex"], Some("openai-codex"), false);
-        config.providers.get_mut("openai-codex").unwrap().base_url = Some(format!("http://{addr}"));
+        config.providers.get_mut("openai-codex").unwrap().url = Some(format!("http://{addr}"));
         let registry = ProviderRegistry::new(config);
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
