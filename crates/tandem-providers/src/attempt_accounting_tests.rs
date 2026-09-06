@@ -247,6 +247,7 @@ mod attempt_accounting_tests {
             json!({"usage":{"prompt_tokens":0}}),
             json!({"usage":{"prompt_tokens":u64::MAX,"completion_tokens":1}}),
             json!({"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":1}}),
+            json!({"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":100}}),
         ] {
             assert!(confirmed_usage(&value, ProviderProtocol::ChatCompletions).is_none());
         }

@@ -275,7 +275,9 @@ pub(crate) fn confirmed_usage(
     } else {
         match usage.get("total_tokens") {
             None => sum,
-            Some(total) => total.as_u64().filter(|total| *total >= sum)?,
+            // A larger total contains tokens with no supported input/output
+            // tariff classification. Do not release their reserved cost.
+            Some(total) => total.as_u64().filter(|total| *total == sum)?,
         }
     };
     Some(ConfirmedProviderUsage {
