@@ -319,12 +319,12 @@ fn same_oauth_account(left: Option<&Value>, right: Option<&Value>) -> bool {
     }
 }
 
-fn active_revision(
+fn active_material(
     dir: &Path,
     kind: ProviderCredentialKind,
     id: &str,
     consult_keychain: bool,
-) -> anyhow::Result<ProviderCredentialRevision> {
+) -> anyhow::Result<(ProviderCredentialRevision, Value)> {
     let _guard = ProviderCredentialMutationFileLock::acquire_blocking(dir)?;
     let id = normalize_provider_id(id);
     let index = strict_json(&kind.index(dir))?;
@@ -355,7 +355,68 @@ fn active_revision(
         actual.is_some() && actual == record.material_sha256,
         "credential revision material mismatch"
     );
-    Ok(record.revision)
+    Ok((
+        record.revision,
+        current.expect("active material was checked"),
+    ))
+}
+
+fn active_revision(
+    dir: &Path,
+    kind: ProviderCredentialKind,
+    id: &str,
+    consult_keychain: bool,
+) -> anyhow::Result<ProviderCredentialRevision> {
+    active_material(dir, kind, id, consult_keychain).map(|(revision, _)| revision)
+}
+
+pub(crate) fn match_runtime_credential_revision(
+    dir: &Path,
+    runtime: &crate::ProviderRuntimeBinding,
+    kind: ProviderCredentialKind,
+    location: crate::ProviderCredentialLocation,
+) -> anyhow::Result<ProviderCredentialRevision> {
+    let (id, consult_keychain) = match location {
+        crate::ProviderCredentialLocation::HostService => (runtime.provider_id.clone(), true),
+        crate::ProviderCredentialLocation::TenantService => (
+            tenant_scoped_provider_id(&runtime.tenant_context, &runtime.provider_id),
+            kind == ProviderCredentialKind::Credential,
+        ),
+    };
+    let (revision, material) = active_material(dir, kind, &id, consult_keychain)?;
+    let token = match kind {
+        ProviderCredentialKind::ApiKey => material
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid API-key material"))?
+            .to_string(),
+        ProviderCredentialKind::Credential => {
+            let credential: ProviderCredential = serde_json::from_value(material)
+                .map_err(|_| anyhow::anyhow!("invalid typed credential material"))?;
+            credential
+                .runtime_bearer_token()
+                .ok_or_else(|| anyhow::anyhow!("credential has no runtime token"))?
+                .to_string()
+        }
+    };
+    // Reuse the real request-header fingerprint implementation. The dummy URL
+    // is only used to construct a Request; there is no client, DNS or network.
+    let (bearer, api_key) = if runtime.protocol == crate::ProviderProtocol::Anthropic {
+        (None, Some(token.as_str()))
+    } else {
+        (Some(token.as_str()), None)
+    };
+    let stored = crate::runtime_binding::transport(
+        "https://credential-binding.invalid/",
+        runtime.protocol,
+        bearer,
+        api_key,
+        runtime.credential_source,
+    )?;
+    anyhow::ensure!(
+        stored.credential_sha256 == runtime.credential_sha256,
+        "loaded runtime credential differs from selected persisted revision"
+    );
+    Ok(revision)
 }
 
 pub fn provider_credential_revision(

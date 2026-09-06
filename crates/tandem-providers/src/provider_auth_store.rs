@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use tandem_types::TenantContext;
 
 mod credential_lifecycle;
+pub(crate) use credential_lifecycle::match_runtime_credential_revision;
 use credential_lifecycle::Mutation;
 pub use credential_lifecycle::{
     provider_credential_revision, provider_credential_revision_for_tenant,
