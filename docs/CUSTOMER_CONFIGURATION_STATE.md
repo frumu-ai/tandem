@@ -33,9 +33,12 @@ still plaintext, and a local-key test is not production KMS recovery evidence.
 
 The shared regression suite runs against SQLite and real PostgreSQL in CI. It
 covers two organizations with the same installation name, reopen, scope and
-expiry rejection, concurrent edits, A/B/A stale versions, append-failure
+expiry rejection, current reference checks on no-op saves, concurrent edits, A/B/A stale versions, append-failure
 rollback, encrypted tenant substitution, sanitized template export and schema
 upgrade with existing runtime state.
+The existing SQLite-to-PostgreSQL-to-SQLite transfer test also carries a real
+locally encrypted customer document and its version history, then decrypts the
+restored document. This is backend portability evidence, not off-site recovery.
 
 This storage adapter is not an HTTP installation API or an activation receipt.
 The authorized service/UI/CLI integration, current-policy checks before runtime

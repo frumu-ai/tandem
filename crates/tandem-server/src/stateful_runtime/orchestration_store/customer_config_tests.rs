@@ -116,6 +116,54 @@ fn reopened(store: &OrchestrationStateStore) -> OrchestrationStateStore {
     reopened
 }
 
+#[cfg(feature = "storage-postgres")]
+pub(super) fn seed_protected_config_for_transfer(
+    store: &OrchestrationStateStore,
+) -> StoredCustomerConfig {
+    futures::executor::block_on(crate::encrypted_file_store::with_test_crypto_provider(
+        tandem_memory::MemoryCryptoProvider::local_key([0x5a; 32]),
+        None,
+        async {
+            let fixture = Fixture::new("a");
+            let stored = fixture.save(store, &fixture.config, None).unwrap();
+            store
+                .with_connection(|connection| {
+                    let payload: String = connection.query_row(
+                        "SELECT record_json FROM solution_customer_configs WHERE org_id='org-a'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    assert!(crate::encrypted_file_store::is_encrypted_payload(&payload));
+                    assert!(!payload.contains(&fixture.config.profile_ref));
+                    Ok(())
+                })
+                .unwrap();
+            stored
+        },
+    ))
+}
+
+#[cfg(feature = "storage-postgres")]
+pub(super) fn assert_protected_config_after_transfer(
+    store: &OrchestrationStateStore,
+    expected: &StoredCustomerConfig,
+) {
+    futures::executor::block_on(crate::encrypted_file_store::with_test_crypto_provider(
+        tandem_memory::MemoryCryptoProvider::local_key([0x5a; 32]),
+        None,
+        async {
+            assert_eq!(&Fixture::new("a").read(store), expected);
+            store.with_connection(|connection| {
+                    let versions: i64 = connection.query_row(
+                        "SELECT COUNT(*) FROM solution_customer_config_versions WHERE org_id='org-a'",
+                        [], |row| row.get(0))?;
+                    assert_eq!(versions, 1);
+                    Ok(())
+                }).unwrap();
+        },
+    ));
+}
+
 #[test]
 #[serial]
 fn customer_config_two_scopes_persist_without_exporting_customer_data() {
@@ -228,10 +276,29 @@ fn customer_config_failed_version_append_rolls_back_current_document() {
     });
 }
 
-#[tokio::test]
+#[test]
 #[serial]
-async fn customer_config_protected_payload_rejects_tenant_substitution() {
-    crate::encrypted_file_store::with_test_crypto_provider(
+fn customer_config_noop_still_checks_current_host_bindings() {
+    for_each_backend(|backend, store| {
+        let mut fixture = Fixture::new("a");
+        let first = fixture.save(store, &fixture.config, None).unwrap();
+        fixture.refs.clear();
+        assert!(
+            fixture
+                .save(store, &fixture.config, Some(&first.version))
+                .is_err(),
+            "{backend}: unchanged content cannot reuse revoked reference approval"
+        );
+        assert_eq!(fixture.read(&reopened(store)), first);
+    });
+}
+
+#[test]
+#[serial]
+fn customer_config_protected_payload_rejects_tenant_substitution() {
+    // Poll the task-local crypto scope without entering Tokio: the synchronous
+    // PostgreSQL client owns its own runtime while these store calls execute.
+    futures::executor::block_on(crate::encrypted_file_store::with_test_crypto_provider(
         tandem_memory::MemoryCryptoProvider::local_key([0x5a; 32]),
         None,
         async {
@@ -262,8 +329,7 @@ async fn customer_config_protected_payload_rejects_tenant_substitution() {
                     .is_err());
             });
         },
-    )
-    .await;
+    ));
 }
 
 #[test]
