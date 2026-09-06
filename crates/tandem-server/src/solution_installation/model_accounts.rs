@@ -146,6 +146,19 @@ impl AppState {
         binding_id: &str,
     ) -> anyhow::Result<SolutionModelAccount> {
         let model = self.operator_model_account(binding_id).await?;
+        self.authorize_solution_model_account_binding(verified, scope, binding_id, model)
+            .await
+    }
+
+    /// Installation passes its exact operator snapshot so authorization cannot
+    /// silently approve a different model binding read after a configuration change.
+    pub(super) async fn authorize_solution_model_account_binding(
+        &self,
+        verified: &VerifiedTenantContext,
+        scope: &CustomerScope,
+        binding_id: &str,
+        model: HostModel,
+    ) -> anyhow::Result<SolutionModelAccount> {
         let context = self
             .current_model_account_context(verified, scope, &model)
             .await?;

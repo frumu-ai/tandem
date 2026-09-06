@@ -269,3 +269,123 @@ async fn solution_service_model_account_revokes_while_credential_lookup_waits() 
         .unwrap();
     assert!(result.unwrap_err().to_string().contains("current user"));
 }
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_service_model_account_preview_and_stage_require_current_account() {
+    crate::encrypted_file_store::with_test_crypto_provider(
+        tandem_memory::MemoryCryptoProvider::local_key([0x39; 32]),
+        None,
+        async {
+            let mut f = Fixture::new().await;
+            f.state.memory_db_path = f.root.path().join("memory.sqlite");
+            let revision = stored_key(&f, TOKEN).await;
+            configure(&mut f, &revision, TOKEN).await;
+
+            // A separately signed synthetic pack explicitly permits this HTTP
+            // provider. The shipped local-only diagnostic fixture is unchanged.
+            let mut entries = fixture();
+            let (_, source) = entries
+                .iter_mut()
+                .find(|(path, _)| path == "solution.json")
+                .unwrap();
+            let mut blueprint: serde_json::Value = serde_json::from_str(source).unwrap();
+            blueprint["constraints"]["allowed_providers"] = serde_json::json!(["llama_cpp"]);
+            blueprint["constraints"]["allow_network_egress"] = true.into();
+            *source = serde_json::to_string(&blueprint).unwrap();
+            let archive = f.root.path().join("model-solution.zip");
+            let key = signed(&archive, &entries);
+            let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+            f.state.pack_manager = Arc::new(PackManager::new(f.root.path().join("model-packs")));
+            f.state
+                .pack_manager
+                .install(request(&archive))
+                .await
+                .unwrap();
+            f.configuration.configuration.constraints.allowed_providers =
+                std::collections::BTreeSet::from(["llama_cpp".into()]);
+            f.configuration
+                .configuration
+                .constraints
+                .allow_network_egress = true;
+
+            let denied = f
+                .state
+                .preview_solution_configuration(&f.verified, &f.configuration)
+                .await
+                .err()
+                .expect("catalog membership must not approve the account");
+            assert!(denied.to_string().contains("model_binding_unapproved"));
+            grant(&f, "model-eng", "eng").await;
+
+            // An unrelated denied account must not block the selected allowed
+            // model. It is still omitted from the host's approved model facts.
+            let mut cli = f.state.config.get_layers_value().await["cli"].clone();
+            let mut unused = cli["solution_installation"]["models"][BINDING].clone();
+            unused["account"]["authorization_revision"] = "not-the-reviewed-revision".into();
+            cli["solution_installation"]["models"]["unused.denied"] = unused;
+            let mut runtime = f.state.runtime.wait().clone();
+            runtime.config = tandem_core::ConfigStore::new(
+                f.root.path().join("unrelated-model-config.json"),
+                Some(cli),
+            )
+            .await
+            .unwrap();
+            f.state.runtime = Arc::new(std::sync::OnceLock::from(runtime));
+            let mut reviewed = f.review_and_save().await;
+
+            f.state
+                .enterprise
+                .org_unit_access_grants
+                .write()
+                .await
+                .remove("model-eng");
+            let denied = f
+                .state
+                .stage_solution_installation(&f.verified, reviewed.clone())
+                .await
+                .unwrap_err();
+            assert!(denied.to_string().contains("model_binding_unapproved"));
+            assert!(!f.root.path().join(".tandem/agent-team/templates").exists());
+
+            grant(&f, "model-eng", "eng").await;
+            let reconnected = stored_key(&f, TOKEN).await;
+            assert_ne!(reconnected, revision);
+            assert!(f
+                .state
+                .preview_solution_configuration(&f.verified, &f.configuration)
+                .await
+                .is_err());
+            assert!(f
+                .state
+                .stage_solution_installation(&f.verified, reviewed.clone())
+                .await
+                .is_err());
+            configure(&mut f, &reconnected, TOKEN).await;
+            // The customer document is unchanged. Review the new host account
+            // facts against its existing protected configuration version.
+            reviewed.reviewed_composition = f
+                .state
+                .preview_solution_configuration(&f.verified, &f.configuration)
+                .await
+                .unwrap()
+                .composition_sha256;
+            let staged = f
+                .state
+                .stage_solution_installation(&f.verified, reviewed)
+                .await
+                .unwrap();
+            assert!(staged.all_components_staged());
+            let agent = &staged.plan.components["central-brain"].resource_id;
+            let template = f
+                .root
+                .path()
+                .join(".tandem/agent-team/templates")
+                .join(format!("{agent}.yaml"));
+            let observed: tandem_orchestrator::AgentTemplate =
+                serde_json::from_slice(&std::fs::read(template).unwrap()).unwrap();
+            assert!(!observed.enabled);
+        },
+    )
+    .await;
+}

@@ -134,6 +134,23 @@ impl AppState {
             }) {
                 continue;
             }
+            // A configured account must be usable by this current installer,
+            // including its reviewed revision and actual loaded credential.
+            // Unrelated denied bindings are omitted; the resolver will reject
+            // a selected binding that is absent. Metadata alone grants nothing.
+            if binding.account.is_some()
+                && self
+                    .authorize_solution_model_account_binding(
+                        verified,
+                        scope,
+                        binding_id,
+                        binding.clone(),
+                    )
+                    .await
+                    .is_err()
+            {
+                continue;
+            }
             models.insert(
                 binding_id.clone(),
                 ModelBinding {
