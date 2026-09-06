@@ -508,6 +508,8 @@ async fn automation_agent_templates_fall_back_to_global_workspace_library() {
         .upsert_template(
             &global_workspace_root,
             tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "shared-copywriter".to_string(),
                 display_name: Some("Shared Copywriter".to_string()),
                 avatar_url: None,
@@ -579,6 +581,8 @@ async fn automation_agent_model_falls_back_to_effective_config_default() {
         approval_policy: None,
     };
     let template = tandem_orchestrator::AgentTemplate {
+        enabled: true,
+        solution_owner: None,
         template_id: "shared-copywriter".to_string(),
         display_name: Some("Shared Copywriter".to_string()),
         avatar_url: None,

@@ -26,6 +26,7 @@ include!("agent_teams_parts/predicate_evidence.rs");
 include!("agent_teams_parts/enterprise_authored_policy.rs");
 include!("agent_teams_parts/phase_tool_policy.rs");
 include!("agent_teams_parts/part01.rs");
+mod solution_templates;
 include!("agent_teams_parts/action_gate_approval.rs");
 include!("agent_teams_parts/part03.rs");
 include!("agent_teams_parts/part02.rs");

@@ -64,6 +64,8 @@ async fn agent_team_spawn_approved_with_policy_and_template() {
                 skill_sources: Default::default(),
             }),
             vec![tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "worker-default".to_string(),
                 display_name: None,
                 avatar_url: None,
@@ -151,6 +153,8 @@ async fn agent_team_spawn_uses_managed_worktree_and_cancel_cleans_it_up() {
                 skill_sources: Default::default(),
             }),
             vec![tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "worker-default".to_string(),
                 display_name: None,
                 avatar_url: None,
@@ -276,6 +280,8 @@ async fn agent_team_spawn_agent_tool_uses_same_policy_gate() {
                 skill_sources: Default::default(),
             }),
             vec![tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "worker-default".to_string(),
                 display_name: None,
                 avatar_url: None,
@@ -383,6 +389,8 @@ async fn agent_team_cancel_instance_endpoint_updates_status() {
                 skill_sources: Default::default(),
             }),
             vec![tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "worker-default".to_string(),
                 display_name: None,
                 avatar_url: None,
@@ -484,6 +492,8 @@ async fn agent_team_capability_policy_denies_network_tool_by_default() {
                 skill_sources: Default::default(),
             }),
             vec![tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "worker-default".to_string(),
                 display_name: None,
                 avatar_url: None,
@@ -604,6 +614,8 @@ async fn agent_team_provider_usage_event_updates_token_usage() {
                 skill_sources: Default::default(),
             }),
             vec![tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "worker-default".to_string(),
                 display_name: None,
                 avatar_url: None,
@@ -733,6 +745,8 @@ async fn agent_team_request_only_spawn_surfaces_in_approvals_endpoint() {
             }),
             vec![
                 tandem_orchestrator::AgentTemplate {
+                    enabled: true,
+                    solution_owner: None,
                     template_id: "worker-default".to_string(),
                     display_name: None,
                     avatar_url: None,
@@ -744,6 +758,8 @@ async fn agent_team_request_only_spawn_surfaces_in_approvals_endpoint() {
                     capabilities: tandem_orchestrator::CapabilitySpec::default(),
                 },
                 tandem_orchestrator::AgentTemplate {
+                    enabled: true,
+                    solution_owner: None,
                     template_id: "tester-default".to_string(),
                     display_name: None,
                     avatar_url: None,
@@ -878,6 +894,8 @@ async fn agent_team_missions_endpoint_returns_rollup_counts() {
                 skill_sources: Default::default(),
             }),
             vec![tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "worker-default".to_string(),
                 display_name: None,
                 avatar_url: None,
