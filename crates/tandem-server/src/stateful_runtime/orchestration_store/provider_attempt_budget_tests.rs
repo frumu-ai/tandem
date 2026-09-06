@@ -162,10 +162,11 @@ async fn complete(
 ) -> anyhow::Result<String> {
     registry
         .scope_tenant_provider_auth_with_recovery(
-            tandem_types::TenantContext::explicit(
+            tandem_types::TenantContext::explicit_user_workspace(
                 "org-a",
                 "workspace-a",
                 Some("deployment-a".into()),
+                "owner-a",
             ),
             ProviderAuthRecovery::new(|_| async { Ok(false) }),
             true,

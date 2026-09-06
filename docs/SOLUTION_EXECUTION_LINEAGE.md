@@ -12,6 +12,12 @@ claimed hop-zero root in the same tenant and goal version. Missing, cyclic,
 cross-goal or mismatched lineage blocks admission. Native goal links remain the
 source of lineage; no new run store, goal service or schema is introduced.
 
+Encrypted native goal startup exposed a scope reconstruction defect: the
+existing column reader passed deployment IDs into `TenantContext::explicit`'s
+actor argument. It now preserves the deployment partition explicitly and leaves
+actor identity unset. Trusted scope columns do not identify a user. The direct
+encrypted round-trip regression also rejects another or missing deployment.
+
 After reservation, it repeats the current callback and persisted execution
 check. The final check samples time after acquiring its writer transaction, then
 checks identity and price freshness again after the wait. A proven denial before
