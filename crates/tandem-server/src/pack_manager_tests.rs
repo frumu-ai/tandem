@@ -16,7 +16,7 @@ fn write_zip(path: &Path, entries: &[(&str, &str)]) {
     zip.finish().expect("finish");
 }
 
-fn write_signed_zip(path: &Path, entries: &[(&str, &str)]) -> String {
+pub(super) fn write_signed_zip(path: &Path, entries: &[(&str, &str)]) -> String {
     let mut ordered = entries
         .iter()
         .map(|(name, body)| ((*name).to_string(), body.as_bytes().to_vec()))
@@ -56,13 +56,13 @@ fn write_signed_zip(path: &Path, entries: &[(&str, &str)]) -> String {
     )
 }
 
-struct EnvGuard {
+pub(super) struct EnvGuard {
     key: &'static str,
     previous: Option<String>,
 }
 
 impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
+    pub(super) fn set(key: &'static str, value: &str) -> Self {
         let previous = std::env::var(key).ok();
         std::env::set_var(key, value);
         Self { key, previous }
