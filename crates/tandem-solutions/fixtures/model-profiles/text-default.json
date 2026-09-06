@@ -1,0 +1,19 @@
+{
+  "schema_version": "1",
+  "default_class": "economy",
+  "profiles": {
+    "economy": {
+      "required_modalities": ["text"],
+      "requires_tool_use": false,
+      "limits": {
+        "max_input_tokens": 3072,
+        "max_output_tokens": 1024,
+        "max_request_cost_microusd": 0,
+        "max_latency_ms": 30000,
+        "max_route_evaluations": 4
+      },
+      "fallbacks": [],
+      "escalations": []
+    }
+  }
+}

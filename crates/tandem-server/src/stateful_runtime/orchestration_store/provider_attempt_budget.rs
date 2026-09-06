@@ -17,35 +17,7 @@ use super::{
     SolutionChargeKind, SolutionRunBudget,
 };
 
-/// Current host-approved upper rates in integer micro-USD per million tokens.
-/// Input rates must cover every supported input category, including cache writes
-/// and reads. These are accounting ceilings, not a provider invoice/guarantee.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApprovedModelPrice {
-    pub input_microusd_per_million: u64,
-    pub output_microusd_per_million: u64,
-    pub request_microusd: u64,
-    pub valid_until_ms: u64,
-}
-
-impl ApprovedModelPrice {
-    pub fn cost(&self, input: u64, output: u64) -> anyhow::Result<u64> {
-        fn tokens(count: u64, rate: u64) -> anyhow::Result<u64> {
-            let rounded = u128::from(count)
-                .checked_mul(u128::from(rate))
-                .and_then(|value| value.checked_add(999_999))
-                .context("model price overflow")?
-                / 1_000_000;
-            u64::try_from(rounded).context("model price overflow")
-        }
-        let input_cost = tokens(input, self.input_microusd_per_million)?;
-        let output_cost = tokens(output, self.output_microusd_per_million)?;
-        self.request_microusd
-            .checked_add(input_cost)
-            .and_then(|value| value.checked_add(output_cost))
-            .context("model price overflow")
-    }
-}
+pub use tandem_solutions::ModelProfilePrice as ApprovedModelPrice;
 
 /// Produced by a trusted current model/root authorization callback, never HTTP
 /// deserialization. The caller must validate activation/current account binding,
