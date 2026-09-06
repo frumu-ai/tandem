@@ -16,12 +16,12 @@ fn write_zip(path: &Path, entries: &[(&str, &str)]) {
     zip.finish().expect("finish");
 }
 
-fn write_signed_zip(path: &Path, entries: &[(&str, &str)]) -> String {
+pub(super) fn write_signed_zip(path: &Path, entries: &[(&str, &str)]) -> String {
     let mut ordered = entries
         .iter()
         .map(|(name, body)| ((*name).to_string(), body.as_bytes().to_vec()))
         .collect::<Vec<_>>();
-    ordered.sort_by(|left, right| left.0.cmp(&right.0));
+    ordered.sort_by(|left, right| Path::new(&left.0).cmp(Path::new(&right.0)));
     let mut hasher = Sha256::new();
     for (name, body) in &ordered {
         hasher.update((name.len() as u64).to_be_bytes());
@@ -56,13 +56,13 @@ fn write_signed_zip(path: &Path, entries: &[(&str, &str)]) -> String {
     )
 }
 
-struct EnvGuard {
+pub(super) struct EnvGuard {
     key: &'static str,
     previous: Option<String>,
 }
 
 impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
+    pub(super) fn set(key: &'static str, value: &str) -> Self {
         let previous = std::env::var(key).ok();
         std::env::set_var(key, value);
         Self { key, previous }
