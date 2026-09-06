@@ -8,7 +8,8 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderProtocol {
     ChatCompletions,
     Responses,
@@ -150,6 +151,31 @@ fn digest(parts: &[&[u8]]) -> String {
     format!("{:x}", digest.finalize())
 }
 
+pub(crate) struct RequestFingerprints {
+    pub endpoint_sha256: String,
+    pub credential_sha256: String,
+}
+
+pub(crate) fn request_fingerprints(request: &reqwest::Request) -> RequestFingerprints {
+    let headers = request.headers();
+    let authorization = headers
+        .get("authorization")
+        .map(|value| value.as_bytes())
+        .unwrap_or_default();
+    let api_key = headers
+        .get("x-api-key")
+        .map(|value| value.as_bytes())
+        .unwrap_or_default();
+    let account = headers
+        .get("chatgpt-account-id")
+        .map(|value| value.as_bytes())
+        .unwrap_or_default();
+    RequestFingerprints {
+        endpoint_sha256: digest(&[b"provider-endpoint-v1", request.url().as_str().as_bytes()]),
+        credential_sha256: digest(&[b"provider-credential-v1", authorization, api_key, account]),
+    }
+}
+
 pub(crate) async fn before_send(
     request: &reqwest::RequestBuilder,
     provider_id: &str,
@@ -188,25 +214,13 @@ pub(crate) async fn before_send(
         maximum_output_tokens <= policy.max_output_tokens,
         "provider output exceeds reviewed limit"
     );
-    let headers = built.headers();
-    let authorization = headers
-        .get("authorization")
-        .map(|value| value.as_bytes())
-        .unwrap_or_default();
-    let api_key = headers
-        .get("x-api-key")
-        .map(|value| value.as_bytes())
-        .unwrap_or_default();
-    let account = headers
-        .get("chatgpt-account-id")
-        .map(|value| value.as_bytes())
-        .unwrap_or_default();
+    let fingerprints = request_fingerprints(&built);
     let attempt = ProviderAttempt {
         provider_id: provider_id.into(),
         model_id: model_id.into(),
         protocol,
-        endpoint_sha256: digest(&[b"provider-endpoint-v1", built.url().as_str().as_bytes()]),
-        credential_sha256: digest(&[b"provider-credential-v1", authorization, api_key, account]),
+        endpoint_sha256: fingerprints.endpoint_sha256,
+        credential_sha256: fingerprints.credential_sha256,
         payload_sha256: digest(&[b"provider-payload-v1", bytes]),
         request_bytes: bytes.len(),
         maximum_output_tokens,

@@ -1,8 +1,6 @@
 use super::*;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use tandem_providers::{
-    AppConfig, ProviderAttempt, ProviderAuthRecovery, ProviderConfig, ProviderRegistry,
-};
+use tandem_providers::{AppConfig, ProviderAuthRecovery, ProviderConfig, ProviderRegistry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn network_fixture(store: &OrchestrationStateStore, name: &str) -> BudgetFixture {
@@ -42,19 +40,23 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-fn registry(address: std::net::SocketAddr) -> ProviderRegistry {
-    ProviderRegistry::new(AppConfig {
+fn configuration(address: std::net::SocketAddr, key: Option<&str>) -> AppConfig {
+    AppConfig {
         providers: [(
             "ollama".into(),
             ProviderConfig {
                 url: Some(format!("http://{address}/v1")),
-                api_key: None,
+                api_key: key.map(str::to_string),
                 default_model: Some("synthetic-model".into()),
             },
         )]
         .into(),
         default_provider: Some("ollama".into()),
-    })
+    }
+}
+
+fn registry(address: std::net::SocketAddr) -> ProviderRegistry {
+    ProviderRegistry::new(configuration(address, None))
 }
 
 fn approval(
@@ -101,30 +103,41 @@ fn approval(
     }
 }
 
-fn current(
+async fn current(
     approved: &ApprovedSolutionProviderCharge,
-    attempt: ProviderAttempt,
-) -> ApprovedSolutionProviderCharge {
+    registry: &ProviderRegistry,
+) -> anyhow::Result<ApprovedSolutionProviderCharge> {
     let mut result = approved.clone();
-    // Synthetic trusted binding callback. Real activation must obtain these
-    // facts from its current host/account registry, not echo browser input.
-    result.endpoint_sha256 = attempt.endpoint_sha256;
-    result.credential_sha256 = attempt.credential_sha256;
-    result
+    // Model/root authorization remains a synthetic fixture; transport/account
+    // facts now come independently from the actual configured registry.
+    let binding = registry
+        .runtime_binding_for_tenant(
+            &approved.verified.tenant_context,
+            &approved.provider_id,
+            &approved.model_id,
+        )
+        .await?;
+    anyhow::ensure!(binding.protocol == result.protocol, "protocol changed");
+    result.endpoint_sha256 = binding.endpoint_sha256;
+    result.credential_sha256 = binding.credential_sha256;
+    Ok(result)
 }
 
 fn policy(
     store: &OrchestrationStateStore,
+    registry: &ProviderRegistry,
     approved: ApprovedSolutionProviderCharge,
     clock: Arc<AtomicU64>,
 ) -> tandem_providers::ProviderAttemptPolicy {
+    let registry = registry.clone();
     store
         .solution_provider_attempt_policy(
             10,
             4096,
-            move |attempt| {
-                let approved = current(&approved, attempt);
-                async move { Ok(approved) }
+            move |_attempt| {
+                let approved = approved.clone();
+                let registry = registry.clone();
+                async move { current(&approved, &registry).await }
             },
             move || clock.load(Ordering::SeqCst),
         )
@@ -250,7 +263,7 @@ fn solution_budget_provider_actual_sends_share_the_durable_ceiling() {
                 reply(&mut socket, true).await;
             });
             let clock = Arc::new(AtomicU64::new(1500));
-            let policy = policy(store, approved, clock);
+            let policy = policy(store, &registry, approved, clock);
             let first = complete(&registry, policy.clone());
             tokio::pin!(first);
             tokio::select! {
@@ -289,7 +302,7 @@ fn solution_budget_provider_missing_usage_survives_reopen_and_blocks_overspend()
                     reply(&mut socket, false).await;
                     listener
                 });
-                let policy = policy(store, approved, Arc::new(AtomicU64::new(1500)));
+                let policy = policy(store, &registry, approved, Arc::new(AtomicU64::new(1500)));
                 assert_eq!(complete(&registry, policy.clone()).await.unwrap(), "ok");
                 let reopened = store.clone();
                 crate::encrypted_file_store::spawn_protected_blocking(move || {
@@ -339,7 +352,7 @@ fn solution_budget_provider_confirmed_receipt_settles_after_user_assertion_expir
                     reply(&mut socket, true).await;
                     listener
                 });
-                let policy = policy(store, approved, clock);
+                let policy = policy(store, &registry, approved, clock);
                 assert_eq!(complete(&registry, policy.clone()).await.unwrap(), "ok");
                 assert!(
                     complete(&registry, policy).await.is_err(),
@@ -375,19 +388,30 @@ fn solution_budget_provider_rechecks_binding_after_reservation_without_sending()
             let approved = approval(&fixture, store);
             runtime().block_on(async {
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                let registry = registry(listener.local_addr().unwrap());
+                let address = listener.local_addr().unwrap();
+                let registry = registry(address);
                 let checks = Arc::new(AtomicUsize::new(0));
                 let count = checks.clone();
+                let runtime_registry = registry.clone();
                 let policy = store
                     .solution_provider_attempt_policy(
                         10,
                         4096,
-                        move |attempt| {
-                            let mut approved = current(&approved, attempt);
-                            if count.fetch_add(1, Ordering::SeqCst) > 0 {
-                                approved.route_revision = sha256(b"changed-account-generation");
+                        move |_attempt| {
+                            let approved = approved.clone();
+                            let registry = runtime_registry.clone();
+                            let changed = count.fetch_add(1, Ordering::SeqCst) > 0;
+                            async move {
+                                if changed {
+                                    registry
+                                        .reload(configuration(
+                                            address,
+                                            Some("synthetic-rebound-account"),
+                                        ))
+                                        .await;
+                                }
+                                current(&approved, &registry).await
                             }
-                            async move { Ok(approved) }
                         },
                         || 1500,
                     )
@@ -432,7 +456,7 @@ fn solution_budget_provider_rejects_stale_model_and_unknown_price_before_network
                         2 => invalid.price = None,
                         _ => invalid.price.as_mut().unwrap().valid_until_ms = 1499,
                     }
-                    let policy = policy(store, invalid, Arc::new(AtomicU64::new(1500)));
+                    let policy = policy(store, &registry, invalid, Arc::new(AtomicU64::new(1500)));
                     assert!(complete(&registry, policy).await.is_err());
                 }
                 assert!(tokio::time::timeout(

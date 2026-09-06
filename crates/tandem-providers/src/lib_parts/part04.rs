@@ -4,6 +4,7 @@ mod tests {
     include!("../hosted_policy_tests.rs");
     include!("../provider_attempt_tests.rs");
     include!("../attempt_accounting_tests.rs");
+    include!("../runtime_binding_tests.rs");
     use futures::StreamExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
