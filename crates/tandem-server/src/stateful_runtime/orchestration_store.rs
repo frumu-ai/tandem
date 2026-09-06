@@ -22,6 +22,7 @@ mod goal_lifecycle;
 mod migration;
 pub(crate) mod protected_records;
 mod runtime_records;
+pub(crate) mod solution_installations;
 mod transfer;
 mod transition;
 
@@ -33,6 +34,10 @@ pub use goal_lifecycle::{GoalEventRow, GoalPauseOutcome, GoalResumeOutcome, Star
 pub use migration::{
     LegacyImportContext, LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport,
 };
+pub use solution_installations::{
+    SolutionComponentProgress, SolutionInstallation, SolutionInstallationInput,
+    SolutionInstallationTransition, SOLUTION_INSTALLATION_CONFLICT,
+};
 pub use transfer::{
     migrate_stateful_storage_backend, StatefulBackendKind, StatefulBackendMigrationReport,
     StatefulBackendMigrationRequest,
@@ -42,7 +47,7 @@ pub use transition::{
     WorkflowCompletionResult,
 };
 
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationStorePaths {
@@ -1209,6 +1214,10 @@ fn initialize_schema(connection: &mut rusqlite::Connection) -> anyhow::Result<()
         customer_configs::migrate_sqlite(connection)?;
         version = 6;
     }
+    if version == 6 {
+        solution_installations::migrate_sqlite(connection)?;
+        version = 7;
+    }
     if version != SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {SCHEMA_VERSION}"
@@ -1562,3 +1571,7 @@ mod hardening_tests;
 #[cfg(test)]
 #[path = "orchestration_store/customer_config_tests.rs"]
 mod customer_config_tests;
+
+#[cfg(all(test, feature = "storage-sqlite"))]
+#[path = "orchestration_store/solution_installation_tests.rs"]
+mod solution_installation_tests;

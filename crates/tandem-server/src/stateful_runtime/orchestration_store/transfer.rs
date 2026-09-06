@@ -1010,6 +1010,10 @@ mod tests {
         seed_runtime_events(source_root.path());
         let customer_config =
             super::super::customer_config_tests::seed_protected_config_for_transfer(&source);
+        let installation =
+            super::super::solution_installation_tests::seed_protected_installation_for_transfer(
+                &source,
+            );
 
         let request = StatefulBackendMigrationRequest {
             source_paths: source_paths.clone(),
@@ -1061,6 +1065,10 @@ mod tests {
         super::super::customer_config_tests::assert_protected_config_after_transfer(
             &round_trip,
             &customer_config,
+        );
+        super::super::solution_installation_tests::assert_protected_installation_after_transfer(
+            &round_trip,
+            &installation,
         );
         round_trip
             .with_connection(|connection| {

@@ -560,6 +560,15 @@ pub(crate) fn initialize_schema(connection: &mut Connection) -> anyhow::Result<(
         transaction.commit()?;
         version = 6;
     }
+    if version == 6 {
+        let transaction =
+            connection.transaction_with_behavior(super::TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            crate::stateful_runtime::orchestration_store::solution_installations::SCHEMA_V7,
+        )?;
+        transaction.commit()?;
+        version = 7;
+    }
     if version != crate::stateful_runtime::orchestration_store::SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {}",

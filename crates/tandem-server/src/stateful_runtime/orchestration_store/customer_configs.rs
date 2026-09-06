@@ -44,7 +44,7 @@ fn record_id(scope: &CustomerScope, generation: u64) -> String {
     format!("{}:{generation}", scope.instance_id)
 }
 
-fn load(
+pub(super) fn load(
     executor: &impl Executor,
     tenant: &TenantContext,
     scope: &CustomerScope,
