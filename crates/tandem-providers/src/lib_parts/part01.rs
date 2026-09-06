@@ -1533,7 +1533,7 @@ fn build_providers(config: &AppConfig) -> Vec<Arc<dyn Provider>> {
                 .default_model
                 .clone()
                 .unwrap_or_else(|| "claude-sonnet-4-6".to_string()),
-            client: Client::new(),
+            client: dispatch_authority::provider_client(),
         }));
     }
     if let Some(cohere) = config.providers.get("cohere") {
@@ -1676,7 +1676,7 @@ fn add_openai_responses_provider(
                 context_window,
             }]
         },
-        client: Client::new(),
+        client: dispatch_authority::provider_client(),
     }));
 }
 

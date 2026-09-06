@@ -1,5 +1,6 @@
 //! Mutable request authority is checked after credential resolution and again
-//! after authentication recovery. It is never cached in a provider permit.
+//! after authentication recovery and before each adapter send, including retries.
+//! It is never cached in a provider permit.
 use std::future::Future;
 use std::sync::Arc;
 
@@ -39,4 +40,13 @@ pub(crate) async fn revalidate() -> anyhow::Result<()> {
         (authority.check)().await?;
     }
     Ok(())
+}
+
+/// Redirects would dispatch another request inside reqwest without an async
+/// authority check. Provider endpoints must be configured to their final URL.
+pub(crate) fn provider_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("provider HTTP client initialization failed")
 }
