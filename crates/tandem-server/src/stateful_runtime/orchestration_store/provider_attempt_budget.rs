@@ -32,6 +32,7 @@ pub struct ApprovedSolutionProviderCharge {
     pub model_class: String,
     pub binding: tandem_solutions::LockedModelBinding,
     pub root_run_id: String,
+    pub execution: super::SolutionRunExecution,
     pub kind: SolutionChargeKind,
     /// Reviewed model/account/price revision, not an arbitrary request ID.
     pub route_revision: String,
@@ -135,6 +136,7 @@ impl OrchestrationStateStore {
                                 installation_generation: approval.installation_generation,
                                 model_class: approval.model_class,
                                 binding: approval.binding,
+                                execution: approval.execution,
                             },
                         )?;
                         ensure!(
@@ -162,6 +164,31 @@ impl OrchestrationStateStore {
                         ensure!(
                             clock() <= price.valid_until_ms,
                             "model price expired during budget admission"
+                        );
+                        let execution_store = store.clone();
+                        let execution_clock = clock.clone();
+                        let tenant = current.verified.tenant_context.clone();
+                        let execution = current.execution.clone();
+                        let root = current.root_run_id.clone();
+                        crate::encrypted_file_store::spawn_protected_blocking(move || {
+                            execution_store.validate_solution_execution(
+                                &tenant,
+                                &execution,
+                                &root,
+                                || execution_clock(),
+                            )
+                        })
+                        .await??;
+                        // The final writer transaction can itself wait. Do not
+                        // return a permit using the pre-wait identity/price time.
+                        tandem_solutions::validate_customer_config_scope(
+                            &current.verified,
+                            &current.scope,
+                            clock(),
+                        )?;
+                        ensure!(
+                            clock() <= price.valid_until_ms,
+                            "model price expired during execution validation"
                         );
                         Ok::<_, anyhow::Error>(())
                     }

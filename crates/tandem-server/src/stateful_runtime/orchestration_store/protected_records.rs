@@ -35,7 +35,12 @@ pub(crate) fn tenant_from_scope(
     if org_id == "local" && workspace_id == "local" && deployment_id.is_none() {
         TenantContext::local_implicit()
     } else {
-        TenantContext::explicit(org_id, workspace_id, deployment_id)
+        // `explicit` takes an actor as its third argument, not a deployment.
+        // SQL scope columns cannot establish personal identity; preserve only
+        // their actual tenant/deployment partition for envelope verification.
+        let mut tenant = TenantContext::explicit(org_id, workspace_id, None);
+        tenant.deployment_id = deployment_id;
+        tenant
     }
 }
 
@@ -155,4 +160,58 @@ pub(crate) fn digest<T: Serialize>(
         value,
     ))?;
     Ok(format!("sha256:{:x}", Sha256::digest(canonical)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn protected_runtime_record_columns_preserve_deployment_without_inventing_actor() {
+        crate::encrypted_file_store::with_test_crypto_provider(
+            tandem_memory::MemoryCryptoProvider::local_key([0x47; 32]),
+            None,
+            async {
+                let tenant = TenantContext::explicit_user_workspace(
+                    "org-a",
+                    "workspace-a",
+                    Some("deployment-a".into()),
+                    "alice",
+                );
+                let reconstructed = tenant_from_scope("org-a", "workspace-a", Some("deployment-a"));
+                assert_eq!(reconstructed.deployment_id.as_deref(), Some("deployment-a"));
+                assert!(reconstructed.actor_id.is_none());
+                let value = serde_json::json!({"goal_id": "scoped-goal"});
+                let stored = encode(&tenant, "goal", "scoped-goal", &value).unwrap();
+                assert!(crate::encrypted_file_store::is_encrypted_payload(&stored));
+                let decoded: serde_json::Value = decode_scoped(
+                    "org-a",
+                    "workspace-a",
+                    Some("deployment-a"),
+                    "goal",
+                    "scoped-goal",
+                    &stored,
+                )
+                .unwrap();
+                assert_eq!(decoded, value);
+                for (workspace, deployment) in [
+                    ("workspace-a", Some("deployment-b")),
+                    ("workspace-b", Some("deployment-a")),
+                    ("workspace-a", None),
+                ] {
+                    assert!(decode_scoped::<serde_json::Value>(
+                        "org-a",
+                        workspace,
+                        deployment,
+                        "goal",
+                        "scoped-goal",
+                        &stored
+                    )
+                    .is_err());
+                }
+                assert!(tenant_from_scope("local", "local", None).is_local_implicit());
+            },
+        )
+        .await;
+    }
 }
