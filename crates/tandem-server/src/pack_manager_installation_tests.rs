@@ -281,6 +281,31 @@ async fn solution_service_rechecks_native_grants_sources_scope_and_revocation() 
         async {
             let fixture = Fixture::new().await;
             let request = fixture.review_and_save().await;
+            let mut conflicting =
+                fixture.state.enterprise.connectors.read().await["connector-a"].clone();
+            conflicting.state = tandem_enterprise_contract::ConnectorLifecycleState::Revoked;
+            fixture
+                .state
+                .enterprise
+                .connectors
+                .write()
+                .await
+                .insert("duplicate-native-key".into(), conflicting);
+            assert!(
+                fixture
+                    .state
+                    .stage_solution_installation(&fixture.verified, request.clone())
+                    .await
+                    .is_err(),
+                "duplicate native connector IDs cannot resolve arbitrarily to an active row"
+            );
+            fixture
+                .state
+                .enterprise
+                .connectors
+                .write()
+                .await
+                .remove("duplicate-native-key");
             fixture
                 .state
                 .enterprise

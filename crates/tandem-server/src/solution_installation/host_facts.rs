@@ -173,11 +173,18 @@ impl AppState {
             {
                 continue;
             }
-            let Some(connector) = connector_rows.values().find(|row| {
-                row.connector_id == source.connector_id
-                    && row.tenant_matches(tenant)
-                    && row.state.allows_ingestion()
-            }) else {
+            let matching_connectors: Vec<_> = connector_rows
+                .values()
+                .filter(|row| row.connector_id == source.connector_id && row.tenant_matches(tenant))
+                .collect();
+            ensure!(
+                matching_connectors.len() <= 1,
+                "ambiguous source connector ID"
+            );
+            let Some(connector) = matching_connectors
+                .first()
+                .filter(|row| row.state.allows_ingestion())
+            else {
                 continue;
             };
             if strict
@@ -201,7 +208,7 @@ impl AppState {
                 projects.insert(project.clone());
             }
             sources.insert(source.binding_id.clone(), source.clone());
-            source_connectors.insert(connector.connector_id.clone(), connector.clone());
+            source_connectors.insert(connector.connector_id.clone(), (**connector).clone());
         }
         drop(connector_rows);
         drop(source_rows);
