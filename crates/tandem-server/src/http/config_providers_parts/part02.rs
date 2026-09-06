@@ -757,11 +757,12 @@ async fn persist_refreshed_openai_codex_oauth(
         .map(str::to_string);
     let api_key = credential.api_key.clone();
     let managed_by = credential.managed_by.clone();
-    if !compare_and_set_openai_codex_oauth_credential(
-        state,
+    if !tandem_core::refresh_provider_oauth_credential_for_tenant_in_dir_serialized(
+        &provider_auth_security_dir_for_state(state),
         tenant_context,
-        Some(previous),
-        Some(credential.clone()),
+        OPENAI_CODEX_PROVIDER_ID,
+        previous,
+        credential.clone(),
     )
     .await?
     {

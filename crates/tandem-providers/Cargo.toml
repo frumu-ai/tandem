@@ -22,8 +22,7 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
 tandem-data-boundary = { path = "../tandem-data-boundary", version = "0.7.2" }
 tandem-types = { path = "../tandem-types", version = "0.7.2" }
-
-[dev-dependencies]
-tempfile = "3"
