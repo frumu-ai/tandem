@@ -21,6 +21,7 @@ mod goal_control;
 mod goal_lifecycle;
 mod migration;
 pub(crate) mod protected_records;
+mod provider_attempt_budget;
 mod runtime_records;
 pub(crate) mod solution_budget_records;
 mod solution_budgets;
@@ -36,9 +37,11 @@ pub use goal_lifecycle::{GoalEventRow, GoalPauseOutcome, GoalResumeOutcome, Star
 pub use migration::{
     LegacyImportContext, LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport,
 };
+pub use provider_attempt_budget::{ApprovedModelPrice, ApprovedSolutionProviderCharge};
 pub use solution_budgets::{
-    SolutionBudgetInput, SolutionBudgetReservationResult, SolutionChargeIntent, SolutionChargeKind,
-    SolutionChargeReservation, SolutionChargeStatus, SolutionRunBudget,
+    SolutionBudgetInput, SolutionBudgetReservationResult, SolutionChargeCostBasis,
+    SolutionChargeIntent, SolutionChargeKind, SolutionChargeReservation, SolutionChargeStatus,
+    SolutionRunBudget,
 };
 pub use solution_installations::{
     SolutionComponentProgress, SolutionInstallation, SolutionInstallationInput,

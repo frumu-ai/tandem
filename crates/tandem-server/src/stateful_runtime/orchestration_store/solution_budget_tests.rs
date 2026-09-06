@@ -1,6 +1,9 @@
 use super::*;
 use std::sync::{Arc, Barrier};
 
+#[path = "provider_attempt_budget_tests.rs"]
+mod provider_tests;
+
 struct BudgetFixture {
     installation: InstallationFixture,
     digest: String,
@@ -303,7 +306,8 @@ fn solution_budget_unknown_price_overrun_and_foreign_scope_fail_closed() {
                 SolutionChargeStatus::Settled {
                     tokens: 2,
                     cost_microusd: 10,
-                    overrun: false
+                    overrun: false,
+                    cost_basis: SolutionChargeCostBasis::Confirmed
                 }
             );
         })
