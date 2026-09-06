@@ -541,17 +541,25 @@ fn ensure_schema_exists(pool: &Pool, schema: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// PostgreSQL rendering of stateful schema v5. Fresh deployments start at the
-/// current version directly — the SQLite v1→v5 migration chain is historical
-/// and never existed on PostgreSQL.
+/// PostgreSQL starts with the v5 baseline, then applies current additive
+/// migrations. The historical SQLite v1-v5 chain never existed on PostgreSQL.
 pub(crate) fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
     use super::{Executor as _, ExecutorRaw as _};
     connection.execute_batch(POSTGRES_SCHEMA_V5)?;
-    let version: i64 = connection.query_row(
+    let mut version: i64 = connection.query_row(
         "SELECT schema_version FROM schema_metadata LIMIT 1",
         [],
         |row| row.get(0),
     )?;
+    if version == 5 {
+        let transaction =
+            connection.transaction_with_behavior(super::TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            crate::stateful_runtime::orchestration_store::customer_configs::SCHEMA_V6,
+        )?;
+        transaction.commit()?;
+        version = 6;
+    }
     if version != crate::stateful_runtime::orchestration_store::SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {}",

@@ -14,6 +14,7 @@ use tandem_automation::{
     WorkflowHandoffStatus,
 };
 
+pub(crate) mod customer_configs;
 mod definitions;
 mod engine_lock;
 mod goal_control;
@@ -24,6 +25,7 @@ mod runtime_records;
 mod transfer;
 mod transition;
 
+pub use customer_configs::{CustomerConfigVersion, StoredCustomerConfig, CUSTOMER_CONFIG_CONFLICT};
 pub use definitions::{DRAFT_CONCURRENCY_CONFLICT, ORCHESTRATION_DRAFT_VERSION};
 pub use engine_lock::{read_engine_lock_owner, EngineLockOwner, StatefulEngineLock};
 pub use goal_control::{GoalCancellationResult, GoalControlOutcome};
@@ -40,7 +42,7 @@ pub use transition::{
     WorkflowCompletionResult,
 };
 
-pub(crate) const SCHEMA_VERSION: i64 = 5;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationStorePaths {
@@ -1203,6 +1205,10 @@ fn initialize_schema(connection: &mut rusqlite::Connection) -> anyhow::Result<()
         migrate_schema_v4_to_v5(connection)?;
         version = 5;
     }
+    if version == 5 {
+        customer_configs::migrate_sqlite(connection)?;
+        version = 6;
+    }
     if version != SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {SCHEMA_VERSION}"
@@ -1552,3 +1558,7 @@ mod encryption_tests;
 #[cfg(test)]
 #[path = "orchestration_store/hardening_tests.rs"]
 mod hardening_tests;
+
+#[cfg(test)]
+#[path = "orchestration_store/customer_config_tests.rs"]
+mod customer_config_tests;

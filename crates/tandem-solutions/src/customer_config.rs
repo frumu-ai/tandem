@@ -136,6 +136,28 @@ pub fn customer_config_revision(config: &CustomerConfig) -> Result<String, Solut
     Ok(sha256(&canonical_json(config)?))
 }
 
+/// Validate the caller's current verified scope without reading customer data.
+/// The runtime must separately authorize the explicitly selected installation.
+pub fn validate_customer_config_scope(
+    context: &VerifiedTenantContext,
+    scope: &CustomerScope,
+    now_ms: u64,
+) -> Result<AuthorityBinding, SolutionError> {
+    let authority = crate::resolve::authority_binding(context, now_ms)?;
+    identifier(&scope.instance_id, "scope.instance_id")?;
+    if scope.org_id != authority.org_id
+        || scope.workspace_id != authority.workspace_id
+        || scope.deployment_id != authority.deployment_id
+    {
+        return Err(SolutionError::new(
+            "customer_scope_mismatch",
+            "scope",
+            "Select the authorized organization and installation",
+        ));
+    }
+    Ok(authority)
+}
+
 /// Produces inputs for the existing resolver, never an activation receipt.
 /// The eventual apply transaction must repeat the revision/authority checks
 /// atomically with persistence; this pure check does not lock a database.
@@ -146,12 +168,8 @@ pub fn prepare_customer_config(
 ) -> Result<PreparedCustomerConfig, SolutionError> {
     validate_blueprint(blueprint)?;
     let revision = customer_config_revision(config)?;
-    let authority = crate::resolve::authority_binding(input.verified_context, input.now_ms)?;
-    if config.scope != *input.selected_scope
-        || config.scope.org_id != authority.org_id
-        || config.scope.workspace_id != authority.workspace_id
-        || config.scope.deployment_id != authority.deployment_id
-    {
+    validate_customer_config_scope(input.verified_context, input.selected_scope, input.now_ms)?;
+    if config.scope != *input.selected_scope {
         return Err(SolutionError::new(
             "customer_scope_mismatch",
             "scope",
