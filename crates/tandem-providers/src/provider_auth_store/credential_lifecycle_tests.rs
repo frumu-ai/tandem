@@ -390,3 +390,49 @@ fn separate_process_api_key_writers_preserve_all_credentials_and_revisions() {
         ));
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn api_key_file_lock_wait_yields_the_runtime_and_shares_oauth_serialization() {
+    let dir = tempdir().unwrap();
+    let tenant = tenant();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let path = dir.path().to_path_buf();
+    let blocker = std::thread::spawn(move || {
+        let _guard = ProviderCredentialMutationFileLock::acquire_blocking(&path).unwrap();
+        ready_tx.send(()).unwrap();
+        // A broken blocking acquisition must fail this test rather than hang
+        // the test process indefinitely waiting for its own async timer.
+        let _ = release_rx.recv_timeout(std::time::Duration::from_secs(3));
+    });
+    ready_rx.recv().unwrap();
+    let acquisition = provider_auth_mutation_in_dir(dir.path());
+    tokio::pin!(acquisition);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut acquisition)
+            .await
+            .is_err()
+    );
+    release_tx.send(()).unwrap();
+    let mut mutation = acquisition.await.unwrap();
+    mutation
+        .set_for_tenant(&tenant, "openai-codex", "synthetic-async-key")
+        .unwrap();
+    let oauth_write = set_provider_oauth_credential_for_tenant_in_dir_serialized(
+        dir.path(),
+        &tenant,
+        "openai-codex",
+        oauth("synthetic-oauth"),
+    );
+    tokio::pin!(oauth_write);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut oauth_write)
+            .await
+            .is_err()
+    );
+    drop(mutation);
+    oauth_write.await.unwrap();
+    blocker.join().unwrap();
+    revision(dir.path(), &tenant, ProviderCredentialKind::ApiKey);
+    revision(dir.path(), &tenant, ProviderCredentialKind::Credential);
+}

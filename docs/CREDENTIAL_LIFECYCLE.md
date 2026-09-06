@@ -4,6 +4,9 @@ Credential revisions live beside `providers` in the existing API-key and typed
 credential index files. Secrets continue to use the existing file/keychain
 backends. The existing cross-process credential file lock now also covers legacy
 API-key writers. Index updates preserve other bindings and deletion tombstones.
+API-key HTTP writes and compensation await this lock through a mutation guard;
+the request revalidates authority after acquisition and releases the guard before
+runtime updates or rollback. Synchronous compatibility APIs remain available.
 
 Every explicit set, disconnect, reconnect, and ordinary compare-and-set creates
 fresh authorization and material UUIDs, including replacement with identical

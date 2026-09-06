@@ -1800,6 +1800,17 @@ pub(super) async fn set_auth(
         .await;
     let _persistence_guard = state.oauth.provider_credential_persistence_guard().await;
     let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
+    let mut persistence =
+        match tandem_core::provider_auth_mutation_in_dir(&provider_auth_security_dir).await {
+            Ok(persistence) => persistence,
+            Err(error) => {
+                return provider_auth_mutation_error_response(
+                    &normalized_id,
+                    "PROVIDER_AUTH_PERSISTENCE_FAILED",
+                    format!("failed to lock provider auth: {error}"),
+                );
+            }
+        };
     let snapshot = snapshot_api_key_mutation(
         &state,
         &provider_auth_security_dir,
@@ -1811,12 +1822,9 @@ pub(super) async fn set_auth(
         return crate::http::host_authority::host_authorization_status(error).into_response();
     }
     credential_guard.advance_generation();
-    let backend = match tandem_core::set_provider_auth_for_tenant_in_dir(
-        &provider_auth_security_dir,
-        &tenant_context,
-        &normalized_id,
-        &token,
-    ) {
+    let persistence_result = persistence.set_for_tenant(&tenant_context, &normalized_id, &token);
+    drop(persistence);
+    let backend = match persistence_result {
         Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
         Ok(tandem_core::ProviderAuthBackend::File) => "file",
         Err(err) => {

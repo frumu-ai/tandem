@@ -144,13 +144,12 @@ pub fn set_provider_auth_for_tenant(
     set_provider_auth(&scoped_provider_id, token)
 }
 
-pub fn set_provider_auth_for_tenant_in_dir(
+fn set_provider_auth_for_tenant_in_dir_unlocked(
     security_dir: &Path,
     tenant_context: &TenantContext,
     provider_id: &str,
     token: &str,
 ) -> anyhow::Result<ProviderAuthBackend> {
-    let _file_guard = ProviderCredentialMutationFileLock::acquire_blocking(security_dir)?;
     let scoped_provider_id = tenant_scoped_provider_id(tenant_context, provider_id);
     let id = normalize_provider_id(&scoped_provider_id);
     let secret = token.trim().to_string();
@@ -178,6 +177,16 @@ pub fn set_provider_auth_for_tenant_in_dir(
     Ok(ProviderAuthBackend::File)
 }
 
+pub fn set_provider_auth_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    token: &str,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let _file_guard = ProviderCredentialMutationFileLock::acquire_blocking(security_dir)?;
+    set_provider_auth_for_tenant_in_dir_unlocked(security_dir, tenant_context, provider_id, token)
+}
+
 pub fn delete_provider_auth_for_tenant(
     tenant_context: &TenantContext,
     provider_id: &str,
@@ -186,12 +195,11 @@ pub fn delete_provider_auth_for_tenant(
     delete_provider_auth(&scoped_provider_id)
 }
 
-pub fn delete_provider_auth_for_tenant_in_dir(
+fn delete_provider_auth_for_tenant_in_dir_unlocked(
     security_dir: &Path,
     tenant_context: &TenantContext,
     provider_id: &str,
 ) -> anyhow::Result<bool> {
-    let _file_guard = ProviderCredentialMutationFileLock::acquire_blocking(security_dir)?;
     let scoped_provider_id =
         normalize_provider_id(&tenant_scoped_provider_id(tenant_context, provider_id));
     if scoped_provider_id.is_empty() {
@@ -218,6 +226,15 @@ pub fn delete_provider_auth_for_tenant_in_dir(
     save_provider_index_to_dir(security_dir, &known)?;
     mutation.finish(None)?;
     Ok(removed)
+}
+
+pub fn delete_provider_auth_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> anyhow::Result<bool> {
+    let _file_guard = ProviderCredentialMutationFileLock::acquire_blocking(security_dir)?;
+    delete_provider_auth_for_tenant_in_dir_unlocked(security_dir, tenant_context, provider_id)
 }
 
 pub fn load_provider_credentials() -> HashMap<String, ProviderCredential> {
@@ -833,4 +850,44 @@ pub async fn refresh_provider_oauth_credential_for_tenant_in_dir_serialized(
         Some(replacement),
         true,
     )
+}
+
+/// Holds the existing credential serialization and file lock without blocking a
+/// Tokio worker during acquisition. Revalidate authority after awaiting this
+/// guard, then snapshot/mutate through it. Drop before rollback or runtime I/O.
+pub struct ProviderAuthMutation {
+    security_dir: PathBuf,
+    _file_guard: ProviderCredentialMutationFileLock,
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+pub async fn provider_auth_mutation_in_dir(
+    security_dir: &Path,
+) -> anyhow::Result<ProviderAuthMutation> {
+    let guard = provider_credential_mutation_lock().lock().await;
+    let file_guard = ProviderCredentialMutationFileLock::acquire(security_dir).await?;
+    Ok(ProviderAuthMutation {
+        security_dir: security_dir.to_path_buf(),
+        _file_guard: file_guard,
+        _guard: guard,
+    })
+}
+
+impl ProviderAuthMutation {
+    pub fn set_for_tenant(
+        &mut self,
+        tenant: &TenantContext,
+        provider_id: &str,
+        token: &str,
+    ) -> anyhow::Result<ProviderAuthBackend> {
+        set_provider_auth_for_tenant_in_dir_unlocked(&self.security_dir, tenant, provider_id, token)
+    }
+
+    pub fn delete_for_tenant(
+        &mut self,
+        tenant: &TenantContext,
+        provider_id: &str,
+    ) -> anyhow::Result<bool> {
+        delete_provider_auth_for_tenant_in_dir_unlocked(&self.security_dir, tenant, provider_id)
+    }
 }
