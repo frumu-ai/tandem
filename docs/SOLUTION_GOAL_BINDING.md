@@ -9,7 +9,9 @@ the same tenant with an otherwise valid model approval.
 customer configuration, fully staged installation, generation, composition and
 verified human. It commits the association with the existing native goal, root
 run, hop-zero link and start event in one writer transaction. A reused root run
-is rejected. Replaying the same start returns the existing records; replaying
+is rejected. Identity expiry uses the trusted clock sampled after acquiring the
+writer lock, rather than the initiating input's timestamp. Replaying the same
+start returns the existing records; replaying
 another installation or actor under that goal ID fails. No additional root
 registry, storage schema or secret store is introduced.
 

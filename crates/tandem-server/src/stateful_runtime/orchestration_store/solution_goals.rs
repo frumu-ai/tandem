@@ -15,6 +15,7 @@ const RECORD_KIND: &str = "solution-goal-binding";
 
 /// Trusted host inputs, never an HTTP-deserializable start permission. The
 /// calling service must authorize activation and the current execution actor.
+#[derive(Clone, Copy)]
 pub struct SolutionGoalStart<'a> {
     pub verified: &'a VerifiedTenantContext,
     pub scope: &'a CustomerScope,

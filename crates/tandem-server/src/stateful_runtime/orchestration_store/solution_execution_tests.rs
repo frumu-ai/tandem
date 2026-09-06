@@ -42,6 +42,7 @@ pub(super) fn seed_execution(store: &OrchestrationStateStore, fixture: &BudgetFi
                 &fixture.installation.customer.context.human_actor.actor_id,
             ),
             goal_start(fixture, &installed),
+            || 1500,
         )
         .unwrap();
 }

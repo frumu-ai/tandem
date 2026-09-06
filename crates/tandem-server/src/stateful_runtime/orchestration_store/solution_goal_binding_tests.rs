@@ -82,11 +82,33 @@ fn solution_budget_provider_goal_binding_requires_staging_and_is_immutable() {
             );
             let pending = fixture.installation.read(store);
             assert!(store
-                .start_solution_goal(&goal, &root, &link, &actor, goal_start(&fixture, &pending))
+                .start_solution_goal(
+                    &goal,
+                    &root,
+                    &link,
+                    &actor,
+                    goal_start(&fixture, &pending),
+                    || 1500
+                )
                 .is_err());
             assert!(store.get_goal(&goal.goal_id).unwrap().is_none());
             assert!(store.get_automation_run(&root.run_id).unwrap().is_none());
             let installed = staged_installation(store, &fixture);
+            // The initiating input still says 1500. Admission must instead use
+            // the trusted clock sampled inside its writer transaction.
+            let expired = fixture.installation.customer.context.expires_at_ms + 1;
+            assert!(store
+                .start_solution_goal(
+                    &goal,
+                    &root,
+                    &link,
+                    &actor,
+                    goal_start(&fixture, &installed),
+                    || expired,
+                )
+                .is_err());
+            assert!(store.get_goal(&goal.goal_id).unwrap().is_none());
+            assert!(store.get_automation_run(&root.run_id).unwrap().is_none());
             assert!(matches!(
                 store
                     .start_solution_goal(
@@ -94,7 +116,8 @@ fn solution_budget_provider_goal_binding_requires_staging_and_is_immutable() {
                         &root,
                         &link,
                         &actor,
-                        goal_start(&fixture, &installed)
+                        goal_start(&fixture, &installed),
+                        || 1500,
                     )
                     .unwrap(),
                 StartGoalOutcome::Created { .. }
@@ -107,7 +130,8 @@ fn solution_budget_provider_goal_binding_requires_staging_and_is_immutable() {
                         &root,
                         &link,
                         &actor,
-                        goal_start(&fixture, &installed)
+                        goal_start(&fixture, &installed),
+                        || 1500,
                     )
                     .unwrap(),
                 StartGoalOutcome::AlreadyStarted { .. }
@@ -185,6 +209,7 @@ fn solution_budget_provider_concurrent_goal_start_cannot_rebind_installation() {
                                     link,
                                     actor,
                                     goal_start(fixture, installed),
+                                    || 1500,
                                 )
                             })
                         })

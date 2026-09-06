@@ -67,7 +67,7 @@ impl OrchestrationStateStore {
         link: &GoalRunLink,
         actor: &PrincipalRef,
     ) -> anyhow::Result<StartGoalOutcome> {
-        self.start_goal_inner(goal, root_run, link, actor, None)
+        self.start_goal_inner(goal, root_run, link, actor, None, &|| 0)
     }
 
     /// Associate current installation facts in the same transaction as native
@@ -79,8 +79,9 @@ impl OrchestrationStateStore {
         link: &GoalRunLink,
         actor: &PrincipalRef,
         solution: super::SolutionGoalStart<'_>,
+        clock: impl Fn() -> u64,
     ) -> anyhow::Result<StartGoalOutcome> {
-        self.start_goal_inner(goal, root_run, link, actor, Some(solution))
+        self.start_goal_inner(goal, root_run, link, actor, Some(solution), &clock)
     }
 
     fn start_goal_inner(
@@ -90,6 +91,7 @@ impl OrchestrationStateStore {
         link: &GoalRunLink,
         actor: &PrincipalRef,
         solution: Option<super::SolutionGoalStart<'_>>,
+        clock: &dyn Fn() -> u64,
     ) -> anyhow::Result<StartGoalOutcome> {
         super::solution_goals::reject_caller_binding(goal)?;
         if link.goal_id != goal.goal_id || link.run_id != root_run.run_id {
@@ -112,6 +114,12 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // Waiting for the writer must not preserve an expired initiating
+            // timestamp. Ordinary goal creation does not use this clock.
+            let solution = solution.map(|input| super::SolutionGoalStart {
+                now_ms: clock(),
+                ..input
+            });
             let bound;
             let goal = if let Some(solution) = &solution {
                 bound = super::solution_goals::bind(&transaction, goal, solution, &root_run.run_id, actor)?;
