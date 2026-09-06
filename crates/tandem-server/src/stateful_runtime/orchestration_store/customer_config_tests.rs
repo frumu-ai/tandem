@@ -340,6 +340,8 @@ fn customer_config_schema_upgrade_keeps_existing_runtime_records() {
         store.with_connection(|connection| {
             connection.execute_batch("DROP TABLE solution_installation_versions;
                 DROP TABLE solution_installations;
+                DROP TABLE solution_budget_records;
+                DROP TABLE solution_budget_versions;
                 DROP TABLE solution_customer_config_versions;
                 DROP TABLE solution_customer_configs;
                 UPDATE schema_metadata SET schema_version=5;
