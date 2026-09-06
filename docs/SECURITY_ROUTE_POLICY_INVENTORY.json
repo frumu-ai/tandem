@@ -21,7 +21,7 @@
       }
     ]
   },
-  "route_count": 848,
+  "route_count": 849,
   "policies": [
     {
       "listener": "engine_api",
@@ -104,6 +104,19 @@
     {
       "listener": "engine_api",
       "method": "POST",
+      "path": "/admin/context-assertions/reload",
+      "ingress_policy": "runtime_auth_gate",
+      "authorization_policy": "verified_hosted_administrator_and_current_policy",
+      "capability": "hosted.admin",
+      "resolver": "operator_keyring_current_snapshot_and_protected_audit",
+      "policy_origin": "admin.context_assertion_keyring",
+      "sources": [
+        "crates/tandem-server/src/http/routes_global.rs:45"
+      ]
+    },
+    {
+      "listener": "engine_api",
+      "method": "POST",
       "path": "/admin/reload-config",
       "ingress_policy": "runtime_auth_gate",
       "authorization_policy": "deployment_administrator_or_loopback_local_owner",
@@ -124,7 +137,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:71"
+        "crates/tandem-server/src/http/routes_global.rs:75"
       ]
     },
     {
@@ -137,7 +150,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:71"
+        "crates/tandem-server/src/http/routes_global.rs:75"
       ]
     },
     {
@@ -423,7 +436,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:49"
+        "crates/tandem-server/src/http/routes_global.rs:53"
       ]
     },
     {
@@ -436,7 +449,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:49"
+        "crates/tandem-server/src/http/routes_global.rs:53"
       ]
     },
     {
@@ -2425,7 +2438,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:55"
+        "crates/tandem-server/src/http/routes_global.rs:59"
       ]
     },
     {
@@ -2438,7 +2451,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:55"
+        "crates/tandem-server/src/http/routes_global.rs:59"
       ]
     },
     {
@@ -2451,7 +2464,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:53"
+        "crates/tandem-server/src/http/routes_global.rs:57"
       ]
     },
     {
@@ -2464,7 +2477,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:53"
+        "crates/tandem-server/src/http/routes_global.rs:57"
       ]
     },
     {
@@ -2477,7 +2490,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:59"
+        "crates/tandem-server/src/http/routes_global.rs:63"
       ]
     },
     {
@@ -2490,7 +2503,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:59"
+        "crates/tandem-server/src/http/routes_global.rs:63"
       ]
     },
     {
@@ -2503,7 +2516,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:59"
+        "crates/tandem-server/src/http/routes_global.rs:63"
       ]
     },
     {
@@ -2516,7 +2529,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:54"
+        "crates/tandem-server/src/http/routes_global.rs:58"
       ]
     },
     {
@@ -2529,7 +2542,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:51"
+        "crates/tandem-server/src/http/routes_global.rs:55"
       ]
     },
     {
@@ -2542,7 +2555,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:51"
+        "crates/tandem-server/src/http/routes_global.rs:55"
       ]
     },
     {
@@ -2633,7 +2646,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:52"
+        "crates/tandem-server/src/http/routes_global.rs:56"
       ]
     },
     {
@@ -2646,7 +2659,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:52"
+        "crates/tandem-server/src/http/routes_global.rs:56"
       ]
     },
     {
@@ -4102,7 +4115,7 @@
       "resolver": "verified_tenant_context",
       "policy_origin": "tenant.authenticated",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:74"
+        "crates/tandem-server/src/http/routes_global.rs:78"
       ]
     },
     {
@@ -4115,7 +4128,7 @@
       "resolver": "verified_tenant_context",
       "policy_origin": "tenant.authenticated",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:74"
+        "crates/tandem-server/src/http/routes_global.rs:78"
       ]
     },
     {
@@ -4414,7 +4427,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:161"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:198"
       ]
     },
     {
@@ -4427,7 +4440,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:161"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:198"
       ]
     },
     {
@@ -4440,7 +4453,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:161"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:198"
       ]
     },
     {
@@ -4453,7 +4466,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:169"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:206"
       ]
     },
     {
@@ -4466,7 +4479,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:165"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:202"
       ]
     },
     {
@@ -4479,7 +4492,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:165"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:202"
       ]
     },
     {
@@ -4492,7 +4505,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:153"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:190"
       ]
     },
     {
@@ -4505,7 +4518,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:153"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:190"
       ]
     },
     {
@@ -4518,7 +4531,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:153"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:190"
       ]
     },
     {
@@ -4531,7 +4544,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:157"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:194"
       ]
     },
     {
@@ -4544,7 +4557,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:149"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:186"
       ]
     },
     {
@@ -4557,7 +4570,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:149"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:186"
       ]
     },
     {
@@ -4570,7 +4583,7 @@
       "resolver": "deployment_or_enterprise_state",
       "policy_origin": "admin.deployment",
       "sources": [
-        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:149"
+        "crates/tandem-enterprise-server/src/http/routes_enterprise_org_units.rs:186"
       ]
     },
     {
@@ -6832,7 +6845,7 @@
       "resolver": "verified_tenant_context",
       "policy_origin": "tenant.authenticated",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:72"
+        "crates/tandem-server/src/http/routes_global.rs:76"
       ]
     },
     {
@@ -6845,7 +6858,7 @@
       "resolver": "verified_tenant_context",
       "policy_origin": "tenant.authenticated",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:73"
+        "crates/tandem-server/src/http/routes_global.rs:77"
       ]
     },
     {
@@ -8353,7 +8366,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:50"
+        "crates/tandem-server/src/http/routes_global.rs:54"
       ]
     },
     {
@@ -8366,7 +8379,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:50"
+        "crates/tandem-server/src/http/routes_global.rs:54"
       ]
     },
     {
@@ -9042,7 +9055,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:48"
+        "crates/tandem-server/src/http/routes_global.rs:52"
       ]
     },
     {
@@ -9055,7 +9068,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:48"
+        "crates/tandem-server/src/http/routes_global.rs:52"
       ]
     },
     {
@@ -10186,7 +10199,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:46"
+        "crates/tandem-server/src/http/routes_global.rs:50"
       ]
     },
     {
@@ -10199,7 +10212,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:46"
+        "crates/tandem-server/src/http/routes_global.rs:50"
       ]
     },
     {
@@ -10212,7 +10225,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:47"
+        "crates/tandem-server/src/http/routes_global.rs:51"
       ]
     },
     {
@@ -10225,7 +10238,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:45"
+        "crates/tandem-server/src/http/routes_global.rs:49"
       ]
     },
     {
@@ -10238,7 +10251,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:45"
+        "crates/tandem-server/src/http/routes_global.rs:49"
       ]
     },
     {
@@ -10940,7 +10953,7 @@
       "resolver": "canonical_host_resource",
       "policy_origin": "host.local_effect",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:63"
+        "crates/tandem-server/src/http/routes_global.rs:67"
       ]
     },
     {
@@ -10953,7 +10966,7 @@
       "resolver": "canonical_host_resource",
       "policy_origin": "host.local_effect",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:63"
+        "crates/tandem-server/src/http/routes_global.rs:67"
       ]
     },
     {
@@ -10966,7 +10979,7 @@
       "resolver": "canonical_host_resource",
       "policy_origin": "host.local_effect",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:63"
+        "crates/tandem-server/src/http/routes_global.rs:67"
       ]
     },
     {
@@ -10979,7 +10992,7 @@
       "resolver": "canonical_host_resource",
       "policy_origin": "host.local_effect",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:63"
+        "crates/tandem-server/src/http/routes_global.rs:67"
       ]
     },
     {
@@ -10992,7 +11005,7 @@
       "resolver": "canonical_host_resource",
       "policy_origin": "host.local_effect",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:70"
+        "crates/tandem-server/src/http/routes_global.rs:74"
       ]
     },
     {
@@ -11005,7 +11018,7 @@
       "resolver": "canonical_host_resource",
       "policy_origin": "host.local_effect",
       "sources": [
-        "crates/tandem-server/src/http/routes_global.rs:69"
+        "crates/tandem-server/src/http/routes_global.rs:73"
       ]
     },
     {

@@ -214,6 +214,12 @@ impl std::error::Error for ToolDispatchBlocked {}
 
 #[async_trait]
 pub trait ToolDispatchPolicy: Send + Sync {
+    /// Recheck mutable authority after receipts/approvals, immediately before
+    /// dispatch. Implementations must not create another approval request.
+    async fn revalidate(&self, _context: &ToolDispatchContext) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn evaluate(
         &self,
         context: ToolDispatchPolicyContext,
@@ -706,7 +712,9 @@ impl GovernedToolDispatcher {
         })
         .await?;
 
-        let result = if canonical_tool.as_deref() == Some("batch") || name == "batch" {
+        let result = if let Err(error) = context.policy.revalidate(&context).await {
+            Err(error.context("tool authority revoked before dispatch"))
+        } else if canonical_tool.as_deref() == Some("batch") || name == "batch" {
             self.execute_governed_batch(args, context.clone(), cancel, progress)
                 .await
         } else {

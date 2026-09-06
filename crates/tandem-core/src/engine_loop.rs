@@ -1484,6 +1484,7 @@ impl EngineLoop {
                 obj.insert("tool_calls".to_string(), Value::Array(governed_calls));
             }
         }
+        self.revalidate_session_authority(session_id).await?;
         let result = match self
             .execute_tool_with_timeout(
                 session_id,

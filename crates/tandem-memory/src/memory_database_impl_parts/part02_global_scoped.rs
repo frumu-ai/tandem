@@ -6,10 +6,10 @@
 impl MemoryDatabase {
     /// Department-scoped variant of [`Self::search_global_memory_for_tenant`]
     /// (TAN-645). `owner_org_unit_id = None` matches all rows (tenant-only, the
-    /// behavior-preserving default); `Some(dept)` restricts to rows stamped with
-    /// that department via the SQL predicate `(?N IS NULL OR owner_org_unit_id =
-    /// ?N)`, so unstamped (NULL) rows are excluded from a department read
-    /// (fail-closed, TAN-647). Enforced in-query rather than post-filtered, so
+    /// behavior-preserving default); `Some(dept)` admits that department and
+    /// explicitly tenant-shared rows without a department. Unlabelled NULL rows
+    /// remain excluded (TAN-647), and private ownership is checked independently.
+    /// Enforced in-query rather than post-filtered, so
     /// LIMIT/ranking see the scoped set.
     #[allow(clippy::too_many_arguments)]
     pub async fn search_global_memory_for_tenant_scoped(
@@ -47,7 +47,7 @@ impl MemoryDatabase {
                AND IFNULL(m.tenant_deployment_id, '') = IFNULL(?4, '')
                AND (
                    m.owner_subject = ?5
-                   OR (m.private = 0 AND m.owner_org_unit_id IS NOT NULL)
+                   OR (m.private = 0 AND (m.owner_org_unit_id IS NOT NULL OR m.tenant_shared = 1))
                    OR (m.owner_subject IS NULL AND m.owner_org_unit_id IS NULL AND m.user_id = ?12)
                )
                AND m.demoted = 0
@@ -55,7 +55,7 @@ impl MemoryDatabase {
                AND (?7 IS NULL OR m.project_tag = ?7)
                AND (?8 IS NULL OR m.channel_tag = ?8)
                AND (?9 IS NULL OR m.host_tag = ?9)
-               AND (?11 IS NULL OR m.owner_org_unit_id = ?11)
+               AND (?11 IS NULL OR m.owner_org_unit_id = ?11 OR (m.owner_org_unit_id IS NULL AND m.tenant_shared = 1))
              ORDER BY rank ASC
              LIMIT ?10"
         );
@@ -105,7 +105,7 @@ impl MemoryDatabase {
                AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')
                AND (
                    owner_subject = ?4
-                   OR (private = 0 AND owner_org_unit_id IS NOT NULL)
+                   OR (private = 0 AND (owner_org_unit_id IS NOT NULL OR tenant_shared = 1))
                    OR (owner_subject IS NULL AND owner_org_unit_id IS NULL AND user_id = ?13)
                )
                AND demoted = 0
@@ -114,7 +114,7 @@ impl MemoryDatabase {
                AND (?7 IS NULL OR channel_tag = ?7)
                AND (?8 IS NULL OR host_tag = ?8)
                AND (?9 = '' OR content LIKE ?10)
-               AND (?12 IS NULL OR owner_org_unit_id = ?12)
+               AND (?12 IS NULL OR owner_org_unit_id = ?12 OR (owner_org_unit_id IS NULL AND tenant_shared = 1))
              ORDER BY created_at_ms DESC
              LIMIT ?11",
         )?;
@@ -152,7 +152,7 @@ impl MemoryDatabase {
     /// Department-scoped variant of [`Self::list_global_memory_for_tenant`]
     /// (TAN-645). See [`Self::search_global_memory_for_tenant_scoped`] for the
     /// `owner_org_unit_id` predicate semantics (`None` = tenant-wide;
-    /// `Some(dept)` restricts, excluding unstamped rows fail-closed).
+    /// `Some(dept)` restricts, admitting department-free rows only when explicitly shared).
     #[allow(clippy::too_many_arguments)]
     pub async fn list_global_memory_for_tenant_scoped(
         &self,
@@ -183,13 +183,13 @@ impl MemoryDatabase {
                AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')
                AND (
                    owner_subject = ?4
-                   OR (private = 0 AND owner_org_unit_id IS NOT NULL)
+                   OR (private = 0 AND (owner_org_unit_id IS NOT NULL OR tenant_shared = 1))
                    OR (owner_subject IS NULL AND owner_org_unit_id IS NULL AND user_id = ?12)
                )
                AND (?5 = '' OR content LIKE ?6 OR source_type LIKE ?6 OR run_id LIKE ?6)
                AND (?7 IS NULL OR project_tag = ?7)
                AND (?8 IS NULL OR channel_tag = ?8)
-               AND (?11 IS NULL OR owner_org_unit_id = ?11)
+               AND (?11 IS NULL OR owner_org_unit_id = ?11 OR (owner_org_unit_id IS NULL AND tenant_shared = 1))
              ORDER BY created_at_ms DESC
              LIMIT ?9 OFFSET ?10",
         )?;
@@ -239,7 +239,7 @@ impl MemoryDatabase {
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
                AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')
-               AND (?5 IS NULL OR owner_org_unit_id = ?5)
+               AND (?5 IS NULL OR owner_org_unit_id = ?5 OR (owner_org_unit_id IS NULL AND tenant_shared = 1))
                AND (private = 0 OR owner_subject = ?6)
              LIMIT 1",
         )?;
@@ -277,18 +277,19 @@ impl MemoryDatabase {
         let next_owner_org_unit_id = owner_org_unit_id_from_metadata(metadata);
         let next_owner_subject = crate::types::owner_subject_from_metadata(metadata);
         let next_private = next_owner_subject.is_some();
+        let next_tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
         let metadata = metadata.map(ToString::to_string).unwrap_or_default();
         let provenance = provenance.map(ToString::to_string).unwrap_or_default();
         let changed = conn.execute(
             "UPDATE memory_records
              SET visibility = ?7, demoted = ?8, metadata = ?9, provenance = ?10,
                  updated_at_ms = ?11, owner_org_unit_id = ?12, private = ?13,
-                 owner_subject = ?14
+                 owner_subject = ?14, tenant_shared = ?15
              WHERE id = ?1
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
                AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')
-               AND (?5 IS NULL OR owner_org_unit_id = ?5)
+               AND (?5 IS NULL OR owner_org_unit_id = ?5 OR (owner_org_unit_id IS NULL AND tenant_shared = 1))
                AND (private = 0 OR owner_subject = ?6)",
             params![
                 id,
@@ -305,6 +306,7 @@ impl MemoryDatabase {
                 next_owner_org_unit_id,
                 i64::from(next_private),
                 next_owner_subject,
+                i64::from(next_tenant_shared),
             ],
         )?;
         Ok(changed > 0)
@@ -327,7 +329,7 @@ impl MemoryDatabase {
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
                AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')
-               AND (?5 IS NULL OR owner_org_unit_id = ?5)
+               AND (?5 IS NULL OR owner_org_unit_id = ?5 OR (owner_org_unit_id IS NULL AND tenant_shared = 1))
                AND (private = 0 OR owner_subject = ?6)",
             params![
                 id,

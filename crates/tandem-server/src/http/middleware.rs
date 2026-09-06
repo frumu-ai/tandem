@@ -173,7 +173,7 @@ async fn attach_enterprise_request_context_for_mode(
 ) -> Result<bool, String> {
     let headers = request.headers();
     let assertion_security = state.context_assertion_security_snapshot().ok();
-    let resolved = match resolve_enterprise_request_context_for_mode_with_cached_security(
+    let mut resolved = match resolve_enterprise_request_context_for_mode_with_cached_security(
         headers,
         mode,
         state.trust_test_tenant_headers.load(Ordering::Relaxed),
@@ -203,8 +203,45 @@ async fn attach_enterprise_request_context_for_mode(
         return Ok(false);
     }
 
+    if let Err(reason) = state
+        .enterprise
+        .hosted_policy
+        .authorize(resolved.verified_tenant_context.as_ref())
+    {
+        tracing::warn!(target: "tandem_server::hosted_policy", reason, "hosted request authority denied");
+        append_authorization_denial_audit_event(state, &resolved).await?;
+        return Ok(false);
+    }
+    let hosted_memberships = if let Some(verified) = resolved.verified_tenant_context.as_mut() {
+        match state.enterprise.hosted_policy.project(verified) {
+            Ok(memberships) => memberships,
+            Err(reason) => {
+                tracing::warn!(target: "tandem_server::hosted_policy", reason, "hosted projection denied");
+                append_authorization_denial_audit_event(state, &resolved).await?;
+                return Ok(false);
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(permission) = super::hosted_route_authority::required_permission(request) {
+        if let Err(reason) = state
+            .enterprise
+            .hosted_policy
+            .authorize_permission(resolved.verified_tenant_context.as_ref(), permission)
+        {
+            tracing::warn!(target: "tandem_server::hosted_policy", reason, "hosted operation denied");
+            append_authorization_denial_audit_event(state, &resolved).await?;
+            return Ok(false);
+        }
+    }
     if let Some(mut verified_tenant_context) = resolved.verified_tenant_context {
-        enrich_verified_context_with_org_unit_grants(state, &mut verified_tenant_context).await;
+        enrich_verified_context_with_org_unit_grants(
+            state,
+            &mut verified_tenant_context,
+            hosted_memberships,
+        )
+        .await;
         super::cross_tenant_grants::enrich_verified_context_with_inbound_cross_tenant_grants(
             state,
             &mut verified_tenant_context,
@@ -242,18 +279,23 @@ fn denial_audit_failure_response(error: &str) -> Response {
 async fn enrich_verified_context_with_org_unit_grants(
     state: &AppState,
     verified: &mut VerifiedTenantContext,
+    hosted_memberships: Option<Vec<OrganizationUnitMembership>>,
 ) {
     if verified.strict_projection.is_none() {
         return;
     }
-    let memberships = state
-        .enterprise
-        .org_unit_memberships
-        .read()
-        .await
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
+    let memberships = if let Some(memberships) = hosted_memberships {
+        memberships
+    } else {
+        state
+            .enterprise
+            .org_unit_memberships
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
     let access_grants = state
         .enterprise
         .org_unit_access_grants
@@ -1749,6 +1791,7 @@ fn resource_kind_scope_label(kind: ResourceKind) -> &'static str {
         ResourceKind::SourceObject => "source_object",
         ResourceKind::IngestionJob => "ingestion_job",
         ResourceKind::ExternalIntegrationAccount => "external_integration_account",
+        ResourceKind::HostedDeployment => "hosted_deployment",
     }
 }
 
@@ -1814,6 +1857,14 @@ fn extract_request_token(headers: &HeaderMap) -> Option<String> {
 #[cfg(test)]
 #[path = "middleware_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "middleware_hosted_policy_tests.rs"]
+mod hosted_policy_tests;
+
+#[cfg(test)]
+#[path = "tests/middleware_hosted_signed_tests.rs"]
+mod hosted_signed_tests;
 
 #[cfg(test)]
 mod slack_events_bypass_tests {

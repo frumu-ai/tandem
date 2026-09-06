@@ -651,6 +651,7 @@ struct McpRefreshTokenResponse {
 
 #[derive(Clone)]
 struct McpEndpointAuthorization {
+    tool_dispatch: Option<McpToolDispatchBinding>,
     local_implicit: bool,
     standalone_private_endpoint_access: Arc<std::sync::atomic::AtomicBool>,
     strict_tenant_enforcement: Arc<std::sync::atomic::AtomicBool>,
@@ -661,6 +662,7 @@ struct McpEndpointAuthorization {
 impl McpEndpointAuthorization {
     fn for_registry(registry: &McpRegistry, tenant: &TenantContext) -> Self {
         Self {
+            tool_dispatch: None,
             local_implicit: tenant.is_local_implicit(),
             standalone_private_endpoint_access: registry
                 .standalone_private_endpoint_access
@@ -971,6 +973,9 @@ async fn post_json_rpc_with_session(
         }
     }
     let request = req.json(&request);
+    if let Some(binding) = &authorization.tool_dispatch {
+        binding.revalidate()?;
+    }
     target.ensure_authorized(authorization)?;
     let mut response = request
         .send()

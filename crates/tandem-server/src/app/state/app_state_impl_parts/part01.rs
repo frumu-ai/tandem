@@ -419,6 +419,7 @@ impl AppState {
 
     pub fn is_ready(&self) -> bool {
         self.runtime.get().is_some()
+            && self.enterprise.hosted_policy.is_ready()
             && self
                 .startup
                 .try_read()

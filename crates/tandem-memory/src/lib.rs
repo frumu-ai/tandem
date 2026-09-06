@@ -10,6 +10,8 @@ pub mod distillation;
 pub mod embeddings;
 pub mod envelope;
 pub mod envelope_crypto;
+#[cfg(test)]
+mod global_sharing_tests;
 pub mod governance;
 #[cfg(test)]
 mod governed_read_tests;

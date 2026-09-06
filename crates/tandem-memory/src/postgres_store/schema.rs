@@ -72,6 +72,7 @@ impl PostgresMemoryStore {
                 owner_org_unit_id TEXT,
                 owner_subject TEXT,
                 private BOOLEAN NOT NULL,
+                tenant_shared BOOLEAN NOT NULL DEFAULT false,
                 data_class TEXT NOT NULL DEFAULT 'internal',
                 source_binding_id TEXT,
                 user_id TEXT NOT NULL,
@@ -147,6 +148,7 @@ impl PostgresMemoryStore {
                  ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
                  UPDATE tandem_memory_chunks SET source='file' WHERE source='' AND source_path IS NOT NULL;
                  ALTER TABLE tandem_memory_global_records ALTER COLUMN data DROP NOT NULL;
+                 ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS tenant_shared BOOLEAN NOT NULL DEFAULT false;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_ciphertext TEXT;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_envelope JSONB;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_policy_decision_id TEXT;
@@ -160,7 +162,7 @@ impl PostgresMemoryStore {
                      source_type, content_hash, run_id, COALESCE(session_id, ''),
                      COALESCE(message_id, ''), COALESCE(tool_name, ''),
                      COALESCE(owner_org_unit_id, ''), private, COALESCE(owner_subject, ''),
-                     data_class, COALESCE(source_binding_id, ''));
+                     data_class, COALESCE(source_binding_id, ''), tenant_shared);
                  ALTER TABLE tandem_memory_entities ALTER COLUMN data DROP NOT NULL;
                  ALTER TABLE tandem_memory_entities ADD COLUMN IF NOT EXISTS data_ciphertext TEXT;
                  ALTER TABLE tandem_memory_entities ADD COLUMN IF NOT EXISTS data_envelope JSONB;
@@ -183,6 +185,16 @@ impl PostgresMemoryStore {
             )
             .await
             .map_err(|error| store_error("record PostgreSQL memory migration", error, false))?;
+        transaction
+            .execute(
+                "INSERT INTO tandem_memory_schema_migrations(version, name)
+                 VALUES (2, 'global_memory_explicit_sharing') ON CONFLICT (version) DO NOTHING",
+                &[],
+            )
+            .await
+            .map_err(|error| {
+                store_error("record PostgreSQL global sharing migration", error, false)
+            })?;
         let vector_type: String = transaction
             .query_one(
                 "SELECT format_type(atttypid, atttypmod) FROM pg_attribute

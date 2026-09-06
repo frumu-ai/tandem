@@ -1,4 +1,6 @@
+mod dispatch_authority;
 mod guarded_dispatch;
+pub use dispatch_authority::ProviderDispatchAuthority;
 pub mod provider_auth_store;
 
 pub use provider_auth_store::*;

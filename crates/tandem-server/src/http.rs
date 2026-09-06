@@ -66,6 +66,7 @@ mod channel_interaction_audit;
 mod channels_api;
 mod coder;
 pub(crate) mod config_providers;
+mod context_key_reload;
 pub(crate) mod context_packs;
 mod context_run_ledger;
 mod context_run_mutation_checkpoints;
@@ -81,6 +82,7 @@ mod goals_api;
 mod goals_projection;
 pub(crate) mod governance;
 pub(crate) mod host_authority;
+mod hosted_route_authority;
 pub(crate) mod incident_monitor;
 mod marketplace;
 pub(crate) mod mcp;
@@ -502,6 +504,7 @@ pub async fn serve_with_route_extensions(
             anyhow::anyhow!("context assertion security startup validation failed: {error}")
         })?;
     let memory_context_policy = apply_strict_tenant_enforcement_defaults()?;
+    state.start_hosted_policy_sync(runtime_auth_mode)?;
     if memory_context_policy.strict_required {
         if let Some(runtime) = state.runtime.get() {
             runtime.mcp.set_strict_tenant_enforcement(true);

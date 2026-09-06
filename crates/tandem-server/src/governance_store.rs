@@ -25,6 +25,7 @@ pub(crate) enum GovernanceStoreFile {
     CrossTenantGrants,
     SourceBindings,
     PolicyRules,
+    HostedPolicyRevision,
 }
 
 impl GovernanceStoreFile {
@@ -39,6 +40,7 @@ impl GovernanceStoreFile {
             Self::CrossTenantGrants => "cross-tenant-grants",
             Self::SourceBindings => "source-bindings",
             Self::PolicyRules => "policy-rules",
+            Self::HostedPolicyRevision => "hosted-policy-revision",
         }
     }
 
@@ -145,6 +147,9 @@ impl<'a> GovernanceStore<'a> {
             }
             GovernanceStoreFile::SourceBindings => &self.state.enterprise.source_bindings_path,
             GovernanceStoreFile::PolicyRules => &self.state.enterprise.policy_rules_path,
+            GovernanceStoreFile::HostedPolicyRevision => {
+                &self.state.enterprise.hosted_policy_revision_path
+            }
         }
     }
 
