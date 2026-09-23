@@ -610,7 +610,9 @@ pub(super) async fn memory_put_impl_with_verified(
         partition_key,
         memory_linkage_detail(&memory_linkage_value)
     );
-    persist_global_memory_record(&state, store.as_ref(), record).await;
+    if !persist_global_memory_record(&state, store.as_ref(), record).await {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     append_memory_audit(
         &state,
         tenant_context,

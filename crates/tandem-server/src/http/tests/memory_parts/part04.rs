@@ -1003,6 +1003,57 @@ async fn memory_list_returns_error_when_store_cannot_open() {
 }
 
 #[tokio::test]
+async fn memory_put_does_not_report_success_when_store_write_fails() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let initial = app
+        .clone()
+        .oneshot(tenant_memory_request(
+            "GET",
+            "/memory?limit=20",
+            "acme",
+            "north",
+            "user-a",
+            None,
+        ))
+        .await
+        .expect("initial memory list response");
+    assert_eq!(initial.status(), StatusCode::OK);
+
+    let conn = rusqlite::Connection::open(&state.memory_db_path).expect("memory test db");
+    conn.execute("DROP TABLE memory_records", [])
+        .expect("remove memory records table");
+    let put = tenant_memory_request(
+        "POST",
+        "/memory/put",
+        "acme",
+        "north",
+        "user-a",
+        Some(json!({
+            "run_id": "failed-store-memory-run",
+            "partition": {
+                "org_id": "acme",
+                "workspace_id": "north",
+                "project_id": "failed-store-project",
+                "tier": "session"
+            },
+            "kind": "fact",
+            "content": "must not be reported as saved",
+            "classification": "internal",
+            "capability": memory_capability(
+                "failed-store-memory-run",
+                "user-a",
+                "acme",
+                "north",
+                "failed-store-project"
+            )
+        })),
+    );
+    let response = app.oneshot(put).await.expect("failed memory put response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
 async fn memory_list_uses_capability_subject_and_rejects_mismatched_user() {
     let state = test_state().await;
     let app = app_router(state.clone());
