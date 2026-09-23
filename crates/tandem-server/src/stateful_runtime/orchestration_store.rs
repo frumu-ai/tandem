@@ -28,6 +28,7 @@ mod solution_budgets;
 mod solution_execution;
 mod solution_goals;
 pub(crate) mod solution_installations;
+mod solution_profile_history;
 mod transfer;
 mod transition;
 
@@ -51,6 +52,7 @@ pub use solution_installations::{
     SolutionComponentProgress, SolutionInstallation, SolutionInstallationInput,
     SolutionInstallationTransition, SOLUTION_INSTALLATION_CONFLICT,
 };
+pub use solution_profile_history::{RuntimeProfileRequest, RuntimeProfileSelection};
 pub use transfer::{
     migrate_stateful_storage_backend, StatefulBackendKind, StatefulBackendMigrationReport,
     StatefulBackendMigrationRequest,
