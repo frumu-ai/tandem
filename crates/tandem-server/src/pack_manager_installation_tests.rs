@@ -1,4 +1,4 @@
-use super::solution_tests::{fixture, request, signed};
+use super::solution_tests::{fixture, fixture_with_profile, request, signed};
 use super::tests::EnvGuard;
 use super::*;
 use crate::solution_installation::{SolutionConfigurationRequest, SolutionStagingRequest};
@@ -25,9 +25,13 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::new_with_entries(fixture()).await
+    }
+
+    async fn new_with_entries(entries: Vec<(String, String)>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let archive = root.path().join("solution.zip");
-        let key = signed(&archive, &fixture());
+        let key = signed(&archive, &entries);
         let keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
         let mut state = crate::test_support::test_state().await;
         state.automation_v2_runs_path = root.path().join("runtime/runs.json");
@@ -192,6 +196,136 @@ impl Fixture {
             expected_generation: None,
         }
     }
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_service_signed_model_profile_stages_and_replays_without_activation() {
+    crate::encrypted_file_store::with_test_crypto_provider(
+        tandem_memory::MemoryCryptoProvider::local_key([0x41; 32]),
+        None,
+        async {
+            let fixture = Fixture::new_with_entries(fixture_with_profile()).await;
+            let request = fixture.review_and_save().await;
+            let staged = fixture
+                .state
+                .stage_solution_installation(&fixture.verified, request.clone())
+                .await
+                .unwrap();
+            assert!(staged.all_components_staged());
+            assert_eq!(
+                staged.plan.components["text-profile"].kind,
+                tandem_solutions::ComponentKind::ModelProfile
+            );
+            let SolutionComponentProgress::Staged {
+                resource_sha256, ..
+            } = &staged.components["text-profile"]
+            else {
+                panic!("profile not staged")
+            };
+            assert_eq!(
+                *resource_sha256,
+                staged.plan.components["text-profile"].artifact.sha256
+            );
+            assert_eq!(
+                fixture
+                    .state
+                    .stage_solution_installation(&fixture.verified, request)
+                    .await
+                    .unwrap(),
+                staged
+            );
+            // A catalog receipt contains only signed data. It does not enable
+            // the worker or grant a provider send.
+            let workspace = fixture.state.workspace_index.snapshot().await.root;
+            let agent = &staged.plan.components["central-brain"].resource_id;
+            let path = Path::new(&workspace)
+                .join(".tandem/agent-team/templates")
+                .join(format!("{agent}.yaml"));
+            let template: tandem_orchestrator::AgentTemplate =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert!(!template.enabled);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_service_rejects_invalid_signed_profile_before_pack_installation() {
+    let mut entries = fixture_with_profile();
+    let catalog = r#"{"schema_version":"1","default_class":"economy","profiles":{}}"#;
+    let profile = entries
+        .iter_mut()
+        .find(|(path, _)| path == "model-profiles/text-default.json")
+        .unwrap();
+    profile.1 = catalog.into();
+    let mut blueprint: serde_json::Value = serde_json::from_str(&entries[1].1).unwrap();
+    blueprint["components"]["text-profile"]["artifact"]["sha256"] =
+        tandem_solutions::sha256(catalog.as_bytes()).into();
+    entries[1].1 = serde_json::to_string(&blueprint).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let archive = root.path().join("invalid-profile.zip");
+    let key = signed(&archive, &entries);
+    let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+    let manager = PackManager::new(root.path().join("packs"));
+    assert!(manager.install(request(&archive)).await.is_err());
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_service_rejects_profile_slot_drift_in_a_signed_pack() {
+    let mut entries = fixture_with_profile();
+    let mut blueprint: serde_json::Value = serde_json::from_str(&entries[1].1).unwrap();
+    blueprint["components"]["text-profile"]["model_classes"] = serde_json::json!(["reasoning"]);
+    entries[1].1 = serde_json::to_string(&blueprint).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let archive = root.path().join("profile-slot-drift.zip");
+    let key = signed(&archive, &entries);
+    let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+    let manager = PackManager::new(root.path().join("packs"));
+    assert!(manager.install(request(&archive)).await.is_err());
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_service_rejects_worker_class_absent_from_signed_profile() {
+    let mut entries = fixture_with_profile();
+    let profile = entries
+        .iter_mut()
+        .find(|(path, _)| path == "model-profiles/text-default.json")
+        .unwrap();
+    let mut catalog: serde_json::Value = serde_json::from_str(&profile.1).unwrap();
+    catalog["default_class"] = "reasoning".into();
+    let economy = catalog["profiles"]["economy"].clone();
+    catalog["profiles"]["reasoning"] = economy;
+    catalog["profiles"]
+        .as_object_mut()
+        .unwrap()
+        .remove("economy");
+    profile.1 = serde_json::to_string(&catalog).unwrap();
+    let profile_sha256 = tandem_solutions::sha256(profile.1.as_bytes());
+    let mut blueprint: serde_json::Value = serde_json::from_str(&entries[1].1).unwrap();
+    blueprint["components"]["text-profile"]["model_classes"] = serde_json::json!(["reasoning"]);
+    blueprint["components"]["text-profile"]["artifact"]["sha256"] = profile_sha256.into();
+    entries[1].1 = serde_json::to_string(&blueprint).unwrap();
+    crate::encrypted_file_store::with_test_crypto_provider(
+        tandem_memory::MemoryCryptoProvider::local_key([0x43; 32]),
+        None,
+        async {
+            let fixture = Fixture::new_with_entries(entries).await;
+            let paths = crate::OrchestrationStorePaths::from_automation_runs_path(
+                &fixture.state.automation_v2_runs_path,
+            );
+            assert!(fixture
+                .state
+                .preview_solution_configuration(&fixture.verified, &fixture.configuration)
+                .await
+                .is_err());
+            assert!(!paths.database_path.exists());
+        },
+    )
+    .await;
 }
 
 #[tokio::test]

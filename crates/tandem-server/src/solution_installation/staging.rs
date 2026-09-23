@@ -2,7 +2,7 @@ use anyhow::{ensure, Context};
 use serde::Deserialize;
 use tandem_enterprise_contract::{AccessPermission, VerifiedTenantContext};
 use tandem_orchestrator::{AgentTemplate, SolutionTemplateOwner};
-use tandem_solutions::{ComponentKind, CustomerScope};
+use tandem_solutions::{parse_model_profiles, sha256, ComponentKind, CustomerScope};
 
 use crate::stateful_runtime::orchestration_store::{
     CustomerConfigVersion, OrchestrationStateStore, SolutionComponentProgress,
@@ -112,7 +112,7 @@ impl AppState {
         ensure!(
             journal.plan.components.values().all(|component| matches!(
                 component.kind,
-                ComponentKind::AgentTemplate | ComponentKind::Routine
+                ComponentKind::AgentTemplate | ComponentKind::Routine | ComponentKind::ModelProfile
             )),
             "selected component requires an installation adapter that is not available"
         );
@@ -181,6 +181,14 @@ impl AppState {
                 composition_sha256: journal.composition_sha256.clone(),
             };
             let fingerprint = match locked.kind {
+                ComponentKind::ModelProfile => {
+                    // The signed pack snapshot and resolver already pin this
+                    // artifact. Revalidate its semantics on every resume; a
+                    // staged profile is data, not an enabled native worker.
+                    let text = std::str::from_utf8(artifact)?;
+                    parse_model_profiles(text)?;
+                    sha256(artifact)
+                }
                 ComponentKind::AgentTemplate => {
                     if already_staged {
                         self.agent_teams
