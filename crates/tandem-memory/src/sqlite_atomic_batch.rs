@@ -190,7 +190,7 @@ impl MemoryDatabase {
         let mut items = Vec::with_capacity(operations.len());
 
         for (index, operation) in operations.into_iter().enumerate() {
-            let value = match execute_atomic_operation(&transaction, operation) {
+            let value = match execute_atomic_operation(&transaction, operation, &self.crypto) {
                 Ok(value) => value,
                 Err(error) => {
                     return match transaction.rollback() {
@@ -287,11 +287,12 @@ fn validate_global_write_scope(
 fn execute_atomic_operation(
     conn: &Connection,
     operation: MemoryStoreBatchOperation,
+    crypto: &crate::crypto::MemoryCryptoProvider,
 ) -> MemoryStoreResult<MemoryStoreBatchValue> {
     match operation {
         MemoryStoreBatchOperation::Write(MemoryStoreWriteRequest::GlobalRecord {
             record, ..
-        }) => put_global_record(conn, &record).map(|result| {
+        }) => put_global_record(conn, &record, crypto).map(|result| {
             MemoryStoreBatchValue::Write(MemoryStoreWriteResult::GlobalRecord(result))
         }),
         MemoryStoreBatchOperation::Mutation(MemoryStoreMutationRequest::DeleteGlobalRecord {
@@ -311,6 +312,7 @@ fn execute_atomic_operation(
             },
         ) => update_global_record_context(
             conn,
+            crypto,
             &scope,
             &id,
             &visibility,
@@ -328,6 +330,7 @@ fn execute_atomic_operation(
 fn put_global_record(
     conn: &Connection,
     record: &GlobalMemoryRecord,
+    crypto: &crate::crypto::MemoryCryptoProvider,
 ) -> MemoryStoreResult<GlobalMemoryWriteResult> {
     let (tenant_org_id, tenant_workspace_id, tenant_deployment_id) =
         global_memory_record_tenant_scope(record);
@@ -383,28 +386,21 @@ fn put_global_record(
         });
     }
 
-    let metadata = record
-        .metadata
-        .as_ref()
-        .map(ToString::to_string)
-        .unwrap_or_default();
-    let provenance = record
-        .provenance
-        .as_ref()
-        .map(ToString::to_string)
-        .unwrap_or_default();
+    let sealed = super::seal_global_record_fields(crypto, record).map_err(MemoryStoreError::from)?;
     conn.execute(
         "INSERT INTO memory_records(
             id, tenant_org_id, tenant_workspace_id, tenant_deployment_id,
             user_id, source_type, content, content_hash, run_id, session_id, message_id, tool_name,
             project_tag, channel_tag, host_tag, metadata, provenance, redaction_status, redaction_count,
             visibility, demoted, score_boost, created_at_ms, updated_at_ms, expires_at_ms, owner_org_unit_id,
-            private, owner_subject, tenant_shared
+            private, owner_subject, tenant_shared,
+            content_envelope, metadata_envelope, provenance_envelope
         ) VALUES (
             ?1, ?2, ?3, ?4,
             ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
             ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
+            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29,
+            ?30, ?31, ?32
         )",
         params![
             record.id,
@@ -413,7 +409,7 @@ fn put_global_record(
             tenant_deployment_id,
             record.user_id,
             record.source_type,
-            record.content,
+            sealed.content,
             record.content_hash,
             record.run_id,
             record.session_id,
@@ -422,8 +418,8 @@ fn put_global_record(
             record.project_tag,
             record.channel_tag,
             record.host_tag,
-            metadata,
-            provenance,
+            sealed.metadata,
+            sealed.provenance,
             record.redaction_status,
             i64::from(record.redaction_count),
             record.visibility,
@@ -436,6 +432,9 @@ fn put_global_record(
             i64::from(private),
             owner_subject,
             i64::from(tenant_shared),
+            sealed.content_envelope,
+            sealed.metadata_envelope,
+            sealed.provenance_envelope,
         ],
     )
     .map_err(store_database_error)?;
@@ -450,6 +449,7 @@ fn put_global_record(
 #[allow(clippy::too_many_arguments)]
 fn update_global_record_context(
     conn: &Connection,
+    crypto: &crate::crypto::MemoryCryptoProvider,
     scope: &crate::store::MemoryReadScope,
     id: &str,
     visibility: &str,
@@ -462,14 +462,17 @@ fn update_global_record_context(
     let next_owner_subject = owner_subject_from_metadata(metadata);
     let next_private = next_owner_subject.is_some();
     let next_tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
-    let metadata = metadata.map(ToString::to_string).unwrap_or_default();
-    let provenance = provenance.map(ToString::to_string).unwrap_or_default();
+    let Some(sealed) = super::seal_global_context_update(conn, crypto, id, metadata, provenance)
+        .map_err(MemoryStoreError::from)? else {
+        return Ok(false);
+    };
     let changed = conn
         .execute(
             "UPDATE memory_records
              SET visibility = ?7, demoted = ?8, metadata = ?9, provenance = ?10,
                  updated_at_ms = ?11, owner_org_unit_id = ?12, private = ?13,
-                 owner_subject = ?14, tenant_shared = ?15
+                 owner_subject = ?14, tenant_shared = ?15,
+                 metadata_envelope = ?16, provenance_envelope = ?17
              WHERE id = ?1
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
@@ -485,13 +488,15 @@ fn update_global_record_context(
                 scope.subject,
                 visibility,
                 i64::from(demoted),
-                metadata,
-                provenance,
+                sealed.metadata,
+                sealed.provenance,
                 now_ms,
                 next_owner_org_unit_id,
                 i64::from(next_private),
                 next_owner_subject,
                 i64::from(next_tenant_shared),
+                sealed.metadata_envelope,
+                sealed.provenance_envelope,
             ],
         )
         .map_err(store_database_error)?;
