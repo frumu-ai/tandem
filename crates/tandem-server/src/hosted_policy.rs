@@ -244,11 +244,9 @@ impl AppState {
             return Ok(None);
         }
         let guard = self.enterprise.hosted_policy.update.lock().await;
-        self.enterprise.hosted_policy.authorize_permission_with_policy(
-            verified,
-            AccessPermission::HostedAdmin,
-            true,
-        )?;
+        self.enterprise
+            .hosted_policy
+            .authorize_permission_with_policy(verified, AccessPermission::HostedAdmin, true)?;
         Ok(Some(guard))
     }
 

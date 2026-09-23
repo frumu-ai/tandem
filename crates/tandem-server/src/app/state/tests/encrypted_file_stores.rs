@@ -673,7 +673,9 @@ async fn hosted_policy_grant_snapshot_persistence_encrypts_and_rejects_failed_or
         },
     )
     .await;
-    let raw = tokio::fs::read_to_string(path).await.expect("raw grant file");
+    let raw = tokio::fs::read_to_string(path)
+        .await
+        .expect("raw grant file");
     assert!(crate::encrypted_file_store::is_encrypted_payload(&raw));
     assert!(!raw.contains(&secret), "grant resource leaked in plaintext");
 
@@ -689,7 +691,12 @@ async fn hosted_policy_grant_snapshot_persistence_encrypts_and_rejects_failed_or
                 format!("{error:?}").contains("fixture KMS decrypt unavailable"),
                 "unexpected error: {error:?}"
             );
-            assert!(state.enterprise.org_unit_access_grants.read().await.is_empty());
+            assert!(state
+                .enterprise
+                .org_unit_access_grants
+                .read()
+                .await
+                .is_empty());
         },
     )
     .await;
@@ -701,7 +708,10 @@ async fn hosted_policy_grant_snapshot_persistence_encrypts_and_rejects_failed_or
                 .load_enterprise_org_unit_access_grants()
                 .await
                 .expect("cold grant reload with KMS");
-            assert_eq!(*state.enterprise.org_unit_access_grants.read().await, grants);
+            assert_eq!(
+                *state.enterprise.org_unit_access_grants.read().await,
+                grants
+            );
         },
     )
     .await;
@@ -711,7 +721,12 @@ async fn hosted_policy_grant_snapshot_persistence_encrypts_and_rejects_failed_or
     tokio::fs::write(path, serde_json::to_vec(&grants).unwrap())
         .await
         .expect("tamper grant file");
-    state.enterprise.org_unit_access_grants.write().await.clear();
+    state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .clear();
     crate::encrypted_file_store::with_test_crypto_provider(
         hosted_provider(false, false),
         Some(RUNTIME_PRINCIPAL),
@@ -720,7 +735,12 @@ async fn hosted_policy_grant_snapshot_persistence_encrypts_and_rejects_failed_or
                 .load_enterprise_org_unit_access_grants()
                 .await
                 .expect_err("plaintext replacement must fail closed");
-            assert!(state.enterprise.org_unit_access_grants.read().await.is_empty());
+            assert!(state
+                .enterprise
+                .org_unit_access_grants
+                .read()
+                .await
+                .is_empty());
         },
     )
     .await;

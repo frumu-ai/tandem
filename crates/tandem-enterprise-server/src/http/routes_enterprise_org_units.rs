@@ -994,7 +994,10 @@ mod hosted_policy_grant_tests {
 
     async fn signed_hosted_grant_http_case() {
         let state = tandem_server::test_support::test_state().await;
-        let replay_path = state.enterprise.org_unit_access_grants_path.with_extension("replay.json");
+        let replay_path = state
+            .enterprise
+            .org_unit_access_grants_path
+            .with_extension("replay.json");
         std::fs::create_dir_all(replay_path.parent().unwrap()).unwrap();
         let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
         let keyring = json!({"grant-key": {
@@ -1003,15 +1006,20 @@ mod hosted_policy_grant_tests {
                 .encode(key.verifying_key().to_bytes()),
             "organization_id": "org-a", "deployment_id": "dep-a",
             "allowed_audiences": ["tandem-runtime"], "status": "active"
-        }}).to_string();
+        }})
+        .to_string();
         tandem_server::test_support::install_hosted_assertion_security_for_test(
-            &state, &keyring, &replay_path,
+            &state,
+            &keyring,
+            &replay_path,
         );
-        state.install_hosted_policy_snapshot_for_test("org-a", "dep-a", &policy(1, "admin"))
+        state
+            .install_hosted_policy_snapshot_for_test("org-a", "dep-a", &policy(1, "admin"))
             .unwrap();
         let app = apply(Router::new())
             .layer(axum::middleware::from_fn_with_state(
-                state.clone(), tandem_server::test_support::hosted_test_ingress,
+                state.clone(),
+                tandem_server::test_support::hosted_test_ingress,
             ))
             .with_state(state.clone());
         let create = json!({
@@ -1021,31 +1029,91 @@ mod hosted_policy_grant_tests {
         });
         let update = json!({"state": "disabled"});
         let path = "/enterprise/org-unit-access-grants/signed-eng-private";
-        assert_eq!(signed_request(&app, "POST", "/enterprise/org-unit-access-grants",
-            &sign_claims(&key, "bob", "member", 1, "bob-create"), create.clone()).await,
-            StatusCode::FORBIDDEN);
-        assert_eq!(signed_request(&app, "POST", "/enterprise/org-unit-access-grants",
-            &sign_claims(&key, "alice", "admin", 1, "alice-create"), create).await,
-            StatusCode::OK);
+        assert_eq!(
+            signed_request(
+                &app,
+                "POST",
+                "/enterprise/org-unit-access-grants",
+                &sign_claims(&key, "bob", "member", 1, "bob-create"),
+                create.clone()
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            signed_request(
+                &app,
+                "POST",
+                "/enterprise/org-unit-access-grants",
+                &sign_claims(&key, "alice", "admin", 1, "alice-create"),
+                create
+            )
+            .await,
+            StatusCode::OK
+        );
         let forged_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-        assert_eq!(signed_request(&app, "PATCH", path,
-            &sign_claims(&forged_key, "alice", "admin", 1, "forged-key"), update.clone()).await,
-            StatusCode::FORBIDDEN);
-        assert_eq!(signed_request(&app, "PATCH", path,
-            &sign_claims(&key, "bob", "member", 1, "bob-update"), update.clone()).await,
-            StatusCode::FORBIDDEN);
-        assert_eq!(signed_request(&app, "PATCH", path,
-            &sign_claims(&key, "alice", "admin", 1, "alice-update"), update.clone()).await,
-            StatusCode::OK);
-        state.install_hosted_policy_snapshot_for_test("org-a", "dep-a", &policy(2, "viewer"))
+        assert_eq!(
+            signed_request(
+                &app,
+                "PATCH",
+                path,
+                &sign_claims(&forged_key, "alice", "admin", 1, "forged-key"),
+                update.clone()
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            signed_request(
+                &app,
+                "PATCH",
+                path,
+                &sign_claims(&key, "bob", "member", 1, "bob-update"),
+                update.clone()
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            signed_request(
+                &app,
+                "PATCH",
+                path,
+                &sign_claims(&key, "alice", "admin", 1, "alice-update"),
+                update.clone()
+            )
+            .await,
+            StatusCode::OK
+        );
+        state
+            .install_hosted_policy_snapshot_for_test("org-a", "dep-a", &policy(2, "viewer"))
             .unwrap();
-        assert_eq!(signed_request(&app, "PATCH", path,
-            &sign_claims(&key, "alice", "admin", 1, "stale-admin"), update.clone()).await,
-            StatusCode::FORBIDDEN);
-        assert_eq!(signed_request(&app, "PATCH", path,
-            &sign_claims(&key, "alice", "viewer", 2, "fresh-viewer"), update).await,
-            StatusCode::FORBIDDEN);
-        assert_eq!(state.enterprise.org_unit_access_grants.read().await.len(), 1);
+        assert_eq!(
+            signed_request(
+                &app,
+                "PATCH",
+                path,
+                &sign_claims(&key, "alice", "admin", 1, "stale-admin"),
+                update.clone()
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            signed_request(
+                &app,
+                "PATCH",
+                path,
+                &sign_claims(&key, "alice", "viewer", 2, "fresh-viewer"),
+                update
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            state.enterprise.org_unit_access_grants.read().await.len(),
+            1
+        );
         assert!(replay_path.is_file());
     }
 }

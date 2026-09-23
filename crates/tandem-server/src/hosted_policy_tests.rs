@@ -241,19 +241,17 @@ async fn hosted_org_unit_grant_admin_requires_current_signed_policy_authority() 
         .await
         .unwrap()
         .unwrap();
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_millis(20),
-        runtime.update.lock()
-    )
-    .await
-    .is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), runtime.update.lock())
+            .await
+            .is_err()
+    );
     drop(commit_guard);
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        runtime.update.lock()
-    )
-    .await
-    .is_ok());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), runtime.update.lock())
+            .await
+            .is_ok()
+    );
 
     let member_assertion = identity(4);
     assert!(state
@@ -309,7 +307,9 @@ async fn hosted_org_unit_grant_admin_requires_current_signed_policy_authority() 
         .into_iter()
         .map(str::to_string)
         .collect();
-    assert!(state.authorize_hosted_org_unit_grant_mutation(&viewer).is_ok());
+    assert!(state
+        .authorize_hosted_org_unit_grant_mutation(&viewer)
+        .is_ok());
 }
 
 fn policy_json(version: u64, generated_at_ms: u64, active: bool) -> Vec<u8> {
