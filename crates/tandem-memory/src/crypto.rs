@@ -18,10 +18,11 @@
 //! as plain text for compatibility, but hosted modes reject plaintext rows to
 //! enforce fail-closed behavior at rest.
 //!
-//! Embeddings (sqlite-vec KNN) and the FTS-indexed `memory_records.content`
-//! column cannot be encrypted without breaking similarity/full-text search; they
-//! are classified as search-required plaintext and governed by authority-scoped
-//! reads instead. See `docs/internal` / the BR-14 notes.
+//! Embeddings remain search-required data. Hosted global records seal content,
+//! metadata and provenance before SQLite writes; FTS only indexes ciphertext.
+//! Hosted text search decrypts rows after tenant/owner SQL filtering and matches
+//! plaintext in process. A legacy plaintext global-record database requires an
+//! offline migration to fresh storage, including WAL and backup handling.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

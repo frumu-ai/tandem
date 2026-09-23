@@ -37,6 +37,17 @@ impl MemoryDatabase {
         Ok(())
     }
 
+    fn deny_unscoped_global_in_hosted(&self, operation: &str) -> MemoryResult<()> {
+        if self.crypto.is_hosted()
+            || self.strict_tenant_enforcement.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(MemoryError::TenantScopeViolation(format!(
+                "{operation} requires an explicit tenant and owner scope in hosted mode"
+            )));
+        }
+        Ok(())
+    }
+
     /// Initialize or open the memory database
     pub async fn new(db_path: &Path) -> MemoryResult<Self> {
         if let Some(parent) = db_path.parent() {
@@ -74,6 +85,11 @@ impl MemoryDatabase {
 
         let _schema_init_guard = SCHEMA_INIT_LOCK.lock().await;
 
+        // An in-place plaintext-to-hosted upgrade cannot erase old SQLite pages,
+        // FTS segments, WAL frames or external backups. Require an explicit
+        // offline migration into fresh storage before opening a legacy database.
+        db.reject_legacy_global_records_for_hosted().await?;
+
         // Initialize schema
         db.init_schema().await?;
         if let Err(err) = db.validate_vector_tables().await {
@@ -93,6 +109,48 @@ impl MemoryDatabase {
         db.validate_integrity().await?;
 
         Ok(db)
+    }
+
+    async fn reject_legacy_global_records_for_hosted(&self) -> MemoryResult<()> {
+        if !self.crypto.is_hosted() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().await;
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_records')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(());
+        }
+        let columns: HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(memory_records)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        if !["content_envelope", "metadata_envelope", "provenance_envelope"]
+            .iter()
+            .all(|name| columns.contains(*name))
+        {
+            return Err(MemoryError::InvalidConfig(
+                "hosted global memory requires a fresh encrypted database; migrate legacy SQLite, WAL and backups offline".to_string(),
+            ));
+        }
+        let legacy_rows: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM memory_records
+             WHERE content_envelope IS NULL OR content NOT LIKE 'tce1:%'
+                OR (IFNULL(metadata, '') <> '' AND metadata_envelope IS NULL)
+                OR (IFNULL(provenance, '') <> '' AND provenance_envelope IS NULL))",
+            [],
+            |row| row.get(0),
+        )?;
+        if legacy_rows {
+            return Err(MemoryError::InvalidConfig(
+                "hosted global memory contains legacy plaintext rows; migrate SQLite, WAL and backups offline".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Validate base SQLite integrity early so startup recovery can heal corrupt DB files.

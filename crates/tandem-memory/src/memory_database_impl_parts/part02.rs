@@ -1388,6 +1388,17 @@ impl MemoryDatabase {
         let conn = self.conn.lock().await;
         let (tenant_org_id, tenant_workspace_id, tenant_deployment_id) =
             global_memory_record_tenant_scope(record);
+        let tenant_scope = MemoryTenantScope {
+            org_id: tenant_org_id.clone(),
+            workspace_id: tenant_workspace_id.clone(),
+            deployment_id: tenant_deployment_id.clone(),
+        };
+        self.deny_local_scope_in_strict_mode("global memory write", &tenant_scope)?;
+        if self.crypto.is_hosted() && tenant_scope.is_local() {
+            return Err(MemoryError::TenantScopeViolation(
+                "hosted global memory write requires an explicit tenant".to_string(),
+            ));
+        }
         // Persist department ownership into the first-class column (TAN-645),
         // sourced from the established metadata key so existing writers populate it
         // without a signature change. TAN-646 will source this from the verified
@@ -1445,28 +1456,21 @@ impl MemoryDatabase {
             });
         }
 
-        let metadata = record
-            .metadata
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        let provenance = record
-            .provenance
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_default();
+        let sealed = seal_global_record_fields(&self.crypto, record)?;
         conn.execute(
             "INSERT INTO memory_records(
                 id, tenant_org_id, tenant_workspace_id, tenant_deployment_id,
                 user_id, source_type, content, content_hash, run_id, session_id, message_id, tool_name,
                 project_tag, channel_tag, host_tag, metadata, provenance, redaction_status, redaction_count,
                 visibility, demoted, score_boost, created_at_ms, updated_at_ms, expires_at_ms, owner_org_unit_id,
-                private, owner_subject, tenant_shared
+                private, owner_subject, tenant_shared,
+                content_envelope, metadata_envelope, provenance_envelope
             ) VALUES (
                 ?1, ?2, ?3, ?4,
                 ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
+                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29,
+                ?30, ?31, ?32
             )",
             params![
                 record.id,
@@ -1475,7 +1479,7 @@ impl MemoryDatabase {
                 tenant_deployment_id,
                 record.user_id,
                 record.source_type,
-                record.content,
+                sealed.content,
                 record.content_hash,
                 record.run_id,
                 record.session_id,
@@ -1484,8 +1488,8 @@ impl MemoryDatabase {
                 record.project_tag,
                 record.channel_tag,
                 record.host_tag,
-                metadata,
-                provenance,
+                sealed.metadata,
+                sealed.provenance,
                 record.redaction_status,
                 i64::from(record.redaction_count),
                 record.visibility,
@@ -1498,6 +1502,9 @@ impl MemoryDatabase {
                 i64::from(private),
                 owner_subject,
                 i64::from(tenant_shared),
+                sealed.content_envelope,
+                sealed.metadata_envelope,
+                sealed.provenance_envelope,
             ],
         )?;
 
@@ -1549,6 +1556,12 @@ impl MemoryDatabase {
         channel_tag: Option<&str>,
         host_tag: Option<&str>,
     ) -> MemoryResult<Vec<GlobalMemorySearchHit>> {
+        self.deny_unscoped_global_in_hosted("global memory search")?;
+        if !self.crypto.is_plaintext() {
+            return self.search_encrypted_global_memory_unscoped(
+                user_id, query, limit, project_tag, channel_tag, host_tag,
+            ).await;
+        }
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut hits = Vec::new();
@@ -1561,6 +1574,9 @@ impl MemoryDatabase {
                 m.tool_name, m.project_tag, m.channel_tag, m.host_tag, m.metadata, m.provenance,
                 m.redaction_status, m.redaction_count, m.visibility, m.demoted, m.score_boost,
                 m.created_at_ms, m.updated_at_ms, m.expires_at_ms,
+                m.content_envelope, m.metadata_envelope, m.provenance_envelope,
+                m.tenant_org_id, m.tenant_workspace_id, m.tenant_deployment_id,
+                m.owner_org_unit_id, m.owner_subject,
                 bm25(memory_records_fts) AS rank
              FROM memory_records_fts
              JOIN memory_records m ON m.id = memory_records_fts.id
@@ -1587,8 +1603,8 @@ impl MemoryDatabase {
                     search_limit
                 ],
                 |row| {
-                    let record = row_to_global_record(row)?;
-                    let rank = row.get::<_, f64>(22)?;
+                    let record = row_to_global_record(row, &self.crypto)?;
+                    let rank = row.get::<_, f64>(30)?;
                     let score = 1.0 / (1.0 + rank.max(0.0));
                     Ok(GlobalMemorySearchHit { record, score })
                 },
@@ -1608,7 +1624,10 @@ impl MemoryDatabase {
                 id, user_id, source_type, content, content_hash, run_id, session_id, message_id,
                 tool_name, project_tag, channel_tag, host_tag, metadata, provenance,
                 redaction_status, redaction_count, visibility, demoted, score_boost,
-                created_at_ms, updated_at_ms, expires_at_ms
+                created_at_ms, updated_at_ms, expires_at_ms,
+                content_envelope, metadata_envelope, provenance_envelope,
+                tenant_org_id, tenant_workspace_id, tenant_deployment_id,
+                owner_org_unit_id, owner_subject
              FROM memory_records
              WHERE user_id = ?1
                AND demoted = 0
@@ -1632,7 +1651,7 @@ impl MemoryDatabase {
                 search_limit
             ],
             |row| {
-                let record = row_to_global_record(row)?;
+                let record = row_to_global_record(row, &self.crypto)?;
                 Ok(GlobalMemorySearchHit {
                     record,
                     score: 0.25,
@@ -1655,6 +1674,12 @@ impl MemoryDatabase {
         limit: i64,
         offset: i64,
     ) -> MemoryResult<Vec<GlobalMemoryRecord>> {
+        self.deny_unscoped_global_in_hosted("global memory list")?;
+        if !self.crypto.is_plaintext() && q.is_some_and(|value| !value.trim().is_empty()) {
+            return self.list_encrypted_global_memory_unscoped(
+                user_id, q.unwrap_or_default(), project_tag, channel_tag, limit, offset,
+            ).await;
+        }
         let conn = self.conn.lock().await;
         let query = q.unwrap_or("").trim();
         let like = format!("%{}%", query);
@@ -1663,7 +1688,10 @@ impl MemoryDatabase {
                 id, user_id, source_type, content, content_hash, run_id, session_id, message_id,
                 tool_name, project_tag, channel_tag, host_tag, metadata, provenance,
                 redaction_status, redaction_count, visibility, demoted, score_boost,
-                created_at_ms, updated_at_ms, expires_at_ms
+                created_at_ms, updated_at_ms, expires_at_ms,
+                content_envelope, metadata_envelope, provenance_envelope,
+                tenant_org_id, tenant_workspace_id, tenant_deployment_id,
+                owner_org_unit_id, owner_subject
              FROM memory_records
              WHERE user_id = ?1
                AND (?2 = '' OR content LIKE ?3 OR source_type LIKE ?3 OR run_id LIKE ?3)
@@ -1682,7 +1710,7 @@ impl MemoryDatabase {
                 limit.clamp(1, 1000),
                 offset.max(0)
             ],
-            row_to_global_record,
+            |row| row_to_global_record(row, &self.crypto),
         )?;
         let mut out = Vec::new();
         for row in rows {
@@ -1728,6 +1756,7 @@ impl MemoryDatabase {
         visibility: &str,
         demoted: bool,
     ) -> MemoryResult<bool> {
+        self.deny_unscoped_global_in_hosted("global memory visibility update")?;
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
         let changed = conn.execute(
@@ -1748,6 +1777,7 @@ impl MemoryDatabase {
         visibility: &str,
         demoted: bool,
     ) -> MemoryResult<bool> {
+        self.deny_unscoped_global_in_hosted("global memory visibility update")?;
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
         let changed = conn.execute(
@@ -1778,24 +1808,28 @@ impl MemoryDatabase {
         metadata: Option<&serde_json::Value>,
         provenance: Option<&serde_json::Value>,
     ) -> MemoryResult<bool> {
+        self.deny_unscoped_global_in_hosted("global memory context update")?;
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
         let tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
-        let metadata = metadata.map(ToString::to_string).unwrap_or_default();
-        let provenance = provenance.map(ToString::to_string).unwrap_or_default();
+        let Some(sealed) = seal_global_context_update(&conn, &self.crypto, id, metadata, provenance)? else {
+            return Ok(false);
+        };
         let changed = conn.execute(
             "UPDATE memory_records
              SET visibility = ?2, demoted = ?3, metadata = ?4, provenance = ?5, updated_at_ms = ?6,
-                 tenant_shared = ?7
+                 tenant_shared = ?7, metadata_envelope = ?8, provenance_envelope = ?9
              WHERE id = ?1",
             params![
                 id,
                 visibility,
                 if demoted { 1i64 } else { 0i64 },
-                metadata,
-                provenance,
+                sealed.metadata,
+                sealed.provenance,
                 now_ms,
                 i64::from(tenant_shared),
+                sealed.metadata_envelope,
+                sealed.provenance_envelope,
             ],
         )?;
         Ok(changed > 0)
@@ -1813,6 +1847,7 @@ impl MemoryDatabase {
         metadata: Option<&serde_json::Value>,
         provenance: Option<&serde_json::Value>,
     ) -> MemoryResult<bool> {
+        self.deny_unscoped_global_in_hosted("global memory context update")?;
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
         // Keep the first-class scope columns consistent with trusted metadata on
@@ -1822,12 +1857,14 @@ impl MemoryDatabase {
         let owner_subject = crate::types::owner_subject_from_metadata(metadata);
         let private = owner_subject.is_some();
         let tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
-        let metadata = metadata.map(ToString::to_string).unwrap_or_default();
-        let provenance = provenance.map(ToString::to_string).unwrap_or_default();
+        let Some(sealed) = seal_global_context_update(&conn, &self.crypto, id, metadata, provenance)? else {
+            return Ok(false);
+        };
         let changed = conn.execute(
             "UPDATE memory_records
              SET visibility = ?5, demoted = ?6, metadata = ?7, provenance = ?8, updated_at_ms = ?9,
-                 owner_org_unit_id = ?10, private = ?11, owner_subject = ?12, tenant_shared = ?13
+                 owner_org_unit_id = ?10, private = ?11, owner_subject = ?12, tenant_shared = ?13,
+                 metadata_envelope = ?14, provenance_envelope = ?15
              WHERE id = ?1
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
@@ -1839,32 +1876,38 @@ impl MemoryDatabase {
                 tenant_deployment_id,
                 visibility,
                 if demoted { 1i64 } else { 0i64 },
-                metadata,
-                provenance,
+                sealed.metadata,
+                sealed.provenance,
                 now_ms,
                 owner_org_unit_id,
                 i64::from(private),
                 owner_subject,
                 i64::from(tenant_shared),
+                sealed.metadata_envelope,
+                sealed.provenance_envelope,
             ],
         )?;
         Ok(changed > 0)
     }
 
     pub async fn get_global_memory(&self, id: &str) -> MemoryResult<Option<GlobalMemoryRecord>> {
+        self.deny_unscoped_global_in_hosted("global memory get")?;
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT
                 id, user_id, source_type, content, content_hash, run_id, session_id, message_id,
                 tool_name, project_tag, channel_tag, host_tag, metadata, provenance,
                 redaction_status, redaction_count, visibility, demoted, score_boost,
-                created_at_ms, updated_at_ms, expires_at_ms
+                created_at_ms, updated_at_ms, expires_at_ms,
+                content_envelope, metadata_envelope, provenance_envelope,
+                tenant_org_id, tenant_workspace_id, tenant_deployment_id,
+                owner_org_unit_id, owner_subject
              FROM memory_records
              WHERE id = ?1
              LIMIT 1",
         )?;
         let record = stmt
-            .query_row(params![id], row_to_global_record)
+            .query_row(params![id], |row| row_to_global_record(row, &self.crypto))
             .optional()?;
         Ok(record)
     }
@@ -1876,13 +1919,17 @@ impl MemoryDatabase {
         tenant_workspace_id: &str,
         tenant_deployment_id: Option<&str>,
     ) -> MemoryResult<Option<GlobalMemoryRecord>> {
+        self.deny_unscoped_global_in_hosted("global memory get")?;
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT
                 id, user_id, source_type, content, content_hash, run_id, session_id, message_id,
                 tool_name, project_tag, channel_tag, host_tag, metadata, provenance,
                 redaction_status, redaction_count, visibility, demoted, score_boost,
-                created_at_ms, updated_at_ms, expires_at_ms
+                created_at_ms, updated_at_ms, expires_at_ms,
+                content_envelope, metadata_envelope, provenance_envelope,
+                tenant_org_id, tenant_workspace_id, tenant_deployment_id,
+                owner_org_unit_id, owner_subject
              FROM memory_records
              WHERE id = ?1
                AND tenant_org_id = ?2
@@ -1893,7 +1940,7 @@ impl MemoryDatabase {
         let record = stmt
             .query_row(
                 params![id, tenant_org_id, tenant_workspace_id, tenant_deployment_id],
-                row_to_global_record,
+                |row| row_to_global_record(row, &self.crypto),
             )
             .optional()?;
         Ok(record)

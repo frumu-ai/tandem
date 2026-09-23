@@ -128,11 +128,22 @@ fn translate(tx: &Transaction<'_>, migration: &LogicalMigration) -> MemoryResult
     match migration.version {
         PRIVATE_OWNER_MIGRATION_VERSION => migrate_private_owner_scope(tx),
         6 => migrate_global_sharing(tx),
+        7 => migrate_global_record_envelopes(tx),
         version => Err(MemoryError::InvalidConfig(format!(
             "no SQLite translator for executable memory migration {version} ('{}')",
             migration.name
         ))),
     }
+}
+
+fn migrate_global_record_envelopes(tx: &Transaction<'_>) -> MemoryResult<()> {
+    let columns = table_columns(tx, "memory_records")?;
+    for name in ["content_envelope", "metadata_envelope", "provenance_envelope"] {
+        if !columns.contains(name) {
+            tx.execute(&format!("ALTER TABLE memory_records ADD COLUMN {name} TEXT"), [])?;
+        }
+    }
+    Ok(())
 }
 
 fn migrate_global_sharing(tx: &Transaction<'_>) -> MemoryResult<()> {
