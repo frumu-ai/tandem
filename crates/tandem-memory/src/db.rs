@@ -323,7 +323,8 @@ fn row_to_global_record(
         &id,
         "metadata",
         metadata_stored.as_deref().unwrap_or_default(),
-        row.get::<_, Option<String>>("metadata_envelope")?.as_deref(),
+        row.get::<_, Option<String>>("metadata_envelope")?
+            .as_deref(),
         &tenant,
         owner_org_unit.as_deref(),
         owner_subject.as_deref(),
@@ -334,7 +335,8 @@ fn row_to_global_record(
         &id,
         "provenance",
         provenance_stored.as_deref().unwrap_or_default(),
-        row.get::<_, Option<String>>("provenance_envelope")?.as_deref(),
+        row.get::<_, Option<String>>("provenance_envelope")?
+            .as_deref(),
         &tenant,
         owner_org_unit.as_deref(),
         owner_subject.as_deref(),
@@ -918,7 +920,9 @@ fn hosted_global_text_matches(content: &str, query: &str) -> bool {
     let content = content.to_lowercase();
     query
         .split_whitespace()
-        .map(|token| token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-'))
+        .map(|token| {
+            token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+        })
         .filter(|token| !token.is_empty())
         .any(|token| content.contains(&token.to_lowercase()))
 }

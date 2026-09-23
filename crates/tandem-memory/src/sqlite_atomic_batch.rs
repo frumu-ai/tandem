@@ -386,7 +386,8 @@ fn put_global_record(
         });
     }
 
-    let sealed = super::seal_global_record_fields(crypto, record).map_err(MemoryStoreError::from)?;
+    let sealed =
+        super::seal_global_record_fields(crypto, record).map_err(MemoryStoreError::from)?;
     conn.execute(
         "INSERT INTO memory_records(
             id, tenant_org_id, tenant_workspace_id, tenant_deployment_id,
@@ -463,7 +464,8 @@ fn update_global_record_context(
     let next_private = next_owner_subject.is_some();
     let next_tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
     let Some(sealed) = super::seal_global_context_update(conn, crypto, id, metadata, provenance)
-        .map_err(MemoryStoreError::from)? else {
+        .map_err(MemoryStoreError::from)?
+    else {
         return Ok(false);
     };
     let changed = conn

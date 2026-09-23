@@ -138,9 +138,16 @@ fn translate(tx: &Transaction<'_>, migration: &LogicalMigration) -> MemoryResult
 
 fn migrate_global_record_envelopes(tx: &Transaction<'_>) -> MemoryResult<()> {
     let columns = table_columns(tx, "memory_records")?;
-    for name in ["content_envelope", "metadata_envelope", "provenance_envelope"] {
+    for name in [
+        "content_envelope",
+        "metadata_envelope",
+        "provenance_envelope",
+    ] {
         if !columns.contains(name) {
-            tx.execute(&format!("ALTER TABLE memory_records ADD COLUMN {name} TEXT"), [])?;
+            tx.execute(
+                &format!("ALTER TABLE memory_records ADD COLUMN {name} TEXT"),
+                [],
+            )?;
         }
     }
     Ok(())
