@@ -870,9 +870,9 @@ pub(super) async fn memory_search(
         },
     };
     let limit = requested_limit.min(gateway_limit);
-    // Storage bounds search retrieval at 100 candidates. Fetch that complete
-    // window so tier/source authorization is evaluated before the requested
-    // result limit instead of allowing disallowed top-ranked rows to consume it.
+    // Storage bounds each department search at 100 candidates. Fetch that
+    // complete window before applying tier/source authorization and the final
+    // result limit.
     let candidate_limit = 100;
     let source_access_filter =
         crate::memory::read_policy::governed_memory_read_filter_with_workflow_phase(
@@ -890,34 +890,54 @@ pub(super) async fn memory_search(
         let store = open_global_memory_store_for_state(&state)
             .await
             .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-        let (owner_org_unit_id, caller_subject) = trusted_memory_database_scope(
+        let (active_org_unit, caller_subject) = trusted_memory_database_scope(
             &tenant_context,
             verified_tenant_context.as_deref(),
             Some(&capability.subject),
         )?;
-        let mut scope = tandem_memory::MemoryReadScope::tenant(MemoryTenantScope {
-            org_id: tenant_context.org_id.clone(),
-            workspace_id: tenant_context.workspace_id.clone(),
-            deployment_id: tenant_context.deployment_id.clone(),
-        });
-        scope.org_unit = owner_org_unit_id;
-        scope.subject = caller_subject;
-        let hits = match with_verified_memory_decrypt_principal(
+        // The active department is a write/default scope, not the complete
+        // read authority of a member in several departments. Query each
+        // current verified membership under the same tenant and subject scope;
+        // never run an unrestricted tenant query for a verified caller.
+        let org_units = trusted_memory_search_org_units(
             verified_tenant_context.as_deref(),
-            store.query(tandem_memory::MemoryStoreQueryRequest::SearchGlobalRecords {
-                scope,
-                user_id: capability.subject.clone(),
-                query: request.query.clone(),
-                limit: candidate_limit,
-                project_tag: Some(request.partition.project_id.clone()),
-            }),
-        )
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        {
-            tandem_memory::MemoryStoreQueryResult::GlobalSearchHits(hits) => hits,
-            _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        };
+            active_org_unit,
+        )?;
+        let mut hits = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for org_unit in org_units {
+            let mut scope = tandem_memory::MemoryReadScope::tenant(MemoryTenantScope {
+                org_id: tenant_context.org_id.clone(),
+                workspace_id: tenant_context.workspace_id.clone(),
+                deployment_id: tenant_context.deployment_id.clone(),
+            });
+            scope.org_unit = org_unit;
+            scope.subject = caller_subject.clone();
+            let scoped_hits = match with_verified_memory_decrypt_principal(
+                verified_tenant_context.as_deref(),
+                store.query(tandem_memory::MemoryStoreQueryRequest::SearchGlobalRecords {
+                    scope,
+                    user_id: capability.subject.clone(),
+                    query: request.query.clone(),
+                    limit: candidate_limit,
+                    project_tag: Some(request.partition.project_id.clone()),
+                }),
+            )
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            {
+                tandem_memory::MemoryStoreQueryResult::GlobalSearchHits(hits) => hits,
+                _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+            };
+            for hit in scoped_hits {
+                if seen.insert(hit.record.id.clone()) {
+                    hits.push(hit);
+                }
+            }
+        }
+        // Stable sorting retains storage order for equal scores while ranking
+        // candidates from different departments before the final result limit.
+        hits.sort_by(|left, right| right.score.total_cmp(&left.score));
         let filtered = hits
             .into_iter()
             .filter(|hit| {
