@@ -107,10 +107,11 @@ export async function verifyContainerHardening(
       errors.push(`${name} contains a floating latest dependency`);
     }
     for (const marker of [
-      "snapshot.debian.org/archive/debian/20260904T000000Z",
-      "snapshot.debian.org/archive/debian-security/20260904T000000Z",
+      "snapshot.debian.org/archive/debian/20260923T120000Z",
+      "snapshot.debian.org/archive/debian-security/20260923T120000Z",
+      "apt-get -y --no-install-recommends upgrade",
       "ca-certificates=20250419",
-      "curl=8.14.1-2+deb13u4",
+      "curl=8.14.1-2+deb13u5",
       "libssl3t64=3.5.7-1~deb13u2",
       "openssl=3.5.7-1~deb13u2",
       "openssl-provider-legacy=3.5.7-1~deb13u2",
