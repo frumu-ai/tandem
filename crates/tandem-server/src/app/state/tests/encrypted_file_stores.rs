@@ -604,7 +604,7 @@ async fn hosted_governance_stores_round_trip_after_crypto_restart() {
 
 #[tokio::test]
 #[serial]
-async fn hosted_grant_snapshot_persistence_encrypts_and_rejects_failed_or_plaintext_writes() {
+async fn hosted_policy_grant_snapshot_persistence_encrypts_and_rejects_failed_or_plaintext_writes() {
     let state = crate::test_support::test_state().await;
     let _env_lock = crate::test_support::TEST_STATE_ENV_LOCK.lock().await;
     let fixture = fixtures::acme_company();

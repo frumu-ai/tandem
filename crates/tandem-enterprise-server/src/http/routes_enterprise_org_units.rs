@@ -788,7 +788,7 @@ async fn persist_enterprise_org_unit_memberships(
 }
 
 #[cfg(test)]
-mod hosted_grant_tests {
+mod hosted_policy_grant_tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
