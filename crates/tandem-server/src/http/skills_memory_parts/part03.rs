@@ -571,7 +571,7 @@ pub(super) async fn memory_list(
                 .await
             {
                 Ok(tandem_memory::MemoryStoreQueryResult::GlobalRecords(rows)) => rows,
-                _ => Vec::new(),
+                _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
             };
             let row_count = rows.len();
             for row in rows {
@@ -622,7 +622,7 @@ pub(super) async fn memory_list(
         })
         .collect::<Vec<_>>()
     } else {
-        Vec::new()
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };
     let total = page.len();
     Ok(Json(json!({
