@@ -949,6 +949,60 @@ async fn explicit_tenant_memory_put_rejects_partition_tenant_switch() {
 }
 
 #[tokio::test]
+async fn memory_list_returns_error_when_store_query_fails() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let list_request = || {
+        Request::builder()
+            .method("GET")
+            .uri("/memory?limit=20")
+            .body(Body::empty())
+            .expect("memory list request")
+    };
+
+    // Initialize the cached store and establish that an empty list succeeds.
+    let empty = app
+        .clone()
+        .oneshot(list_request())
+        .await
+        .expect("empty memory list response");
+    assert_eq!(empty.status(), StatusCode::OK);
+
+    // The next read now fails inside the real SQLite store. It must not look
+    // like another successful empty page to a caller.
+    let conn = rusqlite::Connection::open(&state.memory_db_path).expect("memory test db");
+    conn.execute("DROP TABLE memory_records", [])
+        .expect("remove memory records table");
+    let failed = app
+        .oneshot(list_request())
+        .await
+        .expect("failed memory list response");
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn memory_list_returns_error_when_store_cannot_open() {
+    let mut state = test_state().await;
+    let directory = state
+        .memory_db_path
+        .parent()
+        .expect("memory db parent")
+        .to_path_buf();
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .expect("memory db directory");
+    state.memory_db_path = directory;
+    let app = app_router(state);
+    let request = Request::builder()
+        .method("GET")
+        .uri("/memory?limit=20")
+        .body(Body::empty())
+        .expect("memory list request");
+    let response = app.oneshot(request).await.expect("memory list response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
 async fn memory_list_uses_capability_subject_and_rejects_mismatched_user() {
     let state = test_state().await;
     let app = app_router(state.clone());
