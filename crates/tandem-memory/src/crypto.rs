@@ -207,7 +207,10 @@ impl MemoryCryptoProvider {
     /// True when hosted storage rules are required, even if the KMS is still
     /// unavailable. Use [`Self::is_encrypted_ready`] to check key readiness.
     pub fn is_hosted(&self) -> bool {
-        matches!(self.inner, CryptoInner::Hosted(_) | CryptoInner::HostedPending)
+        matches!(
+            self.inner,
+            CryptoInner::Hosted(_) | CryptoInner::HostedPending
+        )
     }
 
     /// True only when encrypted writes can be completed now. Hosted-pending
@@ -313,10 +316,12 @@ impl MemoryCryptoProvider {
                 "hosted memory decryption requires the row envelope; use decrypt_field_scoped"
                     .to_string(),
             )),
-            CryptoInner::LocalPending | CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
-                "encrypted memory field cannot be read without the configured decryption key"
-                    .to_string(),
-            )),
+            CryptoInner::LocalPending | CryptoInner::HostedPending => {
+                Err(MemoryError::InvalidConfig(
+                    "encrypted memory field cannot be read without the configured decryption key"
+                        .to_string(),
+                ))
+            }
         }
     }
 
@@ -1018,7 +1023,10 @@ mod tests {
             secret_family: crate::decrypt_broker::MemorySecretFamily::MemoryEnvelope,
             hosted_required: true,
         });
-        assert!(provider.is_hosted(), "hosted provenance checks remain active");
+        assert!(
+            provider.is_hosted(),
+            "hosted provenance checks remain active"
+        );
         assert!(!provider.is_plaintext());
         assert!(!provider.is_encrypted_ready());
         assert!(provider.encrypt_field("secret").is_err());
