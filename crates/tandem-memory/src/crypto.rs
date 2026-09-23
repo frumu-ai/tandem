@@ -23,6 +23,10 @@
 //! Hosted text search decrypts rows after tenant/owner SQL filtering and matches
 //! plaintext in process. A legacy plaintext global-record database requires an
 //! offline migration to fresh storage, including WAL and backup handling.
+//! The indexed/structural columns remain plaintext: tenant and owner IDs,
+//! user_id, source_type, content_hash, run/session/message/tool IDs,
+//! project/channel/host tags, visibility, and timestamps. Callers must not put
+//! secret memory text into these fields; only the three payload fields are sealed.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -58,9 +62,11 @@ enum CryptoInner {
     /// fully provisioned (KMS commands + KEK); single-tenant instances never
     /// reach this variant.
     Hosted(Arc<HostedMemoryEnvelopeCrypto>),
+    /// Local encryption was requested but its key could not be loaded. Writes
+    /// and reads fail closed without treating local storage as hosted storage.
+    LocalPending,
     /// Hosted mode requested but its KMS-backed DEK provider is not yet available;
-    /// writes fail closed so plaintext is never persisted under a hosted
-    /// requirement.
+    /// writes fail closed and startup still enforces hosted storage provenance.
     HostedPending,
 }
 
@@ -77,6 +83,7 @@ impl std::fmt::Debug for MemoryCryptoProvider {
             CryptoInner::Plaintext => "plaintext",
             CryptoInner::LocalKey(_) => "local_key",
             CryptoInner::Hosted(_) => "hosted_kms",
+            CryptoInner::LocalPending => "local_pending",
             CryptoInner::HostedPending => "hosted_pending",
         };
         f.debug_struct("MemoryCryptoProvider")
@@ -111,9 +118,39 @@ impl MemoryCryptoProvider {
 
     /// Resolve the provider from the environment-selected crypto mode.
     pub fn from_env() -> Self {
-        let config = MemoryDecryptBrokerConfig::from_env()
-            .unwrap_or_else(|_| MemoryDecryptBrokerConfig::local_disabled());
-        Self::from_mode(config.crypto_mode())
+        let config = match MemoryDecryptBrokerConfig::from_env() {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::error!(
+                    "memory decrypt broker configuration is invalid ({error}); failing closed"
+                );
+                return Self {
+                    inner: CryptoInner::HostedPending,
+                };
+            }
+        };
+        Self::from_broker_config(config)
+    }
+
+    fn from_broker_config(config: MemoryDecryptBrokerConfig) -> Self {
+        let mode = config.crypto_mode();
+        if let Err(error) = config.validate() {
+            tracing::error!(
+                "memory decrypt broker configuration is invalid ({error}); failing closed"
+            );
+            return Self::pending_for_mode(&mode);
+        }
+        Self::from_mode(mode)
+    }
+
+    fn pending_for_mode(mode: &MemoryCryptoMode) -> Self {
+        Self {
+            inner: if mode.is_hosted() {
+                CryptoInner::HostedPending
+            } else {
+                CryptoInner::LocalPending
+            },
+        }
     }
 
     /// Build a provider for an explicit crypto mode.
@@ -128,7 +165,7 @@ impl MemoryCryptoProvider {
                         "local memory encryption is configured but the key could not be loaded ({err}); failing closed"
                     );
                         Self {
-                            inner: CryptoInner::HostedPending,
+                            inner: CryptoInner::LocalPending,
                         }
                     }
                 }
@@ -167,11 +204,10 @@ impl MemoryCryptoProvider {
         matches!(self.inner, CryptoInner::Plaintext)
     }
 
-    /// True when this provider seals per-scope envelopes (hosted KMS mode) and so
-    /// requires the scope-aware [`encrypt_field_scoped`](Self::encrypt_field_scoped)
-    /// / [`decrypt_field_scoped`](Self::decrypt_field_scoped) API.
+    /// True when hosted storage rules are required, even if the KMS is still
+    /// unavailable. Use [`Self::is_encrypted_ready`] to check key readiness.
     pub fn is_hosted(&self) -> bool {
-        matches!(self.inner, CryptoInner::Hosted(_))
+        matches!(self.inner, CryptoInner::Hosted(_) | CryptoInner::HostedPending)
     }
 
     /// True only when encrypted writes can be completed now. Hosted-pending
@@ -202,6 +238,10 @@ impl MemoryCryptoProvider {
                 "hosted memory encryption requires a key scope; use encrypt_field_scoped (fail-closed)"
                     .to_string(),
             )),
+            CryptoInner::LocalPending => Err(MemoryError::InvalidConfig(
+                "local memory encryption key is unavailable; refusing to store plaintext (fail-closed)"
+                    .to_string(),
+            )),
             CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
                 "hosted memory encryption requires a provisioned KMS provider; refusing to store plaintext (fail-closed)"
                     .to_string(),
@@ -230,6 +270,10 @@ impl MemoryCryptoProvider {
                 let sealed = hosted.seal(scope, plaintext, policy_decision_id, audit_id)?;
                 Ok((sealed.ciphertext, Some(sealed.envelope)))
             }
+            CryptoInner::LocalPending => Err(MemoryError::InvalidConfig(
+                "local memory encryption key is unavailable; refusing to store plaintext (fail-closed)"
+                    .to_string(),
+            )),
             CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
                 "hosted memory encryption requires a provisioned KMS provider; refusing to store plaintext (fail-closed)"
                     .to_string(),
@@ -251,6 +295,10 @@ impl MemoryCryptoProvider {
                     "hosted memory mode requires encrypted rows (missing tce1 payload marker)"
                         .to_string(),
                 )),
+                CryptoInner::LocalPending => Err(MemoryError::InvalidConfig(
+                    "local memory encryption key is unavailable; refusing to read plaintext (fail-closed)"
+                        .to_string(),
+                )),
                 CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
                     "hosted memory mode requires encrypted rows (missing tce1 payload marker)"
                         .to_string(),
@@ -265,7 +313,7 @@ impl MemoryCryptoProvider {
                 "hosted memory decryption requires the row envelope; use decrypt_field_scoped"
                     .to_string(),
             )),
-            CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
+            CryptoInner::LocalPending | CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
                 "encrypted memory field cannot be read without the configured decryption key"
                     .to_string(),
             )),
@@ -300,7 +348,7 @@ impl MemoryCryptoProvider {
                 })?;
                 hosted.unseal(envelope, stored, principal, key_lifecycle_policy)
             }
-            CryptoInner::HostedPending => self.decrypt_field(stored),
+            CryptoInner::LocalPending | CryptoInner::HostedPending => self.decrypt_field(stored),
         }
     }
 
@@ -337,7 +385,7 @@ impl MemoryCryptoProvider {
                     key_lifecycle_policy,
                 )
             }
-            CryptoInner::HostedPending => self.decrypt_field(stored),
+            CryptoInner::LocalPending | CryptoInner::HostedPending => self.decrypt_field(stored),
         }
     }
 
@@ -369,6 +417,10 @@ impl MemoryCryptoProvider {
                     hosted.seal_fields(scope, plaintexts, policy_decision_id, audit_id)?;
                 Ok((ciphertexts, Some(envelope)))
             }
+            CryptoInner::LocalPending => Err(MemoryError::InvalidConfig(
+                "local memory encryption key is unavailable; refusing to store plaintext (fail-closed)"
+                    .to_string(),
+            )),
             CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
                 "hosted memory encryption requires a provisioned KMS provider; refusing to store plaintext (fail-closed)"
                     .to_string(),
@@ -956,6 +1008,45 @@ mod tests {
             provider.decrypt_field("legacy memory row").is_err(),
             "hosted mode should reject plaintext rows to avoid compatibility leakage"
         );
+    }
+
+    #[test]
+    fn misconfigured_hosted_broker_never_selects_plaintext_or_local_storage() {
+        let provider = MemoryCryptoProvider::from_broker_config(MemoryDecryptBrokerConfig {
+            provider: "disabled".to_string(),
+            runtime_principal_id: String::new(),
+            secret_family: crate::decrypt_broker::MemorySecretFamily::MemoryEnvelope,
+            hosted_required: true,
+        });
+        assert!(provider.is_hosted(), "hosted provenance checks remain active");
+        assert!(!provider.is_plaintext());
+        assert!(!provider.is_encrypted_ready());
+        assert!(provider.encrypt_field("secret").is_err());
+        assert!(provider.decrypt_field("legacy plaintext").is_err());
+    }
+
+    #[tokio::test]
+    async fn misconfigured_hosted_provider_still_rejects_plaintext_storage_history() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("legacy-history.sqlite");
+        let local = crate::db::MemoryDatabase::new(&path).await.unwrap();
+        drop(local);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE memory_record_crypto_provenance SET state = 'plaintext_history' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let local = crate::db::MemoryDatabase::new(&path).await.unwrap();
+        let pending = MemoryCryptoProvider::from_broker_config(MemoryDecryptBrokerConfig {
+            provider: "disabled".to_string(),
+            runtime_principal_id: String::new(),
+            secret_family: crate::decrypt_broker::MemorySecretFamily::MemoryEnvelope,
+            hosted_required: true,
+        });
+        assert!(local.with_crypto_provider(pending).is_err());
     }
 
     #[test]

@@ -213,7 +213,13 @@ impl MemoryDatabase {
         )?;
         let mut hits = Vec::new();
         for row in rows {
-            let record = row?;
+            let record = match row {
+                Ok(record) => record,
+                Err(error) if self.crypto.is_hosted() && is_global_record_grant_denial(&error) => {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             if hosted_global_text_matches(&record.content, query) {
                 hits.push(GlobalMemorySearchHit { record, score: 0.25 });
                 if hits.len() >= limit.clamp(1, 100) as usize {
@@ -243,10 +249,13 @@ impl MemoryDatabase {
         offset: i64,
         owner_org_unit_id: Option<&str>,
     ) -> MemoryResult<Vec<GlobalMemoryRecord>> {
-        if !self.crypto.is_plaintext() && q.is_some_and(|value| !value.trim().is_empty()) {
+        // Even an empty hosted listing can span data classes. Apply grant
+        // filtering before LIMIT/OFFSET so one denied row cannot hide later
+        // authorized rows or turn the whole listing into an error.
+        if !self.crypto.is_plaintext() {
             return self.list_encrypted_global_memory_for_tenant_scoped(
                 tenant_org_id, tenant_workspace_id, tenant_deployment_id, caller_subject,
-                legacy_user_id, q.unwrap_or_default(), project_tag, channel_tag, limit,
+                legacy_user_id, q.unwrap_or_default().trim(), project_tag, channel_tag, limit,
                 offset, owner_org_unit_id,
             ).await;
         }
@@ -347,7 +356,13 @@ impl MemoryDatabase {
         let mut skipped = 0i64;
         let mut out = Vec::new();
         for row in rows {
-            let record = row?;
+            let record = match row {
+                Ok(record) => record,
+                Err(error) if self.crypto.is_hosted() && is_global_record_grant_denial(&error) => {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             if !record.content.to_lowercase().contains(&query_lower)
                 && !record.source_type.to_lowercase().contains(&query_lower)
                 && !record.run_id.to_lowercase().contains(&query_lower)
