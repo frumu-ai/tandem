@@ -103,7 +103,7 @@ pub(crate) fn catalog_from_installation(
 }
 
 impl AppState {
-    fn authorized_profile_reader(
+    pub(super) fn authorized_profile_reader(
         &self,
         verified: &VerifiedTenantContext,
         scope: &CustomerScope,
@@ -122,7 +122,7 @@ impl AppState {
         Ok(current)
     }
 
-    async fn read_current_staged_installation(
+    pub(super) async fn read_current_staged_installation(
         &self,
         context: VerifiedTenantContext,
         scope: CustomerScope,

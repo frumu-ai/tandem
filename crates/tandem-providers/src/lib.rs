@@ -23,5 +23,7 @@ pub use runtime_binding::{
 };
 mod versioned_binding;
 pub use versioned_binding::{ProviderCredentialLocation, VersionedProviderRuntimeBinding};
+mod availability_probe;
+pub use availability_probe::ProviderAvailabilityObservation;
 #[cfg(test)]
 mod versioned_binding_tests;

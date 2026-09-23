@@ -49,7 +49,10 @@ pub struct SolutionModelAccount {
 }
 
 impl AppState {
-    async fn operator_model_account(&self, binding_id: &str) -> anyhow::Result<HostModel> {
+    pub(super) async fn operator_model_account(
+        &self,
+        binding_id: &str,
+    ) -> anyhow::Result<HostModel> {
         ensure!(
             !binding_id.is_empty() && binding_id.len() <= 256,
             "invalid model binding"

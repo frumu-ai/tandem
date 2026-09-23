@@ -1,5 +1,46 @@
 #[async_trait]
 impl Provider for OpenAICompatibleProvider {
+    async fn probe_model_availability(
+        &self,
+        auth: &ProviderAuthOverride,
+        model_id: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            matches!(auth, ProviderAuthOverride::Inherit),
+            "provider does not support tenant-scoped availability probing"
+        );
+        let url = format!("{}/models", self.base_url);
+        let target = resolve_provider_request_target(&url, &self.id).await?;
+        let mut request = target
+            .client
+            .get(target.url)
+            .timeout(Duration::from_secs(5));
+        if let Some(api_key) = &self.api_key {
+            request = request.bearer_auth(api_key);
+        }
+        dispatch_authority::revalidate().await?;
+        let response = request.send().await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "provider model-list probe failed"
+        );
+        let body = read_provider_response_bytes_with_limit(response, 64 * 1024).await?;
+        let value: serde_json::Value = serde_json::from_slice(&body)?;
+        let listed = value
+            .get("data")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("provider model-list response lacks data"))?;
+        anyhow::ensure!(
+            listed
+                .iter()
+                .filter(|row| row.get("id").and_then(serde_json::Value::as_str) == Some(model_id))
+                .count()
+                == 1,
+            "model is absent or ambiguous in live provider model list"
+        );
+        Ok(())
+    }
+
     fn runtime_transport_binding(&self, auth: &ProviderAuthOverride) -> anyhow::Result<ProviderTransportBinding> {
         anyhow::ensure!(matches!(auth, ProviderAuthOverride::Inherit), "provider does not support tenant-scoped authentication");
         runtime_binding::transport(&format!("{}/chat/completions", self.base_url), ProviderProtocol::ChatCompletions, self.api_key.as_deref(), None, runtime_binding::inherited_source(self.api_key.as_deref()))

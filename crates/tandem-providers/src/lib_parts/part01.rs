@@ -854,6 +854,14 @@ pub trait Provider: Send + Sync {
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
         None
     }
+    /// A live, adapter-owned route check. Unknown protocols fail closed.
+    async fn probe_model_availability(
+        &self,
+        _auth: &ProviderAuthOverride,
+        _model_id: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("provider has no supported model availability probe")
+    }
     fn info(&self) -> ProviderInfo;
     async fn complete(&self, prompt: &str, model_override: Option<&str>) -> anyhow::Result<String>;
     async fn complete_with_auth_override(

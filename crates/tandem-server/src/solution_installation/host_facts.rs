@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tandem_enterprise_contract::{AccessDecision, AccessPermission, VerifiedTenantContext};
 use tandem_solutions::{
     canonical_json, sha256, validate_customer_config_scope, ConnectorBinding, Constraints,
-    CustomerConfigInput, CustomerScope, ModelBinding,
+    CustomerConfigInput, CustomerScope, ModelBinding, ModelModality, ModelProfilePrice,
 };
 
 use crate::AppState;
@@ -34,6 +34,28 @@ pub(super) struct HostModel {
     /// alone must never authorize access to a provider credential.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<super::model_accounts::HostAccountBinding>,
+    /// Operator-reviewed runtime facts. Legacy installation metadata may omit
+    /// this, but an absent review can never establish a runtime route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<HostRouteReview>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HostRouteReview {
+    pub schema_version: u32,
+    pub revision: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub credential_ref: String,
+    pub authorization_revision: String,
+    pub endpoint_sha256: String,
+    pub reviewed_until_ms: u64,
+    pub modalities: BTreeSet<ModelModality>,
+    pub supports_tool_use: bool,
+    pub processing_regions: BTreeSet<String>,
+    pub retention_hours: u64,
+    pub price: ModelProfilePrice,
 }
 
 pub(super) struct HostFacts {
