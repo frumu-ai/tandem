@@ -1054,6 +1054,68 @@ async fn memory_put_does_not_report_success_when_store_write_fails() {
 }
 
 #[tokio::test]
+async fn memory_put_dedup_returns_the_existing_record_id() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let put = || {
+        tenant_memory_request(
+            "POST",
+            "/memory/put",
+            "acme",
+            "north",
+            "user-a",
+            Some(json!({
+                "run_id": "dedup-memory-run",
+                "partition": {
+                    "org_id": "acme",
+                    "workspace_id": "north",
+                    "project_id": "dedup-project",
+                    "tier": "session"
+                },
+                "kind": "fact",
+                "content": "one durable record for repeated writes",
+                "classification": "internal",
+                "capability": memory_capability(
+                    "dedup-memory-run",
+                    "user-a",
+                    "acme",
+                    "north",
+                    "dedup-project"
+                )
+            })),
+        )
+    };
+
+    let (first_status, first) = memory_http_json(&app, put()).await;
+    assert_eq!(first_status, StatusCode::OK);
+    let first_id = first["id"].as_str().expect("first memory id");
+    assert_eq!(first["stored"], true);
+
+    let (second_status, second) = memory_http_json(&app, put()).await;
+    assert_eq!(second_status, StatusCode::OK);
+    assert_eq!(second["id"], first_id);
+    assert_eq!(second["stored"], false);
+
+    let conn = rusqlite::Connection::open(&state.memory_db_path).expect("memory test db");
+    let stored_id: String = conn
+        .query_row(
+            "SELECT id FROM memory_records WHERE run_id = ?1",
+            ["dedup-memory-run"],
+            |row| row.get(0),
+        )
+        .expect("persisted memory record");
+    assert_eq!(stored_id, first_id);
+    let stored_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_records WHERE run_id = ?1",
+            ["dedup-memory-run"],
+            |row| row.get(0),
+        )
+        .expect("persisted memory count");
+    assert_eq!(stored_count, 1);
+}
+
+#[tokio::test]
 async fn memory_list_uses_capability_subject_and_rejects_mismatched_user() {
     let state = test_state().await;
     let app = app_router(state.clone());

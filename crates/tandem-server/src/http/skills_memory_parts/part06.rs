@@ -610,9 +610,11 @@ pub(super) async fn memory_put_impl_with_verified(
         partition_key,
         memory_linkage_detail(&memory_linkage_value)
     );
-    if !persist_global_memory_record(&state, store.as_ref(), record).await {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
+    let write = persist_global_memory_record(&state, store.as_ref(), record)
+        .await
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let id = write.id;
+    let stored = write.stored;
     append_memory_audit(
         &state,
         tenant_context,
@@ -669,7 +671,7 @@ pub(super) async fn memory_put_impl_with_verified(
     );
     Ok(MemoryPutResponse {
         id,
-        stored: true,
+        stored,
         tier: request.partition.tier,
         partition_key,
         audit_id,
