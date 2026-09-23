@@ -39,6 +39,9 @@ fn network_fixture(store: &OrchestrationStateStore, name: &str) -> BudgetFixture
 mod execution_tests;
 use execution_tests::{root_id, seed_execution};
 
+#[path = "solution_profile_history_tests.rs"]
+mod profile_history_tests;
+
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
