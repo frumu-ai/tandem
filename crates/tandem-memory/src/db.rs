@@ -85,6 +85,7 @@ include!("memory_database_impl_parts/part02.rs");
 include!("memory_database_impl_parts/part02_global_scoped.rs");
 include!("memory_database_impl_parts/part02_retention.rs");
 include!("memory_database_impl_parts/part03.rs");
+include!("global_record_crypto.rs");
 
 /// Convert a database row to a MemoryChunk
 fn row_to_chunk(
@@ -288,14 +289,79 @@ fn memory_tenant_scope_from_value(
     Some((org_id, workspace_id, deployment_id))
 }
 
-fn row_to_global_record(row: &Row) -> Result<GlobalMemoryRecord, rusqlite::Error> {
-    let metadata_str: Option<String> = row.get(12)?;
-    let provenance_str: Option<String> = row.get(13)?;
-    Ok(GlobalMemoryRecord {
-        id: row.get(0)?,
+fn row_to_global_record(
+    row: &Row,
+    crypto: &crate::crypto::MemoryCryptoProvider,
+) -> Result<GlobalMemoryRecord, rusqlite::Error> {
+    let map_crypto_error = |error: MemoryError| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(error))
+    };
+    let content_stored: String = row.get(3)?;
+    let metadata_stored: Option<String> = row.get(12)?;
+    let provenance_stored: Option<String> = row.get(13)?;
+    let tenant = MemoryTenantScope {
+        org_id: row.get("tenant_org_id")?,
+        workspace_id: row.get("tenant_workspace_id")?,
+        deployment_id: row.get("tenant_deployment_id")?,
+    };
+    let owner_org_unit: Option<String> = row.get("owner_org_unit_id")?;
+    let owner_subject: Option<String> = row.get("owner_subject")?;
+    let id: String = row.get(0)?;
+    let (content, content_scope) = open_global_field(
+        crypto,
+        &id,
+        "content",
+        &content_stored,
+        row.get::<_, Option<String>>("content_envelope")?.as_deref(),
+        &tenant,
+        owner_org_unit.as_deref(),
+        owner_subject.as_deref(),
+    )
+    .map_err(map_crypto_error)?;
+    let (metadata_plain, metadata_scope) = open_global_field(
+        crypto,
+        &id,
+        "metadata",
+        metadata_stored.as_deref().unwrap_or_default(),
+        row.get::<_, Option<String>>("metadata_envelope")?
+            .as_deref(),
+        &tenant,
+        owner_org_unit.as_deref(),
+        owner_subject.as_deref(),
+    )
+    .map_err(map_crypto_error)?;
+    let (provenance_plain, provenance_scope) = open_global_field(
+        crypto,
+        &id,
+        "provenance",
+        provenance_stored.as_deref().unwrap_or_default(),
+        row.get::<_, Option<String>>("provenance_envelope")?
+            .as_deref(),
+        &tenant,
+        owner_org_unit.as_deref(),
+        owner_subject.as_deref(),
+    )
+    .map_err(map_crypto_error)?;
+    let parse_json = |value: &str| -> Result<Option<serde_json::Value>, rusqlite::Error> {
+        if value.is_empty() {
+            return Ok(None);
+        }
+        match serde_json::from_str(value) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if !crypto.is_hosted() => {
+                let _ = error;
+                Ok(None)
+            }
+            Err(error) => Err(map_crypto_error(MemoryError::from(error))),
+        }
+    };
+    let metadata = parse_json(&metadata_plain)?;
+    let provenance = parse_json(&provenance_plain)?;
+    let record = GlobalMemoryRecord {
+        id,
         user_id: row.get(1)?,
         source_type: row.get(2)?,
-        content: row.get(3)?,
+        content,
         content_hash: row.get(4)?,
         run_id: row.get(5)?,
         session_id: row.get(6)?,
@@ -304,12 +370,8 @@ fn row_to_global_record(row: &Row) -> Result<GlobalMemoryRecord, rusqlite::Error
         project_tag: row.get(9)?,
         channel_tag: row.get(10)?,
         host_tag: row.get(11)?,
-        metadata: metadata_str
-            .filter(|s| !s.is_empty())
-            .and_then(|s| serde_json::from_str(&s).ok()),
-        provenance: provenance_str
-            .filter(|s| !s.is_empty())
-            .and_then(|s| serde_json::from_str(&s).ok()),
+        metadata,
+        provenance,
         redaction_status: row.get(14)?,
         redaction_count: row.get::<_, i64>(15)? as u32,
         visibility: row.get(16)?,
@@ -318,7 +380,25 @@ fn row_to_global_record(row: &Row) -> Result<GlobalMemoryRecord, rusqlite::Error
         created_at_ms: row.get::<_, i64>(19)? as u64,
         updated_at_ms: row.get::<_, i64>(20)? as u64,
         expires_at_ms: row.get::<_, Option<i64>>(21)?.map(|v| v as u64),
-    })
+    };
+    if crypto.is_hosted() {
+        let (org, workspace, deployment) = global_memory_record_tenant_scope(&record);
+        let derived_scope = global_record_scope(&record);
+        if (org, workspace, deployment)
+            != (tenant.org_id, tenant.workspace_id, tenant.deployment_id)
+            || derived_scope.org_unit.as_deref() != owner_org_unit.as_deref()
+            || derived_scope.owner_subject.as_deref() != owner_subject.as_deref()
+            || [content_scope, metadata_scope, provenance_scope]
+                .into_iter()
+                .flatten()
+                .any(|scope| scope != derived_scope)
+        {
+            return Err(map_crypto_error(MemoryError::InvalidConfig(
+                "global record encrypted scope differs from its trusted row columns".to_string(),
+            )));
+        }
+    }
+    Ok(record)
 }
 
 fn row_to_source_object_lifecycle(
@@ -830,6 +910,21 @@ fn build_fts_query(query: &str) -> String {
     } else {
         tokens.join(" OR ")
     }
+}
+
+fn hosted_global_text_matches(content: &str, query: &str) -> bool {
+    let query = query.trim();
+    if query.is_empty() {
+        return true;
+    }
+    let content = content.to_lowercase();
+    query
+        .split_whitespace()
+        .map(|token| {
+            token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+        })
+        .filter(|token| !token.is_empty())
+        .any(|token| content.contains(&token.to_lowercase()))
 }
 
 include!("memory_database_impl_parts/db_tests.rs");

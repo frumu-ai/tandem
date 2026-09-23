@@ -466,7 +466,8 @@ mod tests {
             let db = MemoryDatabase::new(&temp.path().join("hosted.db"))
                 .await
                 .unwrap()
-                .with_crypto_provider(hosted_provider());
+                .with_crypto_provider(hosted_provider())
+                .unwrap();
             let tenant = MemoryTenantScope {
                 org_id: "acme".to_string(),
                 workspace_id: "hq".to_string(),
