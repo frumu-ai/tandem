@@ -143,7 +143,7 @@ fn select(
 
 #[test]
 #[serial]
-fn solution_profile_history_replay_restart_and_independent_operations() {
+fn solution_budget_profile_history_replay_restart_and_independent_operations() {
     encrypted(|| {
         for_each_backend(|_, store| {
             let fixture = network_fixture(store, "profile-replay");
@@ -213,7 +213,7 @@ fn solution_profile_history_replay_restart_and_independent_operations() {
 
 #[test]
 #[serial]
-fn solution_profile_history_failed_route_stays_terminal_and_requires_current_goal() {
+fn solution_budget_profile_history_failed_route_stays_terminal_and_requires_current_goal() {
     encrypted(|| {
         for_each_backend(|_, store| {
             let fixture = network_fixture(store, "profile-failure");
