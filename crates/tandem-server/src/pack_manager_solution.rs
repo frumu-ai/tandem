@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::ensure;
 use tandem_solutions::{
-    parse_blueprint, SolutionBlueprint, MAX_ARTIFACT_BYTES, MAX_BLUEPRINT_BYTES,
+    parse_blueprint, parse_model_profiles, ComponentKind, SolutionBlueprint, MAX_ARTIFACT_BYTES,
+    MAX_BLUEPRINT_BYTES,
 };
 
 use super::*;
@@ -155,6 +156,15 @@ fn snapshot(root: &Path) -> anyhow::Result<Snapshot> {
             format!("{:x}", Sha256::digest(bytes)) == component.artifact.sha256,
             "solution component {id} artifact digest mismatch"
         );
+        if component.kind == ComponentKind::ModelProfile {
+            let text = std::str::from_utf8(bytes)?;
+            let catalog = parse_model_profiles(text)?;
+            ensure!(
+                component.model_classes
+                    == catalog.profiles.keys().cloned().collect::<BTreeSet<_>>(),
+                "solution component {id} declared model classes differ from its signed catalog"
+            );
+        }
         allowed.insert(path);
         artifacts.insert(id.clone(), bytes.clone());
     }

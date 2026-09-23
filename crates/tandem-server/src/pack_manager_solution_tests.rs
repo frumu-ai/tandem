@@ -32,6 +32,27 @@ pub(super) fn fixture() -> Vec<(String, String)> {
     .collect()
 }
 
+pub(super) fn fixture_with_profile() -> Vec<(String, String)> {
+    let mut entries = fixture();
+    let catalog = include_str!("../../tandem-solutions/fixtures/model-profiles/text-default.json");
+    let mut blueprint: Value = serde_json::from_str(&entries[1].1).unwrap();
+    blueprint["components"]["text-profile"] = serde_json::json!({
+        "kind": "model_profile",
+        "required": true,
+        "model_classes": ["economy"],
+        "artifact": {
+            "pack_id": "tandem.company-brain", "version": "0.1.0",
+            "sha256": tandem_solutions::sha256(catalog.as_bytes()),
+            "path": "model-profiles/text-default.json"
+        }
+    });
+    blueprint["components"]["central-brain"]["depends_on"] =
+        serde_json::json!({"text-profile": "=0.1.0"});
+    entries[1].1 = serde_json::to_string(&blueprint).unwrap();
+    entries.push(("model-profiles/text-default.json".into(), catalog.into()));
+    entries
+}
+
 pub(super) fn signed(path: &Path, entries: &[(String, String)]) -> String {
     write_signed_zip(
         path,
