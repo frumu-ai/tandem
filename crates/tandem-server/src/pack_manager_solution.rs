@@ -288,6 +288,30 @@ impl PackManager {
         let index = self.read_index().await?;
         let record =
             select_record(&index, Some(selector), None).ok_or_else(|| anyhow!("pack not found"))?;
+        self.verified_solution_artifacts(&record).await
+    }
+
+    /// Load the exact installed solution identity in a protected plan. A newer
+    /// current pack must never silently replace the version the plan reviewed.
+    pub async fn solution_artifacts_exact(
+        &self,
+        pack_id: &str,
+        version: &str,
+    ) -> anyhow::Result<SolutionPackArtifacts> {
+        let index = self.read_index().await?;
+        let mut records = index
+            .packs
+            .iter()
+            .filter(|record| record.pack_id == pack_id && record.version == version);
+        let record = records.next().ok_or_else(|| anyhow!("pack not found"))?;
+        ensure!(records.next().is_none(), "ambiguous installed solution identity");
+        self.verified_solution_artifacts(record).await
+    }
+
+    async fn verified_solution_artifacts(
+        &self,
+        record: &PackInstallRecord,
+    ) -> anyhow::Result<SolutionPackArtifacts> {
         ensure!(record.pack_type == "solution", "pack is not a solution");
         let lock = self.pack_lock(&record.name).await;
         let _guard = lock.lock().await;
