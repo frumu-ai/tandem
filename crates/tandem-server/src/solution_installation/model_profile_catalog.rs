@@ -10,8 +10,7 @@ use tandem_solutions::{
 
 use crate::pack_manager::SolutionPackArtifacts;
 use crate::stateful_runtime::orchestration_store::{
-    CustomerConfigVersion, OrchestrationStateStore, SolutionComponentProgress,
-    SolutionInstallation,
+    CustomerConfigVersion, OrchestrationStateStore, SolutionComponentProgress, SolutionInstallation,
 };
 use crate::AppState;
 
@@ -54,7 +53,10 @@ pub(crate) fn catalog_from_installation(
     let (component_id, locked) = profiles
         .next()
         .context("current installation has no model-profile component")?;
-    ensure!(profiles.next().is_none(), "ambiguous staged model-profile component");
+    ensure!(
+        profiles.next().is_none(),
+        "ambiguous staged model-profile component"
+    );
     let selected = pack
         .blueprint
         .components

@@ -304,7 +304,10 @@ impl PackManager {
             .iter()
             .filter(|record| record.pack_id == pack_id && record.version == version);
         let record = records.next().ok_or_else(|| anyhow!("pack not found"))?;
-        ensure!(records.next().is_none(), "ambiguous installed solution identity");
+        ensure!(
+            records.next().is_none(),
+            "ambiguous installed solution identity"
+        );
         self.verified_solution_artifacts(record).await
     }
 

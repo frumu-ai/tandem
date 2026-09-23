@@ -383,12 +383,15 @@ async fn solution_service_catalog_loader_keeps_current_staged_v1_after_v2_instal
             let mut claimed = staged.clone();
             claimed.components.insert(
                 "text-profile".into(),
-                SolutionComponentProgress::Claimed { attempt_id: "pending".into() },
+                SolutionComponentProgress::Claimed {
+                    attempt_id: "pending".into(),
+                },
             );
             assert!(catalog_from_installation(&claimed, &signed_pack).is_err());
             let mut bad_receipt = staged.clone();
-            if let SolutionComponentProgress::Staged { resource_sha256, .. } =
-                bad_receipt.components.get_mut("text-profile").unwrap()
+            if let SolutionComponentProgress::Staged {
+                resource_sha256, ..
+            } = bad_receipt.components.get_mut("text-profile").unwrap()
             {
                 *resource_sha256 = "b".repeat(64);
             }
@@ -397,11 +400,19 @@ async fn solution_service_catalog_loader_keeps_current_staged_v1_after_v2_instal
             bad_blueprint.plan.blueprint_sha256 = "b".repeat(64);
             assert!(catalog_from_installation(&bad_blueprint, &signed_pack).is_err());
             let mut bad_artifact = staged.clone();
-            bad_artifact.plan.components.get_mut("text-profile").unwrap().artifact.sha256 =
-                "b".repeat(64);
+            bad_artifact
+                .plan
+                .components
+                .get_mut("text-profile")
+                .unwrap()
+                .artifact
+                .sha256 = "b".repeat(64);
             assert!(catalog_from_installation(&bad_artifact, &signed_pack).is_err());
 
-            let path = fixture.root.path().join("packs")
+            let path = fixture
+                .root
+                .path()
+                .join("packs")
                 .join("tandem.company-brain/0.1.0/model-profiles/text-default.json");
             let original = std::fs::read(&path).unwrap();
             std::fs::write(&path, b"tampered catalog").unwrap();

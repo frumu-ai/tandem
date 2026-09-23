@@ -198,11 +198,11 @@ fn current_staged_installation_read_is_generation_bound_on_each_backend() {
                 SolutionInstallationTransition::Begin,
             )
             .unwrap();
-        assert!(read(current.generation).is_err(), "pending components are not staged");
-        for (component, attempt) in [
-            ("central-brain", "first"),
-            ("review-notes", "second"),
-        ] {
+        assert!(
+            read(current.generation).is_err(),
+            "pending components are not staged"
+        );
+        for (component, attempt) in [("central-brain", "first"), ("review-notes", "second")] {
             let claimed = store
                 .transition_solution_installation(
                     fixture.input(&config, &digest),
@@ -213,7 +213,10 @@ fn current_staged_installation_read_is_generation_bound_on_each_backend() {
                     },
                 )
                 .unwrap();
-            assert!(read(claimed.generation).is_err(), "claimed component is not staged");
+            assert!(
+                read(claimed.generation).is_err(),
+                "claimed component is not staged"
+            );
             current = store
                 .transition_solution_installation(
                     fixture.input(&config, &digest),
@@ -227,7 +230,10 @@ fn current_staged_installation_read_is_generation_bound_on_each_backend() {
                 .unwrap();
         }
         assert_eq!(read(current.generation).unwrap(), current);
-        assert!(read(current.generation - 1).is_err(), "stale generation must fail closed");
+        assert!(
+            read(current.generation - 1).is_err(),
+            "stale generation must fail closed"
+        );
         assert!(store
             .current_staged_solution_installation(
                 &fixture.customer.context,
