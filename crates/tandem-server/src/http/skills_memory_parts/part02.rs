@@ -748,7 +748,7 @@ pub(super) async fn persist_global_memory_record(
     state: &AppState,
     store: &dyn tandem_memory::MemoryStore,
     mut record: GlobalMemoryRecord,
-) {
+) -> bool {
     let tenant_context = record_tenant_context(&record);
     publish_tenant_event(
         state,
@@ -775,7 +775,7 @@ pub(super) async fn persist_global_memory_record(
                 "messageID": record.message_id,
             }),
         );
-        return;
+        return false;
     }
     record.content = truncate_text(&scrubbed, MAX_MEMORY_RECORD_CONTENT_CHARS);
     record.redaction_count = scrub.redactions;
@@ -837,8 +837,10 @@ pub(super) async fn persist_global_memory_record(
                     "messageID": record.message_id,
                 }),
             );
+            true
         }
         Ok(_) => {
+            tracing::warn!("unexpected global memory store write result");
             publish_tenant_event(
                 state,
                 &tenant_context,
@@ -851,8 +853,10 @@ pub(super) async fn persist_global_memory_record(
                     "messageID": record.message_id,
                 }),
             );
+            false
         }
         Err(err) => {
+            tracing::warn!("global memory store write failed: {err}");
             publish_tenant_event(
                 state,
                 &tenant_context,
@@ -865,6 +869,7 @@ pub(super) async fn persist_global_memory_record(
                     "messageID": record.message_id,
                 }),
             );
+            false
         }
     }
 }
