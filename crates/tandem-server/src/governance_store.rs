@@ -1,12 +1,13 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Context;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use tandem_enterprise_contract::DataClass;
+use tandem_enterprise_contract::{DataClass, OrganizationUnitAccessGrant};
 use tandem_memory::envelope::MemoryKeyScope;
 use tandem_memory::types::MemoryTenantScope;
 use tandem_types::TenantContext;
@@ -127,6 +128,45 @@ pub(crate) struct GovernanceStore<'a> {
 
 pub(crate) fn for_state(state: &AppState) -> GovernanceStore<'_> {
     GovernanceStore { state }
+}
+
+impl AppState {
+    /// Persist a grant registry while its caller holds the mutation lock. Taking
+    /// the snapshot directly avoids re-entering the same lock and keeps hosted
+    /// writes in the scoped, authenticated governance store.
+    pub async fn persist_enterprise_org_unit_access_grants_snapshot(
+        &self,
+        grants: &HashMap<String, OrganizationUnitAccessGrant>,
+    ) -> anyhow::Result<()> {
+        // A hosted policy source is authoritative even if it has not produced
+        // a usable snapshot yet. Fail closed on that state and require a real
+        // hosted KMS roundtrip before any grant data reaches the file writer.
+        if self
+            .enterprise
+            .hosted_policy
+            .current()
+            .map_err(anyhow::Error::msg)?
+            .is_some()
+        {
+            let store_context = GovernanceStoreFile::OrgUnitAccessGrants.storage_context();
+            crate::encrypted_file_store::validate_hosted_crypto_ready(&store_context.manifest)
+                .context("hosted org-unit access grants require a working KMS provider")?;
+        }
+        let records = grants
+            .iter()
+            .map(|(key, grant)| {
+                GovernanceStoreFile::OrgUnitAccessGrants.json_record(
+                    key.as_str(),
+                    grant,
+                    &grant.tenant_context,
+                    Some(&grant.unit.id),
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for_state(self)
+            .write_json_records(GovernanceStoreFile::OrgUnitAccessGrants, &records)
+            .await
+    }
 }
 
 impl<'a> GovernanceStore<'a> {

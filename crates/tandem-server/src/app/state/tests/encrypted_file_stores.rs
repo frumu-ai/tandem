@@ -604,6 +604,130 @@ async fn hosted_governance_stores_round_trip_after_crypto_restart() {
 
 #[tokio::test]
 #[serial]
+async fn hosted_grant_snapshot_persistence_encrypts_and_rejects_failed_or_plaintext_writes() {
+    let state = crate::test_support::test_state().await;
+    let _env_lock = crate::test_support::TEST_STATE_ENV_LOCK.lock().await;
+    let fixture = fixtures::acme_company();
+    let grants = fixture
+        .graph
+        .unit_access_grants
+        .iter()
+        .map(|grant| (grant.grant_id.clone(), grant.clone()))
+        .collect::<HashMap<_, _>>();
+    let secret = fixture.engineering_secret.resource_id;
+    let path = &state.enterprise.org_unit_access_grants_path;
+    assert!(serde_json::to_string(&grants).unwrap().contains(&secret));
+    let policy = serde_json::to_vec(&json!({
+        "schema_version": 1, "policy_version": 1,
+        "organization_id": "acme", "deployment_id": "acme",
+        "generated_at": chrono::DateTime::from_timestamp_millis(crate::now_ms() as i64).unwrap(),
+        "users": [], "org_units": [], "org_unit_memberships": [], "deployment_grants": []
+    }))
+    .unwrap();
+    state
+        .install_hosted_policy_snapshot_for_test("acme", "acme", &policy)
+        .unwrap();
+
+    crate::encrypted_file_store::with_test_crypto_provider(
+        MemoryCryptoProvider::plaintext(),
+        None,
+        async {
+            let error = state
+                .persist_enterprise_org_unit_access_grants_snapshot(&grants)
+                .await
+                .expect_err("hosted policy must reject a plaintext provider");
+            assert!(
+                format!("{error:?}").contains("KMS provider is unavailable"),
+                "unexpected error: {error:?}"
+            );
+            assert!(!path.exists(), "plaintext provider wrote a grant file");
+        },
+    )
+    .await;
+
+    crate::encrypted_file_store::with_test_crypto_provider(
+        hosted_provider(true, false),
+        Some(RUNTIME_PRINCIPAL),
+        async {
+            let error = state
+                .persist_enterprise_org_unit_access_grants_snapshot(&grants)
+                .await
+                .expect_err("unavailable KMS must not persist a grant snapshot");
+            assert!(
+                format!("{error:?}").contains("fixture KMS encrypt unavailable"),
+                "unexpected error: {error:?}"
+            );
+            assert!(!path.exists(), "failed encryption wrote a grant file");
+        },
+    )
+    .await;
+
+    crate::encrypted_file_store::with_test_crypto_provider(
+        hosted_provider(false, false),
+        Some(RUNTIME_PRINCIPAL),
+        async {
+            state
+                .persist_enterprise_org_unit_access_grants_snapshot(&grants)
+                .await
+                .expect("persist encrypted grant snapshot");
+        },
+    )
+    .await;
+    let raw = tokio::fs::read_to_string(path).await.expect("raw grant file");
+    assert!(crate::encrypted_file_store::is_encrypted_payload(&raw));
+    assert!(!raw.contains(&secret), "grant resource leaked in plaintext");
+
+    crate::encrypted_file_store::with_test_crypto_provider(
+        hosted_provider(false, true),
+        Some(RUNTIME_PRINCIPAL),
+        async {
+            let error = state
+                .load_enterprise_org_unit_access_grants()
+                .await
+                .expect_err("cold grant reload must fail when KMS decrypt is unavailable");
+            assert!(
+                format!("{error:?}").contains("fixture KMS decrypt unavailable"),
+                "unexpected error: {error:?}"
+            );
+            assert!(state.enterprise.org_unit_access_grants.read().await.is_empty());
+        },
+    )
+    .await;
+    crate::encrypted_file_store::with_test_crypto_provider(
+        hosted_provider(false, false),
+        Some(RUNTIME_PRINCIPAL),
+        async {
+            state
+                .load_enterprise_org_unit_access_grants()
+                .await
+                .expect("cold grant reload with KMS");
+            assert_eq!(*state.enterprise.org_unit_access_grants.read().await, grants);
+        },
+    )
+    .await;
+
+    // A legacy writer replacing this authenticated collection with raw JSON
+    // must be detected on the next load, even if the JSON itself is valid.
+    tokio::fs::write(path, serde_json::to_vec(&grants).unwrap())
+        .await
+        .expect("tamper grant file");
+    state.enterprise.org_unit_access_grants.write().await.clear();
+    crate::encrypted_file_store::with_test_crypto_provider(
+        hosted_provider(false, false),
+        Some(RUNTIME_PRINCIPAL),
+        async {
+            state
+                .load_enterprise_org_unit_access_grants()
+                .await
+                .expect_err("plaintext replacement must fail closed");
+            assert!(state.enterprise.org_unit_access_grants.read().await.is_empty());
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial]
 async fn hosted_kms_write_failure_is_returned_without_persisted_success() {
     let state = crate::test_support::test_state().await;
     let _env_lock = crate::test_support::TEST_STATE_ENV_LOCK.lock().await;

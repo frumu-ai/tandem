@@ -31,7 +31,7 @@ pub(crate) struct RuntimeContextAssertionSecurity {
 }
 
 impl RuntimeContextAssertionSecurity {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn from_test_metadata_keyring(raw: &str, replay_path: &Path) -> Self {
         let keyring = parse_runtime_keyring(raw, true).unwrap();
         let key_count = keyring.len();

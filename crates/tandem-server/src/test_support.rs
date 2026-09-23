@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::json;
@@ -31,6 +32,24 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::{AppState, RuntimeState};
+
+#[cfg(feature = "test-support")]
+pub use crate::http::hosted_test_ingress;
+#[path = "test_support_hosted_crypto.rs"]
+mod hosted_crypto;
+pub use hosted_crypto::with_hosted_crypto_for_test;
+
+/// Install the same metadata-key verifier and durable replay store used by
+/// hosted ingress, without process-wide environment variables.
+pub fn install_hosted_assertion_security_for_test(
+    state: &AppState,
+    raw_keyring: &str,
+    replay_path: &Path,
+) {
+    let security = crate::context_assertion_security::RuntimeContextAssertionSecurity::
+        from_test_metadata_keyring(raw_keyring, replay_path);
+    *state.context_assertion_security.write().unwrap() = Some(Arc::new(security));
+}
 
 /// Build a ready [`AppState`] backed by per-call temp directories, with the
 /// enterprise storage paths and a seeded in-memory MCP server wired up. Suitable

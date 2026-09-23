@@ -302,7 +302,7 @@ impl ProtectedFileCrypto {
 }
 
 fn crypto() -> ProtectedFileCrypto {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         if let Ok(provider) = TEST_CRYPTO.try_with(Clone::clone) {
             return provider;
@@ -451,12 +451,12 @@ where
     write_text_file(path, &plaintext, context).await
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 tokio::task_local! {
     static TEST_CRYPTO: ProtectedFileCrypto;
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) async fn with_test_crypto_provider<F, T>(
     provider: MemoryCryptoProvider,
     principal_id: Option<&str>,

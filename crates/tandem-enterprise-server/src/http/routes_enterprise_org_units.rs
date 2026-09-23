@@ -24,6 +24,21 @@ use super::routes_enterprise::{
     validate_external_id, EnterpriseAdminResponseBase, EnterpriseResult,
 };
 
+async fn require_org_unit_grant_admin<'a>(
+    state: &'a AppState,
+    request_principal: &RequestPrincipal,
+    verified: Option<&VerifiedTenantContext>,
+) -> Result<Option<tokio::sync::MutexGuard<'a, ()>>, (StatusCode, Json<Value>)> {
+    match state.hosted_org_unit_grant_mutation_guard(verified).await {
+        Ok(Some(guard)) => Ok(Some(guard)),
+        Ok(None) => require_enterprise_admin(request_principal, verified).map(|()| None),
+        Err(_) => Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"code": "HOSTED_ADMIN_REQUIRED"})),
+        )),
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct EnterpriseOrgUnitsResponse {
     #[serde(flatten)]
@@ -462,7 +477,6 @@ pub(super) async fn create_org_unit_access_grant(
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<CreateOrganizationUnitAccessGrantRequest>,
 ) -> EnterpriseResult<EnterpriseOrgUnitAccessGrantsResponse> {
-    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let unit_id = validate_enterprise_id("unit_id", &input.unit_id)?;
     let taxonomy_id = input
         .taxonomy_id
@@ -515,14 +529,21 @@ pub(super) async fn create_org_unit_access_grant(
     grant.state = input.state;
     grant.expires_at_ms = input.expires_at_ms;
 
+    let _policy_commit_guard = require_org_unit_grant_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )
+    .await?;
     {
         let mut registry = state.enterprise.org_unit_access_grants.write().await;
-        registry.insert(enterprise_org_unit_access_grant_key(&grant), grant.clone());
-        persist_enterprise_org_unit_access_grants(
-            &state.enterprise.org_unit_access_grants_path,
-            &registry,
-        )
-        .await?;
+        let mut next = registry.clone();
+        next.insert(enterprise_org_unit_access_grant_key(&grant), grant.clone());
+        state
+            .persist_enterprise_org_unit_access_grants_snapshot(&next)
+            .await
+            .map_err(|_| internal_error("ENTERPRISE_ORG_UNIT_ACCESS_GRANTS_PERSIST_FAILED"))?;
+        *registry = next;
     }
 
     Ok(Json(EnterpriseOrgUnitAccessGrantsResponse {
@@ -578,11 +599,17 @@ pub(super) async fn update_org_unit_access_grant(
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<UpdateOrganizationUnitAccessGrantRequest>,
 ) -> EnterpriseResult<EnterpriseOrgUnitAccessGrantsResponse> {
-    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
+    let _policy_commit_guard = require_org_unit_grant_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )
+    .await?;
     let grant_id = validate_enterprise_id("grant_id", &grant_id)?;
     let updated = {
         let mut registry = state.enterprise.org_unit_access_grants.write().await;
-        let Some(grant) = registry.values_mut().find(|grant| {
+        let mut next = registry.clone();
+        let Some(grant) = next.values_mut().find(|grant| {
             grant.grant_id == grant_id
                 && org_unit_access_grant_tenant_matches(grant, &tenant_context)
         }) else {
@@ -594,11 +621,11 @@ pub(super) async fn update_org_unit_access_grant(
         grant.expires_at_ms = input.expires_at_ms;
         grant.updated_at_ms = now_ms();
         let updated = grant.clone();
-        persist_enterprise_org_unit_access_grants(
-            &state.enterprise.org_unit_access_grants_path,
-            &registry,
-        )
-        .await?;
+        state
+            .persist_enterprise_org_unit_access_grants_snapshot(&next)
+            .await
+            .map_err(|_| internal_error("ENTERPRISE_ORG_UNIT_ACCESS_GRANTS_PERSIST_FAILED"))?;
+        *registry = next;
         updated
     };
 
@@ -760,19 +787,265 @@ async fn persist_enterprise_org_unit_memberships(
     Ok(())
 }
 
-async fn persist_enterprise_org_unit_access_grants(
-    path: &std::path::Path,
-    registry: &HashMap<String, OrganizationUnitAccessGrant>,
-) -> Result<(), (StatusCode, Json<Value>)> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|_| internal_error("ENTERPRISE_ORG_UNIT_ACCESS_GRANTS_PERSIST_FAILED"))?;
+#[cfg(test)]
+mod hosted_grant_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use base64::Engine as _;
+    use ed25519_dalek::Signer;
+    use serde_json::json;
+    use tandem_enterprise_contract::{
+        hosted_policy::role_capabilities, AuthorityChain, HumanActor, TenantContextAssertionClaims,
+        TenantContextAssertionHeader,
+    };
+    use tower::ServiceExt;
+
+    fn claims(actor: &str, role: &str, version: u64, nonce: &str) -> TenantContextAssertionClaims {
+        let now = now_ms();
+        let tenant =
+            TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".into()), actor);
+        let principal = RequestPrincipal::authenticated_user(actor, "tandem-web");
+        let mut claims = TenantContextAssertionClaims::new_v1(
+            "tandem-web",
+            "tandem-runtime",
+            now,
+            now + 60_000,
+            format!("grant-{actor}-{version}-{nonce}"),
+            tenant,
+            HumanActor::tandem_user(actor),
+            AuthorityChain::from_request(principal),
+            vec![format!("hosted:role:{role}")],
+        );
+        claims.policy_version = Some(version);
+        claims.capabilities = role_capabilities(role)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        claims
     }
-    let payload = serde_json::to_vec_pretty(registry)
-        .map_err(|_| internal_error("ENTERPRISE_ORG_UNIT_ACCESS_GRANTS_PERSIST_FAILED"))?;
-    tokio::fs::write(path, payload)
-        .await
-        .map_err(|_| internal_error("ENTERPRISE_ORG_UNIT_ACCESS_GRANTS_PERSIST_FAILED"))?;
-    Ok(())
+
+    fn identity(actor: &str, role: &str, version: u64) -> VerifiedTenantContext {
+        claims(actor, role, version, "direct").into()
+    }
+
+    fn policy(version: u64, alice_role: &str) -> Vec<u8> {
+        let now = now_ms();
+        serde_json::to_vec(&json!({
+            "schema_version": 1, "policy_version": version,
+            "organization_id": "org-a", "deployment_id": "dep-a",
+            "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+            "users": [
+                {"id": "alice", "email": null, "username": null, "role": alice_role,
+                 "capabilities": role_capabilities(alice_role), "is_active": true,
+                 "email_verified": true},
+                {"id": "bob", "email": null, "username": null, "role": "member",
+                 "capabilities": role_capabilities("member"), "is_active": true,
+                 "email_verified": true}
+            ],
+            "org_units": [{"id": "eng", "slug": "eng", "display_name": "Engineering",
+                           "kind": "department", "state": "active"}],
+            "org_unit_memberships": [{"unit_id": "eng", "user_id": "alice"}],
+            "deployment_grants": []
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn hosted_admin_can_create_and_revoke_grant_but_member_and_downgraded_admin_cannot() {
+        tandem_server::test_support::with_hosted_crypto_for_test(hosted_grant_handler_case()).await;
+    }
+
+    async fn hosted_grant_handler_case() {
+        let state = tandem_server::test_support::test_state().await;
+        state
+            .install_hosted_policy_snapshot_for_test("org-a", "dep-a", &policy(4, "admin"))
+            .unwrap();
+        let alice = identity("alice", "admin", 4);
+        let bob = identity("bob", "member", 4);
+        let create = || -> CreateOrganizationUnitAccessGrantRequest {
+            serde_json::from_value(json!({
+                "grant_id": "grant-eng-private", "taxonomy_id": HOSTED_TAXONOMY_ID,
+                "unit_id": "eng", "resource_kind": "document", "resource_id": "eng-private",
+                "permissions": ["read"], "data_classes": ["customer_data"]
+            }))
+            .unwrap()
+        };
+        let call_create = |verified: VerifiedTenantContext| {
+            let tenant = verified.tenant_context.clone();
+            let principal =
+                RequestPrincipal::authenticated_user(&verified.human_actor.actor_id, "tandem-web");
+            create_org_unit_access_grant(
+                State(state.clone()),
+                Extension(tenant),
+                Extension(principal),
+                Some(Extension(verified)),
+                Json(create()),
+            )
+        };
+        assert_eq!(
+            call_create(bob.clone()).await.unwrap_err().0,
+            StatusCode::FORBIDDEN
+        );
+        assert!(call_create(alice.clone()).await.is_ok());
+        assert_eq!(
+            state.enterprise.org_unit_access_grants.read().await.len(),
+            1
+        );
+
+        let revoke = |verified: VerifiedTenantContext| {
+            let tenant = verified.tenant_context.clone();
+            let principal =
+                RequestPrincipal::authenticated_user(&verified.human_actor.actor_id, "tandem-web");
+            update_org_unit_access_grant(
+                State(state.clone()),
+                Path("grant-eng-private".into()),
+                Extension(tenant),
+                Extension(principal),
+                Some(Extension(verified)),
+                Json(serde_json::from_value(json!({"state": "disabled"})).unwrap()),
+            )
+        };
+        assert_eq!(revoke(bob).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        state
+            .install_hosted_policy_snapshot_for_test("org-a", "dep-a", &policy(5, "owner"))
+            .unwrap();
+        let owner = identity("alice", "owner", 5);
+        assert!(revoke(owner.clone()).await.is_ok());
+        assert!(state
+            .enterprise
+            .org_unit_access_grants
+            .read()
+            .await
+            .values()
+            .all(|grant| { grant.state == OrganizationUnitState::Disabled }));
+        assert!(call_create(owner.clone()).await.is_ok());
+        state
+            .install_hosted_policy_snapshot_for_test("org-a", "dep-a", &policy(6, "viewer"))
+            .unwrap();
+        assert_eq!(revoke(alice).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        assert_eq!(revoke(owner).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            revoke(identity("alice", "viewer", 6)).await.unwrap_err().0,
+            StatusCode::FORBIDDEN
+        );
+        let mut forged_enterprise_admin = identity("alice", "viewer", 6);
+        forged_enterprise_admin.roles.push("admin".into());
+        assert_eq!(
+            revoke(forged_enterprise_admin).await.unwrap_err().0,
+            StatusCode::FORBIDDEN
+        );
+        assert!(state
+            .enterprise
+            .org_unit_access_grants
+            .read()
+            .await
+            .values()
+            .all(|grant| { grant.state == OrganizationUnitState::Active }));
+    }
+
+    fn sign_claims(
+        key: &ed25519_dalek::SigningKey,
+        actor: &str,
+        role: &str,
+        version: u64,
+        nonce: &str,
+    ) -> String {
+        let header = TenantContextAssertionHeader::ed25519("grant-key");
+        let encoded_header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&header).unwrap());
+        let encoded_claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims(actor, role, version, nonce)).unwrap());
+        let input = format!("{encoded_header}.{encoded_claims}");
+        let signature = key.sign(input.as_bytes());
+        format!(
+            "{input}.{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes())
+        )
+    }
+
+    async fn signed_request(
+        app: &Router,
+        method: &str,
+        path: &str,
+        assertion: &str,
+        body: Value,
+    ) -> StatusCode {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .header("x-tandem-context-assertion", assertion)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn signed_hosted_grant_http_rechecks_current_admin() {
+        tandem_server::test_support::with_hosted_crypto_for_test(signed_hosted_grant_http_case())
+            .await;
+    }
+
+    async fn signed_hosted_grant_http_case() {
+        let state = tandem_server::test_support::test_state().await;
+        let replay_path = state.enterprise.org_unit_access_grants_path.with_extension("replay.json");
+        std::fs::create_dir_all(replay_path.parent().unwrap()).unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let keyring = json!({"grant-key": {
+            "purpose": "context_assertion",
+            "public_key": base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(key.verifying_key().to_bytes()),
+            "organization_id": "org-a", "deployment_id": "dep-a",
+            "allowed_audiences": ["tandem-runtime"], "status": "active"
+        }}).to_string();
+        tandem_server::test_support::install_hosted_assertion_security_for_test(
+            &state, &keyring, &replay_path,
+        );
+        state.install_hosted_policy_snapshot_for_test("org-a", "dep-a", &policy(1, "admin"))
+            .unwrap();
+        let app = apply(Router::new())
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(), tandem_server::test_support::hosted_test_ingress,
+            ))
+            .with_state(state.clone());
+        let create = json!({
+            "grant_id": "signed-eng-private", "taxonomy_id": HOSTED_TAXONOMY_ID,
+            "unit_id": "eng", "resource_kind": "document", "resource_id": "signed-private",
+            "permissions": ["read"], "data_classes": ["customer_data"]
+        });
+        let update = json!({"state": "disabled"});
+        let path = "/enterprise/org-unit-access-grants/signed-eng-private";
+        assert_eq!(signed_request(&app, "POST", "/enterprise/org-unit-access-grants",
+            &sign_claims(&key, "bob", "member", 1, "bob-create"), create.clone()).await,
+            StatusCode::FORBIDDEN);
+        assert_eq!(signed_request(&app, "POST", "/enterprise/org-unit-access-grants",
+            &sign_claims(&key, "alice", "admin", 1, "alice-create"), create).await,
+            StatusCode::OK);
+        let forged_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        assert_eq!(signed_request(&app, "PATCH", path,
+            &sign_claims(&forged_key, "alice", "admin", 1, "forged-key"), update.clone()).await,
+            StatusCode::FORBIDDEN);
+        assert_eq!(signed_request(&app, "PATCH", path,
+            &sign_claims(&key, "bob", "member", 1, "bob-update"), update.clone()).await,
+            StatusCode::FORBIDDEN);
+        assert_eq!(signed_request(&app, "PATCH", path,
+            &sign_claims(&key, "alice", "admin", 1, "alice-update"), update.clone()).await,
+            StatusCode::OK);
+        state.install_hosted_policy_snapshot_for_test("org-a", "dep-a", &policy(2, "viewer"))
+            .unwrap();
+        assert_eq!(signed_request(&app, "PATCH", path,
+            &sign_claims(&key, "alice", "admin", 1, "stale-admin"), update.clone()).await,
+            StatusCode::FORBIDDEN);
+        assert_eq!(signed_request(&app, "PATCH", path,
+            &sign_claims(&key, "alice", "viewer", 2, "fresh-viewer"), update).await,
+            StatusCode::FORBIDDEN);
+        assert_eq!(state.enterprise.org_unit_access_grants.read().await.len(), 1);
+        assert!(replay_path.is_file());
+    }
 }

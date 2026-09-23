@@ -254,6 +254,25 @@ async fn attach_enterprise_request_context_for_mode(
     Ok(true)
 }
 
+#[cfg(feature = "test-support")]
+pub async fn hosted_test_ingress(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    match attach_enterprise_request_context_for_mode(
+        &state,
+        &mut request,
+        RuntimeAuthMode::HostedSingleTenant,
+    )
+    .await
+    {
+        Ok(true) => next.run(request).await,
+        Ok(false) => StatusCode::FORBIDDEN.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 fn tenant_context_denied_response() -> Response {
     (
         StatusCode::FORBIDDEN,
