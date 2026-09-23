@@ -1,9 +1,23 @@
 impl MemoryDatabase {
     /// Override the memory payload crypto provider (used to select an explicit
     /// local-encrypted/hosted provider or in tests). Defaults to env resolution.
-    pub fn with_crypto_provider(mut self, crypto: crate::crypto::MemoryCryptoProvider) -> Self {
+    pub fn with_crypto_provider(
+        mut self,
+        crypto: crate::crypto::MemoryCryptoProvider,
+    ) -> MemoryResult<Self> {
+        // This test/embedding override must enforce the same legacy-data gate
+        // as env-selected hosted mode in new(). Otherwise a caller can open a
+        // plaintext DB locally and only then switch to hosted encryption.
+        let conn = self.conn.try_lock().map_err(|_| {
+            MemoryError::Lock(
+                "cannot switch memory crypto while the database is busy".to_string(),
+            )
+        })?;
+        Self::reject_legacy_global_records_for_hosted_connection(&conn, &crypto, false)?;
+        Self::promote_hosted_global_provenance(&conn, &crypto)?;
+        drop(conn);
         self.crypto = crypto;
-        self
+        Ok(self)
     }
 
     /// Override strict tenant enforcement for this instance (instances inherit
@@ -50,6 +64,13 @@ impl MemoryDatabase {
 
     /// Initialize or open the memory database
     pub async fn new(db_path: &Path) -> MemoryResult<Self> {
+        // A missing main file is not fresh if SQLite sidecars from an earlier
+        // database remain at this path. Never assume their pages are clean.
+        let created_fresh = !db_path.exists() && ["-wal", "-shm"].iter().all(|suffix| {
+            let mut sidecar = db_path.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            !Path::new(&sidecar).exists()
+        });
         if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -88,10 +109,11 @@ impl MemoryDatabase {
         // An in-place plaintext-to-hosted upgrade cannot erase old SQLite pages,
         // FTS segments, WAL frames or external backups. Require an explicit
         // offline migration into fresh storage before opening a legacy database.
-        db.reject_legacy_global_records_for_hosted().await?;
+        db.reject_legacy_global_records_for_hosted(created_fresh).await?;
 
         // Initialize schema
-        db.init_schema().await?;
+        db.init_schema(created_fresh).await?;
+        db.promote_hosted_global_provenance_after_init().await?;
         if let Err(err) = db.validate_vector_tables().await {
             match &err {
                 crate::types::MemoryError::Database(db_err)
@@ -111,11 +133,49 @@ impl MemoryDatabase {
         Ok(db)
     }
 
-    async fn reject_legacy_global_records_for_hosted(&self) -> MemoryResult<()> {
-        if !self.crypto.is_hosted() {
+    async fn reject_legacy_global_records_for_hosted(
+        &self,
+        created_fresh: bool,
+    ) -> MemoryResult<()> {
+        let conn = self.conn.lock().await;
+        Self::reject_legacy_global_records_for_hosted_connection(
+            &conn,
+            &self.crypto,
+            created_fresh,
+        )
+    }
+
+    fn reject_legacy_global_records_for_hosted_connection(
+        conn: &Connection,
+        crypto: &crate::crypto::MemoryCryptoProvider,
+        created_fresh: bool,
+    ) -> MemoryResult<()> {
+        if !crypto.is_hosted() {
             return Ok(());
         }
-        let conn = self.conn.lock().await;
+        if created_fresh {
+            return Ok(());
+        }
+        let marker_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_record_crypto_provenance')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !marker_exists {
+            return Err(MemoryError::InvalidConfig(
+                "hosted global memory requires a fresh database or an explicit offline migration; storage provenance is unknown".to_string(),
+            ));
+        }
+        let provenance: Option<String> = conn.query_row(
+            "SELECT state FROM memory_record_crypto_provenance WHERE id = 1",
+            [],
+            |row| row.get(0),
+        ).optional()?;
+        if !matches!(provenance.as_deref(), Some("pristine" | "hosted")) {
+            return Err(MemoryError::InvalidConfig(
+                "hosted global memory cannot reuse SQLite storage with plaintext history; migrate SQLite, FTS, WAL and backups offline".to_string(),
+            ));
+        }
         let table_exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_records')",
             [],
@@ -140,8 +200,8 @@ impl MemoryDatabase {
         let legacy_rows: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM memory_records
              WHERE content_envelope IS NULL OR content NOT LIKE 'tce1:%'
-                OR (IFNULL(metadata, '') <> '' AND metadata_envelope IS NULL)
-                OR (IFNULL(provenance, '') <> '' AND provenance_envelope IS NULL))",
+                OR metadata_envelope IS NULL OR IFNULL(metadata, '') NOT LIKE 'tce1:%'
+                OR provenance_envelope IS NULL OR IFNULL(provenance, '') NOT LIKE 'tce1:%')",
             [],
             |row| row.get(0),
         )?;
@@ -149,6 +209,25 @@ impl MemoryDatabase {
             return Err(MemoryError::InvalidConfig(
                 "hosted global memory contains legacy plaintext rows; migrate SQLite, WAL and backups offline".to_string(),
             ));
+        }
+        Ok(())
+    }
+
+    async fn promote_hosted_global_provenance_after_init(&self) -> MemoryResult<()> {
+        let conn = self.conn.lock().await;
+        Self::promote_hosted_global_provenance(&conn, &self.crypto)
+    }
+
+    fn promote_hosted_global_provenance(
+        conn: &Connection,
+        crypto: &crate::crypto::MemoryCryptoProvider,
+    ) -> MemoryResult<()> {
+        if crypto.is_hosted() {
+            conn.execute(
+                "UPDATE memory_record_crypto_provenance SET state = 'hosted'
+                 WHERE id = 1 AND state = 'pristine'",
+                [],
+            )?;
         }
         Ok(())
     }
@@ -193,7 +272,7 @@ impl MemoryDatabase {
     }
 
     /// Initialize database schema
-    async fn init_schema(&self) -> MemoryResult<()> {
+    async fn init_schema(&self, created_fresh: bool) -> MemoryResult<()> {
         let mut conn = self.conn.lock().await;
 
         // Extension is already registered globally in new()
@@ -1268,7 +1347,55 @@ impl MemoryDatabase {
         // changes are translated by the pending-version coordinator, which
         // records a version only in the transaction that applies it.
         crate::migrations::run_sqlite_migrations(&mut conn)?;
+        Self::ensure_global_crypto_provenance(&mut conn, created_fresh)?;
 
+        Ok(())
+    }
+
+    fn ensure_global_crypto_provenance(
+        conn: &mut Connection,
+        created_fresh: bool,
+    ) -> MemoryResult<()> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS memory_record_crypto_provenance (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                state TEXT NOT NULL CHECK (state IN ('pristine', 'hosted', 'legacy_unknown', 'plaintext_history'))
+            );
+            CREATE TRIGGER IF NOT EXISTS memory_record_crypto_provenance_no_downgrade
+            BEFORE UPDATE OF state ON memory_record_crypto_provenance
+            WHEN NEW.state != OLD.state
+              AND NOT ((OLD.state = 'pristine' AND NEW.state IN ('hosted', 'plaintext_history'))
+                    OR (OLD.state = 'hosted' AND NEW.state = 'plaintext_history')
+                    OR (OLD.state = 'legacy_unknown' AND NEW.state = 'plaintext_history'))
+            BEGIN
+                SELECT RAISE(ABORT, 'memory crypto provenance cannot be downgraded');
+            END;
+            CREATE TRIGGER IF NOT EXISTS memory_records_plaintext_history_ai
+            AFTER INSERT ON memory_records
+            WHEN NEW.content_envelope IS NULL OR NEW.content NOT GLOB 'tce1:*'
+              OR NEW.metadata_envelope IS NULL OR IFNULL(NEW.metadata, '') NOT GLOB 'tce1:*'
+              OR NEW.provenance_envelope IS NULL OR IFNULL(NEW.provenance, '') NOT GLOB 'tce1:*'
+            BEGIN
+                UPDATE memory_record_crypto_provenance
+                SET state = 'plaintext_history' WHERE id = 1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS memory_records_plaintext_history_au
+            AFTER UPDATE OF content, metadata, provenance, content_envelope, metadata_envelope, provenance_envelope
+            ON memory_records
+            WHEN NEW.content_envelope IS NULL OR NEW.content NOT GLOB 'tce1:*'
+              OR NEW.metadata_envelope IS NULL OR IFNULL(NEW.metadata, '') NOT GLOB 'tce1:*'
+              OR NEW.provenance_envelope IS NULL OR IFNULL(NEW.provenance, '') NOT GLOB 'tce1:*'
+            BEGIN
+                UPDATE memory_record_crypto_provenance
+                SET state = 'plaintext_history' WHERE id = 1;
+            END;",
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO memory_record_crypto_provenance (id, state) VALUES (1, ?1)",
+            params![if created_fresh { "pristine" } else { "legacy_unknown" }],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1410,6 +1537,11 @@ impl MemoryDatabase {
     /// and recreate the schema in-place so new writes can proceed.
     /// This intentionally clears memory content for the active DB file.
     pub async fn reset_all_memory_tables(&self) -> MemoryResult<()> {
+        if self.crypto.is_hosted() {
+            return Err(MemoryError::InvalidConfig(
+                "hosted memory reset requires a new database and explicit recovery of SQLite, WAL and backups".to_string(),
+            ));
+        }
         let _schema_init_guard = SCHEMA_INIT_LOCK.lock().await;
         let table_names = {
             let conn = self.conn.lock().await;
@@ -1433,7 +1565,7 @@ impl MemoryDatabase {
             }
         }
 
-        self.init_schema().await
+        self.init_schema(false).await
     }
 
     /// Attempt an immediate vector-table repair when a concrete DB error indicates

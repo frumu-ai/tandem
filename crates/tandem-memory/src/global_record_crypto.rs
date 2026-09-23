@@ -43,7 +43,7 @@ pub(super) fn seal_global_field(
     plaintext: &str,
     scope: &MemoryKeyScope,
 ) -> MemoryResult<(String, Option<String>)> {
-    if plaintext.is_empty() && field != "content" {
+    if plaintext.is_empty() && field != "content" && !crypto.is_hosted() {
         return Ok((String::new(), None));
     }
     let (policy, audit) = authorization_ids(id, field);
@@ -153,7 +153,7 @@ pub(super) fn open_global_field(
             "hosted global record requires a hosted KMS provider".to_string(),
         ));
     }
-    if stored.is_empty() && field != "content" {
+    if stored.is_empty() && field != "content" && !crypto.is_hosted() {
         if envelope.is_some() {
             return Err(MemoryError::InvalidConfig(
                 "empty global record field carries an envelope".to_string(),
@@ -186,6 +186,23 @@ pub(super) fn open_global_field(
         None => crypto.decrypt_field(stored)?,
     };
     Ok((plaintext, expected_scope))
+}
+
+/// Only the broker's explicit grant denials are skippable while scanning a
+/// mixed-class hosted result set. Corrupt envelopes, wrong keys and malformed
+/// rows remain hard errors. The broker prefixes its audited denial reason with
+/// MemoryError's display text before returning it from authorize_unwrap().
+pub(super) fn is_global_record_grant_denial(error: &rusqlite::Error) -> bool {
+    let rusqlite::Error::FromSqlConversionFailure(_, _, source) = error else {
+        return false;
+    };
+    let Some(MemoryError::InvalidConfig(reason)) = source.downcast_ref::<MemoryError>() else {
+        return false;
+    };
+    matches!(reason.as_str(),
+        "Invalid configuration: memory decrypt principal lacks data-class grant"
+            | "Invalid configuration: memory decrypt principal lacks source-binding grant"
+            | "Invalid configuration: memory decrypt principal lacks owner-subject grant")
 }
 
 impl MemoryDatabase {
