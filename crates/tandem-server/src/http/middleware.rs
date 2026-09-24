@@ -284,11 +284,14 @@ fn tenant_context_denied_response() -> Response {
         .into_response()
 }
 
-fn denial_audit_failure_response(error: &str) -> Response {
+const REQUIRED_DENIAL_RECEIPT_PUBLIC_ERROR: &str =
+    "request remained denied because its required denial receipt could not be written";
+
+fn denial_audit_failure_response(_error: &str) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({
-            "error": format!("request remained denied, but its required denial receipt could not be written: {error}"),
+            "error": REQUIRED_DENIAL_RECEIPT_PUBLIC_ERROR,
             "code": "AUDIT_PERSISTENCE_FAILED",
         })),
     )
@@ -346,14 +349,12 @@ fn required_denial_receipt_error(error: anyhow::Error) -> String {
         os_error = ?io_error.and_then(std::io::Error::raw_os_error),
         "required denial receipt failed"
     );
-    error.to_string()
+    REQUIRED_DENIAL_RECEIPT_PUBLIC_ERROR.to_string()
 }
 
 #[cfg(test)]
-#[test]
-fn denial_receipt_diagnostic_does_not_include_error_content() {
-    use anyhow::Context;
-
+#[tokio::test]
+async fn denial_receipt_diagnostic_and_response_hide_error_content() {
     let error = anyhow::anyhow!(
         "failed to spawn google cloud kms decrypt command secret-token: Resource temporarily unavailable (os error 11)"
     )
@@ -362,6 +363,19 @@ fn denial_receipt_diagnostic_does_not_include_error_content() {
         required_denial_receipt_category(&error),
         ("read", "kms_decrypt_spawn")
     );
+    let raw_error = format!("{error:#}");
+    let safe_error = required_denial_receipt_error(error);
+    assert_eq!(safe_error, REQUIRED_DENIAL_RECEIPT_PUBLIC_ERROR);
+    let response = denial_audit_failure_response(&raw_error);
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("denial body");
+    let encoded = String::from_utf8(body.to_vec()).expect("JSON body");
+    assert!(!encoded.contains("secret-token") && !encoded.contains("secret-path"));
+    let json: serde_json::Value = serde_json::from_str(&encoded).expect("JSON response");
+    assert_eq!(json["code"], "AUDIT_PERSISTENCE_FAILED");
+    assert_eq!(json["error"], REQUIRED_DENIAL_RECEIPT_PUBLIC_ERROR);
 }
 
 async fn enrich_verified_context_with_org_unit_grants(
