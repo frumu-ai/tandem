@@ -297,8 +297,7 @@ pub async fn load_protected_audit_events_for_tenant(
         Ok(rows) => rows,
         Err(error) => {
             tracing::error!(
-                path = %state.protected_audit_path.display(),
-                error = ?error,
+                io_error_kind = ?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
                 "best-effort protected audit load failed"
             );
             Vec::new()
@@ -323,6 +322,24 @@ pub async fn append_protected_audit_event(
     // Tandem processes cannot both select the same chain tail. The store lock
     // is then acquired in one consistent order, avoiding nested re-acquisition.
     let _chain_guard = ProtectedAuditChainLock::acquire(&path).await?;
+    crate::encrypted_file_store::with_audit_append_crypto(append_protected_audit_event_locked(
+        state,
+        event_type,
+        tenant_context,
+        actor,
+        payload,
+    ))
+    .await
+}
+
+async fn append_protected_audit_event_locked(
+    state: &AppState,
+    event_type: impl Into<String>,
+    tenant_context: &TenantContext,
+    actor: Option<String>,
+    payload: Value,
+) -> anyhow::Result<()> {
+    let path = state.protected_audit_path.clone();
     let authority = crate::audit_integrity::integrity_authority()?;
     let store_file = crate::governance_store::GovernanceStoreFile::ProtectedAudit;
     let governance_store = crate::governance_store::for_state(state);
@@ -443,11 +460,7 @@ pub async fn append_protected_audit_event(
         Ok(()) => Ok(()),
         Err(err) => {
             tracing::error!(
-                path = %path.display(),
-                tenant_org_id = %row.tenant_context.org_id,
-                tenant_workspace_id = %row.tenant_context.workspace_id,
-                event_id = %row.event_id,
-                error = ?err,
+                io_error_kind = ?err.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
                 "protected audit persistence failed"
             );
             Err(err)
@@ -502,10 +515,7 @@ pub async fn append_protected_audit_event_best_effort(
             .await
     {
         tracing::error!(
-            event_type,
-            tenant_org_id = %tenant_context.org_id,
-            tenant_workspace_id = %tenant_context.workspace_id,
-            error = ?error,
+            io_error_kind = ?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
             "best-effort protected audit event was not persisted"
         );
     }

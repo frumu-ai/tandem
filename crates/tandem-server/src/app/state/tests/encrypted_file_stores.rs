@@ -5,6 +5,8 @@ use super::*;
 
 use serial_test::serial;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tandem_enterprise_contract::authority::fixtures;
 use tandem_memory::decrypt_broker::{MemoryDecryptBroker, MemoryDecryptBrokerConfig};
 use tandem_memory::dek_cache::MemoryDekCache;
@@ -24,6 +26,7 @@ const KEK_ID: &str = "projects/test/locations/global/keyRings/tandem/cryptoKeys/
 struct XorFixtureKms {
     fail_encrypt: bool,
     fail_decrypt: bool,
+    decrypt_count: Option<Arc<AtomicUsize>>,
 }
 
 impl GoogleCloudKmsEncryptClient for XorFixtureKms {
@@ -45,17 +48,29 @@ impl GoogleCloudKmsDecryptClient for XorFixtureKms {
                 "fixture KMS decrypt unavailable".to_string(),
             ));
         }
+        if let Some(count) = &self.decrypt_count {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
         assert!(!request.additional_authenticated_data.is_empty());
         Ok(request.ciphertext.iter().map(|byte| byte ^ 0x5a).collect())
     }
 }
 
 fn hosted_provider(fail_encrypt: bool, fail_decrypt: bool) -> MemoryCryptoProvider {
+    hosted_provider_with_decrypt_count(fail_encrypt, fail_decrypt, None)
+}
+
+fn hosted_provider_with_decrypt_count(
+    fail_encrypt: bool,
+    fail_decrypt: bool,
+    decrypt_count: Option<Arc<AtomicUsize>>,
+) -> MemoryCryptoProvider {
     let config = MemoryDecryptBrokerConfig::hosted(PROVIDER_ID, RUNTIME_PRINCIPAL).expect("config");
     let broker = MemoryDecryptBroker::new(config).expect("broker");
     let kms = XorFixtureKms {
         fail_encrypt,
         fail_decrypt,
+        decrypt_count,
     };
     let wrap =
         GoogleCloudKmsDekWrapProvider::new(kms.clone(), RUNTIME_PRINCIPAL).expect("wrap provider");
@@ -72,6 +87,116 @@ fn hosted_provider(fail_encrypt: bool, fail_decrypt: bool) -> MemoryCryptoProvid
         "1",
         0,
     ))
+}
+
+#[tokio::test]
+#[serial]
+async fn hosted_audit_append_reuses_dek_only_within_one_write() {
+    let state = crate::test_support::test_state().await;
+    let _env_lock = crate::test_support::TEST_STATE_ENV_LOCK.lock().await;
+    let anchors = tempfile::tempdir().expect("external anchor directory");
+    let tenant_context = tenant();
+    let decrypt_count = Arc::new(AtomicUsize::new(0));
+    let factory_count = Arc::clone(&decrypt_count);
+    let factory: Arc<dyn Fn() -> MemoryCryptoProvider + Send + Sync> = Arc::new(move || {
+        hosted_provider_with_decrypt_count(false, false, Some(Arc::clone(&factory_count)))
+    });
+    let keyring = crate::audit_integrity::test_keyring(
+        "audit-active",
+        "audit-throughput-integrity-secret-32-bytes",
+        &[],
+    );
+
+    crate::encrypted_file_store::with_test_crypto_factory(
+        factory,
+        Some(RUNTIME_PRINCIPAL),
+        crate::audit_integrity::with_test_keyring(
+            Some(keyring),
+            crate::audit_integrity::with_test_anchor_dir(anchors.path().to_path_buf(), async {
+                for (event_type, expected_decrypts) in [
+                    ("governance.throughput.first", 0),
+                    ("governance.throughput.second", 4),
+                    ("governance.throughput.third", 10),
+                ] {
+                    crate::audit::append_protected_audit_event(
+                        &state,
+                        event_type,
+                        &tenant_context,
+                        Some("hosted-test".to_string()),
+                        json!({"event": event_type}),
+                    )
+                    .await
+                    .expect("append encrypted keyed audit row");
+                    assert_eq!(
+                        decrypt_count.load(Ordering::Relaxed),
+                        expected_decrypts,
+                        "each append must have a fresh cache, with one KMS unwrap per existing envelope"
+                    );
+                }
+                for sequence in 4..=16 {
+                    let before = decrypt_count.load(Ordering::Relaxed);
+                    crate::audit::append_protected_audit_event(
+                        &state,
+                        "governance.throughput.scale",
+                        &tenant_context,
+                        Some("hosted-test".to_string()),
+                        json!({"sequence": sequence}),
+                    )
+                    .await
+                    .expect("append longer encrypted keyed ledger");
+                    assert_eq!(
+                        decrypt_count.load(Ordering::Relaxed) - before,
+                        sequence * 2,
+                        "one physical read must KMS-unwrap each previous frame and row plus both witnesses"
+                    );
+                }
+
+                let before_verify = decrypt_count.load(Ordering::Relaxed);
+                let verification =
+                    crate::audit::verify_protected_audit_ledger(&state.protected_audit_path)
+                        .await;
+                assert!(verification.valid, "{verification:?}");
+                assert_eq!(verification.record_count, 16);
+                assert_eq!(
+                    decrypt_count.load(Ordering::Relaxed) - before_verify,
+                    34,
+                    "a separate verifier must use a fresh cache and verify all 16 frames and rows"
+                );
+
+                let mut tampered = tokio::fs::read(&state.protected_audit_path)
+                    .await
+                    .expect("read encrypted ledger");
+                let marker = b"tce1:";
+                let offset = tampered
+                    .windows(marker.len())
+                    .position(|window| window == marker)
+                    .expect("encrypted frame")
+                    + marker.len();
+                tampered[offset] = if tampered[offset] == b'0' { b'1' } else { b'0' };
+                tokio::fs::write(&state.protected_audit_path, &tampered)
+                    .await
+                    .expect("tamper encrypted frame");
+                assert!(
+                    crate::audit::append_protected_audit_event(
+                        &state,
+                        "governance.throughput.denied_tamper",
+                        &tenant_context,
+                        Some("hosted-test".to_string()),
+                        json!({"must_not_commit": true}),
+                    )
+                    .await
+                    .is_err(),
+                    "an external ledger rewrite must still fail closed"
+                );
+                assert_eq!(
+                    tokio::fs::read(&state.protected_audit_path).await.unwrap(),
+                    tampered,
+                    "failed append must leave the tampered ledger unchanged"
+                );
+            }),
+        ),
+    )
+    .await;
 }
 
 struct EnvRestore {
