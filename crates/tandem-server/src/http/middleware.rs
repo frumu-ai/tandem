@@ -299,7 +299,10 @@ fn denial_audit_failure_response(error: &str) -> Response {
 // fixed categories and OS error numbers: an audit/KMS error chain may contain
 // installation paths, assertion metadata, or command output in the future.
 fn required_denial_receipt_category(error: &anyhow::Error) -> (&'static str, &'static str) {
-    let causes = error.chain().map(|cause| cause.to_string()).collect::<Vec<_>>();
+    let causes = error
+        .chain()
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>();
     let contains = |needle: &str| causes.iter().any(|cause| cause.contains(needle));
     let phase = if contains("read governance JSONL store") {
         "read"
