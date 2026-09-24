@@ -254,6 +254,25 @@ async fn attach_enterprise_request_context_for_mode(
     Ok(true)
 }
 
+#[cfg(feature = "test-support")]
+pub async fn hosted_test_ingress(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    match attach_enterprise_request_context_for_mode(
+        &state,
+        &mut request,
+        RuntimeAuthMode::HostedSingleTenant,
+    )
+    .await
+    {
+        Ok(true) => next.run(request).await,
+        Ok(false) => StatusCode::FORBIDDEN.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 fn tenant_context_denied_response() -> Response {
     (
         StatusCode::FORBIDDEN,
@@ -265,15 +284,33 @@ fn tenant_context_denied_response() -> Response {
         .into_response()
 }
 
-fn denial_audit_failure_response(error: &str) -> Response {
+const REQUIRED_DENIAL_RECEIPT_PUBLIC_ERROR: &str =
+    "request remained denied because its required denial receipt could not be written";
+
+fn denial_audit_failure_response(_error: &str) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({
-            "error": format!("request remained denied, but its required denial receipt could not be written: {error}"),
+            "error": REQUIRED_DENIAL_RECEIPT_PUBLIC_ERROR,
             "code": "AUDIT_PERSISTENCE_FAILED",
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn denial_audit_failure_response_hides_internal_error() {
+    let response = denial_audit_failure_response("secret-token at /secret/installation/path");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("denial body");
+    let encoded = String::from_utf8(body.to_vec()).expect("JSON body");
+    assert!(!encoded.contains("secret-token") && !encoded.contains("/secret/installation/path"));
+    let json: serde_json::Value = serde_json::from_str(&encoded).expect("JSON response");
+    assert_eq!(json["code"], "AUDIT_PERSISTENCE_FAILED");
+    assert_eq!(json["error"], REQUIRED_DENIAL_RECEIPT_PUBLIC_ERROR);
 }
 
 async fn enrich_verified_context_with_org_unit_grants(

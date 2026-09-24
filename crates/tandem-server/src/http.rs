@@ -92,6 +92,8 @@ pub(crate) mod mcp_inventory;
 pub(crate) mod mcp_run_as;
 pub(crate) mod memory_audit_store;
 mod middleware;
+#[cfg(feature = "test-support")]
+pub use middleware::hosted_test_ingress;
 mod mission_builder;
 mod mission_builder_host;
 mod mission_builder_runtime;

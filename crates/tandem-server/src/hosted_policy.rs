@@ -97,8 +97,21 @@ impl HostedPolicyRuntime {
         verified: Option<&VerifiedTenantContext>,
         permission: AccessPermission,
     ) -> Result<(), &'static str> {
+        self.authorize_permission_with_policy(verified, permission, false)
+    }
+
+    fn authorize_permission_with_policy(
+        &self,
+        verified: Option<&VerifiedTenantContext>,
+        permission: AccessPermission,
+        require_policy: bool,
+    ) -> Result<(), &'static str> {
         let Some(policy) = self.current()? else {
-            return Ok(());
+            return if require_policy {
+                Err("hosted_policy_not_configured")
+            } else {
+                Ok(())
+            };
         };
         let now = crate::now_ms();
         let projection =
@@ -167,6 +180,76 @@ impl HostedPolicyRuntime {
 }
 
 impl AppState {
+    /// Distinguish a hosted policy source from the local enterprise role path.
+    /// A configured source remains authoritative while it is unsynchronized.
+    pub(crate) fn hosted_policy_source_configured(&self) -> Result<bool, &'static str> {
+        Ok(self
+            .enterprise
+            .hosted_policy
+            .source
+            .read()
+            .map_err(|_| "hosted_policy_lock_failed")?
+            .is_some())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_hosted_policy_snapshot_for_test(
+        &self,
+        organization_id: &str,
+        deployment_id: &str,
+        input: &[u8],
+    ) -> Result<(), &'static str> {
+        let now = crate::now_ms();
+        let policy = HostedPolicyBundle::from_json(input)?.validate(
+            organization_id,
+            deployment_id,
+            now,
+            None,
+        )?;
+        let runtime = &self.enterprise.hosted_policy;
+        *runtime
+            .source
+            .write()
+            .map_err(|_| "hosted_policy_lock_failed")? = Some(PolicySource {
+            organization_id: organization_id.into(),
+            deployment_id: deployment_id.into(),
+            path: PathBuf::from("test-only-policy"),
+            started_at_ms: 0,
+        });
+        *runtime
+            .snapshot
+            .write()
+            .map_err(|_| "hosted_policy_lock_failed")? = Some(Arc::new(policy));
+        Ok(())
+    }
+
+    /// Enterprise grant mutations may use hosted administration only when a
+    /// synchronized policy currently grants it to this signed identity.
+    pub fn authorize_hosted_org_unit_grant_mutation(
+        &self,
+        verified: &VerifiedTenantContext,
+    ) -> Result<(), &'static str> {
+        self.enterprise
+            .hosted_policy
+            .authorize_permission_with_policy(Some(verified), AccessPermission::HostedAdmin, true)
+    }
+
+    /// Serialize grant commits with hosted policy publication. The returned
+    /// guard must be held through durable persistence of the grant snapshot.
+    pub async fn hosted_org_unit_grant_mutation_guard(
+        &self,
+        verified: Option<&VerifiedTenantContext>,
+    ) -> Result<Option<tokio::sync::MutexGuard<'_, ()>>, &'static str> {
+        if !self.hosted_policy_source_configured()? {
+            return Ok(None);
+        }
+        let guard = self.enterprise.hosted_policy.update.lock().await;
+        self.enterprise
+            .hosted_policy
+            .authorize_permission_with_policy(verified, AccessPermission::HostedAdmin, true)?;
+        Ok(Some(guard))
+    }
+
     pub(crate) fn start_hosted_policy_sync(&self, mode: RuntimeAuthMode) -> anyhow::Result<()> {
         let input_path = std::env::var("TANDEM_HOSTED_POLICY_FILE").ok();
         if mode != RuntimeAuthMode::HostedSingleTenant
