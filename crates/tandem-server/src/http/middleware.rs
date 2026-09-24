@@ -295,6 +295,72 @@ fn denial_audit_failure_response(error: &str) -> Response {
         .into_response()
 }
 
+// A failed required receipt must remain a 500. Keep diagnostic output to
+// fixed categories and OS error numbers: an audit/KMS error chain may contain
+// installation paths, assertion metadata, or command output in the future.
+fn required_denial_receipt_category(error: &anyhow::Error) -> (&'static str, &'static str) {
+    let causes = error.chain().map(|cause| cause.to_string()).collect::<Vec<_>>();
+    let contains = |needle: &str| causes.iter().any(|cause| cause.contains(needle));
+    let phase = if contains("read governance JSONL store") {
+        "read"
+    } else if contains("append governance JSONL store") {
+        "append"
+    } else {
+        "other"
+    };
+    let category = if contains("failed to spawn google cloud kms decrypt command") {
+        "kms_decrypt_spawn"
+    } else if contains("google cloud kms decrypt command timed out") {
+        "kms_decrypt_timeout"
+    } else if contains("google cloud kms decrypt command exited with status") {
+        "kms_decrypt_exit"
+    } else if contains("failed to spawn google cloud kms encrypt command") {
+        "kms_encrypt_spawn"
+    } else if contains("google cloud kms encrypt command timed out") {
+        "kms_encrypt_timeout"
+    } else if contains("google cloud kms encrypt command exited with status") {
+        "kms_encrypt_exit"
+    } else if contains("protected JSONL") {
+        "protected_jsonl"
+    } else if contains("external integrity anchor") {
+        "external_anchor"
+    } else {
+        "other"
+    };
+    (phase, category)
+}
+
+fn required_denial_receipt_error(error: anyhow::Error) -> String {
+    let (phase, category) = required_denial_receipt_category(&error);
+    let io_error = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>());
+    tracing::error!(
+        target: "tandem_server::audit",
+        phase,
+        category,
+        io_kind = ?io_error.map(std::io::Error::kind),
+        os_error = ?io_error.and_then(std::io::Error::raw_os_error),
+        "required denial receipt failed"
+    );
+    error.to_string()
+}
+
+#[cfg(test)]
+#[test]
+fn denial_receipt_diagnostic_does_not_include_error_content() {
+    use anyhow::Context;
+
+    let error = anyhow::anyhow!(
+        "failed to spawn google cloud kms decrypt command secret-token: Resource temporarily unavailable (os error 11)"
+    )
+    .context("read governance JSONL store secret-path");
+    assert_eq!(
+        required_denial_receipt_category(&error),
+        ("read", "kms_decrypt_spawn")
+    );
+}
+
 async fn enrich_verified_context_with_org_unit_grants(
     state: &AppState,
     verified: &mut VerifiedTenantContext,
@@ -698,7 +764,7 @@ impl TenantContextIngressDenial {
         )
         .await
         .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(required_denial_receipt_error)
     }
 }
 fn preview_context_assertion_for_audit(
@@ -740,7 +806,7 @@ async fn append_authorization_denial_audit_event(
     )
     .await
     .map(|_| ())
-    .map_err(|error| error.to_string())
+    .map_err(required_denial_receipt_error)
 }
 
 #[cfg(test)]
