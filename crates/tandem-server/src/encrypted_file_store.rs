@@ -314,12 +314,12 @@ fn crypto() -> ProtectedFileCrypto {
     }
     #[cfg(test)]
     {
-        if let Ok(provider) = TEST_CRYPTO_FACTORY.try_with(|(factory, principal_id)| {
-            ProtectedFileCrypto {
+        if let Ok(provider) =
+            TEST_CRYPTO_FACTORY.try_with(|(factory, principal_id)| ProtectedFileCrypto {
                 provider: factory(),
                 principal_id: principal_id.clone(),
-            }
-        }) {
+            })
+        {
             return provider;
         }
     }
