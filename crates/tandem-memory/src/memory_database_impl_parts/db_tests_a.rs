@@ -381,7 +381,7 @@
         let db = MemoryDatabase::new(&path)
             .await
             .unwrap()
-            .with_crypto_provider(crate::crypto::MemoryCryptoProvider::local_key([5u8; 32]));
+            .with_crypto_provider(crate::crypto::MemoryCryptoProvider::local_key([5u8; 32])).unwrap();
 
         let chunk = MemoryChunk {
             id: "enc-1".to_string(),
@@ -450,7 +450,7 @@
         let other = MemoryDatabase::new(&path)
             .await
             .unwrap()
-            .with_crypto_provider(crate::crypto::MemoryCryptoProvider::local_key([6u8; 32]));
+            .with_crypto_provider(crate::crypto::MemoryCryptoProvider::local_key([6u8; 32])).unwrap();
         assert!(other.get_session_chunks("session-enc").await.is_err());
     }
 

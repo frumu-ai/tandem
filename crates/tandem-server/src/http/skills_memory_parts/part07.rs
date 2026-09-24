@@ -215,7 +215,7 @@ mod tool_event_capture_tests {
 
         let now = crate::now_ms();
         let huge = "x".repeat(MAX_MEMORY_RECORD_CONTENT_CHARS * 3);
-        persist_global_memory_record(
+        let _ = persist_global_memory_record(
             &state,
             &db,
             GlobalMemoryRecord {

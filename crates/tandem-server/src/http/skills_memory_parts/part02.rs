@@ -748,7 +748,7 @@ pub(super) async fn persist_global_memory_record(
     state: &AppState,
     store: &dyn tandem_memory::MemoryStore,
     mut record: GlobalMemoryRecord,
-) {
+) -> Option<tandem_memory::types::GlobalMemoryWriteResult> {
     let tenant_context = record_tenant_context(&record);
     publish_tenant_event(
         state,
@@ -775,7 +775,7 @@ pub(super) async fn persist_global_memory_record(
                 "messageID": record.message_id,
             }),
         );
-        return;
+        return None;
     }
     record.content = truncate_text(&scrubbed, MAX_MEMORY_RECORD_CONTENT_CHARS);
     record.redaction_count = scrub.redactions;
@@ -837,8 +837,10 @@ pub(super) async fn persist_global_memory_record(
                     "messageID": record.message_id,
                 }),
             );
+            Some(write)
         }
         Ok(_) => {
+            tracing::warn!("unexpected global memory store write result");
             publish_tenant_event(
                 state,
                 &tenant_context,
@@ -851,8 +853,10 @@ pub(super) async fn persist_global_memory_record(
                     "messageID": record.message_id,
                 }),
             );
+            None
         }
         Err(err) => {
+            tracing::warn!("global memory store write failed: {err}");
             publish_tenant_event(
                 state,
                 &tenant_context,
@@ -865,6 +869,7 @@ pub(super) async fn persist_global_memory_record(
                     "messageID": record.message_id,
                 }),
             );
+            None
         }
     }
 }
@@ -888,7 +893,7 @@ pub(super) async fn ingest_run_messages(
             match (message.role.clone(), part) {
                 (MessageRole::User, MessagePart::Text { text }) => {
                     let now = crate::now_ms();
-                    persist_global_memory_record(
+                    let _ = persist_global_memory_record(
                         state,
                         store,
                         GlobalMemoryRecord {
@@ -923,7 +928,7 @@ pub(super) async fn ingest_run_messages(
                 }
                 (MessageRole::Assistant, MessagePart::Text { text }) => {
                     let now = crate::now_ms();
-                    persist_global_memory_record(
+                    let _ = persist_global_memory_record(
                         state,
                         store,
                         GlobalMemoryRecord {
@@ -975,7 +980,7 @@ pub(super) async fn ingest_run_messages(
                                 }
                                 None => "ok".to_string(),
                             };
-                            persist_global_memory_record(
+                            let _ = persist_global_memory_record(
                                 state,
                                 store,
                                 GlobalMemoryRecord {
@@ -1016,7 +1021,7 @@ pub(super) async fn ingest_run_messages(
                     }
                     let now = crate::now_ms();
                     let tool_input = summarize_value(&args, 1200);
-                    persist_global_memory_record(
+                    let _ = persist_global_memory_record(
                         state,
                         store,
                         GlobalMemoryRecord {
@@ -1058,7 +1063,7 @@ pub(super) async fn ingest_run_messages(
                         .unwrap_or_default();
                     if !tool_output.trim().is_empty() {
                         let now = crate::now_ms();
-                        persist_global_memory_record(
+                        let _ = persist_global_memory_record(
                             state,
                             store,
                             GlobalMemoryRecord {
@@ -1211,7 +1216,7 @@ pub(super) async fn ingest_event_memory_records(
             _ => return,
         };
     let now = crate::now_ms();
-    persist_global_memory_record(
+    let _ = persist_global_memory_record(
         state,
         store,
         GlobalMemoryRecord {

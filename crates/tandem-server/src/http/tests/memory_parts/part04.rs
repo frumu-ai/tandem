@@ -949,6 +949,173 @@ async fn explicit_tenant_memory_put_rejects_partition_tenant_switch() {
 }
 
 #[tokio::test]
+async fn memory_list_returns_error_when_store_query_fails() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let list_request = || {
+        Request::builder()
+            .method("GET")
+            .uri("/memory?limit=20")
+            .body(Body::empty())
+            .expect("memory list request")
+    };
+
+    // Initialize the cached store and establish that an empty list succeeds.
+    let empty = app
+        .clone()
+        .oneshot(list_request())
+        .await
+        .expect("empty memory list response");
+    assert_eq!(empty.status(), StatusCode::OK);
+
+    // The next read now fails inside the real SQLite store. It must not look
+    // like another successful empty page to a caller.
+    let conn = rusqlite::Connection::open(&state.memory_db_path).expect("memory test db");
+    conn.execute("DROP TABLE memory_records", [])
+        .expect("remove memory records table");
+    let failed = app
+        .oneshot(list_request())
+        .await
+        .expect("failed memory list response");
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn memory_list_returns_error_when_store_cannot_open() {
+    let mut state = test_state().await;
+    let directory = state
+        .memory_db_path
+        .parent()
+        .expect("memory db parent")
+        .to_path_buf();
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .expect("memory db directory");
+    state.memory_db_path = directory;
+    let app = app_router(state);
+    let request = Request::builder()
+        .method("GET")
+        .uri("/memory?limit=20")
+        .body(Body::empty())
+        .expect("memory list request");
+    let response = app.oneshot(request).await.expect("memory list response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn memory_put_does_not_report_success_when_store_write_fails() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let initial = app
+        .clone()
+        .oneshot(tenant_memory_request(
+            "GET",
+            "/memory?limit=20",
+            "acme",
+            "north",
+            "user-a",
+            None,
+        ))
+        .await
+        .expect("initial memory list response");
+    assert_eq!(initial.status(), StatusCode::OK);
+
+    let conn = rusqlite::Connection::open(&state.memory_db_path).expect("memory test db");
+    conn.execute("DROP TABLE memory_records", [])
+        .expect("remove memory records table");
+    let put = tenant_memory_request(
+        "POST",
+        "/memory/put",
+        "acme",
+        "north",
+        "user-a",
+        Some(json!({
+            "run_id": "failed-store-memory-run",
+            "partition": {
+                "org_id": "acme",
+                "workspace_id": "north",
+                "project_id": "failed-store-project",
+                "tier": "session"
+            },
+            "kind": "fact",
+            "content": "must not be reported as saved",
+            "classification": "internal",
+            "capability": memory_capability(
+                "failed-store-memory-run",
+                "user-a",
+                "acme",
+                "north",
+                "failed-store-project"
+            )
+        })),
+    );
+    let response = app.oneshot(put).await.expect("failed memory put response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn memory_put_dedup_returns_the_existing_record_id() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let put = || {
+        tenant_memory_request(
+            "POST",
+            "/memory/put",
+            "acme",
+            "north",
+            "user-a",
+            Some(json!({
+                "run_id": "dedup-memory-run",
+                "partition": {
+                    "org_id": "acme",
+                    "workspace_id": "north",
+                    "project_id": "dedup-project",
+                    "tier": "session"
+                },
+                "kind": "fact",
+                "content": "one durable record for repeated writes",
+                "classification": "internal",
+                "capability": memory_capability(
+                    "dedup-memory-run",
+                    "user-a",
+                    "acme",
+                    "north",
+                    "dedup-project"
+                )
+            })),
+        )
+    };
+
+    let (first_status, first) = memory_http_json(&app, put()).await;
+    assert_eq!(first_status, StatusCode::OK);
+    let first_id = first["id"].as_str().expect("first memory id");
+    assert_eq!(first["stored"], true);
+
+    let (second_status, second) = memory_http_json(&app, put()).await;
+    assert_eq!(second_status, StatusCode::OK);
+    assert_eq!(second["id"], first_id);
+    assert_eq!(second["stored"], false);
+
+    let conn = rusqlite::Connection::open(&state.memory_db_path).expect("memory test db");
+    let stored_id: String = conn
+        .query_row(
+            "SELECT id FROM memory_records WHERE run_id = ?1",
+            ["dedup-memory-run"],
+            |row| row.get(0),
+        )
+        .expect("persisted memory record");
+    assert_eq!(stored_id, first_id);
+    let stored_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_records WHERE run_id = ?1",
+            ["dedup-memory-run"],
+            |row| row.get(0),
+        )
+        .expect("persisted memory count");
+    assert_eq!(stored_count, 1);
+}
+
+#[tokio::test]
 async fn memory_list_uses_capability_subject_and_rejects_mismatched_user() {
     let state = test_state().await;
     let app = app_router(state.clone());
