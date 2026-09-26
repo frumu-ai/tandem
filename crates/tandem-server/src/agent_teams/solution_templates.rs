@@ -158,6 +158,11 @@ fn persist_disabled(path: &Path, payload: &[u8]) -> anyhow::Result<()> {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
             Err(error) => return Err(error.into()),
         }
+        // New bytes were synced through the writable temporary handle above.
+        // Sync publication here; reconciliation of an existing durable alias
+        // must not require a writable file or directory.
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
         verify_disabled(path, payload)
     })();
     let _ = std::fs::remove_file(temporary);
@@ -197,10 +202,7 @@ fn verify_disabled(path: &Path, payload: &[u8]) -> anyhow::Result<()> {
         std::fs::symlink_metadata(path)?.file_type().is_file(),
         "solution template destination is not a regular file"
     );
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)?;
+    let file = std::fs::File::open(path)?;
     let mut existing = Vec::new();
     (&file)
         .take(MAX_ARTIFACT_BYTES as u64 + 1)
@@ -217,13 +219,6 @@ fn verify_disabled(path: &Path, payload: &[u8]) -> anyhow::Result<()> {
         canonical_json(&observed)? == payload && canonical_json(&document)? == payload,
         "solution template ownership or content conflict"
     );
-    file.sync_all()?;
-    #[cfg(unix)]
-    std::fs::File::open(
-        path.parent()
-            .ok_or_else(|| anyhow::anyhow!("missing template directory"))?,
-    )?
-    .sync_all()?;
     Ok(())
 }
 
@@ -433,6 +428,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn native_stage_reconciles_read_only_alias_without_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_str().unwrap();
+        let parent = dir.path().join(".tandem/agent-team/templates");
+        std::fs::create_dir_all(&parent).unwrap();
+        let path = parent.join("checked-in.yaml");
+        let (template, owner) = fixture();
+        let mut installed = template.clone();
+        installed.enabled = false;
+        installed.solution_owner = Some(owner.clone());
+        let original = canonical_json(&installed).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+        let result = runtime
+            .stage_solution_template(workspace, template, owner)
+            .await;
+        let unchanged = std::fs::read(&path).unwrap() == original
+            && std::fs::metadata(&path).unwrap().permissions().mode() & 0o777 == 0o444
+            && std::fs::read_dir(&parent).unwrap().count() == 1;
+        // Restore only the fixture directory so TempDir can clean it up even
+        // when asserting the pre-fix failure below.
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.unwrap(), sha256(&original));
+        assert!(unchanged);
     }
 
     #[tokio::test]
