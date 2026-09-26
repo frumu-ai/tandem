@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(deny_unknown_fields)]
 pub struct CustomerConfig {
     pub schema_version: String,
+    /// Stable reusable solution identity; versions may advance independently.
+    pub solution_id: String,
     pub scope: CustomerScope,
     pub profile_ref: String,
     pub timezone: String,
