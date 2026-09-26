@@ -11,10 +11,10 @@ use axum::Router;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tandem_enterprise_contract::{
-    AccessEffect, AccessPermission, DataClass, OrganizationUnit, OrganizationUnitAccessGrant,
-    OrganizationUnitKind, OrganizationUnitMembership, OrganizationUnitMembershipSource,
-    OrganizationUnitState, PrincipalKind, PrincipalRef, RequestPrincipal, ResourceKind,
-    ResourceRef, ScopedGrant, TenantContext, VerifiedTenantContext,
+    hosted_policy::HOSTED_TAXONOMY_ID, AccessEffect, AccessPermission, DataClass, OrganizationUnit,
+    OrganizationUnitAccessGrant, OrganizationUnitKind, OrganizationUnitMembership,
+    OrganizationUnitMembershipSource, OrganizationUnitState, PrincipalKind, PrincipalRef,
+    RequestPrincipal, ResourceKind, ResourceRef, ScopedGrant, TenantContext, VerifiedTenantContext,
 };
 
 use tandem_server::{now_ms, AppState};
@@ -144,6 +144,43 @@ fn default_member_kind() -> PrincipalKind {
     PrincipalKind::HumanUser
 }
 
+pub(super) fn registry_error(reason: &'static str) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "code": "ENTERPRISE_HOSTED_REGISTRY_UNAVAILABLE", "reason": reason,
+        })),
+    )
+}
+
+fn require_local_registry_owner(
+    taxonomy: &str,
+    source: Option<OrganizationUnitMembershipSource>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if taxonomy == HOSTED_TAXONOMY_ID
+        || source == Some(OrganizationUnitMembershipSource::HostedControlPlane)
+    {
+        return Err(bad_request("ENTERPRISE_HOSTED_REGISTRY_READ_ONLY"));
+    }
+    Ok(())
+}
+
+#[test]
+fn hosted_policy_registry_ownership_cannot_be_claimed_by_local_authoring() {
+    assert!(require_local_registry_owner("organization_unit", None).is_ok());
+    assert!(require_local_registry_owner(
+        "organization_unit",
+        Some(OrganizationUnitMembershipSource::Scim)
+    )
+    .is_ok());
+    assert!(require_local_registry_owner(HOSTED_TAXONOMY_ID, None).is_err());
+    assert!(require_local_registry_owner(
+        "organization_unit",
+        Some(OrganizationUnitMembershipSource::HostedControlPlane)
+    )
+    .is_err());
+}
+
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router
         .route(
@@ -176,43 +213,35 @@ pub(super) async fn list_org_units(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
-) -> Json<EnterpriseOrgUnitsResponse> {
-    let mut org_units: Vec<_> = state
-        .enterprise
-        .org_units
-        .read()
+) -> EnterpriseResult<EnterpriseOrgUnitsResponse> {
+    let mut org_units = state
+        .enterprise_org_unit_view(&tenant_context)
         .await
-        .values()
-        .filter(|unit| organization_unit_tenant_matches(unit, &tenant_context))
-        .cloned()
-        .collect();
+        .map_err(registry_error)?
+        .units;
     org_units.sort_by(|left, right| {
         left.taxonomy_id
             .cmp(&right.taxonomy_id)
             .then_with(|| left.unit_id.cmp(&right.unit_id))
     });
 
-    Json(EnterpriseOrgUnitsResponse {
+    Ok(Json(EnterpriseOrgUnitsResponse {
         base: storage_base(tenant_context, request_principal),
         count: org_units.len(),
         org_units,
-    })
+    }))
 }
 
 pub(super) async fn list_org_unit_memberships(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
-) -> Json<EnterpriseOrgUnitMembershipsResponse> {
-    let mut memberships: Vec<_> = state
-        .enterprise
-        .org_unit_memberships
-        .read()
+) -> EnterpriseResult<EnterpriseOrgUnitMembershipsResponse> {
+    let mut memberships = state
+        .enterprise_org_unit_view(&tenant_context)
         .await
-        .values()
-        .filter(|membership| org_unit_membership_tenant_matches(membership, &tenant_context))
-        .cloned()
-        .collect();
+        .map_err(registry_error)?
+        .memberships;
     memberships.sort_by(|left, right| {
         left.unit
             .id
@@ -221,27 +250,23 @@ pub(super) async fn list_org_unit_memberships(
             .then_with(|| left.membership_id.cmp(&right.membership_id))
     });
 
-    Json(EnterpriseOrgUnitMembershipsResponse {
+    Ok(Json(EnterpriseOrgUnitMembershipsResponse {
         base: storage_base(tenant_context, request_principal),
         count: memberships.len(),
         memberships,
-    })
+    }))
 }
 
 pub(super) async fn list_org_unit_access_grants(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
-) -> Json<EnterpriseOrgUnitAccessGrantsResponse> {
-    let mut access_grants: Vec<_> = state
-        .enterprise
-        .org_unit_access_grants
-        .read()
+) -> EnterpriseResult<EnterpriseOrgUnitAccessGrantsResponse> {
+    let mut access_grants = state
+        .enterprise_org_unit_view(&tenant_context)
         .await
-        .values()
-        .filter(|grant| org_unit_access_grant_tenant_matches(grant, &tenant_context))
-        .cloned()
-        .collect();
+        .map_err(registry_error)?
+        .access_grants;
     access_grants.sort_by(|left, right| {
         left.unit
             .id
@@ -250,11 +275,11 @@ pub(super) async fn list_org_unit_access_grants(
             .then_with(|| left.grant_id.cmp(&right.grant_id))
     });
 
-    Json(EnterpriseOrgUnitAccessGrantsResponse {
+    Ok(Json(EnterpriseOrgUnitAccessGrantsResponse {
         base: storage_base(tenant_context, request_principal),
         count: access_grants.len(),
         access_grants,
-    })
+    }))
 }
 
 pub(super) async fn list_effective_org_unit_grants(
@@ -266,12 +291,13 @@ pub(super) async fn list_effective_org_unit_grants(
     let member_id = validate_external_id("member_id", &query.member_id)?;
     let member = PrincipalRef::new(query.member_kind, member_id);
     let now = now_ms();
-    let memberships: Vec<_> = state
-        .enterprise
-        .org_unit_memberships
-        .read()
+    let view = state
+        .enterprise_org_unit_view(&tenant_context)
         .await
-        .values()
+        .map_err(registry_error)?;
+    let memberships: Vec<_> = view
+        .memberships
+        .iter()
         .filter(|membership| {
             org_unit_membership_tenant_matches(membership, &tenant_context)
                 && membership.member == member
@@ -280,12 +306,9 @@ pub(super) async fn list_effective_org_unit_grants(
         .cloned()
         .collect();
     let mut grants = Vec::new();
-    for access_grant in state
-        .enterprise
-        .org_unit_access_grants
-        .read()
-        .await
-        .values()
+    for access_grant in view
+        .access_grants
+        .iter()
         .filter(|grant| org_unit_access_grant_tenant_matches(grant, &tenant_context))
     {
         for membership in &memberships {
@@ -318,6 +341,7 @@ pub(super) async fn create_org_unit(
         .map(|value| validate_enterprise_id("taxonomy_id", value))
         .transpose()?
         .unwrap_or_else(|| "organization_unit".to_string());
+    require_local_registry_owner(&taxonomy_id, None)?;
     let display_name = input.display_name.trim().to_string();
     if display_name.is_empty() {
         return Err(bad_request("ENTERPRISE_ORG_UNIT_DISPLAY_NAME_REQUIRED"));
@@ -384,6 +408,7 @@ pub(super) async fn create_org_unit_membership(
         .map(|value| validate_enterprise_id("taxonomy_id", value))
         .transpose()?
         .unwrap_or_else(|| "organization_unit".to_string());
+    require_local_registry_owner(&taxonomy_id, Some(input.source))?;
     ensure_org_unit_for_tenant(&state, &tenant_context, &taxonomy_id, &unit_id).await?;
     let member_id = validate_external_id("member_id", &input.member_id)?;
     let membership_id = input
@@ -618,11 +643,11 @@ async fn ensure_org_unit_for_tenant(
     unit_id: &str,
 ) -> Result<(), (StatusCode, Json<Value>)> {
     if state
-        .enterprise
-        .org_units
-        .read()
+        .enterprise_org_unit_view(tenant_context)
         .await
-        .values()
+        .map_err(registry_error)?
+        .units
+        .iter()
         .any(|unit| {
             unit.taxonomy_id == taxonomy_id
                 && unit.unit_id == unit_id

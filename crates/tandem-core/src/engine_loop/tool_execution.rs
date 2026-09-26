@@ -6,16 +6,26 @@ use tandem_tools::{
     ToolDispatchReceiptPhase, ToolDispatchSource, ToolDispatchStatus,
 };
 
-#[derive(Debug)]
-struct EnginePreauthorizedDispatchPolicy(ToolDispatchDecision);
+struct EnginePreauthorizedDispatchPolicy {
+    decision: ToolDispatchDecision,
+    authority: Option<Arc<dyn ToolPolicyHook>>,
+}
 
 #[async_trait::async_trait]
 impl ToolDispatchPolicy for EnginePreauthorizedDispatchPolicy {
+    async fn revalidate(&self, context: &ToolDispatchContext) -> anyhow::Result<()> {
+        if let Some(hook) = &self.authority {
+            hook.revalidate_session(context.verified_tenant_context.clone())
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn evaluate(
         &self,
         _context: ToolDispatchPolicyContext,
     ) -> anyhow::Result<ToolDispatchDecision> {
-        Ok(self.0.clone())
+        Ok(self.decision.clone())
     }
 }
 
@@ -36,6 +46,22 @@ impl ToolDispatchLedger for EngineToolDispatchLedger {
 }
 
 impl EngineLoop {
+    pub(super) async fn scope_provider_authority<F: std::future::Future>(
+        &self,
+        session_id: &str,
+        future: F,
+    ) -> F::Output {
+        let engine = self.clone();
+        let session_id = session_id.to_owned();
+        tandem_providers::ProviderDispatchAuthority::new(move || {
+            let engine = engine.clone();
+            let session_id = session_id.clone();
+            async move { engine.revalidate_session_authority(&session_id).await }
+        })
+        .scope(future)
+        .await
+    }
+
     pub(super) async fn record_tool_preflight_denial(
         &self,
         session_id: &str,
@@ -127,10 +153,11 @@ impl EngineLoop {
                     .message(message_id),
             )
             .with_scope_allowlist(scope_allowlist)
-            .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy(
-                preauthorized_decision
+            .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy {
+                decision: preauthorized_decision
                     .unwrap_or_else(|| ToolDispatchDecision::allow_with_id("engine_preflight")),
-            )))
+                authority: self.tool_policy_hook.read().await.clone(),
+            }))
             .with_ledger(tool_dispatch_ledger);
         if let Some(verified_tenant_context) = verified_tenant_context {
             dispatch_context =
@@ -468,6 +495,25 @@ impl EngineLoop {
         self.cancellations.remove(session_id).await;
     }
 
+    pub(super) async fn revalidate_session_authority(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        if let Some(hook) = self.tool_policy_hook.read().await.clone() {
+            let verified = self
+                .storage
+                .get_session(session_id)
+                .await
+                .and_then(|session| session.verified_tenant_context);
+            if let Err(error) = hook.revalidate_session(verified).await {
+                self.mark_session_run_failed(session_id, &error.to_string())
+                    .await;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn workspace_override_active(&self, session_id: &str) -> bool {
         let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
         let mut overrides = self.workspace_overrides.write().await;
@@ -636,17 +682,20 @@ impl EngineLoop {
                 anyhow::bail!(reason);
             }
         };
+        self.revalidate_session_authority(session_id).await?;
         let stream = match self
-            .providers
-            .stream_with_egress_permit(
-                &provider_egress_permit,
-                Some(route.provider_id.as_str()),
-                route.model_id.as_deref(),
-                messages,
-                ToolMode::None,
-                None,
-                sampling,
-                cancel.clone(),
+            .scope_provider_authority(
+                session_id,
+                self.providers.stream_with_egress_permit(
+                    &provider_egress_permit,
+                    Some(route.provider_id.as_str()),
+                    route.model_id.as_deref(),
+                    messages,
+                    ToolMode::None,
+                    None,
+                    sampling,
+                    cancel.clone(),
+                ),
             )
             .await
         {

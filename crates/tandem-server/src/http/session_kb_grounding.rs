@@ -1162,6 +1162,7 @@ async fn synthesize_strict_kb_answer(
     let stream = match crate::http::session_run_retry::scope_provider_auth_for_tenant(
         state,
         tenant_context,
+        verified_tenant_context,
         crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
         Some(session_id),
         Some(run_id),
@@ -1279,6 +1280,7 @@ async fn retry_strict_kb_non_streaming_synthesis(
     crate::http::session_run_retry::scope_provider_auth_for_tenant(
         state,
         tenant_context,
+        verified_tenant_context,
         crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
         Some(session_id),
         Some(run_id),

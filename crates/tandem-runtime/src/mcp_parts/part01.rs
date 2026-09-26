@@ -563,6 +563,11 @@ impl McpRegistry {
     }
 
     pub async fn connect_for_tenant(&self, name: &str, current_tenant: &TenantContext) -> bool {
+        self.connect_for_tenant_bound(name, current_tenant, None).await
+    }
+
+    pub(crate) async fn connect_for_tenant_bound(&self, name: &str, current_tenant: &TenantContext,
+        binding: Option<&mut McpToolDispatchBinding>) -> bool {
         let server = {
             let servers = self.servers.read().await;
             let Some(server) = servers.get(name) else {
@@ -587,7 +592,7 @@ impl McpRegistry {
         }
 
         if parse_remote_endpoint(&server.transport).is_some() {
-            return self.refresh_for_tenant(name, current_tenant).await.is_ok();
+            return self.refresh_for_tenant_bound(name, current_tenant, binding).await.is_ok();
         }
 
         let (tool_cache, tools_fetched_at_ms) = if current_tenant.is_local_implicit() {
@@ -621,6 +626,11 @@ impl McpRegistry {
         name: &str,
         current_tenant: &TenantContext,
     ) -> Result<Vec<McpRemoteTool>, String> {
+        self.refresh_for_tenant_bound(name, current_tenant, None).await
+    }
+
+    async fn refresh_for_tenant_bound(&self, name: &str, current_tenant: &TenantContext,
+        mut binding: Option<&mut McpToolDispatchBinding>) -> Result<Vec<McpRemoteTool>, String> {
         let server = {
             let servers = self.servers.read().await;
             let Some(server) = servers.get(name) else {
@@ -637,7 +647,7 @@ impl McpRegistry {
             .ok_or_else(|| "MCP refresh currently supports HTTP/S transports only".to_string())?;
 
         let _ = self
-            .ensure_oauth_bearer_token_fresh_for_tenant(name, current_tenant, false)
+            .ensure_oauth_bearer_token_fresh_bound(name, current_tenant, false, binding.as_deref_mut())
             .await;
         let server = {
             let servers = self.servers.read().await;
@@ -649,8 +659,9 @@ impl McpRegistry {
         let request_headers = self
             .effective_headers_for_current_tenant(name, &server, current_tenant)
             .await;
-        let endpoint_authorization =
+        let mut endpoint_authorization =
             McpEndpointAuthorization::for_registry(self, current_tenant);
+        endpoint_authorization.tool_dispatch = binding.as_deref().cloned();
         let discovery = self
             .discover_remote_tools(
                 name,
@@ -678,11 +689,12 @@ impl McpRegistry {
                 ));
             }
             Err(DiscoverRemoteToolsError::Message(err)) => {
-                if should_retry_mcp_oauth_refresh(&server, &err)
+                if should_retry_mcp_oauth_refresh(&server, self.oauth_config_for_tenant(name, &server, current_tenant).await.is_some(), &err)
                     && self
-                        .ensure_oauth_bearer_token_fresh_for_tenant(name, current_tenant, true)
+                        .ensure_oauth_bearer_token_fresh_bound(name, current_tenant, true, binding.as_deref_mut())
                         .await?
                 {
+                    endpoint_authorization.tool_dispatch = binding.as_deref().cloned();
                     let refreshed_server = {
                         let servers = self.servers.read().await;
                         servers
@@ -1176,6 +1188,20 @@ impl McpRegistry {
         args: Value,
         current_tenant: &TenantContext,
     ) -> Result<ToolResult, String> {
+        self.call_tool_for_tenant_with_authority(server_name, tool_name, args, current_tenant, None).await
+    }
+
+    pub async fn call_tool_for_tenant_with_authority(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        args: Value,
+        current_tenant: &TenantContext,
+        request_authority: Option<crate::McpRequestAuthority>,
+    ) -> Result<ToolResult, String> {
+        if let Some(authority) = &request_authority {
+            authority.revalidate()?;
+        }
         if current_tenant.is_local_implicit()
             && self
                 .strict_tenant_enforcement
@@ -1210,10 +1236,20 @@ impl McpRegistry {
             ));
         }
 
+        let mut dispatch_binding = McpToolDispatchBinding {
+            registry: self.clone(), server_name: server_name.into(), tool_name: tool_name.into(),
+            server_policy: server_dispatch_policy(&server), tenant: current_tenant.clone(),
+            connection_generation: self.connection_for_tenant(server_name, current_tenant).await
+                .map(|connection| connection.connection_generation),
+            request_authority,
+        };
+        if !current_tenant.is_local_implicit() && dispatch_binding.connection_generation.is_none() {
+            return Err("MCP tenant connection is missing or was revoked before dispatch".into());
+        }
         // Single readiness gate (Invariant 2 of `docs/SPINE.md`): one
-        // attempt, no backoff — same shape as the previous inline check.
+        // attempt, no backoff. Recheck authority after its network waits.
         let server = match self
-            .ensure_ready_for_tenant(server_name, current_tenant, EnsureReadyPolicy::default())
+            .ensure_ready_for_tenant_bound(server_name, current_tenant, EnsureReadyPolicy::default(), Some(&mut dispatch_binding))
             .await
         {
             Ok(server) => server,
@@ -1237,7 +1273,7 @@ impl McpRegistry {
         let canonical_tool = canonical_tool_key(tool_name);
         let now = now_ms();
         let _ = self
-            .ensure_oauth_bearer_token_fresh_for_tenant(server_name, current_tenant, false)
+            .ensure_oauth_bearer_token_fresh_bound(server_name, current_tenant, false, Some(&mut dispatch_binding))
             .await;
         let server = {
             let servers = self.servers.read().await;
@@ -1288,8 +1324,9 @@ impl McpRegistry {
                 "arguments": normalized_args
             }
         });
-        let endpoint_authorization =
+        let mut endpoint_authorization =
             McpEndpointAuthorization::for_registry(self, current_tenant);
+        endpoint_authorization.tool_dispatch = Some(dispatch_binding);
         let (response, session_id) = match post_json_rpc_with_session(
             &endpoint,
             &request_headers,
@@ -1301,12 +1338,13 @@ impl McpRegistry {
         {
             Ok(result) => result,
             Err(error) => {
-                if should_retry_mcp_oauth_refresh(&server, &error)
+                if should_retry_mcp_oauth_refresh(&server, self.oauth_config_for_tenant(server_name, &server, current_tenant).await.is_some(), &error)
                     && self
-                        .ensure_oauth_bearer_token_fresh_for_tenant(
+                        .ensure_oauth_bearer_token_fresh_bound(
                             server_name,
                             current_tenant,
                             true,
+                            endpoint_authorization.tool_dispatch.as_mut(),
                         )
                         .await?
                 {
@@ -1628,27 +1666,21 @@ impl McpRegistry {
         name: &str,
         force: bool,
     ) -> Result<bool, String> {
-        self.ensure_oauth_bearer_token_fresh_for_tenant(name, &local_tenant_context(), force)
+        self.ensure_oauth_bearer_token_fresh_bound(name, &local_tenant_context(), force, None)
             .await
     }
 
-    async fn ensure_oauth_bearer_token_fresh_for_tenant(
+    async fn ensure_oauth_bearer_token_fresh_bound(
         &self,
         name: &str,
         current_tenant: &TenantContext,
         force: bool,
+        binding: Option<&mut McpToolDispatchBinding>,
     ) -> Result<bool, String> {
-        let server = {
-            let servers = self.servers.read().await;
-            servers.get(name).cloned()
-        }
-        .ok_or_else(|| format!("MCP server '{name}' not found"))?;
-        let Some(oauth) = self
-            .oauth_config_for_tenant(name, &server, current_tenant)
-            .await
-        else {
+        let Some(predecessor) = self.capture_oauth_refresh_predecessor(name, current_tenant).await? else {
             return Ok(false);
         };
+        let oauth = &predecessor.oauth;
         let credential = if current_tenant.is_local_implicit() {
             tandem_core::load_provider_oauth_credential_in_dir(
                 &self.oauth_security_dir,
@@ -1678,33 +1710,17 @@ impl McpRegistry {
         if !should_refresh {
             return Ok(false);
         }
-        let endpoint_authorization =
+        let mut endpoint_authorization =
             McpEndpointAuthorization::for_registry(self, current_tenant);
+        endpoint_authorization.tool_dispatch = binding.as_deref().cloned();
 
         let refreshed = refresh_mcp_oauth_credential(
-            &oauth,
+            oauth,
             &credential,
             &endpoint_authorization,
         )
         .await?;
-        self.set_bearer_token_for_tenant(name, &refreshed.access_token, current_tenant)
-            .await?;
-        if current_tenant.is_local_implicit() {
-            tandem_core::set_provider_oauth_credential_in_dir(
-                &self.oauth_security_dir,
-                &oauth.provider_id,
-                refreshed,
-            )
-            .map_err(|error| error.to_string())?;
-        } else {
-            tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
-                &self.oauth_security_dir,
-                current_tenant,
-                &oauth.provider_id,
-                refreshed,
-            )
-            .map_err(|error| error.to_string())?;
-        }
+        self.commit_oauth_refresh(name, current_tenant, predecessor, refreshed, binding).await?;
         Ok(true)
     }
 }

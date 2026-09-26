@@ -419,6 +419,7 @@ impl AppState {
 
     pub fn is_ready(&self) -> bool {
         self.runtime.get().is_some()
+            && self.enterprise.hosted_policy.is_ready()
             && self
                 .startup
                 .try_read()
@@ -428,7 +429,10 @@ impl AppState {
     pub async fn wait_until_ready_or_failed(&self, attempts: usize, sleep_ms: u64) -> bool {
         for _ in 0..attempts {
             let startup = self.startup_snapshot().await;
-            if matches!(startup.status, StartupStatus::Ready) {
+            if matches!(startup.status, StartupStatus::Ready)
+                && self.runtime.get().is_some()
+                && self.enterprise.hosted_policy.is_ready()
+            {
                 return true;
             }
             if matches!(startup.status, StartupStatus::Failed) {
@@ -437,6 +441,8 @@ impl AppState {
             tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
         }
         matches!(self.startup_snapshot().await.status, StartupStatus::Ready)
+            && self.runtime.get().is_some()
+            && self.enterprise.hosted_policy.is_ready()
     }
 
     pub fn mode_label(&self) -> &'static str {
@@ -631,7 +637,9 @@ impl AppState {
             .as_ref()
             .is_some_and(|hash| constant_time_hash_eq(hash, &record.token_hash))
         {
-            return Err("rotate to a replacement token before revoking the current transport token");
+            return Err(
+                "rotate to a replacement token before revoking the current transport token",
+            );
         }
         if active_count <= 1 {
             return Err("cannot revoke the final active transport token");

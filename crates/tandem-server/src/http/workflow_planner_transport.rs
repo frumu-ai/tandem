@@ -353,9 +353,13 @@ pub(crate) async fn invoke_planner_provider(
         )
     };
 
+    let dispatch_session = state.storage.get_session(session_id).await;
     let planner_future = crate::http::session_run_retry::scope_provider_auth_for_tenant(
         state,
         tenant_context,
+        dispatch_session
+            .as_ref()
+            .and_then(|session| session.verified_tenant_context.as_ref()),
         crate::http::session_run_retry::PromptExecutionSurface::Planner,
         Some(session_id),
         Some(run_id),

@@ -1104,18 +1104,25 @@ impl ProviderRegistry {
         }
     }
 
-    async fn recover_typed_auth_failure(&self, provider_id: &str, error: &anyhow::Error) -> bool {
+    async fn recover_typed_auth_failure(
+        &self,
+        provider_id: &str,
+        error: &anyhow::Error,
+    ) -> anyhow::Result<bool> {
         if !provider_id.eq_ignore_ascii_case("openai-codex")
             || error
                 .downcast_ref::<ProviderAuthenticationError>()
                 .is_none()
         {
-            return false;
+            return Ok(false);
         }
         let Ok(recovery) = PROVIDER_AUTH_RECOVERY.try_with(Clone::clone) else {
-            return false;
+            return Ok(false);
         };
-        match recovery.attempt(provider_id).await {
+        // Recovery may transmit refresh credentials and persist new tokens.
+        // Reauthorize before entering it, not only before replaying the request.
+        dispatch_authority::revalidate().await?;
+        Ok(match recovery.attempt(provider_id).await {
             Ok(recovered) => recovered,
             Err(_) => {
                 tracing::warn!(
@@ -1124,7 +1131,7 @@ impl ProviderRegistry {
                 );
                 false
             }
-        }
+        })
     }
 
     pub async fn reload(&self, config: AppConfig) {
@@ -1157,6 +1164,7 @@ impl ProviderRegistry {
         let auth_override = self
             .auth_override_for_provider(resolved_provider_id.as_str())
             .await;
+        dispatch_authority::revalidate().await?;
         match provider
             .complete_with_auth_override(prompt, model_id, auth_override)
             .await
@@ -1165,11 +1173,12 @@ impl ProviderRegistry {
             Err(error)
                 if self
                     .recover_typed_auth_failure(resolved_provider_id.as_str(), &error)
-                    .await =>
+                    .await? =>
             {
                 let auth_override = self
                     .auth_override_for_provider(resolved_provider_id.as_str())
                     .await;
+                dispatch_authority::revalidate().await?;
                 provider
                     .complete_with_auth_override(prompt, model_id, auth_override)
                     .await
@@ -1299,6 +1308,7 @@ impl ProviderRegistry {
         let retry_messages = messages.clone();
         let retry_tools = tools.clone();
         let retry_cancel = cancel.clone();
+        dispatch_authority::revalidate().await?;
         match provider
             .stream_with_auth_override(
                 messages,
@@ -1315,11 +1325,12 @@ impl ProviderRegistry {
             Err(error)
                 if self
                     .recover_typed_auth_failure(resolved_provider_id.as_str(), &error)
-                    .await =>
+                    .await? =>
             {
                 let auth_override = self
                     .auth_override_for_provider(resolved_provider_id.as_str())
                     .await;
+                dispatch_authority::revalidate().await?;
                 provider
                     .stream_with_auth_override(
                         retry_messages,

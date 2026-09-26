@@ -1746,6 +1746,7 @@ pub(super) async fn context_generate_layers(
     crate::http::session_run_retry::scope_provider_auth_for_tenant(
         &state,
         &tenant_context,
+        verified_tenant_context.as_deref(),
         crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
         Some(&layer_session_id),
         Some(&layer_run_id),
@@ -1827,6 +1828,7 @@ pub(super) async fn context_distill(
     let report = crate::http::session_run_retry::scope_provider_auth_for_tenant(
         &state,
         &tenant_context,
+        verified_tenant_context.as_deref(),
         crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
         Some(&input.session_id),
         Some(&provider_auth_run_id),

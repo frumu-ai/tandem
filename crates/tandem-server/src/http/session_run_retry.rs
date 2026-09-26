@@ -11,8 +11,8 @@
 
 use serde_json::json;
 use tandem_data_boundary::SensitiveDataClass;
-use tandem_providers::ProviderAuthRecovery;
-use tandem_types::{SendMessageRequest, TenantContext};
+use tandem_providers::{ProviderAuthRecovery, ProviderDispatchAuthority};
+use tandem_types::{SendMessageRequest, TenantContext, VerifiedTenantContext};
 
 use super::sessions::publish_tenant_event;
 use crate::http::AppState;
@@ -197,6 +197,7 @@ fn recovery_for_execution(
 pub(crate) async fn scope_provider_auth_for_tenant<F>(
     state: &AppState,
     tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
     surface: PromptExecutionSurface,
     session_id: Option<&str>,
     run_id: Option<&str>,
@@ -240,6 +241,17 @@ where
     }
 
     let recovery = recovery_for_execution(state, tenant_context, surface, session_id, run_id);
+    let policy = state.enterprise.hosted_policy.clone();
+    let verified = verified_tenant_context.cloned();
+    let authority = ProviderDispatchAuthority::new(move || {
+        let policy = policy.clone();
+        let verified = verified.clone();
+        async move {
+            policy
+                .authorize_execution(verified.as_ref())
+                .map_err(anyhow::Error::msg)
+        }
+    });
     let allow_private_provider_endpoints =
         crate::http::host_authority::standalone_local_runtime_posture(state, tenant_context);
     state
@@ -248,7 +260,7 @@ where
             tenant_context.clone(),
             recovery,
             allow_private_provider_endpoints,
-            future,
+            authority.scope(future),
         )
         .await
 }
@@ -265,11 +277,8 @@ pub(crate) async fn run_prompt_with_auth_recovery(
     correlation_id: Option<String>,
     tenant_context: &TenantContext,
 ) -> anyhow::Result<()> {
-    let session_model = state
-        .storage
-        .get_session(session_id)
-        .await
-        .and_then(|session| session.model);
+    let session = state.storage.get_session(session_id).await;
+    let session_model = session.as_ref().and_then(|session| session.model.as_ref());
     let provider_id_hint = req
         .model
         .as_ref()
@@ -291,6 +300,9 @@ pub(crate) async fn run_prompt_with_auth_recovery(
     scope_provider_auth_for_tenant(
         state,
         tenant_context,
+        session
+            .as_ref()
+            .and_then(|session| session.verified_tenant_context.as_ref()),
         surface,
         Some(session_id),
         Some(run_id),

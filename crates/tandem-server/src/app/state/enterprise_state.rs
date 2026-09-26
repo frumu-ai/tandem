@@ -38,6 +38,8 @@ use crate::config;
 /// `Clone` and is cloned alongside `AppState`.
 #[derive(Clone)]
 pub struct EnterpriseState {
+    pub(crate) hosted_policy: Arc<crate::hosted_policy::HostedPolicyRuntime>,
+    pub(crate) hosted_policy_revision_path: PathBuf,
     pub org_units: Arc<RwLock<HashMap<String, EnterpriseOrganizationUnit>>>,
     pub org_units_path: PathBuf,
     pub org_unit_memberships: Arc<RwLock<HashMap<String, EnterpriseOrganizationUnitMembership>>>,
@@ -63,6 +65,9 @@ impl EnterpriseState {
     /// the same defaults `AppState::new_starting` previously inlined.
     pub fn new() -> Self {
         Self {
+            hosted_policy: Arc::new(crate::hosted_policy::HostedPolicyRuntime::default()),
+            hosted_policy_revision_path: config::paths::resolve_enterprise_org_units_path()
+                .with_file_name("hosted-policy-revision.json"),
             org_units: Arc::new(RwLock::new(HashMap::new())),
             org_units_path: config::paths::resolve_enterprise_org_units_path(),
             org_unit_memberships: Arc::new(RwLock::new(HashMap::new())),

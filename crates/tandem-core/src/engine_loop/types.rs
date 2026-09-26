@@ -155,6 +155,15 @@ pub trait SpawnAgentHook: Send + Sync {
 }
 
 pub trait ToolPolicyHook: Send + Sync {
+    /// Cheap final authority check after waits/approvals, also used for model
+    /// dispatch. Do not create approval requests or repeat the full audit hook.
+    fn revalidate_session(
+        &self,
+        _verified: Option<VerifiedTenantContext>,
+    ) -> BoxFuture<'static, anyhow::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn evaluate_tool(
         &self,
         ctx: ToolPolicyContext,

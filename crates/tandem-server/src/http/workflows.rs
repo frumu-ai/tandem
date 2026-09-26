@@ -267,6 +267,7 @@ pub(super) fn workflow_reviewer_is_eligible(
         })
         || verified.strict_projection.as_ref().is_some_and(|strict| {
             strict.has_permission(AccessPermission::Admin)
+                || strict.has_permission(AccessPermission::HostedAdmin)
                 || strict.has_permission(AccessPermission::Delegate)
         })
 }

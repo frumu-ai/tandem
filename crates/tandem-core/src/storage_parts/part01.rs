@@ -392,6 +392,20 @@ impl Storage {
         self.run_blocking(move |repository| repository.save_session(&session)).await
     }
 
+    /// Update only authority on the current stored header, preserving concurrent
+    /// title/message changes and refusing a deleted or differently owned session.
+    pub async fn update_session_authority(
+        &self,
+        session_id: &str,
+        expected_tenant: TenantContext,
+        authority: Option<tandem_types::VerifiedTenantContext>,
+    ) -> anyhow::Result<bool> {
+        let session_id = session_id.to_string();
+        self.run_blocking(move |repository| {
+            repository.update_session_authority(&session_id, &expected_tenant, authority)
+        }).await
+    }
+
     pub async fn repair_sessions_from_file_store(&self) -> anyhow::Result<SessionRepairStats> {
         let base = self.base.clone();
         self.run_blocking(move |repository| {

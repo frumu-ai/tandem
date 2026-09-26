@@ -1175,7 +1175,7 @@ fn test_claims(issued_at_ms: u64, expires_at_ms: u64) -> TenantContextAssertionC
     )
 }
 
-fn sign_test_context_assertion(
+pub(super) fn sign_test_context_assertion(
     signing_key: &ed25519_dalek::SigningKey,
     kid: &str,
     claims: TenantContextAssertionClaims,

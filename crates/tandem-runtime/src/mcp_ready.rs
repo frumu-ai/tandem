@@ -126,6 +126,17 @@ impl McpRegistry {
         current_tenant: &TenantContext,
         policy: EnsureReadyPolicy,
     ) -> Result<McpServer, McpReadyError> {
+        self.ensure_ready_for_tenant_bound(server_name, current_tenant, policy, None)
+            .await
+    }
+
+    pub(crate) async fn ensure_ready_for_tenant_bound(
+        &self,
+        server_name: &str,
+        current_tenant: &TenantContext,
+        policy: EnsureReadyPolicy,
+        mut binding: Option<&mut crate::mcp::McpToolDispatchBinding>,
+    ) -> Result<McpServer, McpReadyError> {
         let initial = self.list().await.get(server_name).cloned();
         let Some(server) = initial else {
             return Err(McpReadyError::NotFound);
@@ -149,7 +160,10 @@ impl McpRegistry {
                 }
                 next_delay_ms = next_delay_ms.saturating_mul(policy.backoff_factor.max(1) as u64);
             }
-            if self.connect_for_tenant(server_name, current_tenant).await {
+            if self
+                .connect_for_tenant_bound(server_name, current_tenant, binding.as_deref_mut())
+                .await
+            {
                 if let Some(server) = self.list().await.get(server_name).cloned() {
                     if self
                         .runtime_connected_for_tenant(server_name, &server, current_tenant)

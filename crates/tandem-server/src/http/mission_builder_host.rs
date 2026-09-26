@@ -349,6 +349,7 @@ async fn invoke_mission_builder_provider(
     let builder_future = crate::http::session_run_retry::scope_provider_auth_for_tenant(
         state,
         tenant_context,
+        verified_tenant_context,
         crate::http::session_run_retry::PromptExecutionSurface::MissionBuilder,
         Some(session_id),
         Some(run_id),
