@@ -49,6 +49,13 @@ with blueprint ceilings; it cannot enable forbidden egress, add a provider or
 raise token, concurrency or spending limits. A customer configuration revision
 is not itself a verified policy revision.
 
+The prepared result retains a customer-owned `customer_config` snapshot,
+including the validated profile, timezone/locale, secret/data references and
+concrete memory bindings. Its hash is `request.customer_config_revision`.
+Runtime adapters consume this snapshot alongside the resolved plan and narrowed
+`deployment_policy`; they must not reread a mutable document or treat the
+snapshot as permission to activate. It must not be included in shareable exports.
+
 Every blueprint memory space requires a matching declaration. Private subjects,
 departments and projects must already be approved by the trusted host for this
 caller. These declarations are not grants. The runtime adapter must use governed
@@ -70,6 +77,8 @@ There are two distinct artifacts:
   and must stay within that customer's storage and access controls.
 - `customer_config_template(blueprint)` produces a shareable skeleton containing
   only reusable blueprint identity and declared configuration slots. It accepts
+  blueprint-owned preference definitions and memory-space kinds, so recipients
+  can discover their defaults, allowed overrides and required bindings. It accepts
   no customer document, so customer names, source IDs, reference names, hashes,
   bindings and override values cannot be copied accidentally. The result requires
   new customer configuration and cannot be imported as a deployable document.
