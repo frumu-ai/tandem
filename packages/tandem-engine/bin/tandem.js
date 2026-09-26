@@ -501,7 +501,18 @@ async function runAddonDoctorJson() {
   try {
     const report = JSON.parse(String(result.stdout || ""));
     if (!report || typeof report !== "object" || Array.isArray(report)) return null;
-    return { ...report, doctorExitCode: result.code };
+    // Accept completed unhealthy diagnoses, but not arbitrary JSON objects.
+    // These are the fields consumed by status/open and the health contract.
+    const health = report.engineHealth;
+    if (typeof report.ok !== "boolean"
+      || typeof report.panelHost !== "string" || !report.panelHost.trim()
+      || !Number.isInteger(report.panelPort) || report.panelPort < 1 || report.panelPort > 65535
+      || typeof report.panelPublicUrl !== "string"
+      || typeof report.engineUrl !== "string"
+      || (health !== null && (!health || typeof health !== "object" || Array.isArray(health)
+        || typeof health.ready !== "boolean" || typeof health.healthy !== "boolean"))) return null;
+    if (report.ok && (!health?.ready || !health?.healthy || !report.engineUrl.trim())) return null;
+    return { ...report, doctorExitCode: result.code || (report.ok ? 0 : 1) };
   } catch {
     return null;
   }
