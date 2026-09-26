@@ -33,8 +33,11 @@ function countMatches(source, pattern) {
 // Require the pinned command as a RUN instruction or a continued RUN command,
 // not merely as prose, an ENV value, or an argument to echo/printf.
 function hasPinnedOsUpgrade(source) {
-  const runtimeStage = source.split(/^FROM[ \t]+[^\r\n]+$/m).at(-1);
-  const runs = runtimeStage.match(/^RUN[ \t]+(?:[^\n]*\\\r?\n)*[^\n]*/gm) || [];
+  const runtimeStage = source.split(/^[ \t]*FROM[ \t]+[^\r\n]+$/im).at(-1);
+  // The pinned base's default shell is part of the execution contract. A
+  // stage-local override can report success without running any RUN payload.
+  if (/^[ \t]*SHELL[ \t]+/im.test(runtimeStage)) return false;
+  const runs = runtimeStage.match(/^[ \t]*RUN[ \t]+(?:[^\n]*\\\r?\n)*[^\n]*/gim) || [];
   return runs.some((run) => {
     // Mask shell strings/escapes before inspecting command boundaries. Keep a
     // placeholder for quoted arguments so they cannot disappear into a command.
@@ -58,9 +61,18 @@ function hasPinnedOsUpgrade(source) {
         commands += char;
       }
     }
-    // Heredocs and command substitution are outside the supported pinned form.
-    if (quote || commands.includes("<<") || commands.includes("$(")) return false;
-    return /(?:^RUN\s+|&&\s+)apt-get -y --no-install-recommends upgrade\s*(?=&&|$)/.test(commands);
+    // Accept only the repository's straight-line AND chain. OR, pipelines,
+    // groups, substitutions and early-exit builtins can make a skipped upgrade
+    // look like a successful image build, so do not try to interpret them.
+    if (quote || /[|;(){}$&]/.test(commands.replaceAll("&&", "")) || commands.includes("<<")) return false;
+    const steps = commands.replace(/^[ \t]*RUN\s+/i, "").split(/\s*&&\s*/).map((step) => step.trim());
+    const upgrade = steps.indexOf("apt-get -y --no-install-recommends upgrade");
+    if (upgrade < 0) return false;
+    return steps.slice(0, upgrade).every((step) =>
+      step === "rm -f /etc/apt/sources.list.d/debian.sources" ||
+      /^printf _+(?:\s+_+)+\s+>\s+\/etc\/apt\/sources\.list$/.test(step) ||
+      /^apt-get(?: -o Acquire::Check-Valid-Until=false)? update$/.test(step)
+    );
   });
 }
 
@@ -129,14 +141,17 @@ export async function verifyContainerHardening(
     ["engine Dockerfile", engineDockerfile],
     ["control-panel Dockerfile", panelDockerfile],
   ]) {
-    const fromLines = source.match(/^FROM\s+\S+/gm) || [];
+    const fromLines = source.match(/^[ \t]*FROM[ \t]+[^\r\n]+/gim) || [];
     if (fromLines.length === 0) errors.push(`${name} has no FROM instruction`);
     for (const line of fromLines) {
-      if (!line.includes(PINNED_NODE_BASE)) {
+      const base = line.match(/^[ \t]*FROM[ \t]+(\S+)(?:[ \t]+AS[ \t]+\S+)?[ \t]*$/i)?.[1];
+      if (base !== PINNED_NODE_BASE) {
         errors.push(`${name} uses an unapproved or non-digest-pinned base: ${line}`);
       }
     }
-    requireMatch(source, /^USER node$/m, `${name} must run as USER node`, errors);
+    const runtimeStage = source.split(/^[ \t]*FROM[ \t]+[^\r\n]+$/im).at(-1);
+    const users = [...runtimeStage.matchAll(/^[ \t]*USER[ \t]+([^\r\n]+)$/gim)];
+    if (users.at(-1)?.[1].trim() !== "node") errors.push(`${name} must run as USER node`);
     if (/@latest\b|ENGINE_VERSION=latest\b/.test(source)) {
       errors.push(`${name} contains a floating latest dependency`);
     }
@@ -312,6 +327,16 @@ function selfTest() {
     `RUN echo " ${slash}\n  && apt-get -y --no-install-recommends upgrade ${slash}\n  "`,
     "RUN true # && apt-get -y --no-install-recommends upgrade",
     "FROM base AS build\nRUN apt-get -y --no-install-recommends upgrade\nFROM base\nRUN true",
+    "RUN false && apt-get -y --no-install-recommends upgrade && true || true",
+    "RUN false && (true && apt-get -y --no-install-recommends upgrade) || true",
+    "RUN unused() { true && apt-get -y --no-install-recommends upgrade; }; true",
+    "RUN exit 0 && apt-get -y --no-install-recommends upgrade",
+    "RUN exec true && apt-get -y --no-install-recommends upgrade",
+    'FROM base\nSHELL ["/bin/sh", "-c", "exit 0"]\nRUN apt-get -y --no-install-recommends upgrade',
+    'FROM base\nshell ["/bin/echo"]\nRUN apt-get -y --no-install-recommends upgrade',
+    "RUN apt-get update && apt-get -y --no-install-recommends upgrade && true & exit 0",
+    "FROM base\nRUN apt-get -y --no-install-recommends upgrade\nfrom alpine:3.20\nRUN true",
+    "FROM base\nRUN apt-get -y --no-install-recommends upgrade\n  from alpine:3.20\nRUN true",
   ]) {
     if (hasPinnedOsUpgrade(source)) throw new Error("accepted inert OS upgrade text");
   }
