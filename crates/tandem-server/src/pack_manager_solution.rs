@@ -22,7 +22,39 @@ pub struct SolutionPackArtifacts {
 
 struct Snapshot {
     files: BTreeMap<String, Vec<u8>>,
-    solution: SolutionPackArtifacts,
+    blueprint: SolutionBlueprint,
+}
+
+impl Snapshot {
+    // Consume only after signature/receipt verification. Inspection and export
+    // never need a second artifact map, and distinct artifact buffers can move
+    // directly into the existing public owned-byte API without copying.
+    fn into_solution(mut self) -> anyhow::Result<SolutionPackArtifacts> {
+        let mut artifacts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut first_component: BTreeMap<String, String> = BTreeMap::new();
+        for (id, component) in &self.blueprint.components {
+            let path = &component.artifact.path;
+            let bytes = if let Some(bytes) = self.files.remove(path) {
+                first_component.insert(path.clone(), id.clone());
+                bytes
+            } else {
+                // Multiple components may legally reference one file. Preserve
+                // the API's independently owned bytes only for those aliases.
+                let first = first_component
+                    .get(path)
+                    .ok_or_else(|| anyhow!("solution component {id} artifact missing"))?;
+                artifacts
+                    .get(first)
+                    .ok_or_else(|| anyhow!("solution artifact alias missing"))?
+                    .clone()
+            };
+            artifacts.insert(id.clone(), bytes);
+        }
+        Ok(SolutionPackArtifacts {
+            blueprint: self.blueprint,
+            artifacts,
+        })
+    }
 }
 
 fn portable_path(value: &str) -> anyhow::Result<String> {
@@ -35,6 +67,56 @@ fn portable_path(value: &str) -> anyhow::Result<String> {
     );
     safe_relative_pack_path(value)?;
     Ok(value.into())
+}
+
+#[test]
+fn artifact_loading_moves_unique_buffers_and_preserves_shared_paths() {
+    for shared_path in [false, true] {
+        let mut blueprint = parse_blueprint(include_str!(
+            "../../tandem-solutions/fixtures/company-brain-text/solution.json"
+        ))
+        .unwrap();
+        if shared_path {
+            let path = blueprint.components["central-brain"].artifact.path.clone();
+            blueprint
+                .components
+                .get_mut("review-notes")
+                .unwrap()
+                .artifact
+                .path = path;
+        }
+        let mut files = BTreeMap::new();
+        for component in blueprint.components.values() {
+            files
+                .entry(component.artifact.path.clone())
+                .or_insert_with(|| vec![7u8; 1024]);
+        }
+        let pointers: BTreeMap<_, _> = blueprint
+            .components
+            .iter()
+            .map(|(id, component)| {
+                (
+                    id.clone(),
+                    files[&component.artifact.path].as_ptr() as usize,
+                )
+            })
+            .collect();
+        let snapshot = Snapshot { files, blueprint };
+        let mut result = snapshot.into_solution().unwrap();
+        assert_eq!(result.artifacts.len(), 2);
+        for (id, bytes) in &result.artifacts {
+            assert_eq!(bytes, &vec![7u8; 1024]);
+            if !shared_path || id == "central-brain" {
+                assert_eq!(
+                    bytes.as_ptr() as usize,
+                    pointers[id],
+                    "buffer copied for {id}"
+                );
+            }
+        }
+        result.artifacts.get_mut("central-brain").unwrap()[0] = 9;
+        assert_eq!(result.artifacts["review-notes"][0], 7);
+    }
 }
 
 fn snapshot(root: &Path) -> anyhow::Result<Snapshot> {
@@ -133,7 +215,6 @@ fn snapshot(root: &Path) -> anyhow::Result<Snapshot> {
         blueprint_path.clone(),
     ]
     .into();
-    let mut artifacts = BTreeMap::new();
     for (id, component) in &blueprint.components {
         ensure!(
             component.artifact.pack_id == pack_id && component.artifact.version == manifest.version,
@@ -156,7 +237,6 @@ fn snapshot(root: &Path) -> anyhow::Result<Snapshot> {
             "solution component {id} artifact digest mismatch"
         );
         allowed.insert(path);
-        artifacts.insert(id.clone(), bytes.clone());
     }
     ensure!(
         files.keys().all(|path| allowed.contains(path)),
@@ -175,13 +255,7 @@ fn snapshot(root: &Path) -> anyhow::Result<Snapshot> {
             "embedded_secret_detected in solution file {path}"
         );
     }
-    Ok(Snapshot {
-        files,
-        solution: SolutionPackArtifacts {
-            blueprint,
-            artifacts,
-        },
-    })
+    Ok(Snapshot { files, blueprint })
 }
 
 fn verify_snapshot(snapshot: &Snapshot) -> anyhow::Result<String> {
@@ -214,9 +288,8 @@ fn verify_snapshot(snapshot: &Snapshot) -> anyhow::Result<String> {
 pub(super) fn verified_digest(root: &Path, manifest: &PackManifest) -> anyhow::Result<String> {
     let snapshot = snapshot(root)?;
     ensure!(
-        snapshot.solution.blueprint.solution.id
-            == manifest.pack_id.as_deref().unwrap_or(&manifest.name)
-            && snapshot.solution.blueprint.solution.version == manifest.version,
+        snapshot.blueprint.solution.id == manifest.pack_id.as_deref().unwrap_or(&manifest.name)
+            && snapshot.blueprint.solution.version == manifest.version,
         "solution differs from selected install manifest"
     );
     verify_snapshot(&snapshot)
@@ -227,8 +300,8 @@ fn verify_installed(snapshot: &Snapshot, record: &PackInstallRecord) -> anyhow::
     ensure!(record.solution_content_sha256.as_deref() == Some(digest.as_str()),
         "solution content differs from install receipt or lacks a validated receipt; reinstall a verified archive");
     ensure!(
-        snapshot.solution.blueprint.solution.id == record.pack_id
-            && snapshot.solution.blueprint.solution.version == record.version,
+        snapshot.blueprint.solution.id == record.pack_id
+            && snapshot.blueprint.solution.version == record.version,
         "solution no longer matches its installed identity"
     );
     Ok(())
@@ -243,10 +316,37 @@ pub(super) fn inspection(root: &Path, record: &PackInstallRecord) -> anyhow::Res
     let snapshot = snapshot(root)?;
     verify_installed(&snapshot, record)?;
     Ok(serde_json::json!({
-        "blueprint": snapshot.solution.blueprint,
+        "blueprint": snapshot.blueprint,
         "runtime_materialized": false,
         "activation_required": true,
     }))
+}
+
+fn exceeds_import_compression_limit(size: u64, compressed_size: u64) -> bool {
+    size > compressed_size
+        .max(1)
+        .saturating_mul(MAX_ENTRY_COMPRESSION_RATIO.min(MAX_ARCHIVE_COMPRESSION_RATIO))
+}
+
+#[test]
+fn export_compression_limit_preserves_exact_boundary() {
+    let compressed = 30_521;
+    let limit = MAX_ENTRY_COMPRESSION_RATIO.min(MAX_ARCHIVE_COMPRESSION_RATIO);
+    assert!(!exceeds_import_compression_limit(
+        compressed * limit - 1,
+        compressed
+    ));
+    assert!(!exceeds_import_compression_limit(
+        compressed * limit,
+        compressed
+    ));
+    assert!(exceeds_import_compression_limit(
+        compressed * limit + 1,
+        compressed
+    ));
+    assert!(!exceeds_import_compression_limit(limit, 0));
+    assert!(exceeds_import_compression_limit(limit + 1, 0));
+    assert!(!exceeds_import_compression_limit(u64::MAX, u64::MAX));
 }
 
 pub(super) fn export(root: &Path, output: &Path, record: &PackInstallRecord) -> anyhow::Result<()> {
@@ -261,10 +361,26 @@ pub(super) fn export(root: &Path, output: &Path, record: &PackInstallRecord) -> 
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
     for (path, bytes) in &snapshot.files {
-        writer.start_file(path, options)?;
-        std::io::Write::write_all(&mut writer, bytes)?;
+        // Measure the actual ZIP encoding, then copy it without recompression.
+        // Highly compressible, legitimate artifacts must remain importable under
+        // the same zip-bomb limits enforced on publisher archives.
+        let mut candidate = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        candidate.start_file(path, options)?;
+        std::io::Write::write_all(&mut candidate, bytes)?;
+        let mut candidate = ZipArchive::new(candidate.finish()?)?;
+        let entry = candidate.by_index(0)?;
+        if exceeds_import_compression_limit(entry.size(), entry.compressed_size()) {
+            writer.start_file(path, options.compression_method(CompressionMethod::Stored))?;
+            std::io::Write::write_all(&mut writer, bytes)?;
+        } else {
+            writer.raw_copy_file(entry)?;
+        }
     }
-    writer.finish()?;
+    let file = writer.finish()?;
+    ensure!(
+        file.metadata()?.len() <= MAX_ARCHIVE_BYTES,
+        "export exceeds maximum import archive size"
+    );
     Ok(())
 }
 
@@ -284,6 +400,6 @@ impl PackManager {
         let root = self.validated_record_install_path(&record)?;
         let snapshot = snapshot(&root)?;
         verify_installed(&snapshot, &record)?;
-        Ok(snapshot.solution)
+        snapshot.into_solution()
     }
 }

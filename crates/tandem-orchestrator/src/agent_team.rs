@@ -34,6 +34,7 @@ pub enum SpawnBehavior {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpawnDenyCode {
+    SpawnTemplateDisabled,
     SpawnPolicyMissing,
     SpawnPolicyDisabled,
     SpawnDeniedEdge,
@@ -121,8 +122,29 @@ pub struct SkillRequirement {
     pub path: Option<String>,
 }
 
+/// Ownership of a staged solution resource. This metadata is not authorization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolutionTemplateOwner {
+    pub org_id: String,
+    pub workspace_id: String,
+    pub deployment_id: String,
+    pub instance_id: String,
+    pub component_id: String,
+    pub composition_sha256: String,
+}
+
+fn template_enabled_by_default() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTemplate {
+    /// Existing templates remain enabled; installers explicitly stage disabled.
+    #[serde(default = "template_enabled_by_default")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solution_owner: Option<SolutionTemplateOwner>,
     #[serde(rename = "templateID")]
     pub template_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -280,6 +302,12 @@ impl SpawnPolicy {
         running_agents: usize,
         template: Option<&AgentTemplate>,
     ) -> SpawnDecision {
+        if template.is_some_and(|template| !template.enabled) {
+            return deny(
+                SpawnDenyCode::SpawnTemplateDisabled,
+                "agent template is staged or disabled".to_string(),
+            );
+        }
         if !self.enabled {
             return deny(
                 SpawnDenyCode::SpawnPolicyDisabled,
@@ -452,6 +480,42 @@ mod tests {
     }
 
     #[test]
+    fn disabled_template_cannot_be_promoted_to_spawn_approval() {
+        let mut policy = base_policy();
+        policy
+            .spawn_edges
+            .get_mut(&AgentRole::Orchestrator)
+            .unwrap()
+            .behavior = Some(SpawnBehavior::RequestOnly);
+        let req = SpawnRequest {
+            mission_id: Some("m1".into()),
+            parent_instance_id: Some("p1".into()),
+            source: SpawnSource::UiAction,
+            parent_role: Some(AgentRole::Orchestrator),
+            role: AgentRole::Worker,
+            template_id: Some("staged-worker".into()),
+            justification: "reviewed action".into(),
+            budget_override: None,
+        };
+        let mut template: AgentTemplate = serde_json::from_value(serde_json::json!({
+            "templateID": "staged-worker", "role": "worker"
+        }))
+        .unwrap();
+        // Old documents preserve enabled semantics, including approval policy.
+        assert!(template.enabled);
+        assert!(
+            policy
+                .evaluate(&req, 0, 0, Some(&template))
+                .requires_user_approval
+        );
+        template.enabled = false;
+        let decision = policy.evaluate(&req, 0, 0, Some(&template));
+        assert!(!decision.allowed);
+        assert!(!decision.requires_user_approval);
+        assert_eq!(decision.code, Some(SpawnDenyCode::SpawnTemplateDisabled));
+    }
+
+    #[test]
     fn policy_requires_justification() {
         let policy = base_policy();
         let req = SpawnRequest {
@@ -511,6 +575,8 @@ mod tests {
             budget_override: None,
         };
         let template = AgentTemplate {
+            enabled: true,
+            solution_owner: None,
             template_id: "worker-default".to_string(),
             display_name: Some("Worker".to_string()),
             avatar_url: None,

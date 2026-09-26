@@ -508,6 +508,8 @@ async fn automation_agent_templates_fall_back_to_global_workspace_library() {
         .upsert_template(
             &global_workspace_root,
             tandem_orchestrator::AgentTemplate {
+                enabled: true,
+                solution_owner: None,
                 template_id: "shared-copywriter".to_string(),
                 display_name: Some("Shared Copywriter".to_string()),
                 avatar_url: None,
@@ -545,6 +547,28 @@ async fn automation_agent_templates_fall_back_to_global_workspace_library() {
 }
 
 #[tokio::test]
+async fn automation_agent_templates_reject_disabled_local_and_global_matches() {
+    let state = ready_test_state().await;
+    let global = state.workspace_index.snapshot().await.root;
+    let local = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let mut template: tandem_orchestrator::AgentTemplate = serde_json::from_value(json!({
+        "templateID": "disabled-template-regression", "role": "worker"
+    })).unwrap();
+    assert!(template.enabled, "legacy templates remain enabled by default");
+    state.agent_teams.upsert_template(&global, template.clone()).await.unwrap();
+    template.enabled = false;
+    state.agent_teams.upsert_template(local.path().to_str().unwrap(), template.clone()).await.unwrap();
+    let resolve = crate::app::state::automation::resolve_automation_agent_template;
+    // A disabled local match must not fall through to the enabled global row.
+    assert!(resolve(&state, local.path().to_str().unwrap(), &template.template_id).await.unwrap_err().to_string().contains("disabled"));
+    state.agent_teams.upsert_template(&global, template.clone()).await.unwrap();
+    assert!(resolve(&state, other.path().to_str().unwrap(), &template.template_id).await.unwrap_err().to_string().contains("disabled"));
+    assert!(resolve(&state, &global, &template.template_id).await.is_err());
+    assert!(resolve(&state, &global, " ").await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn automation_agent_model_falls_back_to_effective_config_default() {
     let state = ready_test_state().await;
     state
@@ -579,6 +603,8 @@ async fn automation_agent_model_falls_back_to_effective_config_default() {
         approval_policy: None,
     };
     let template = tandem_orchestrator::AgentTemplate {
+        enabled: true,
+        solution_owner: None,
         template_id: "shared-copywriter".to_string(),
         display_name: Some("Shared Copywriter".to_string()),
         avatar_url: None,
