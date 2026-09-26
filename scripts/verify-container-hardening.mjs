@@ -99,7 +99,9 @@ function hasPinnedOsUpgrade(source) {
         quote = char;
         commands += "_";
       } else if (char === "#") {
-        break;
+        // This constrained instruction needs no shell comments. In particular,
+        // a hash inside a word is not a shell comment and must not hide suffixes.
+        return false;
       } else {
         commands += char;
       }
@@ -363,6 +365,7 @@ function selfTest() {
     "RUN ln -sf /bin/true /usr/bin/apt-get\nRUN apt-get -y --no-install-recommends upgrade",
     "COPY fake-apt /usr/bin/apt-get\nRUN apt-get -y --no-install-recommends upgrade",
     "ENV PATH=/fake\nRUN apt-get -y --no-install-recommends upgrade",
+    "RUN apt-get -y --no-install-recommends upgrade# & exit 0",
     'RUN printf \'%s\\n\' "$(ln -sf /bin/true /usr/bin/apt-get)" > /etc/apt/sources.list && apt-get -y --no-install-recommends upgrade',
     'RUN printf \'%s\\n\' "`ln -sf /bin/true /usr/bin/apt-get`" > /etc/apt/sources.list && apt-get -y --no-install-recommends upgrade',
     "# RUN apt-get -y --no-install-recommends upgrade",
