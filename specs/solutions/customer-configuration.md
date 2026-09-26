@@ -70,7 +70,9 @@ snapshot as permission to activate. It must not be included in shareable exports
 
 Every blueprint memory space requires a matching declaration. Private subjects,
 departments and projects must already be approved by the trusted host for this
-caller. These declarations are not grants. The runtime adapter must use governed
+caller. Private subject IDs preserve case and accept the enterprise external-ID
+domain (1–512 bytes, no control characters or surrounding whitespace); approval
+still requires an exact match. These declarations are not grants. The runtime adapter must use governed
 `memory_records` and its verified owner/department/tenant labels; project
 partitions do not confer access. Unsupported team/curated stores are rejected.
 Actual write/recall and membership-change evidence is tracked separately in

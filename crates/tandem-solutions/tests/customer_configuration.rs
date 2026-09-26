@@ -182,6 +182,48 @@ fn customer_memory_bindings_accept_authorized_enterprise_ids() {
 }
 
 #[test]
+fn private_memory_accepts_exact_approved_external_subject_ids() {
+    for subject_id in [
+        "Owner@Example.test".into(),
+        "S".repeat(512),
+        "用户-Owner".into(),
+    ] {
+        let mut f = Fixture::new(A, "a");
+        f.config.memory_spaces.insert(
+            "private".into(),
+            CustomerMemorySpace::PrivateUser {
+                subject_id: subject_id.clone(),
+            },
+        );
+        f.subjects.insert(subject_id.clone());
+        assert!(
+            f.prepare(None, None).is_ok(),
+            "approved external subject rejected"
+        );
+        f.subjects.remove(&subject_id);
+        assert_eq!(
+            f.prepare(None, None).err().unwrap().code,
+            "customer_memory_binding_denied"
+        );
+    }
+    for subject_id in [
+        String::new(),
+        "S".repeat(513),
+        " Owner".into(),
+        "Owner ".into(),
+        "Owner\nOther".into(),
+    ] {
+        let mut f = Fixture::new(A, "a");
+        f.subjects.insert(subject_id.clone());
+        f.config.memory_spaces.insert(
+            "private".into(),
+            CustomerMemorySpace::PrivateUser { subject_id },
+        );
+        assert!(f.prepare(None, None).is_err());
+    }
+}
+
+#[test]
 fn customer_solution_binding_rejects_a_compatible_different_blueprint() {
     let mut f = Fixture::new(A, "a");
     assert!(f.prepare(None, None).is_ok());
