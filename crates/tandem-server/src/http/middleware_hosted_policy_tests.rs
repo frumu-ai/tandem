@@ -62,7 +62,11 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
                 document.clone(),
                 now,
             )
-            .with_permissions(vec![AccessPermission::Read])
+            .with_permissions(vec![
+                AccessPermission::Read,
+                AccessPermission::Admin,
+                AccessPermission::HostedAdmin,
+            ])
             .with_data_classes(vec![DataClass::Internal]),
         );
     verified.strict_projection = Some(policy.project_identity(&verified, now).unwrap());
@@ -75,7 +79,11 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
             .evaluate_access(&document, AccessPermission::Read, DataClass::Internal, now)
             .decision
     };
-    assert_eq!(access(&verified), AccessDecision::Allow);
+    assert_ne!(access(&verified), AccessDecision::Allow);
+    let strict = verified.strict_projection.as_ref().unwrap();
+    assert!(strict.has_permission(AccessPermission::HostedUse));
+    assert!(!strict.has_permission(AccessPermission::Admin));
+    assert!(!strict.has_permission(AccessPermission::HostedAdmin));
 
     input.policy_version = 2;
     input.org_unit_memberships.clear();

@@ -163,9 +163,11 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
         .hosted_policy
         .configure_test_source("org-a", "dep-a", path.clone());
     let app = super::super::routes_automation_webhook_management::apply(
-        super::super::routes_workflows::apply(super::super::routes_routines_automations::apply(
-            Router::new(),
-        )),
+        super::super::routes_channel_automation_drafts::apply(
+            super::super::routes_workflows::apply(
+                super::super::routes_routines_automations::apply(Router::new()),
+            ),
+        ),
     )
     .route("/probe", get(probe))
     .layer(axum::middleware::from_fn_with_state(state.clone(), ingress))
@@ -248,6 +250,12 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
 
     // Ownership and default trigger scope must not bypass hosted operation grants.
     for (method, path) in [
+        ("GET", "/automations/channel-drafts/pending"),
+        ("HEAD", "/automations/channel-drafts/pending"),
+        ("POST", "/automations/channel-drafts"),
+        ("POST", "/automations/channel-drafts/draft/answer"),
+        ("POST", "/automations/channel-drafts/draft/confirm"),
+        ("POST", "/automations/channel-drafts/draft/cancel"),
         ("GET", "/workflows"),
         ("HEAD", "/workflows"),
         ("GET", "/workflows/missing"),
@@ -357,6 +365,23 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
     std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
     state.reload_hosted_policy().await.unwrap();
     let fresh = sign("alice", "viewer", 5);
+    assert_ne!(
+        automation_request(&app, &fresh, "GET", "/automations/channel-drafts/pending")
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        automation_request(
+            &app,
+            &fresh,
+            "POST",
+            "/automations/channel-drafts/draft/confirm"
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
     assert_eq!(
         automation_request(
             &app,
@@ -395,6 +420,17 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
     std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
     state.reload_hosted_policy().await.unwrap();
     let fresh = sign("alice", "viewer", 6);
+    assert_ne!(
+        automation_request(
+            &app,
+            &fresh,
+            "POST",
+            "/automations/channel-drafts/draft/confirm"
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
     // With write authority, the handler runs and still requires a real trigger.
     assert_eq!(
         automation_request(
@@ -467,4 +503,42 @@ async fn hosted_policy_worker_readiness_waits_for_snapshot() {
     assert!(state.wait_until_ready_or_failed(1, 0).await);
     state.mark_failed("test", "expected failure").await;
     assert!(!state.wait_until_ready_or_failed(1, 0).await);
+}
+
+#[tokio::test]
+async fn hosted_policy_admin_can_review_without_generic_admin() {
+    let state = crate::test_support::test_state().await;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("policy.json");
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", path.clone());
+    let now = crate::now_ms();
+    for (version, role) in [(1, "viewer"), (2, "member"), (3, "admin"), (4, "owner")] {
+        write_policy(&path, version, Some(role), now);
+        state.reload_hosted_policy().await.unwrap();
+        let mut verified: VerifiedTenantContext = claims("alice", role, version, now).into();
+        state
+            .enterprise
+            .hosted_policy
+            .project(&mut verified)
+            .unwrap();
+        assert!(!verified
+            .strict_projection
+            .as_ref()
+            .unwrap()
+            .has_permission(AccessPermission::Admin));
+        let tenant = verified.tenant_context.clone();
+        assert_eq!(
+            super::super::workflows::workflow_reviewer_is_eligible(&tenant, Some(&verified)),
+            matches!(role, "admin" | "owner"),
+            "{role}"
+        );
+        verified.expires_at_ms = now - 1;
+        assert!(!super::super::workflows::workflow_reviewer_is_eligible(
+            &tenant,
+            Some(&verified)
+        ));
+    }
 }

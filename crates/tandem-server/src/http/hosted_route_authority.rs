@@ -11,6 +11,17 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
     let method = request.method().as_str();
     let read = matches!(method, "GET" | "HEAD");
     use AccessPermission::*;
+    match (method, path) {
+        (_, "/automations/channel-drafts/pending") if read => return Some(HostedAutomationRead),
+        (
+            "POST",
+            "/automations/channel-drafts"
+            | "/automations/channel-drafts/{draft_id}/answer"
+            | "/automations/channel-drafts/{draft_id}/confirm"
+            | "/automations/channel-drafts/{draft_id}/cancel",
+        ) => return Some(HostedAutomationWrite),
+        _ => {}
+    }
     // The legacy automation and routine names are aliases for the same
     // handlers and must preserve the same hosted operation boundary.
     if let Some(suffix) = path

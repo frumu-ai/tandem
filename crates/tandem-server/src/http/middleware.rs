@@ -281,21 +281,19 @@ async fn enrich_verified_context_with_org_unit_grants(
     verified: &mut VerifiedTenantContext,
     hosted_memberships: Option<Vec<OrganizationUnitMembership>>,
 ) {
-    if verified.strict_projection.is_none() {
+    // Hosted projection already contains the control-plane grants. Local rows
+    // must not augment its memberships, even if they use the reserved unit ID.
+    if verified.strict_projection.is_none() || hosted_memberships.is_some() {
         return;
     }
-    let memberships = if let Some(memberships) = hosted_memberships {
-        memberships
-    } else {
-        state
-            .enterprise
-            .org_unit_memberships
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>()
-    };
+    let memberships = state
+        .enterprise
+        .org_unit_memberships
+        .read()
+        .await
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
     let access_grants = state
         .enterprise
         .org_unit_access_grants

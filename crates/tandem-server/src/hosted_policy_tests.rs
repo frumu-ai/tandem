@@ -307,6 +307,29 @@ async fn hosted_policy_registry_view_replaces_human_memberships_without_persisti
         .write()
         .await
         .insert("data".into(), native_grant.clone());
+    let service_grant = OrganizationUnitAccessGrant::active(
+        "native-service-data",
+        tenant.clone(),
+        local.principal_ref(),
+        ResourceRef::new("org-a", "dep-a", ResourceKind::Document, "service-document"),
+        now,
+    )
+    .with_permissions(vec![AccessPermission::Read]);
+    state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .insert("native-service-data".into(), service_grant.clone());
+    assert_eq!(
+        state
+            .enterprise_org_unit_view(&tenant)
+            .await
+            .unwrap()
+            .access_grants
+            .len(),
+        2
+    );
     assert_eq!(
         state
             .enterprise_org_unit_view(&tenant)
@@ -344,8 +367,17 @@ async fn hosted_policy_registry_view_replaces_human_memberships_without_persisti
         .iter()
         .find(|row| row.source == OrganizationUnitMembershipSource::HostedControlPlane)
         .unwrap();
-    assert!(view.access_grants[0]
+    assert_eq!(view.access_grants, vec![service_grant.clone()]);
+    assert!(view.access_grants.iter().all(|grant| grant
         .to_scoped_grant_for_membership(hosted_member, now)
+        .is_none()));
+    let service_member = view
+        .memberships
+        .iter()
+        .find(|row| row.membership_id == "service")
+        .unwrap();
+    assert!(service_grant
+        .to_scoped_grant_for_membership(service_member, now)
         .is_some());
     input.policy_version = 5;
     input.org_unit_memberships.clear();
@@ -356,7 +388,16 @@ async fn hosted_policy_registry_view_replaces_human_memberships_without_persisti
     assert_eq!(removed.hosted_policy_revision.unwrap().version, 5);
     assert_eq!(removed.memberships.len(), 1);
     assert_eq!(removed.memberships[0].membership_id, "service");
-    assert_eq!(removed.access_grants, vec![native_grant]);
+    assert_eq!(removed.access_grants, vec![service_grant]);
+    assert_eq!(
+        state
+            .enterprise
+            .org_unit_access_grants
+            .read()
+            .await
+            .get("data"),
+        Some(&native_grant)
+    );
     assert_eq!(state.enterprise.org_units.read().await.len(), 1);
     assert_eq!(state.enterprise.org_unit_memberships.read().await.len(), 2);
     let other =

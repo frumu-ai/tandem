@@ -138,7 +138,11 @@ async fn call_mcp_tool_for_tenant_with_trusted_context(
     let authority = tandem_runtime::McpRequestAuthority::new({
         let policy = state.enterprise.hosted_policy.clone();
         let verified = verified_context.cloned();
-        move || policy.authorize(verified.as_ref()).map_err(str::to_owned)
+        move || {
+            policy
+                .authorize_execution(verified.as_ref())
+                .map_err(str::to_owned)
+        }
     });
     let phase_authority = extract_mcp_phase_tool_authority(&args);
     let run_as = resolve_mcp_run_as(state, server_name, tool_name, args, tenant_context).await?;
