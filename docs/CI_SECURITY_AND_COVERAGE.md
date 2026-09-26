@@ -120,8 +120,8 @@ The lockfile also updates lru to 0.18.2 for
 and replaces the yanked chacha20 0.10.1 with 0.10.2.
 Existing audit gates and severity thresholds remain unchanged.
 
-Engine and panel runtime images now use the 2026-09-04 Debian snapshots and
-explicitly pin OpenSSL 3.5.7-1~deb13u2. Package availability was checked against
+Engine and panel runtime images now use the 2026-09-23 12:00 UTC Debian snapshots and
+explicitly pin curl 8.14.1-2+deb13u5 and OpenSSL 3.5.7-1~deb13u2. Package availability was checked against
 both snapshot indexes; the [Debian security tracker](https://security-tracker.debian.org/tracker/source-package/openssl)
 identifies this as the patched trixie-security package. Runtime and migration
 images use the official Node 24.20.0 trixie-slim multi-architecture digest

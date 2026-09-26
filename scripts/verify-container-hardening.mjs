@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFile, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +20,19 @@ const PINNED_OS_STEPS = [
   "apt-get -y --no-install-recommends upgrade",
   "apt-get install -y --no-install-recommends ca-certificates=20250419 curl=8.14.1-2+deb13u5 libssl3t64=3.5.7-1~deb13u2 openssl=3.5.7-1~deb13u2 openssl-provider-legacy=3.5.7-1~deb13u2",
 ];
+const PINNED_OS_CLEANUP = "rm -rf /var/lib/apt/lists/* /etc/apt/sources.list";
+const PANEL_PACKAGE_MANAGER_STEPS = [
+  "corepack enable",
+  "corepack prepare pnpm@11.17.0 --activate",
+];
+// The remaining runtime instructions are reviewed recipes, not arbitrary shell.
+// Any change requires explicit review of its package/provenance effects and a
+// new digest here. Release version/digest ENV pins precede the OS RUN and are
+// independently validated, so ordinary release-pin updates remain supported.
+const APPROVED_RUNTIME_TAILS = new Map([
+  ["engine Dockerfile", "a9f7a31d867873093d877e938f0c8e25a49e40331371043c9605072b2c080c0d"],
+  ["control-panel Dockerfile", "35b82395e549c08644bf907f5974555e305b40a61dbf872db6c077ad036657c5"],
+]);
 const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
 const SEMVER_PRERELEASE_IDENTIFIER =
   "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
@@ -46,9 +60,12 @@ function dockerInstructions(source) {
   const instructions = [];
   let pending = "";
   for (const line of source.split(/\r?\n/)) {
-    if (/^\s*(?:#|$)/.test(line)) continue;
+    if (/^[ \t]*(?:#|$)/.test(line)) continue;
+    // Docker/shell separators are not JavaScript's Unicode whitespace set.
+    // Reject unsupported whitespace before any trim or token normalization.
+    if (/[^\S \t]/u.test(line)) return [];
     const continued = line.endsWith("\\");
-    pending += (continued ? line.slice(0, -1) : line) + " ";
+    pending += continued ? line.slice(0, -1) : line;
     if (!continued) {
       instructions.push(pending.trim());
       pending = "";
@@ -68,7 +85,18 @@ function finalRuntimeUser(source) {
     .at(-1)?.replace(/^USER\s+/i, "").trim();
 }
 
-function hasPinnedOsUpgrade(source) {
+function hasApprovedRuntimeTail(source, name) {
+  const runtime = runtimeInstructions(source);
+  const firstRun = runtime.findIndex((line) => /^RUN\s/i.test(line));
+  if (firstRun < 0) return false;
+  const digest = createHash("sha256").update(JSON.stringify(runtime.slice(firstRun + 1))).digest("hex");
+  return APPROVED_RUNTIME_TAILS.get(name) === digest;
+}
+
+function hasPinnedOsUpgrade(source, name) {
+  const role = name === "engine Dockerfile" ? "engine" :
+    name === "control-panel Dockerfile" ? "panel" : null;
+  if (!role) return false;
   const runtime = runtimeInstructions(source);
   // The pinned base's default shell is part of the execution contract. A
   // stage-local override can report success without running any RUN payload.
@@ -81,20 +109,27 @@ function hasPinnedOsUpgrade(source) {
   if (!runtime.slice(0, firstRun).every((line) =>
     /^ARG (?:TARGETARCH|TANDEM_ENGINE_INSTALL_SOURCE=release|TANDEM_ENGINE_CANDIDATE_SHA256)$/.test(line) ||
     (/^ENV\s/.test(line) && line.slice(4).trim().split(/\s+/).every((entry) =>
-      /^(?:DEBIAN_FRONTEND=noninteractive|TANDEM_ENGINE_VERSION=[0-9A-Za-z.+-]+|TANDEM_ENGINE_BINARY_SHA256=[0-9a-f]{64}|HOME=\/var\/lib\/tandem\/(?:engine|panel)|XDG_CACHE_HOME=\/var\/lib\/tandem\/(?:engine|panel)\/\.cache|npm_config_(?:update_notifier|fund|audit)=false)$/.test(entry)
+      entry === `HOME=/var/lib/tandem/${role}` ||
+      entry === `XDG_CACHE_HOME=/var/lib/tandem/${role}/.cache` ||
+      /^(?:DEBIAN_FRONTEND=noninteractive|TANDEM_ENGINE_VERSION=[0-9A-Za-z.+-]+|TANDEM_ENGINE_BINARY_SHA256=[0-9a-f]{64}|npm_config_(?:update_notifier|fund|audit)=false)$/.test(entry)
     ))
   )) return false;
   const runs = [runtime[firstRun]];
   return runs.some((run) => {
     // Mask shell strings/escapes before inspecting command boundaries. Keep a
     // placeholder for quoted arguments so they cannot disappear into a command.
-    const shell = run.replace(/\\\r?\n/g, " ");
+    const shell = run;
     // The canonical upgrade instruction needs no expansion. Reject it even
     // inside quotes: double-quoted substitutions still execute shell commands.
     if (/[$`]/.test(shell)) return false;
-    const literalSteps = shell.replace(/^RUN\s+/i, "").split(/\s*&&\s*/)
-      .map((step) => step.trim().replace(/\s+/g, " "));
+    const literalSteps = shell.replace(/^RUN[ \t]+/i, "").split(/[ \t]*&&[ \t]*/)
+      .map((step) => step.trim().replace(/[ \t]+/g, " "));
     if (!PINNED_OS_STEPS.every((step, index) => literalSteps[index] === step)) return false;
+    const suffix = literalSteps.slice(PINNED_OS_STEPS.length);
+    if (suffix[0] !== PINNED_OS_CLEANUP || !(
+      (role === "engine" && suffix.length === 1) || (role === "panel" && suffix.length === 3 &&
+        PANEL_PACKAGE_MANAGER_STEPS.every((step, index) => suffix[index + 1] === step))
+    )) return false;
     let quote = null;
     let commands = "";
     for (let i = 0; i < shell.length; i++) {
@@ -156,6 +191,35 @@ export function parsePinnedEngineVersion(source) {
   return EXACT_SEMVER.test(value) ? value : "";
 }
 
+// Keep the canonical physical layout consumed by release workflow sed commands,
+// but also inspect logical ENV assignments so hidden effective overrides cannot
+// evade either the image verifier or the candidate/release pin classifier.
+export function parsePinnedEngineRelease(source) {
+  const version = parsePinnedEngineVersion(source);
+  const hashes = [...source.matchAll(/^[ \t]*TANDEM_ENGINE_BINARY_SHA256=([0-9a-f]{64}) \\$/gm)];
+  const versions = [...source.matchAll(/^[ \t]*TANDEM_ENGINE_VERSION=/gm)];
+  const hash = hashes[0]?.[1];
+  if (!version || versions.length !== 1 || hashes.length !== 1) return null;
+  const assignments = new Map();
+  const instructions = dockerInstructions(source);
+  if (instructions.length === 0) return null;
+  for (const line of instructions) {
+    if (!/^ENV[ \t]/i.test(line)) continue;
+    for (const entry of line.slice(4).trim().split(/[ \t]+/)) {
+      const match = entry.match(/^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:+-]+)$/);
+      if (!match) return null;
+      const [, key, value] = match;
+      if (key === "TANDEM_ENGINE_VERSION" || key === "TANDEM_ENGINE_BINARY_SHA256") {
+        if (assignments.has(key)) return null;
+        assignments.set(key, value);
+      }
+    }
+  }
+  if (assignments.get("TANDEM_ENGINE_VERSION") !== version ||
+      assignments.get("TANDEM_ENGINE_BINARY_SHA256") !== hash) return null;
+  return { version, hash };
+}
+
 export async function verifyContainerHardening(
   root = process.cwd(),
   { expectedEngineVersion } = {}
@@ -212,10 +276,12 @@ export async function verifyContainerHardening(
     ]) {
       if (!source.includes(marker)) errors.push(`${name} is missing immutable OS input ${marker}`);
     }
-    if (!hasPinnedOsUpgrade(source)) errors.push(`${name} must execute the pinned OS upgrade`);
+    if (!hasPinnedOsUpgrade(source, name)) errors.push(`${name} must execute the pinned OS upgrade`);
+    if (!hasApprovedRuntimeTail(source, name)) errors.push(`${name} has an unreviewed post-upgrade runtime recipe`);
   }
 
   const engineVersion = parsePinnedEngineVersion(engineDockerfile);
+  if (!parsePinnedEngineRelease(engineDockerfile)) errors.push("engine image must have exactly one canonical release version and SHA-256 ENV assignment");
   if (!engineVersion) errors.push("engine image must pin an exact semantic version in the image");
   if (engineVersion && engineVersion !== String(enginePackage.version || "")) {
     errors.push(
@@ -341,7 +407,37 @@ export async function verifyContainerHardening(
   return { assets: [...discovered].sort(), errors };
 }
 
-function selfTest() {
+async function selfTest() {
+  for (const name of ["engine", "control-panel"]) {
+    const source = await readFile(`packages/tandem-control-panel/docker/${name}.Dockerfile`, "utf8");
+    if (!hasPinnedOsUpgrade(source, `${name} Dockerfile`)) throw new Error(`unapproved current ${name} upgrade`);
+    const role = name === "engine" ? "engine" : "panel";
+    const opposite = role === "engine" ? "panel" : "engine";
+    for (const separator of ["\u00a0", "\u2003", "\ufeff", "\v", "\f"]) {
+      const mutation = source.replace(PINNED_OS_CLEANUP, `rm -rf /var/lib/apt/lists/*${separator}/etc/apt/sources.list`);
+      if (hasPinnedOsUpgrade(mutation, `${name} Dockerfile`)) throw new Error(`accepted non-shell whitespace in ${name}`);
+    }
+    for (const mutation of [
+      source.replace(`HOME=/var/lib/tandem/${role}`, `HOME=/var/lib/tandem/${opposite}`),
+      source.replace(`XDG_CACHE_HOME=/var/lib/tandem/${role}/.cache`, `XDG_CACHE_HOME=/var/lib/tandem/${opposite}/.cache`),
+      source.replace(PINNED_OS_CLEANUP, "rm -rf /var/lib/apt/lists/*\\\n/etc/apt/sources.list"),
+      role === "engine" ? source.replace(PINNED_OS_CLEANUP, `${PINNED_OS_CLEANUP} && ${PANEL_PACKAGE_MANAGER_STEPS.join(" && ")}`) : source.replaceAll("corepack enable", "true"),
+    ]) {
+      if (hasPinnedOsUpgrade(mutation, `${name} Dockerfile`)) throw new Error(`accepted role/continuation mutation in ${name}`);
+    }
+    if (!hasApprovedRuntimeTail(source, `${name} Dockerfile`)) throw new Error(`unapproved current ${name} runtime recipe`);
+    const other = name === "engine" ? "control-panel" : "engine";
+    if (hasApprovedRuntimeTail(source, `${other} Dockerfile`)) throw new Error("accepted a swapped runtime recipe");
+    for (const mutation of [
+      "RUN apt-get update && apt-get reinstall curl=8.14.1-2+deb13u5",
+      "RUN printf '%s' 'deb [trusted=yes] http://attacker.invalid trixie main' > /etc/apt/sources.list",
+      "COPY unreviewed-packages /usr/lib/",
+    ]) {
+      if (hasApprovedRuntimeTail(source.replace("USER node", `${mutation}\nUSER node`), `${name} Dockerfile`)) {
+        throw new Error(`accepted post-upgrade ${name} mutation`);
+      }
+    }
+  }
   const expected = [
     ["Dockerfile.production", ""],
     ["ops/Containerfile", ""],
@@ -358,18 +454,22 @@ function selfTest() {
     throw new Error("container hardening self-test classified a normal workflow as Kubernetes");
   }
   const slash = String.fromCharCode(92);
-  const canonicalUpgrade = `RUN ${PINNED_OS_STEPS.join(" && ")}`;
+  const canonicalSteps = [...PINNED_OS_STEPS, PINNED_OS_CLEANUP];
+  const canonicalUpgrade = `RUN ${canonicalSteps.join(" && ")}`;
   for (const source of [
     canonicalUpgrade,
-    `RUN ${PINNED_OS_STEPS.join(` ${slash}\n && `)} && true`,
+    `RUN ${canonicalSteps.join(` ${slash}\n && `)}`,
   ]) {
-    if (!hasPinnedOsUpgrade(source)) throw new Error("missing real OS upgrade instruction");
+    if (!hasPinnedOsUpgrade(source, "engine Dockerfile")) throw new Error("missing real OS upgrade instruction");
   }
+  if (!hasPinnedOsUpgrade(`${canonicalUpgrade} && ${PANEL_PACKAGE_MANAGER_STEPS.join(" && ")}`, "control-panel Dockerfile")) throw new Error("missing panel package manager setup");
   for (const source of [
     "RUN apt-get -y --no-install-recommends upgrade",
     canonicalUpgrade.replace(PINNED_OS_STEPS[1], "printf '%s\\n' 'deb [trusted=yes] http://attacker.invalid trixie main' > /etc/apt/sources.list"),
     canonicalUpgrade.replace(`${PINNED_OS_STEPS[2]} && `, ""),
     `${canonicalUpgrade} & exit 0`,
+    `${canonicalUpgrade} && apt-get update && apt-get reinstall curl=8.14.1-2+deb13u5`,
+    `${canonicalUpgrade} && printf '%s' 'deb [trusted=yes] http://attacker.invalid trixie main' > /etc/apt/sources.list`,
     canonicalUpgrade.replace(" upgrade &&", " upgrade# & exit 0 &&"),
     `RUN ln -sf /bin/true /usr/bin/apt-get\n${canonicalUpgrade}`,
     `USER root\n${canonicalUpgrade}`,
@@ -398,7 +498,7 @@ function selfTest() {
     "FROM base\nRUN apt-get -y --no-install-recommends upgrade\nfrom alpine:3.20\nRUN true",
     "FROM base\nRUN apt-get -y --no-install-recommends upgrade\n  from alpine:3.20\nRUN true",
   ]) {
-    if (hasPinnedOsUpgrade(source)) throw new Error("accepted inert OS upgrade text");
+    if (hasPinnedOsUpgrade(source, "engine Dockerfile")) throw new Error("accepted inert OS upgrade text");
   }
   if (finalRuntimeUser(`FROM base\nUSER root\nRUN printf '%s\\n' ${slash}\nUSER node`) !== "root") {
     throw new Error("continued RUN payload was treated as USER instruction");
@@ -425,7 +525,7 @@ function argValue(name) {
 }
 
 async function main() {
-  if (process.argv.includes("--self-test")) selfTest();
+  if (process.argv.includes("--self-test")) await selfTest();
   const result = await verifyContainerHardening(process.cwd(), {
     expectedEngineVersion: argValue("--expected-engine-version"),
   });

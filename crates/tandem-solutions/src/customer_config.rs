@@ -192,7 +192,15 @@ pub fn validate_customer_config(config: &CustomerConfig) -> Result<(), SolutionE
         identifier(slot, "memory_spaces")?;
         match space {
             CustomerMemorySpace::PrivateUser { subject_id } => {
-                identifier(subject_id, "memory_spaces.subject_id")?
+                // Subjects use the enterprise external-identity domain, not
+                // blueprint names. Preserve exact identity for host approval.
+                if subject_id.is_empty()
+                    || subject_id.len() > 512
+                    || subject_id.trim() != subject_id
+                    || subject_id.chars().any(char::is_control)
+                {
+                    return Err(invalid("memory_spaces.subject_id"));
+                }
             }
             CustomerMemorySpace::DepartmentShared { org_unit_id } => {
                 enterprise_identifier(org_unit_id, "memory_spaces.org_unit_id")?
