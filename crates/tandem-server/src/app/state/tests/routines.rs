@@ -56,6 +56,7 @@ async fn routine_put_persists_and_loads() {
     state.routines_path = routines_path.clone();
 
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "routine-1".to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Digest".to_string(),
@@ -94,6 +95,7 @@ async fn persist_routines_does_not_clobber_existing_store_with_empty_state() {
     writer.routines_path = routines_path.clone();
     writer
         .put_routine(RoutineSpec {
+            solution_owner: None,
             routine_id: "automation-guarded".to_string(),
             tenant_context: tandem_types::TenantContext::local_implicit(),
             name: "Guarded Automation".to_string(),
@@ -187,6 +189,7 @@ async fn evaluate_routine_misfires_respects_skip_run_once_and_catch_up() {
     state.routines_path = routines_path.clone();
 
     let base = |id: &str, policy: RoutineMisfirePolicy| RoutineSpec {
+        solution_owner: None,
         routine_id: id.to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: id.to_string(),
@@ -251,6 +254,7 @@ async fn evaluate_routine_misfires_respects_skip_run_once_and_catch_up() {
 #[test]
 fn routine_policy_blocks_external_side_effects_by_default() {
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "routine-policy-1".to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Connector routine".to_string(),
@@ -277,6 +281,7 @@ fn routine_policy_blocks_external_side_effects_by_default() {
 #[test]
 fn routine_policy_requires_approval_for_external_side_effects_when_enabled() {
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "routine-policy-2".to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Connector routine".to_string(),
@@ -306,6 +311,7 @@ fn routine_policy_requires_approval_for_external_side_effects_when_enabled() {
 #[test]
 fn routine_policy_allows_non_external_entrypoints() {
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "routine-policy-3".to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Internal mission routine".to_string(),
@@ -1082,6 +1088,7 @@ async fn routine_session_policy_roundtrip_normalizes_tools() {
 async fn routine_run_preserves_latest_session_id_after_session_clears() {
     let state = AppState::new_starting("routine-latest-session".to_string(), true);
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "routine-session-link".to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Routine Session Link".to_string(),
@@ -1138,6 +1145,7 @@ async fn hosted_scheduled_routine_preserves_tenant_in_spec_run_and_session() {
     );
     hosted.deployment_id = Some("deployment-hosted-a".to_string());
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "hosted-scheduled".to_string(),
         tenant_context: hosted.clone(),
         name: "Hosted Scheduled".to_string(),

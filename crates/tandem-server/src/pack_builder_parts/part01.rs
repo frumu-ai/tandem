@@ -1136,6 +1136,7 @@ impl PackBuilderTool {
                 .unwrap_or("team");
             let max_agents = input.max_agents.unwrap_or(4);
             let mut routine = RoutineSpec {
+                solution_owner: None,
                 routine_id: routine_id.clone(),
                 tenant_context: routine_tenant_context.clone(),
                 name: plan.routine_template.name.clone(),

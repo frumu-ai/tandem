@@ -880,6 +880,10 @@ struct AutomationV2TaskResetPreview {
 
 pub(super) fn routine_error_response(error: RoutineStoreError) -> (StatusCode, Json<Value>) {
     match error {
+        RoutineStoreError::ManagedResource { message } => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": message, "code": "SOLUTION_ROUTINE_MANAGED"})),
+        ),
         RoutineStoreError::InvalidRoutineId { routine_id } => (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -965,6 +969,7 @@ pub(super) async fn routines_create(
         .unwrap_or_else(|| "unknown".to_string());
 
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: input
             .routine_id
             .unwrap_or_else(|| Uuid::new_v4().to_string()),
