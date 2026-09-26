@@ -250,7 +250,8 @@ pub fn prepare_customer_config(
             "Customer configuration belongs to a different solution",
         ));
     }
-    validate_customer_config_scope(input.verified_context, input.selected_scope, input.now_ms)?;
+    let authority =
+        validate_customer_config_scope(input.verified_context, input.selected_scope, input.now_ms)?;
     if config.scope != *input.selected_scope {
         return Err(SolutionError::new(
             "customer_scope_mismatch",

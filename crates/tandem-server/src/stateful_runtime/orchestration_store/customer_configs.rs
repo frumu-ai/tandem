@@ -125,11 +125,12 @@ impl OrchestrationStateStore {
             }
             let prepared = prepare_customer_config(blueprint, config, CustomerConfigInput {
                 current_revision: current.as_ref().map(|stored| stored.version.sha256.as_str()),
+                current_solution_id: current.as_ref().map(|stored| stored.config.solution_id.as_str()),
                 ..input
             })?;
             let blueprint_sha256 = blueprint_hash(blueprint)?;
             if let Some(stored) = current.as_ref().filter(|stored|
-                stored.version.sha256 == prepared.request.customer_config_revision
+                stored.version.sha256 == prepared.revision()
                 && stored.blueprint_sha256 == blueprint_sha256) {
                 transaction.commit()?;
                 return Ok(stored.clone());
@@ -139,7 +140,7 @@ impl OrchestrationStateStore {
                 .ok_or_else(|| anyhow::anyhow!("customer configuration generation exhausted"))?;
             let stored = StoredCustomerConfig {
                 config: config.clone(),
-                version: CustomerConfigVersion { generation, sha256: prepared.request.customer_config_revision },
+                version: CustomerConfigVersion { generation, sha256: prepared.revision().to_owned() },
                 blueprint_sha256,
                 updated_by: input.verified_context.human_actor.actor_id.clone(),
                 updated_at_ms: input.now_ms,

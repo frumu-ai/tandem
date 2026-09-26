@@ -90,6 +90,7 @@ impl Fixture {
                 selected_scope: &self.config.scope,
                 now_ms: 1500,
                 current_revision: None,
+                current_solution_id: None,
                 expected_revision: expected.map(|value| value.sha256.as_str()),
                 host_policy: &self.blueprint.constraints,
                 approved_references: &self.refs,
