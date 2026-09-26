@@ -105,6 +105,7 @@ impl InstallationFixture {
             selected_scope: &fixture.config.scope,
             now_ms: 1500,
             current_revision: None,
+            current_solution_id: None,
             expected_revision: None,
             host_policy: &fixture.blueprint.constraints,
             approved_references: &fixture.refs,
@@ -126,20 +127,20 @@ impl InstallationFixture {
             self.configuration(),
         )
         .unwrap();
-        let plan = resolve(
-            &self.customer.blueprint,
-            ResolutionInput {
-                request: &prepared.request,
-                verified_context: &self.customer.context,
-                now_ms: 1500,
-                engine_version: "0.7.2",
-                deployment_policy: &prepared.deployment_policy,
-                available_deployment_requirements: &self.readiness,
-                approved_models: &self.models,
-                artifacts: &self.artifacts,
-            },
-        )
-        .unwrap();
+        let plan = prepared
+            .resolve(
+                &self.customer.blueprint,
+                CustomerResolutionInput {
+                    verified_context: &self.customer.context,
+                    now_ms: 1500,
+                    engine_version: "0.7.2",
+                    host_policy: &self.customer.blueprint.constraints,
+                    available_deployment_requirements: &self.readiness,
+                    approved_models: &self.models,
+                    artifacts: &self.artifacts,
+                },
+            )
+            .unwrap();
         (config, plan.composition_hash().unwrap())
     }
 
@@ -563,4 +564,67 @@ fn solution_installation_schema_upgrade_preserves_configuration() {
         store.initialize().unwrap();
         assert_eq!(fixture.read(store), record);
     });
+}
+
+#[cfg(feature = "storage-sqlite")]
+#[test]
+fn solution_installation_sqlite_migration_rechecks_concurrent_v6_reads() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("migration.db");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE schema_metadata (schema_version INTEGER NOT NULL);
+        INSERT INTO schema_metadata VALUES (6);",
+        )
+        .unwrap();
+    drop(connection);
+    let barrier = std::sync::Barrier::new(6);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..6)
+            .map(|_| {
+                let path = &path;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let mut connection = rusqlite::Connection::open(path).unwrap();
+                    connection
+                        .busy_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    let version: i64 = connection
+                        .query_row("SELECT schema_version FROM schema_metadata", [], |row| {
+                            row.get(0)
+                        })
+                        .unwrap();
+                    assert_eq!(version, 6);
+                    barrier.wait();
+                    super::solution_installations::migrate_sqlite(&mut connection)
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+    });
+    let mut connection = rusqlite::Connection::open(path).unwrap();
+    // A waiter that originally observed v5 must accept both already-completed
+    // steps without resetting the schema or recreating existing tables.
+    super::customer_configs::migrate_sqlite(&mut connection).unwrap();
+    super::solution_installations::migrate_sqlite(&mut connection).unwrap();
+    let version: i64 = connection
+        .query_row("SELECT schema_version FROM schema_metadata", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 7);
+    connection
+        .execute("UPDATE schema_metadata SET schema_version=99", [])
+        .unwrap();
+    assert!(super::solution_installations::migrate_sqlite(&mut connection).is_err());
+    assert!(super::customer_configs::migrate_sqlite(&mut connection).is_err());
+    let version: i64 = connection
+        .query_row("SELECT schema_version FROM schema_metadata", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 99);
 }

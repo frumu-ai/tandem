@@ -90,3 +90,5 @@ jobs:
         run: cargo test -p tandem-orchestrator --locked disabled_template_cannot --lib
       - name: Lint the PostgreSQL and SQLite store adapter
         run: cargo clippy -p tandem-server --locked --features storage-postgres --lib -- -D warnings
+      - name: Verify solution packs and existing pack lifecycle
+        run: cargo test -p tandem-server --locked --features storage-postgres pack_manager --lib -- --test-threads=1

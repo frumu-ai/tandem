@@ -24,6 +24,10 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
+#[path = "pack_manager_solution.rs"]
+mod solution;
+pub use solution::SolutionPackArtifacts;
+
 const MARKER_FILE: &str = "tandempack.yaml";
 const INDEX_FILE: &str = "index.json";
 const CURRENT_FILE: &str = "current";
@@ -69,6 +73,8 @@ pub struct PackInstallRecord {
     pub pack_type: String,
     pub install_path: String,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solution_content_sha256: Option<String>,
     pub installed_at_ms: u64,
     pub source: Value,
     #[serde(default)]
@@ -91,6 +97,8 @@ pub struct PackInspection {
     pub risk: Value,
     pub permission_sheet: Value,
     pub workflow_extensions: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solution: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +211,11 @@ impl PackManager {
         let risk = inspect_risk(&manifest, &installed);
         let permission_sheet = inspect_permission_sheet(&manifest, &risk);
         let workflow_extensions = inspect_workflow_extensions(&manifest);
+        let solution = if installed.pack_type == "solution" {
+            Some(solution::inspection(&install_path, &installed)?)
+        } else {
+            None
+        };
         Ok(PackInspection {
             installed,
             manifest,
@@ -210,6 +223,7 @@ impl PackManager {
             risk,
             permission_sheet,
             workflow_extensions,
+            solution,
         })
     }
 
@@ -322,7 +336,7 @@ impl PackManager {
                 n == "1" || n == "true" || n == "yes" || n == "on"
             })
             .unwrap_or(false);
-        if strict_secret_scan && !secret_hits.is_empty() {
+        if (strict_secret_scan || manifest.pack_type == "solution") && !secret_hits.is_empty() {
             let _ = tokio::fs::remove_dir_all(&stage_root).await;
             return Err(anyhow!(
                 "embedded_secret_detected: {} potential secret(s) found (first: {})",
@@ -331,6 +345,11 @@ impl PackManager {
             ));
         }
         let signature_status = verify_pack_signature(&stage_unpacked)?;
+        let solution_content_sha256 = if manifest.pack_type == "solution" {
+            Some(solution::verified_digest(&stage_unpacked, &manifest)?)
+        } else {
+            None
+        };
         if signature_policy == PackSignaturePolicy::RequireTrusted
             && pack_signature_required()
             && matches!(signature_status, PackSignatureStatus::Unsigned)
@@ -373,6 +392,7 @@ impl PackManager {
             pack_type: manifest.pack_type.clone(),
             install_path: install_target.to_string_lossy().to_string(),
             sha256,
+            solution_content_sha256,
             installed_at_ms: now_ms(),
             source: if input.source.is_null() {
                 serde_json::json!({
@@ -563,7 +583,12 @@ impl PackManager {
         tokio::fs::create_dir_all(parent).await?;
         reject_symlink_path(parent, "pack export directory")?;
         let temporary = parent.join(format!(".export-{}.tmp", Uuid::new_v4()));
-        if let Err(error) = zip_directory(&pack_dir, &temporary) {
+        let export_result = if record.pack_type == "solution" {
+            solution::export(&pack_dir, &temporary, &record)
+        } else {
+            zip_directory(&pack_dir, &temporary)
+        };
+        if let Err(error) = export_result {
             let _ = std::fs::remove_file(&temporary);
             return Err(error);
         }
@@ -945,6 +970,9 @@ fn validate_manifest(
     validate_pack_identifier("manifest.type", &manifest.pack_type)?;
     if let Some(pack_id) = manifest.pack_id.as_deref() {
         validate_pack_identifier("manifest.pack_id", pack_id)?;
+    }
+    if manifest.pack_type == "solution" {
+        solution::validate(install_root)?;
     }
     if let Some(marketplace) = manifest_value
         .pointer("/marketplace")
@@ -1420,11 +1448,17 @@ fn verify_pack_signature(root: &Path) -> anyhow::Result<PackSignatureStatus> {
     if !signature_path.exists() {
         return Ok(PackSignatureStatus::Unsigned);
     }
-    let envelope: PackSignatureEnvelope = serde_json::from_slice(
-        &std::fs::read(&signature_path)
-            .with_context(|| format!("read {}", signature_path.display()))?,
-    )
-    .context("parse tandempack.sig JSON")?;
+    let signature = std::fs::read(&signature_path)
+        .with_context(|| format!("read {}", signature_path.display()))?;
+    verify_pack_signature_bytes(&signature, pack_content_digest(root)?)
+}
+
+fn verify_pack_signature_bytes(
+    signature: &[u8],
+    digest: [u8; 32],
+) -> anyhow::Result<PackSignatureStatus> {
+    let envelope: PackSignatureEnvelope =
+        serde_json::from_slice(signature).context("parse tandempack.sig JSON")?;
     validate_pack_identifier("signature.key_id", &envelope.key_id)?;
     let trusted_keys = trusted_pack_public_keys()?;
     let public_key = trusted_keys
@@ -1435,7 +1469,6 @@ fn verify_pack_signature(root: &Path) -> anyhow::Result<PackSignatureStatus> {
         .ok_or_else(|| anyhow!("pack signature must be a base64 Ed25519 signature"))?;
     let verifying_key =
         VerifyingKey::from_bytes(public_key).context("invalid trusted pack public key")?;
-    let digest = pack_content_digest(root)?;
     verifying_key
         .verify_strict(&digest, &Signature::from_bytes(&signature_bytes))
         .context("pack signature verification failed")?;
@@ -1655,3 +1688,7 @@ pub fn map_missing_capability_error(
 #[cfg(test)]
 #[path = "pack_manager_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "pack_manager_solution_tests.rs"]
+mod solution_tests;

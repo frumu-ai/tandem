@@ -1,4 +1,5 @@
 schema_version: "1"
+solution_id: tandem.company-brain
 scope:
   org_id: org-b
   workspace_id: workspace-b

@@ -91,6 +91,7 @@ impl Fixture {
                 selected_scope: &self.config.scope,
                 now_ms: 1500,
                 current_revision: None,
+                current_solution_id: None,
                 expected_revision: expected.map(|value| value.sha256.as_str()),
                 host_policy: &self.blueprint.constraints,
                 approved_references: &self.refs,
@@ -117,7 +118,7 @@ fn reopened(store: &OrchestrationStateStore) -> OrchestrationStateStore {
     reopened
 }
 
-#[cfg(feature = "storage-postgres")]
+#[cfg(any(feature = "storage-postgres", feature = "storage-sqlite"))]
 pub(super) fn seed_protected_config_for_transfer(
     store: &OrchestrationStateStore,
 ) -> StoredCustomerConfig {
@@ -369,4 +370,55 @@ fn customer_config_schema_upgrade_keeps_existing_runtime_records() {
             })
             .unwrap();
     });
+}
+
+#[cfg(feature = "storage-sqlite")]
+#[test]
+fn customer_config_sqlite_migration_rechecks_after_concurrent_v5_reads() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("migration.db");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection.execute_batch("CREATE TABLE schema_metadata (schema_version INTEGER NOT NULL); INSERT INTO schema_metadata VALUES (5);").unwrap();
+    drop(connection);
+    let barrier = std::sync::Barrier::new(6);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..6)
+            .map(|_| {
+                let path = &path;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let mut connection = rusqlite::Connection::open(path).unwrap();
+                    connection
+                        .busy_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    let version: i64 = connection
+                        .query_row("SELECT schema_version FROM schema_metadata", [], |row| {
+                            row.get(0)
+                        })
+                        .unwrap();
+                    assert_eq!(version, 5);
+                    // Match initialize_schema's decision before the migration lock.
+                    barrier.wait();
+                    super::customer_configs::migrate_sqlite(&mut connection)
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+    });
+    let mut connection = rusqlite::Connection::open(path).unwrap();
+    let version: i64 = connection
+        .query_row("SELECT schema_version FROM schema_metadata", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    // This exercises only the customer-config v5 -> v6 step, not the
+    // subsequent installation-journal migration performed by initialization.
+    assert_eq!(version, 6);
+    // A future or otherwise unexpected schema must not be rewritten to v6.
+    connection
+        .execute("UPDATE schema_metadata SET schema_version=99", [])
+        .unwrap();
+    assert!(super::customer_configs::migrate_sqlite(&mut connection).is_err());
 }
