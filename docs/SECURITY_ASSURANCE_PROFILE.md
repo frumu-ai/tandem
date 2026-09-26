@@ -25,7 +25,7 @@ required, including for the files and packages consumed by these instructions.
 The Compose profile is supported for local or single-host, self-managed use. Its verified controls are:
 
 - a supported Node base pinned to one multi-architecture digest;
-- OS packages resolved from the dated `20260904T000000Z` Debian and Debian-security snapshots with exact `ca-certificates`, `curl` and patched OpenSSL package versions;
+- OS packages resolved from the dated `20260923T120000Z` Debian and Debian-security snapshots with exact `ca-certificates`, `curl` (`8.14.1-2+deb13u5`) and patched OpenSSL package versions;
 - an exact Tandem engine npm version (floating `latest`, `next`, alpha, and beta values fail the image build);
 - an exact pre-publication engine candidate built offline with a
   digest-pinned Ubuntu 22.04 buildpack and Rust 1.95.0 toolchain images,
