@@ -10,14 +10,21 @@ fn fixture(org: &str) -> (RoutineSpec, SolutionRoutineOwner) {
     let artifact = include_bytes!(
         "../../../../../tandem-solutions/fixtures/company-brain-text/routines/review-notes.json"
     );
-    let routine =
-        solution_routine_from_artifact(artifact, "solution-test-review-notes", &tenant).unwrap();
     let owner = SolutionRoutineOwner {
         instance_id: "brain".into(),
         component_id: "review-notes".into(),
         composition_sha256: "a".repeat(64),
         enabled: true,
     };
+    let resource_id = solution_resource_id(
+        &tenant.org_id,
+        &tenant.workspace_id,
+        tenant.deployment_id.as_deref().unwrap(),
+        &owner.instance_id,
+        &owner.component_id,
+    )
+    .unwrap();
+    let routine = solution_routine_from_artifact(artifact, &resource_id, &tenant).unwrap();
     (routine, owner)
 }
 
@@ -26,6 +33,76 @@ fn state(directory: &std::path::Path) -> AppState {
     state.routines_path = directory.join("routines.json");
     state.routine_runs_path = directory.join("runs.json");
     state
+}
+
+#[tokio::test]
+async fn solution_routine_rejects_substituted_identity_before_writing() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = state(directory.path());
+    for field in [
+        "org",
+        "workspace",
+        "deployment",
+        "instance",
+        "component",
+        "resource",
+    ] {
+        let (mut routine, mut owner) = fixture("org-a");
+        match field {
+            "org" => routine.tenant_context.org_id.push_str("-other"),
+            "workspace" => routine.tenant_context.workspace_id.push_str("-other"),
+            "deployment" => routine
+                .tenant_context
+                .deployment_id
+                .as_mut()
+                .unwrap()
+                .push_str("-other"),
+            "instance" => owner.instance_id.push_str("-other"),
+            "component" => owner.component_id.push_str("-other"),
+            "resource" => routine.routine_id = "solution-unbound".into(),
+            _ => unreachable!(),
+        }
+        assert!(
+            state.stage_solution_routine(routine, owner).await.is_err(),
+            "{field}"
+        );
+        assert!(!state.routines_path.exists());
+        assert!(state.routines.read().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn solution_routine_rejects_malformed_deployment_before_writing() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = state(directory.path());
+    for deployment in [
+        None,
+        Some("".into()),
+        Some(" ".into()),
+        Some(" leading".into()),
+        Some("trailing ".into()),
+        Some("embedded\ncontrol".into()),
+        Some("x".repeat(257)),
+    ] {
+        let (mut routine, owner) = fixture("org-a");
+        routine.tenant_context.deployment_id = deployment;
+        // Match the supplied identity so this tests ownership validation itself.
+        routine.routine_id = solution_resource_id(
+            &routine.tenant_context.org_id,
+            &routine.tenant_context.workspace_id,
+            routine
+                .tenant_context
+                .deployment_id
+                .as_deref()
+                .unwrap_or_default(),
+            &owner.instance_id,
+            &owner.component_id,
+        )
+        .unwrap();
+        assert!(state.stage_solution_routine(routine, owner).await.is_err());
+        assert!(!state.routines_path.exists());
+        assert!(state.routines.read().await.is_empty());
+    }
 }
 
 #[tokio::test]

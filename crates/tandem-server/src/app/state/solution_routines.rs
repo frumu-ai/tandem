@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use tandem_solutions::{canonical_json, sha256, MAX_ARTIFACT_BYTES};
+use tandem_solutions::{canonical_json, sha256, solution_resource_id, MAX_ARTIFACT_BYTES};
 
 use super::{normalize_routine, read_state_file_with_legacy, routine_store_index, AppState};
 use crate::routines::errors::RoutineStoreError;
@@ -111,10 +111,15 @@ impl AppState {
             ));
         }
         for reference in [
-            &owner.instance_id,
-            &owner.component_id,
-            &routine.tenant_context.org_id,
-            &routine.tenant_context.workspace_id,
+            owner.instance_id.as_str(),
+            owner.component_id.as_str(),
+            routine.tenant_context.org_id.as_str(),
+            routine.tenant_context.workspace_id.as_str(),
+            routine
+                .tenant_context
+                .deployment_id
+                .as_deref()
+                .unwrap_or_default(),
         ] {
             if reference.is_empty()
                 || reference.len() > 256
@@ -137,6 +142,23 @@ impl AppState {
         {
             return Err(managed(
                 "solution routine requires deployment and reviewed composition",
+            ));
+        }
+        let expected_id = solution_resource_id(
+            &routine.tenant_context.org_id,
+            &routine.tenant_context.workspace_id,
+            routine
+                .tenant_context
+                .deployment_id
+                .as_deref()
+                .unwrap_or_default(),
+            &owner.instance_id,
+            &owner.component_id,
+        )
+        .map_err(managed)?;
+        if routine.routine_id != expected_id {
+            return Err(managed(
+                "solution routine ID does not match its installation owner",
             ));
         }
         owner.enabled = false;
