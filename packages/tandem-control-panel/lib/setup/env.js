@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, openSync, readFileSync, writeFileSync, writeSync } from "fs";
 import { mkdir } from "fs/promises";
 import { randomBytes } from "crypto";
 import { dirname, resolve } from "path";
@@ -107,6 +107,55 @@ function sanitizeExampleEnv(parsed) {
 }
 
 async function ensureBootstrapEnv(options = {}) {
+  if (options.readOnly) return buildBootstrapEnv(options);
+  const paths = resolveSetupPaths({
+    env: options.env || process.env,
+    platform: options.platform,
+    allowAmbientStateEnv: options.allowAmbientStateEnv,
+  });
+  const envPath = resolve(options.envPath || paths.envFile);
+  // Complete asynchronous setup before reading the configuration to merge.
+  await mkdir(dirname(envPath), { recursive: true });
+  await mkdir(paths.logsDir, { recursive: true });
+  await mkdir(paths.engineStateDir, { recursive: true });
+  await mkdir(paths.controlPanelStateDir, { recursive: true });
+  const descriptor = openManagedEnv(envPath);
+  try {
+    // No await between descriptor-bound read, merge and write.
+    return buildBootstrapEnv(options, descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function openManagedEnv(envPath) {
+  const noFollow = constants.O_NOFOLLOW || 0;
+  let descriptor;
+  try {
+    descriptor = openSync(envPath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    // In particular, do not use O_TRUNC before validating the opened inode.
+    const before = lstatSync(envPath);
+    if (!before.isFile() || before.isSymbolicLink()) throw new Error("Managed env must be a regular, non-symlink file");
+    descriptor = openSync(envPath, constants.O_RDWR | noFollow);
+    try {
+      const opened = fstatSync(descriptor);
+      const after = lstatSync(envPath);
+      if (!opened.isFile() || opened.nlink !== 1 || after.isSymbolicLink() ||
+          opened.dev !== before.dev || opened.ino !== before.ino ||
+          opened.dev !== after.dev || opened.ino !== after.ino) {
+        throw new Error("Managed env changed while opening or has multiple links");
+      }
+    } catch (error) {
+      closeSync(descriptor);
+      throw error;
+    }
+  }
+  return descriptor;
+}
+
+function buildBootstrapEnv(options = {}, descriptor = null) {
   const cwd = resolve(options.cwd || process.cwd());
   const paths = resolveSetupPaths({
     env: options.env || process.env,
@@ -117,7 +166,9 @@ async function ensureBootstrapEnv(options = {}) {
   const overwrite = options.overwrite === true;
   const cwdEnvPath = resolve(cwd, ".env");
   const sourceExamplePath = resolve(cwd, ".env.example");
-  const existing = existsSync(envPath) ? parseDotEnv(readFileSync(envPath, "utf8")) : {};
+  const existing = descriptor !== null
+    ? parseDotEnv(readFileSync(descriptor, "utf8"))
+    : existsSync(envPath) ? parseDotEnv(readFileSync(envPath, "utf8")) : {};
   const cwdEnv =
     options.allowCwdEnvMerge !== false && envPath !== cwdEnvPath && existsSync(cwdEnvPath)
       ? parseDotEnv(readFileSync(cwdEnvPath, "utf8"))
@@ -164,11 +215,14 @@ async function ensureBootstrapEnv(options = {}) {
   }
 
   if (!options.readOnly) {
-    await mkdir(dirname(envPath), { recursive: true });
-    await mkdir(paths.logsDir, { recursive: true });
-    await mkdir(paths.engineStateDir, { recursive: true });
-    await mkdir(paths.controlPanelStateDir, { recursive: true });
-    writeFileSync(envPath, serializeEnv(ordered), "utf8");
+    const content = Buffer.from(serializeEnv(ordered), "utf8");
+    let offset = 0;
+    while (offset < content.length) {
+      const written = writeSync(descriptor, content, offset, content.length - offset, offset);
+      if (written === 0) throw new Error("Managed env write made no progress");
+      offset += written;
+    }
+    ftruncateSync(descriptor, content.length);
   }
 
   return {
