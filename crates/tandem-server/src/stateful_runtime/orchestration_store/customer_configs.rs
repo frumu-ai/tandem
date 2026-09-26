@@ -200,7 +200,18 @@ UPDATE schema_metadata SET schema_version = 6;
 pub(super) fn migrate_sqlite(connection: &mut rusqlite::Connection) -> anyhow::Result<()> {
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    transaction.execute_batch(SCHEMA_V6)?;
+    // Another connection may have migrated after the caller read the version.
+    // Recheck while holding the write lock before applying any schema changes.
+    let version: i64 = transaction.query_row(
+        "SELECT schema_version FROM schema_metadata LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    match version {
+        5 => transaction.execute_batch(SCHEMA_V6)?,
+        6 => {}
+        _ => anyhow::bail!("unsupported schema version for customer config migration: {version}"),
+    }
     transaction.commit()?;
     Ok(())
 }
