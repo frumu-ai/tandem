@@ -55,16 +55,30 @@ pub enum CustomerMemorySpace {
     Project { project_id: String },
 }
 
+/// Immutable, non-serializable preparation bound to its blueprint and authority.
+/// Resolve through `PreparedCustomerConfig::resolve`; no raw request can escape.
+/// ```compile_fail
+/// fn unbind(prepared: tandem_solutions::PreparedCustomerConfig) {
+///     let _ = prepared.request;
+/// }
+/// ```
+/// ```compile_fail
+/// fn serialize(prepared: tandem_solutions::PreparedCustomerConfig) {
+///     let _ = serde_json::to_string(&prepared);
+/// }
+/// ```
 pub struct PreparedCustomerConfig {
-    pub request: InstallRequest,
+    pub(crate) request: InstallRequest,
     /// Customer-owned snapshot validated with this request's revision. Retain
     /// profile, locale, secret/data references and concrete memory bindings for
     /// runtime adapters without rereading a potentially changed document.
     /// This is not a reusable export or an authorization/activation receipt.
-    pub customer_config: CustomerConfig,
-    /// Pass this narrowed policy to the existing resolver. It intersects again
-    /// with the blueprint. Never substitute customer policy for host policy.
-    pub deployment_policy: Constraints,
+    pub(crate) customer_config: CustomerConfig,
+    /// Stored ceilings intersect again with fresh host policy and the blueprint
+    /// during resolution. Callers cannot replace this validated policy.
+    pub(crate) deployment_policy: Constraints,
+    pub(crate) blueprint_sha256: String,
+    pub(crate) authority: AuthorityBinding,
 }
 
 /// Public template derives only from the reusable blueprint. No customer
