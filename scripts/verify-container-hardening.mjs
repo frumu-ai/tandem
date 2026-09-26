@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFile, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +25,14 @@ const PANEL_PACKAGE_MANAGER_STEPS = [
   "corepack enable",
   "corepack prepare pnpm@11.17.0 --activate",
 ];
+// The remaining runtime instructions are reviewed recipes, not arbitrary shell.
+// Any change requires explicit review of its package/provenance effects and a
+// new digest here. Release version/digest ENV pins precede the OS RUN and are
+// independently validated, so ordinary release-pin updates remain supported.
+const APPROVED_RUNTIME_TAILS = new Set([
+  "3aa36d7670d7b307c6e1301b5e04cb3d61e17fbd3e2faef745937d6a02a485c4", // engine
+  "09a7c8b6a1a218e6e78363dc45957cc8aa796e9d5e5362f37fe2fe7cf316964d", // panel
+]);
 const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
 const SEMVER_PRERELEASE_IDENTIFIER =
   "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
@@ -71,6 +80,14 @@ function runtimeInstructions(source) {
 function finalRuntimeUser(source) {
   return runtimeInstructions(source).filter((line) => /^USER\s/i.test(line))
     .at(-1)?.replace(/^USER\s+/i, "").trim();
+}
+
+function hasApprovedRuntimeTail(source) {
+  const runtime = runtimeInstructions(source);
+  const firstRun = runtime.findIndex((line) => /^RUN\s/i.test(line));
+  if (firstRun < 0) return false;
+  const digest = createHash("sha256").update(JSON.stringify(runtime.slice(firstRun + 1))).digest("hex");
+  return APPROVED_RUNTIME_TAILS.has(digest);
 }
 
 function hasPinnedOsUpgrade(source) {
@@ -223,6 +240,7 @@ export async function verifyContainerHardening(
       if (!source.includes(marker)) errors.push(`${name} is missing immutable OS input ${marker}`);
     }
     if (!hasPinnedOsUpgrade(source)) errors.push(`${name} must execute the pinned OS upgrade`);
+    if (!hasApprovedRuntimeTail(source)) errors.push(`${name} has an unreviewed post-upgrade runtime recipe`);
   }
 
   const engineVersion = parsePinnedEngineVersion(engineDockerfile);
@@ -351,7 +369,20 @@ export async function verifyContainerHardening(
   return { assets: [...discovered].sort(), errors };
 }
 
-function selfTest() {
+async function selfTest() {
+  for (const name of ["engine", "control-panel"]) {
+    const source = await readFile(`packages/tandem-control-panel/docker/${name}.Dockerfile`, "utf8");
+    if (!hasApprovedRuntimeTail(source)) throw new Error(`unapproved current ${name} runtime recipe`);
+    for (const mutation of [
+      "RUN apt-get update && apt-get reinstall curl=8.14.1-2+deb13u5",
+      "RUN printf '%s' 'deb [trusted=yes] http://attacker.invalid trixie main' > /etc/apt/sources.list",
+      "COPY unreviewed-packages /usr/lib/",
+    ]) {
+      if (hasApprovedRuntimeTail(source.replace("USER node", `${mutation}\nUSER node`))) {
+        throw new Error(`accepted post-upgrade ${name} mutation`);
+      }
+    }
+  }
   const expected = [
     ["Dockerfile.production", ""],
     ["ops/Containerfile", ""],
@@ -439,7 +470,7 @@ function argValue(name) {
 }
 
 async function main() {
-  if (process.argv.includes("--self-test")) selfTest();
+  if (process.argv.includes("--self-test")) await selfTest();
   const result = await verifyContainerHardening(process.cwd(), {
     expectedEngineVersion: argValue("--expected-engine-version"),
   });

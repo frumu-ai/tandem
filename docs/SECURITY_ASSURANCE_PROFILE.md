@@ -12,6 +12,14 @@ As of TAN-822, the repository contains exactly three deployment assets:
 
 There are no checked-in Kubernetes, Helm, Kustomize, or Terraform assets. `scripts/verify-container-hardening.mjs` fails when a new deployment asset appears without being added to the reviewed inventory and scanner coverage.
 
+The runtime Docker policy requires the exact pinned snapshot refresh, upgrade,
+package-install and cleanup sequence. Post-upgrade logical Docker instructions
+are SHA-256 allowlisted as reviewed recipes: later RUN/COPY changes require an
+explicit recipe review and digest update, not an attempt to prove arbitrary shell
+safe. Release version and binary-digest ENV pins are checked separately. This is
+a source-drift control; exact-head image scans and artifact provenance remain
+required, including for the files and packages consumed by these instructions.
+
 ## Local Compose profile
 
 The Compose profile is supported for local or single-host, self-managed use. Its verified controls are:
