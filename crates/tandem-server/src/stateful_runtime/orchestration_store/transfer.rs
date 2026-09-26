@@ -1008,6 +1008,8 @@ mod tests {
             .unwrap();
         seed_session_messages(source_root.path());
         seed_runtime_events(source_root.path());
+        let customer_config =
+            super::super::customer_config_tests::seed_protected_config_for_transfer(&source);
 
         let request = StatefulBackendMigrationRequest {
             source_paths: source_paths.clone(),
@@ -1056,6 +1058,10 @@ mod tests {
             backend::StorageBackendConfig::Sqlite,
         )
         .unwrap();
+        super::super::customer_config_tests::assert_protected_config_after_transfer(
+            &round_trip,
+            &customer_config,
+        );
         round_trip
             .with_connection(|connection| {
                 let rowid: i64 = connection.query_row(

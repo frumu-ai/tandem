@@ -8456,6 +8456,7 @@ dependencies = [
  "tandem-providers",
  "tandem-runtime",
  "tandem-skills",
+ "tandem-solutions",
  "tandem-tools",
  "tandem-types",
  "tandem-wire",
