@@ -36,6 +36,57 @@ fn state(directory: &std::path::Path) -> AppState {
 }
 
 #[tokio::test]
+async fn solution_routine_rejects_unreceipted_persisted_fields() {
+    for location in ["top", "owner", "schedule"] {
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        let (routine, owner) = fixture("org-a");
+        let fingerprint = state
+            .stage_solution_routine(routine.clone(), owner.clone())
+            .await
+            .unwrap();
+        let original = tokio::fs::read(&state.routines_path).await.unwrap();
+        let cached = bytes(&*state.routines.read().await).unwrap();
+        let mut raw: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let row = raw.as_object_mut().unwrap().values_mut().next().unwrap();
+        let target = match location {
+            "owner" => &mut row["solution_owner"],
+            "schedule" => row["schedule"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .next()
+                .unwrap(),
+            _ => row,
+        };
+        target["unreceipted_field"] = serde_json::json!("not in the fingerprint");
+        let changed = serde_json::to_vec(&raw).unwrap();
+        tokio::fs::write(&state.routines_path, &changed)
+            .await
+            .unwrap();
+        assert!(
+            state
+                .stage_solution_routine(routine.clone(), owner.clone())
+                .await
+                .is_err(),
+            "location={location}"
+        );
+        assert_eq!(
+            tokio::fs::read(&state.routines_path).await.unwrap(),
+            changed
+        );
+        assert_eq!(bytes(&*state.routines.read().await).unwrap(), cached);
+        tokio::fs::write(&state.routines_path, &original)
+            .await
+            .unwrap();
+        assert_eq!(
+            state.stage_solution_routine(routine, owner).await.unwrap(),
+            fingerprint
+        );
+    }
+}
+
+#[tokio::test]
 async fn solution_routine_rejects_substituted_identity_before_writing() {
     let directory = tempfile::tempdir().unwrap();
     let state = state(directory.path());

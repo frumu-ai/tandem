@@ -189,6 +189,22 @@ impl AppState {
             Some(raw) => {
                 let rows: HashMap<String, RoutineSpec> =
                     serde_json::from_str(&raw).map_err(managed)?;
+                let documents: HashMap<String, serde_json::Value> =
+                    serde_json::from_str(&raw).map_err(managed)?;
+                // Native deserialization may discard unknown fields. A receipt
+                // must cover the complete durable document for this resource,
+                // including nested fields, not just its typed projection.
+                // Leave unrelated legacy/manual rows' defaulting unchanged.
+                for (stored_key, existing) in &rows {
+                    if RoutineIdentity::new(&existing.routine_id, &existing.tenant_context)
+                        == identity
+                        && bytes(&documents[stored_key])? != bytes(existing)?
+                    {
+                        return Err(managed(
+                            "solution routine contains unreceipted persisted content; reconcile before staging",
+                        ));
+                    }
+                }
                 let count = rows.len();
                 let indexed = routine_store_index(rows);
                 if indexed.len() != count {
