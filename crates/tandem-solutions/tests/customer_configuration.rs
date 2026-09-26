@@ -200,6 +200,12 @@ fn current_identity_selection_approved_references_and_revisions_are_required() {
 fn sanitized_template_contains_no_customer_values_and_cannot_be_imported_as_deployable_config() {
     let a = Fixture::new(A, "a");
     let b = Fixture::new(B, "b");
+    let template = customer_config_template(&a.blueprint).unwrap();
+    assert_eq!(template.preferences, a.blueprint.preferences);
+    assert_eq!(template.memory_spaces, a.blueprint.memory_spaces);
+    assert!(template.preferences.contains_key("reply-language"));
+    assert_eq!(template.memory_spaces["private"], MemorySpace::PrivateUser);
+    assert_eq!(template.memory_spaces["projects"], MemorySpace::Project);
     let exported = canonical_json(&customer_config_template(&a.blueprint).unwrap()).unwrap();
     assert_eq!(
         exported,
@@ -221,6 +227,34 @@ fn sanitized_template_contains_no_customer_values_and_cannot_be_imported_as_depl
     // Customer-owned recovery serialization preserves references, never values.
     let backup = String::from_utf8(canonical_json(&a.config).unwrap()).unwrap();
     assert_eq!(parse_customer_config(&backup).unwrap(), a.config);
+}
+
+#[test]
+fn prepared_customer_snapshot_preserves_validated_bindings_and_revision() {
+    let mut f = Fixture::new(A, "a");
+    f.config
+        .secret_refs
+        .insert("mail".into(), "secret-ref:synthetic-mail-a".into());
+    f.refs.insert("secret-ref:synthetic-mail-a".into());
+    let prepared = f.prepare(None, None).unwrap();
+    assert_eq!(prepared.customer_config, f.config);
+    assert_eq!(
+        customer_config_revision(&prepared.customer_config).unwrap(),
+        prepared.request.customer_config_revision,
+    );
+    // Later caller edits must not change the validated snapshot or its hash.
+    f.config.profile_ref = "profile-ref:unapproved".into();
+    f.config.locale = "fr".into();
+    f.config.secret_refs.clear();
+    assert_ne!(prepared.customer_config, f.config);
+    assert_eq!(
+        prepared.customer_config.secret_refs["mail"],
+        "secret-ref:synthetic-mail-a"
+    );
+    assert_eq!(
+        f.prepare(None, None).err().unwrap().code,
+        "customer_reference_denied"
+    );
 }
 
 #[test]

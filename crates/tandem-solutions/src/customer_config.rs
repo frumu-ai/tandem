@@ -246,6 +246,7 @@ pub fn prepare_customer_config(
         }
     }
     Ok(PreparedCustomerConfig {
+        customer_config: config.clone(),
         request: InstallRequest {
             instance_id: config.scope.instance_id.clone(),
             customer_config_revision: revision,
@@ -294,6 +295,8 @@ pub fn customer_config_template(
             })
             .collect(),
         requires_customer_configuration: true,
+        preferences: blueprint.preferences.clone(),
+        memory_spaces: blueprint.memory_spaces.clone(),
     })
 }
 

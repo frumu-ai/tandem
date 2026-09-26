@@ -55,6 +55,11 @@ pub enum CustomerMemorySpace {
 
 pub struct PreparedCustomerConfig {
     pub request: InstallRequest,
+    /// Customer-owned snapshot validated with this request's revision. Retain
+    /// profile, locale, secret/data references and concrete memory bindings for
+    /// runtime adapters without rereading a potentially changed document.
+    /// This is not a reusable export or an authorization/activation receipt.
+    pub customer_config: CustomerConfig,
     /// Pass this narrowed policy to the existing resolver. It intersects again
     /// with the blueprint. Never substitute customer policy for host policy.
     pub deployment_policy: Constraints,
@@ -70,6 +75,8 @@ pub struct CustomerConfigTemplate {
     pub optional_components: BTreeSet<String>,
     pub model_slots: BTreeSet<String>,
     pub connector_slots: BTreeSet<String>,
+    pub preferences: BTreeMap<String, Preference>,
+    pub memory_spaces: BTreeMap<String, MemorySpace>,
     pub requires_customer_configuration: bool,
 }
 
