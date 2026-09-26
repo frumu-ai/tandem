@@ -108,3 +108,16 @@ test("bootstrap rejects a FIFO without blocking", { skip: process.platform === "
   assert.equal(child.error, undefined);
   assert.equal(child.status, 0, child.stderr);
 });
+
+test("read-only diagnosis rejects a FIFO without blocking", { skip: process.platform === "win32" }, (t) => {
+  const { options } = fixture(t);
+  assert.equal(spawnSync("mkfifo", [options.envPath]).status, 0);
+  const moduleUrl = new URL("../lib/setup/env.js", import.meta.url).href;
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import { ensureBootstrapEnv } from ${JSON.stringify(moduleUrl)};
+    try { await ensureBootstrapEnv(${JSON.stringify({ ...options, readOnly: true })}); process.exit(1); }
+    catch (error) { if (!/regular file/.test(error.message)) throw error; }
+  `], { timeout: 5000, encoding: "utf8" });
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 0, child.stderr);
+});

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "fs/promises";
+import { createServer } from "node:http";
 import path from "path";
 import os from "os";
 import { spawn } from "child_process";
@@ -10,12 +11,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, "..");
 const cliPath = path.join(packageRoot, "index.js");
 
-function runCli(args, cwd) {
+function runCli(args, cwd, executable = cliPath, env = process.env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cliPath, ...args], {
+    const child = spawn(process.execPath, [executable, ...args], {
       cwd,
       stdio: "pipe",
-      env: process.env,
+      env,
     });
     let stdout = "";
     let stderr = "";
@@ -53,4 +54,47 @@ test("scaffold creates a standalone editable app payload", async () => {
   assert.match(startRunner, /proxyPublicEngineAutomationWebhook/);
   assert.match(startRunner, /\["POST", "OPTIONS"\]/);
   assert.match(startRunner, /headers\.set\("x-forwarded-prefix", "\/api\/engine"\)/);
+});
+
+test("generated doctor is read-only and reports stopped, unready and ready engines", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "generated-panel-doctor-"));
+  const generated = await runCli(["my-panel"], root);
+  assert.equal(generated.code, 0, generated.stderr);
+  const panel = path.join(root, "my-panel");
+  await mkdir(path.join(panel, "dist"));
+  const engine = path.join(panel, "node_modules/@frumu/tandem/bin");
+  await mkdir(engine, { recursive: true });
+  await writeFile(path.join(engine, "tandem-engine.js"), "throw new Error('doctor must not start engine');\n");
+  let ready = false;
+  const server = createServer((request, response) => {
+    assert.equal(request.url, "/global/health");
+    assert.equal(request.headers.authorization, undefined);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ready, healthy: ready }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const envFile = path.join(root, "panel.env");
+  const contents = `TANDEM_ENGINE_URL=http://127.0.0.1:${server.address().port}\nCUSTOM=preserve\n`;
+  await writeFile(envFile, contents);
+  const before = (await readdir(root)).sort();
+  const env = { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root };
+  const doctor = () => runCli(["doctor", "--json", "--env-file", envFile], root,
+    path.join(panel, "bin/cli.js"), env);
+  for (const expected of [false, true]) {
+    ready = expected;
+    const result = await doctor();
+    assert.equal(result.code, expected ? 0 : 1, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.installed, true);
+    assert.equal(report.runtimeReady, expected);
+    assert.equal(report.solutionReady, false);
+    assert.equal(await readFile(envFile, "utf8"), contents);
+    assert.deepEqual((await readdir(root)).sort(), before);
+  }
+  await new Promise((resolve) => server.close(resolve));
+  const stopped = await doctor();
+  assert.equal(stopped.code, 1, stopped.stderr);
+  assert.equal(JSON.parse(stopped.stdout).running, false);
+  assert.equal(await readFile(envFile, "utf8"), contents);
 });

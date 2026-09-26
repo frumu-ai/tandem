@@ -51,6 +51,15 @@ async function installedPanel() {
   } };
 }
 
+test("invalid public URLs are absent and preserve the non-loopback warning", async () => {
+  const panel = await installedPanel();
+  for (const publicUrl of ["not a URL", "ftp://panel.example.test", "javascript:alert(1)"]) {
+    const result = await panel.run(`http://127.0.0.1:1\nTANDEM_CONTROL_PANEL_PUBLIC_URL=${publicUrl}\nTANDEM_CONTROL_PANEL_HOST=0.0.0.0`);
+    assert.equal(result.panelPublicUrl, "");
+    assert.ok(result.warnings.some((warning) => warning.includes("non-loopback")));
+  }
+});
+
 test("installed packages cannot hide stopped, unready, invalid or recovered engine state", async (t) => {
   const panel = await installedPanel();
   let response = { ready: false, healthy: false };

@@ -736,7 +736,7 @@ async function handlePanelCommand(subcommand, cli, env = process.env) {
       }
       console.log(`[Tandem] panel add-on is installed but did not return a quick status response.`);
       console.log(`[Tandem] try: tandem panel doctor`);
-      return 0;
+      return 1;
     }
     await runCommand(addon.command, args, { stdio: "inherit" });
     return 0;

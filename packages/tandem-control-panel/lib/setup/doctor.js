@@ -8,14 +8,14 @@ const require = createRequire(import.meta.url);
 function diagnosticUrl(value) {
   try {
     const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol)) return "invalid";
+    if (!["http:", "https:"].includes(url.protocol)) return "";
     url.username = "";
     url.password = "";
     url.search = "";
     url.hash = "";
     return url.toString().replace(/\/$/, "");
   } catch {
-    return "invalid";
+    return "";
   }
 }
 

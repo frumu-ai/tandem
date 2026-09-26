@@ -63,7 +63,15 @@ test("panel open retains configured URL when doctor reports unhealthy", async ()
 });
 
 test("malformed failed doctor output is not treated as a report", async () => {
-  const f = fixture(1, "not JSON");
-  await f.cli.handlePanelCommand("status", { argv: ["status"] });
-  assert.ok(f.output.some((line) => line.includes("did not return")));
+  for (const [code, output] of [[1, "not JSON"], [0, "null"], [0, "[]"], [0, '"text"'], [null, "{}"]]) {
+    const f = fixture(code, output);
+    assert.equal(await f.cli.handlePanelCommand("status", { argv: ["status"] }), 1);
+    assert.ok(f.output.some((line) => line.includes("did not return")));
+  }
+});
+
+test("panel open falls back when the doctor has no valid public URL", async () => {
+  const f = fixture(1, JSON.stringify({ panelPublicUrl: "", panelHost: "127.0.0.1", panelPort: 45678 }));
+  await f.cli.handlePanelCommand("open", { argv: ["open"] });
+  assert.deepEqual(f.calls.at(-1), ["xdg-open", "http://127.0.0.1:45678"]);
 });

@@ -29,6 +29,24 @@ function serializeEnv(entries) {
   return `${entries.map(([k, v]) => `${k}=${v}`).join("\n")}\n`;
 }
 
+function readExistingEnv(pathname) {
+  let descriptor;
+  try {
+    descriptor = openSync(pathname, constants.O_RDONLY | (constants.O_NONBLOCK || 0));
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  }
+  try {
+    // Read-only diagnostics may follow a link to a regular configuration file,
+    // but must not block reading pipes or devices before the health timeout.
+    if (!fstatSync(descriptor).isFile()) throw new Error("Env path must identify a regular file");
+    return parseDotEnv(readFileSync(descriptor, "utf8"));
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 function loadDotEnvFile(pathname, targetEnv = process.env) {
   if (!pathname || !existsSync(pathname)) return false;
   const parsed = parseDotEnv(readFileSync(pathname, "utf8"));
@@ -169,13 +187,13 @@ function buildBootstrapEnv(options = {}, descriptor = null) {
   const sourceExamplePath = resolve(cwd, ".env.example");
   const existing = descriptor !== null
     ? parseDotEnv(readFileSync(descriptor, "utf8"))
-    : existsSync(envPath) ? parseDotEnv(readFileSync(envPath, "utf8")) : {};
+    : readExistingEnv(envPath);
   const cwdEnv =
-    options.allowCwdEnvMerge !== false && envPath !== cwdEnvPath && existsSync(cwdEnvPath)
-      ? parseDotEnv(readFileSync(cwdEnvPath, "utf8"))
+    options.allowCwdEnvMerge !== false && envPath !== cwdEnvPath
+      ? readExistingEnv(cwdEnvPath)
       : {};
-  const example = options.allowCwdEnvMerge !== false && existsSync(sourceExamplePath)
-    ? sanitizeExampleEnv(parseDotEnv(readFileSync(sourceExamplePath, "utf8")))
+  const example = options.allowCwdEnvMerge !== false
+    ? sanitizeExampleEnv(readExistingEnv(sourceExamplePath))
     : {};
   const defaults = { ...bootstrapDefaults(paths), ...example };
   const merged = { ...defaults, ...cwdEnv, ...existing };
