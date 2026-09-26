@@ -989,7 +989,9 @@ impl OrchestrationStateStore {
     }
 }
 
-#[cfg(test)]
+// Every transfer test uses SQLite as a source or destination, including the
+// PostgreSQL round trips. PostgreSQL-only conformance is tested separately.
+#[cfg(all(test, feature = "storage-sqlite"))]
 mod tests {
     use super::*;
     use crate::stateful_runtime::backend::Executor;
