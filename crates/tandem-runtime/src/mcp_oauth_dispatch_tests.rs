@@ -13,6 +13,9 @@ async fn oauth_dispatch_case(
     force_401: bool,
     mutation: Option<&str>,
 ) {
+    // Bearer credentials use the process-wide provider store. Cooperate with
+    // the existing fixtures that temporarily redirect TANDEM_HOME.
+    let _provider_auth_guard = super::tests::provider_auth_test_guard().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let refreshes = Arc::new(AtomicUsize::new(0));
@@ -23,7 +26,8 @@ async fn oauth_dispatch_case(
     let release = Arc::new(tokio::sync::Notify::new());
     let server_refreshing = refreshing.clone();
     let server_release = release.clone();
-    let pause_refresh = mutation.is_some();
+    let revoke_before_refresh = mutation == Some("pre-revoke");
+    let pause_refresh = mutation.is_some() && !revoke_before_refresh;
     let server = tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -165,6 +169,7 @@ async fn oauth_dispatch_case(
     let request_registry = registry.clone();
     let request_name = name.clone();
     let request_tenant = tenant.clone();
+    let authority_checks = AtomicUsize::new(0);
     let request = tokio::spawn(async move {
         request_registry
             .call_tool_for_tenant_with_authority(
@@ -173,7 +178,12 @@ async fn oauth_dispatch_case(
                 json!({}),
                 &request_tenant,
                 Some(crate::McpRequestAuthority::new(move || {
-                    if request_revoked.load(Ordering::SeqCst) {
+                    // Admission succeeds, but the authority has expired by the
+                    // next check, before any refresh request may be sent.
+                    if request_revoked.load(Ordering::SeqCst)
+                        || (revoke_before_refresh
+                            && authority_checks.fetch_add(1, Ordering::SeqCst) > 0)
+                    {
                         Err("request revoked".into())
                     } else {
                         Ok(())
@@ -182,7 +192,7 @@ async fn oauth_dispatch_case(
             )
             .await
     });
-    if let Some(mutation) = mutation {
+    if let Some(mutation) = mutation.filter(|_| !revoke_before_refresh) {
         tokio::time::timeout(std::time::Duration::from_secs(10), refreshing.notified())
             .await
             .unwrap();
@@ -236,7 +246,11 @@ async fn oauth_dispatch_case(
         .await;
     server.abort();
     std::fs::remove_dir_all(&directory).unwrap();
-    assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        refreshes.load(Ordering::SeqCst),
+        usize::from(!revoke_before_refresh),
+        "revoked requests must not send refresh credentials"
+    );
     if let Some(mutation) = mutation {
         assert!(outcome.is_err(), "{mutation}: {outcome:?}");
         assert_eq!(calls.load(Ordering::SeqCst), 0, "{mutation}");
@@ -255,6 +269,15 @@ async fn oauth_dispatch_case(
     } else {
         assert!(outcome.is_ok(), "{outcome:?}");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn oauth_dispatch_revocation_before_refresh_sends_no_credentials() {
+    for explicit in [false, true] {
+        for connected in [false, true] {
+            oauth_dispatch_case(explicit, connected, false, Some("pre-revoke")).await;
+        }
     }
 }
 

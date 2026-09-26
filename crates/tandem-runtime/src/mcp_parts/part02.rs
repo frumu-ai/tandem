@@ -868,6 +868,12 @@ async fn refresh_mcp_oauth_credential(
         )
         .header(ACCEPT, "application/json")
         .form(&params);
+    // DNS resolution above can outlive the initiating request's authority.
+    // Check again before sending refresh credentials, not only before saving
+    // the provider's response locally.
+    if let Some(binding) = &authorization.tool_dispatch {
+        binding.revalidate()?;
+    }
     target.ensure_authorized(authorization)?;
     let mut response = request
         .send()
