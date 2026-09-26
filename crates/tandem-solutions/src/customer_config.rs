@@ -13,6 +13,9 @@ pub struct CustomerConfigInput<'a> {
     pub selected_scope: &'a CustomerScope,
     pub now_ms: u64,
     pub current_revision: Option<&'a str>,
+    /// Stable solution ID read from the selected installation, alongside its
+    /// current revision. Both are absent only for a new installation.
+    pub current_solution_id: Option<&'a str>,
     pub expected_revision: Option<&'a str>,
     pub host_policy: &'a Constraints,
     pub approved_references: &'a BTreeSet<String>,
@@ -20,6 +23,65 @@ pub struct CustomerConfigInput<'a> {
     pub approved_subjects: &'a BTreeSet<String>,
     pub approved_org_units: &'a BTreeSet<String>,
     pub approved_projects: &'a BTreeSet<String>,
+}
+
+/// Fresh trusted host inputs for resolving an immutable customer preparation.
+pub struct CustomerResolutionInput<'a> {
+    pub verified_context: &'a VerifiedTenantContext,
+    pub now_ms: u64,
+    pub engine_version: &'a str,
+    pub host_policy: &'a Constraints,
+    pub available_deployment_requirements: &'a BTreeSet<String>,
+    pub approved_models: &'a BTreeMap<String, ModelBinding>,
+    pub artifacts: &'a BTreeMap<String, Vec<u8>>,
+}
+
+impl PreparedCustomerConfig {
+    pub fn revision(&self) -> &str {
+        &self.request.customer_config_revision
+    }
+
+    pub fn customer_config(&self) -> &CustomerConfig {
+        &self.customer_config
+    }
+
+    pub fn resolve(
+        &self,
+        blueprint: &SolutionBlueprint,
+        input: CustomerResolutionInput<'_>,
+    ) -> Result<ResolvedPlan, SolutionError> {
+        if blueprint_hash(blueprint)? != self.blueprint_sha256 {
+            return Err(SolutionError::new(
+                "customer_blueprint_changed",
+                "solution",
+                "Prepare again after changing the blueprint",
+            ));
+        }
+        if crate::resolve::authority_binding(input.verified_context, input.now_ms)?
+            != self.authority
+        {
+            return Err(SolutionError::new(
+                "customer_authority_changed",
+                "authority",
+                "Prepare again for the current verified authority",
+            ));
+        }
+        let policy =
+            crate::resolve::intersect_constraints(&self.deployment_policy, input.host_policy);
+        resolve(
+            blueprint,
+            ResolutionInput {
+                request: &self.request,
+                verified_context: input.verified_context,
+                now_ms: input.now_ms,
+                engine_version: input.engine_version,
+                deployment_policy: &policy,
+                available_deployment_requirements: input.available_deployment_requirements,
+                approved_models: input.approved_models,
+                artifacts: input.artifacts,
+            },
+        )
+    }
 }
 
 fn invalid(path: &str) -> SolutionError {
@@ -33,6 +95,18 @@ fn invalid(path: &str) -> SolutionError {
 fn reference(value: &str, prefix: &str, path: &str) -> Result<(), SolutionError> {
     let suffix = value.strip_prefix(prefix).ok_or_else(|| invalid(path))?;
     identifier(suffix, path)
+}
+
+fn enterprise_identifier(value: &str, path: &str) -> Result<(), SolutionError> {
+    if value.is_empty()
+        || value.len() > 96
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    {
+        return Err(invalid(path));
+    }
+    Ok(())
 }
 
 pub fn parse_customer_config(input: &str) -> Result<CustomerConfig, SolutionError> {
@@ -58,14 +132,15 @@ pub fn validate_customer_config(config: &CustomerConfig) -> Result<(), SolutionE
             "Expected string version 1",
         ));
     }
+    identifier(&config.solution_id, "solution_id")?;
     for (path, value) in [
         ("scope.org_id", &config.scope.org_id),
         ("scope.workspace_id", &config.scope.workspace_id),
         ("scope.deployment_id", &config.scope.deployment_id),
-        ("scope.instance_id", &config.scope.instance_id),
     ] {
-        identifier(value, path)?;
+        enterprise_identifier(value, path)?;
     }
+    identifier(&config.scope.instance_id, "scope.instance_id")?;
     reference(&config.profile_ref, "profile-ref:", "profile_ref")?;
     if config.timezone.is_empty()
         || config.timezone.len() > 80
@@ -117,13 +192,21 @@ pub fn validate_customer_config(config: &CustomerConfig) -> Result<(), SolutionE
         identifier(slot, "memory_spaces")?;
         match space {
             CustomerMemorySpace::PrivateUser { subject_id } => {
-                identifier(subject_id, "memory_spaces.subject_id")?
+                // Subjects use the enterprise external-identity domain, not
+                // blueprint names. Preserve exact identity for host approval.
+                if subject_id.is_empty()
+                    || subject_id.len() > 512
+                    || subject_id.trim() != subject_id
+                    || subject_id.chars().any(char::is_control)
+                {
+                    return Err(invalid("memory_spaces.subject_id"));
+                }
             }
             CustomerMemorySpace::DepartmentShared { org_unit_id } => {
-                identifier(org_unit_id, "memory_spaces.org_unit_id")?
+                enterprise_identifier(org_unit_id, "memory_spaces.org_unit_id")?
             }
             CustomerMemorySpace::Project { project_id } => {
-                identifier(project_id, "memory_spaces.project_id")?
+                enterprise_identifier(project_id, "memory_spaces.project_id")?
             }
             CustomerMemorySpace::TenantShared => (),
         }
@@ -168,7 +251,15 @@ pub fn prepare_customer_config(
 ) -> Result<PreparedCustomerConfig, SolutionError> {
     validate_blueprint(blueprint)?;
     let revision = customer_config_revision(config)?;
-    validate_customer_config_scope(input.verified_context, input.selected_scope, input.now_ms)?;
+    if config.solution_id != blueprint.solution.id {
+        return Err(SolutionError::new(
+            "customer_solution_mismatch",
+            "solution_id",
+            "Customer configuration belongs to a different solution",
+        ));
+    }
+    let authority =
+        validate_customer_config_scope(input.verified_context, input.selected_scope, input.now_ms)?;
     if config.scope != *input.selected_scope {
         return Err(SolutionError::new(
             "customer_scope_mismatch",
@@ -188,6 +279,23 @@ pub fn prepare_customer_config(
             "expected_revision",
             "Configuration changed; preview the current revision",
         ));
+    }
+    if input.current_revision.is_some() != input.current_solution_id.is_some() {
+        return Err(SolutionError::new(
+            "customer_installation_identity_required",
+            "current_solution_id",
+            "Load the current solution identity and revision together",
+        ));
+    }
+    if let Some(solution_id) = input.current_solution_id {
+        identifier(solution_id, "current_solution_id")?;
+        if solution_id != config.solution_id {
+            return Err(SolutionError::new(
+                "customer_solution_mismatch",
+                "current_solution_id",
+                "Cannot replace the selected installation with another solution",
+            ));
+        }
     }
     for value in std::iter::once(&config.profile_ref)
         .chain(config.secret_refs.values())
@@ -246,6 +354,9 @@ pub fn prepare_customer_config(
         }
     }
     Ok(PreparedCustomerConfig {
+        blueprint_sha256: blueprint_hash(blueprint)?,
+        authority,
+        customer_config: config.clone(),
         request: InstallRequest {
             instance_id: config.scope.instance_id.clone(),
             customer_config_revision: revision,
@@ -294,6 +405,8 @@ pub fn customer_config_template(
             })
             .collect(),
         requires_customer_configuration: true,
+        preferences: blueprint.preferences.clone(),
+        memory_spaces: blueprint.memory_spaces.clone(),
     })
 }
 
@@ -306,6 +419,7 @@ pub fn customer_config_changes(
     validate_customer_config(previous)?;
     validate_customer_config(next)?;
     let groups = [
+        ("solution_id", previous.solution_id != next.solution_id),
         ("scope", previous.scope != next.scope),
         ("profile_ref", previous.profile_ref != next.profile_ref),
         ("timezone", previous.timezone != next.timezone),

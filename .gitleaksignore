@@ -90,7 +90,10 @@ e64795105ba26d08348f26d8cbcc0d6d615976da:guide/src/content/docs/engine-authentic
 # Keep all-history scanning enabled; other commits and findings remain blocking.
 6689c1dc3c6a3332fedde925ff2deac33ad0e9aa:packages/tandem-control-panel/tests/hosted-session-integration.test.mjs:tandem-token-assignment:77
 
-# Reviewed 2026-09-05: exact historical doctor fixture placeholder, never a
-# credential. The test asserts it is absent from diagnostics and never sends it.
-# Current fixture uses a short placeholder. No rule/path-wide exclusion.
+# Reviewed 2026-09-26: exact historical doctor-test dummy token. The fixture
+# asserts redaction; it is not a credential. No rule/path-wide exclusion.
 92cc0f75ab9c01bb0d8f5c01271519b10b20b5cc:packages/tandem-control-panel/tests/doctor-readiness.test.mjs:tandem-token-assignment:29
+
+# Reviewed 2026-09-26: ordinary prose describing corrupt/missing metadata in
+# credential lifecycle tests. No credential or assigned secret is present.
+56e6a1b011a45effe9153ac719bf3bbe97065007:docs/CREDENTIAL_LIFECYCLE.md:generic-api-key:39
