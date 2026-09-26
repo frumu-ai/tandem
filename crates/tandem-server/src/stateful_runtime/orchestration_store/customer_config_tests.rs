@@ -118,7 +118,7 @@ fn reopened(store: &OrchestrationStateStore) -> OrchestrationStateStore {
     reopened
 }
 
-#[cfg(feature = "storage-postgres")]
+#[cfg(any(feature = "storage-postgres", feature = "storage-sqlite"))]
 pub(super) fn seed_protected_config_for_transfer(
     store: &OrchestrationStateStore,
 ) -> StoredCustomerConfig {
@@ -413,7 +413,9 @@ fn customer_config_sqlite_migration_rechecks_after_concurrent_v5_reads() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, super::SCHEMA_VERSION);
+    // This exercises only the customer-config v5 -> v6 step, not the
+    // subsequent installation-journal migration performed by initialization.
+    assert_eq!(version, 6);
     // A future or otherwise unexpected schema must not be rewritten to v6.
     connection
         .execute("UPDATE schema_metadata SET schema_version=99", [])

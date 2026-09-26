@@ -12,8 +12,8 @@ use anyhow::{bail, ensure};
 use serde::{Deserialize, Serialize};
 use tandem_enterprise_contract::VerifiedTenantContext;
 use tandem_solutions::{
-    prepare_customer_config, resolve, validate_customer_config_scope, CustomerConfigInput,
-    CustomerScope, ModelBinding, ResolutionInput, ResolvedPlan, SolutionBlueprint,
+    prepare_customer_config, validate_customer_config_scope, CustomerConfigInput,
+    CustomerResolutionInput, CustomerScope, ModelBinding, ResolvedPlan, SolutionBlueprint,
 };
 
 use super::{customer_configs, protected_records, CustomerConfigVersion, OrchestrationStateStore};
@@ -159,14 +159,16 @@ impl OrchestrationStateStore {
                 .ok_or_else(|| anyhow::anyhow!("save customer configuration before installation"))?;
             ensure!(&config.version == input.expected_config, SOLUTION_INSTALLATION_CONFLICT);
             let now_ms = config_input.now_ms;
+            let host_policy = config_input.host_policy;
             let prepared = prepare_customer_config(input.blueprint, &config.config, CustomerConfigInput {
                 current_revision: Some(&config.version.sha256),
+                current_solution_id: Some(&config.config.solution_id),
                 expected_revision: Some(&config.version.sha256),
                 ..config_input
             })?;
-            let plan = resolve(input.blueprint, ResolutionInput {
-                request: &prepared.request, verified_context: context, now_ms,
-                engine_version: input.engine_version, deployment_policy: &prepared.deployment_policy,
+            let plan = prepared.resolve(input.blueprint, CustomerResolutionInput {
+                verified_context: context, now_ms,
+                engine_version: input.engine_version, host_policy,
                 available_deployment_requirements: input.available_deployment_requirements,
                 approved_models: input.approved_models, artifacts: input.artifacts,
             })?;
@@ -329,7 +331,16 @@ UPDATE schema_metadata SET schema_version=7;
 pub(super) fn migrate_sqlite(connection: &mut rusqlite::Connection) -> anyhow::Result<()> {
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    transaction.execute_batch(SCHEMA_V7)?;
+    let version: i64 = transaction.query_row(
+        "SELECT schema_version FROM schema_metadata LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    match version {
+        6 => transaction.execute_batch(SCHEMA_V7)?,
+        7 => {}
+        _ => bail!("unsupported schema version for installation migration: {version}"),
+    }
     transaction.commit()?;
     Ok(())
 }
