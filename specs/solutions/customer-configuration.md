@@ -14,11 +14,18 @@ configuration revisions and preferences with identical artifact digests.
 ## Customer-owned input
 
 Schema version is the string `"1"`. Unknown fields, duplicate YAML/JSON keys,
+missing or mismatched `solution_id` (the blueprint's stable solution ID),
 unsupported memory kinds, oversized documents and malformed references are
 rejected. Scope explicitly selects organization, workspace, deployment and
 installation. The trusted host must independently select that installation and
 supply a current verified context; matching client-provided IDs are not proof
 of authorization.
+
+Organization, workspace and deployment IDs preserve case and accept 1–96 ASCII
+alphanumeric, underscore or hyphen characters, matching enterprise identifiers.
+Installation IDs retain the blueprint identifier grammar. The stable solution ID
+participates in the configuration revision; it does not pin the upstream version,
+so an upgrade of the same solution can retain customer settings.
 
 Human company names, aliases and imported content belong in separately owned
 profile/data stores. This initial contract references them with `profile-ref:`

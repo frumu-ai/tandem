@@ -112,6 +112,73 @@ impl Fixture {
 }
 
 #[test]
+fn customer_solution_binding_rejects_a_compatible_different_blueprint() {
+    let mut f = Fixture::new(A, "a");
+    assert!(f.prepare(None, None).is_ok());
+    f.blueprint.solution.version = "0.2.0".into();
+    assert!(f.prepare(None, None).is_ok());
+    f.blueprint.solution.id = "different.solution".into();
+    assert_eq!(
+        f.prepare(None, None).err().unwrap().code,
+        "customer_solution_mismatch"
+    );
+    let previous = f.config.clone();
+    f.config.solution_id = f.blueprint.solution.id.clone();
+    assert_ne!(
+        customer_config_revision(&previous).unwrap(),
+        customer_config_revision(&f.config).unwrap()
+    );
+    assert!(
+        customer_config_changes(&f.blueprint, &f.blueprint, &previous, &f.config)
+            .unwrap()
+            .customer_fields
+            .contains("solution_id")
+    );
+    assert!(parse_customer_config(&A.replace("solution_id: tandem.company-brain\n", "")).is_err());
+}
+
+#[test]
+fn customer_scope_accepts_existing_case_preserving_enterprise_ids() {
+    let mut f = Fixture::new(A, "a");
+    let id = "A".repeat(96);
+    f.config.scope.org_id = id.clone();
+    f.config.scope.workspace_id = id.clone();
+    f.config.scope.deployment_id = id.clone();
+    f.context.tenant_context.org_id = id.clone();
+    f.context.tenant_context.workspace_id = id.clone();
+    f.context.tenant_context.deployment_id = Some(id);
+    assert!(f.prepare(None, None).is_ok());
+    f.context.tenant_context.org_id = "a".repeat(96);
+    assert_eq!(
+        f.prepare(None, None).err().unwrap().code,
+        "customer_scope_mismatch"
+    );
+}
+
+#[test]
+fn customer_scope_rejects_malformed_enterprise_ids_without_normalizing() {
+    for invalid in [
+        "A".repeat(97),
+        " Org".into(),
+        "Org ".into(),
+        "org.id".into(),
+        "org/id".into(),
+        "Örg".into(),
+        String::new(),
+    ] {
+        for field in ["org_id", "workspace_id", "deployment_id"] {
+            let f = Fixture::new(A, "a");
+            let mut document = serde_json::to_value(&f.config).unwrap();
+            document["scope"][field] = serde_json::json!(invalid);
+            assert!(
+                parse_customer_config(&document.to_string()).is_err(),
+                "{field}: {invalid:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn two_customers_resolve_one_artifact_with_distinct_scopes_and_bounded_overrides() {
     let a = Fixture::new(A, "a");
     let b = Fixture::new(B, "b");

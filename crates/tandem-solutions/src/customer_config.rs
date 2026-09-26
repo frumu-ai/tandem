@@ -58,14 +58,22 @@ pub fn validate_customer_config(config: &CustomerConfig) -> Result<(), SolutionE
             "Expected string version 1",
         ));
     }
+    identifier(&config.solution_id, "solution_id")?;
     for (path, value) in [
         ("scope.org_id", &config.scope.org_id),
         ("scope.workspace_id", &config.scope.workspace_id),
         ("scope.deployment_id", &config.scope.deployment_id),
-        ("scope.instance_id", &config.scope.instance_id),
     ] {
-        identifier(value, path)?;
+        if value.is_empty()
+            || value.len() > 96
+            || !value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+        {
+            return Err(invalid(path));
+        }
     }
+    identifier(&config.scope.instance_id, "scope.instance_id")?;
     reference(&config.profile_ref, "profile-ref:", "profile_ref")?;
     if config.timezone.is_empty()
         || config.timezone.len() > 80
@@ -168,6 +176,13 @@ pub fn prepare_customer_config(
 ) -> Result<PreparedCustomerConfig, SolutionError> {
     validate_blueprint(blueprint)?;
     let revision = customer_config_revision(config)?;
+    if config.solution_id != blueprint.solution.id {
+        return Err(SolutionError::new(
+            "customer_solution_mismatch",
+            "solution_id",
+            "Customer configuration belongs to a different solution",
+        ));
+    }
     validate_customer_config_scope(input.verified_context, input.selected_scope, input.now_ms)?;
     if config.scope != *input.selected_scope {
         return Err(SolutionError::new(
@@ -309,6 +324,7 @@ pub fn customer_config_changes(
     validate_customer_config(previous)?;
     validate_customer_config(next)?;
     let groups = [
+        ("solution_id", previous.solution_id != next.solution_id),
         ("scope", previous.scope != next.scope),
         ("profile_ref", previous.profile_ref != next.profile_ref),
         ("timezone", previous.timezone != next.timezone),
