@@ -30,7 +30,7 @@ use crate::stateful_runtime::{
 
 /// Runs `test` once per available backend. The backend name is passed for
 /// assertion messages so a Postgres-only failure is immediately attributable.
-fn for_each_backend(test: impl Fn(&str, &OrchestrationStateStore)) {
+pub(super) fn for_each_backend(test: impl Fn(&str, &OrchestrationStateStore)) {
     #[cfg(feature = "storage-sqlite")]
     {
         let directory = tempfile::tempdir().unwrap();

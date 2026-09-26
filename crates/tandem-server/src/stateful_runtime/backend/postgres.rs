@@ -541,23 +541,33 @@ fn ensure_schema_exists(pool: &Pool, schema: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// PostgreSQL rendering of stateful schema v5. Fresh deployments start at the
-/// current version directly — the SQLite v1→v5 migration chain is historical
-/// and never existed on PostgreSQL.
+/// PostgreSQL starts with the v5 baseline, then applies current additive
+/// migrations. The historical SQLite v1-v5 chain never existed on PostgreSQL.
 pub(crate) fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
     use super::{Executor as _, ExecutorRaw as _};
-    connection.execute_batch(POSTGRES_SCHEMA_V5)?;
-    let version: i64 = connection.query_row(
+    // Serialize baseline creation and version inspection with migration. A
+    // waiter must observe the version committed by the previous initializer.
+    let transaction =
+        connection.transaction_with_behavior(super::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(POSTGRES_SCHEMA_V5)?;
+    let mut version: i64 = transaction.query_row(
         "SELECT schema_version FROM schema_metadata LIMIT 1",
         [],
         |row| row.get(0),
     )?;
+    if version == 5 {
+        transaction.execute_batch(
+            crate::stateful_runtime::orchestration_store::customer_configs::SCHEMA_V6,
+        )?;
+        version = 6;
+    }
     if version != crate::stateful_runtime::orchestration_store::SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {}",
             crate::stateful_runtime::orchestration_store::SCHEMA_VERSION
         );
     }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -835,6 +845,66 @@ CREATE TABLE IF NOT EXISTS stateful_migration_attempts (
 #[cfg(test)]
 mod tests {
     use super::translate_sql;
+
+    #[test]
+    fn customer_config_postgres_initialization_serializes_concurrent_openers() {
+        use super::super::{Connection, Executor, ExecutorRaw};
+        use super::{drop_schema_for_tests, initialize_schema, PostgresTarget, POSTGRES_SCHEMA_V5};
+        use std::sync::{Arc, Barrier};
+
+        let Ok(url) = std::env::var("TANDEM_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.trim().is_empty() {
+            return;
+        }
+        // Exercise both fresh creation and the reviewed v5-to-v6 upgrade race.
+        for existing_v5 in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let target =
+                PostgresTarget::for_root(&url, &directory.path().join("runtime.db")).unwrap();
+            if existing_v5 {
+                let connection = Connection::from_postgres(target.connect().unwrap());
+                connection.execute_batch(POSTGRES_SCHEMA_V5).unwrap();
+            }
+            let barrier = Arc::new(Barrier::new(6));
+            let results = std::thread::scope(|scope| {
+                let workers: Vec<_> = (0..6)
+                    .map(|_| {
+                        let target = target.clone();
+                        let barrier = barrier.clone();
+                        scope.spawn(move || {
+                            let mut connection =
+                                Connection::from_postgres(target.connect().unwrap());
+                            barrier.wait();
+                            initialize_schema(&mut connection)
+                        })
+                    })
+                    .collect();
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            let connection = Connection::from_postgres(target.connect().unwrap());
+            let versions: Vec<i64> = connection
+                .prepare("SELECT schema_version FROM schema_metadata")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            drop(connection);
+            drop_schema_for_tests(&url, target.schema()).unwrap();
+            for result in results {
+                result.unwrap();
+            }
+            assert_eq!(
+                versions,
+                vec![crate::stateful_runtime::orchestration_store::SCHEMA_VERSION]
+            );
+        }
+    }
 
     #[test]
     fn translates_numbered_placeholders() {

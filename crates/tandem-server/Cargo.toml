@@ -73,6 +73,7 @@ tandem-tools = { path = "../tandem-tools", version = "0.7.2" }
 tandem-automation = { path = "../tandem-automation", version = "0.7.2" }
 tandem-incident-monitor = { path = "../tandem-incident-monitor", version = "0.7.2" }
 tandem-skills = { path = "../tandem-skills", version = "0.7.2" }
+tandem-solutions = { path = "../tandem-solutions", version = "0.7.2" }
 tandem-memory = { path = "../tandem-memory", version = "0.7.2" }
 tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.7.2" }
 tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "0.7.2" }
