@@ -52,7 +52,7 @@ pub(super) async fn refresh_prompt_authority(
     request_tenant: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
 ) -> Result<(), super::HttpError> {
-    let mut session = state
+    let session = state
         .storage
         .get_session(session_id)
         .await
@@ -101,10 +101,13 @@ pub(super) async fn refresh_prompt_authority(
         &mut current,
     )
     .await;
-    session.verified_tenant_context = Some(current);
-    state
+    let updated = state
         .storage
-        .save_session(session)
+        .update_session_authority(session_id, session.tenant_context, Some(current))
         .await
-        .map_err(|_| super::persistence_error("Failed to refresh session authority"))
+        .map_err(|_| super::persistence_error("Failed to refresh session authority"))?;
+    if !updated {
+        return Err(super::session_not_found_error());
+    }
+    Ok(())
 }

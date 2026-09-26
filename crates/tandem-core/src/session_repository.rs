@@ -183,6 +183,28 @@ impl SessionRepository {
         })
     }
 
+    pub(crate) fn update_session_authority(
+        &self,
+        session_id: &str,
+        expected_tenant: &tandem_types::TenantContext,
+        authority: Option<tandem_types::VerifiedTenantContext>,
+    ) -> Result<bool> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let Some(mut current) = load_session_header(&transaction, session_id)? else {
+                return Ok(false);
+            };
+            if &current.tenant_context != expected_tenant {
+                return Ok(false);
+            }
+            current.verified_tenant_context = authority;
+            update_session_header(&transaction, &current)?;
+            transaction.commit()?;
+            Ok(true)
+        })
+    }
+
     pub(crate) fn delete_session(&self, session_id: &str) -> Result<bool> {
         self.with_connection(|connection| {
             let transaction =
