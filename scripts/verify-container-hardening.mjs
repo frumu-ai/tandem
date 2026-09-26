@@ -58,9 +58,18 @@ function hasPinnedOsUpgrade(source) {
         commands += char;
       }
     }
-    // Heredocs and command substitution are outside the supported pinned form.
-    if (quote || commands.includes("<<") || commands.includes("$(")) return false;
-    return /(?:^RUN\s+|&&\s+)apt-get -y --no-install-recommends upgrade\s*(?=&&|$)/.test(commands);
+    // Accept only the repository's straight-line AND chain. OR, pipelines,
+    // groups, substitutions and early-exit builtins can make a skipped upgrade
+    // look like a successful image build, so do not try to interpret them.
+    if (quote || /[|;(){}$]/.test(commands) || commands.includes("<<")) return false;
+    const steps = commands.replace(/^RUN\s+/, "").split(/\s*&&\s*/).map((step) => step.trim());
+    const upgrade = steps.indexOf("apt-get -y --no-install-recommends upgrade");
+    if (upgrade < 0) return false;
+    return steps.slice(0, upgrade).every((step) =>
+      step === "rm -f /etc/apt/sources.list.d/debian.sources" ||
+      /^printf _+(?:\s+_+)+\s+>\s+\/etc\/apt\/sources\.list$/.test(step) ||
+      /^apt-get(?: -o Acquire::Check-Valid-Until=false)? update$/.test(step)
+    );
   });
 }
 
@@ -312,6 +321,11 @@ function selfTest() {
     `RUN echo " ${slash}\n  && apt-get -y --no-install-recommends upgrade ${slash}\n  "`,
     "RUN true # && apt-get -y --no-install-recommends upgrade",
     "FROM base AS build\nRUN apt-get -y --no-install-recommends upgrade\nFROM base\nRUN true",
+    "RUN false && apt-get -y --no-install-recommends upgrade && true || true",
+    "RUN false && (true && apt-get -y --no-install-recommends upgrade) || true",
+    "RUN unused() { true && apt-get -y --no-install-recommends upgrade; }; true",
+    "RUN exit 0 && apt-get -y --no-install-recommends upgrade",
+    "RUN exec true && apt-get -y --no-install-recommends upgrade",
   ]) {
     if (hasPinnedOsUpgrade(source)) throw new Error("accepted inert OS upgrade text");
   }
