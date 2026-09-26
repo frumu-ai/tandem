@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -60,15 +61,42 @@ test("normal setup preserves keys and token; explicit overwrite rotates only tok
   if (process.platform !== "win32") assert.equal(statSync(options.envPath).mode & 0o777, 0o600);
 });
 
-test("read-only diagnosis creates no paths and preserves existing contents and mode", async (t) => {
+test("read-only diagnosis creates no paths", async (t) => {
   const { root, options } = fixture(t);
   await ensureBootstrapEnv({ ...options, readOnly: true });
   assert.equal(existsSync(options.envPath), false);
   assert.equal(existsSync(join(root, "config")), false);
   assert.equal(existsSync(join(root, "data")), false);
+});
+
+test("read-only diagnosis preserves existing contents and mode", async (t) => {
+  const { options } = fixture(t);
   writeFileSync(options.envPath, "CUSTOM=unchanged\n", { mode: 0o640 });
   const before = statSync(options.envPath);
   await ensureBootstrapEnv({ ...options, readOnly: true, overwrite: true });
   assert.equal(readFileSync(options.envPath, "utf8"), "CUSTOM=unchanged\n");
   assert.equal(statSync(options.envPath).mode, before.mode);
+});
+
+test("bootstrap rejects a hard-linked env without changing either name", async (t) => {
+  const { root, options } = fixture(t);
+  const target = join(root, "hard-link-sentinel");
+  writeFileSync(target, "must remain unchanged\n");
+  linkSync(target, options.envPath);
+  await assert.rejects(ensureBootstrapEnv(options), /multiple links/);
+  assert.equal(readFileSync(target, "utf8"), "must remain unchanged\n");
+  assert.equal(readFileSync(options.envPath, "utf8"), "must remain unchanged\n");
+});
+
+test("bootstrap rejects a FIFO without blocking", { skip: process.platform === "win32" }, (t) => {
+  const { options } = fixture(t);
+  assert.equal(spawnSync("mkfifo", [options.envPath]).status, 0);
+  const moduleUrl = new URL("../lib/setup/env.js", import.meta.url).href;
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import { ensureBootstrapEnv } from ${JSON.stringify(moduleUrl)};
+    try { await ensureBootstrapEnv(${JSON.stringify(options)}); process.exit(1); }
+    catch (error) { if (!/Managed env/.test(error.message)) throw error; }
+  `], { timeout: 5000, encoding: "utf8" });
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 0, child.stderr);
 });

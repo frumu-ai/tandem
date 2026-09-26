@@ -135,22 +135,23 @@ function openManagedEnv(envPath) {
     descriptor = openSync(envPath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
-    // In particular, do not use O_TRUNC before validating the opened inode.
-    const before = lstatSync(envPath);
-    if (!before.isFile() || before.isSymbolicLink()) throw new Error("Managed env must be a regular, non-symlink file");
-    descriptor = openSync(envPath, constants.O_RDWR | noFollow);
-    try {
-      const opened = fstatSync(descriptor);
-      const after = lstatSync(envPath);
-      if (!opened.isFile() || opened.nlink !== 1 || after.isSymbolicLink() ||
-          opened.dev !== before.dev || opened.ino !== before.ino ||
-          opened.dev !== after.dev || opened.ino !== after.ino) {
-        throw new Error("Managed env changed while opening or has multiple links");
-      }
-    } catch (error) {
-      closeSync(descriptor);
-      throw error;
+    // Open without truncating or relying on a previous path check. Nonblocking
+    // mode lets descriptor validation reject FIFOs without waiting for a peer.
+    descriptor = openSync(envPath, constants.O_RDWR | noFollow | (constants.O_NONBLOCK || 0));
+  }
+  try {
+    // Validate both created and existing files before any content is read or
+    // written. On platforms without O_NOFOLLOW, the path check also rejects
+    // symlinks and substitutions; subsequent I/O stays bound to this inode.
+    const opened = fstatSync(descriptor);
+    const after = lstatSync(envPath);
+    if (!opened.isFile() || opened.nlink !== 1 || !after.isFile() || after.isSymbolicLink() ||
+        opened.dev !== after.dev || opened.ino !== after.ino) {
+      throw new Error("Managed env changed while opening or has multiple links");
     }
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
   }
   return descriptor;
 }
