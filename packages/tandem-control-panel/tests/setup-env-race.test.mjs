@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, linkSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, linkSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -72,10 +72,18 @@ test("read-only diagnosis creates no paths", async (t) => {
 test("read-only diagnosis preserves existing contents and mode", async (t) => {
   const { options } = fixture(t);
   writeFileSync(options.envPath, "CUSTOM=unchanged\n", { mode: 0o640 });
-  const before = statSync(options.envPath);
-  await ensureBootstrapEnv({ ...options, readOnly: true, overwrite: true });
-  assert.equal(readFileSync(options.envPath, "utf8"), "CUSTOM=unchanged\n");
-  assert.equal(statSync(options.envPath).mode, before.mode);
+  const descriptor = openSync(options.envPath, "r");
+  try {
+    const before = fstatSync(descriptor);
+    await ensureBootstrapEnv({ ...options, readOnly: true, overwrite: true });
+    assert.equal(readFileSync(descriptor, "utf8"), "CUSTOM=unchanged\n");
+    const after = statSync(options.envPath);
+    assert.equal(after.dev, before.dev);
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.mode, before.mode);
+  } finally {
+    closeSync(descriptor);
+  }
 });
 
 test("bootstrap rejects a hard-linked env without changing either name", async (t) => {
