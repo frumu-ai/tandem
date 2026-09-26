@@ -34,6 +34,9 @@ function countMatches(source, pattern) {
 // not merely as prose, an ENV value, or an argument to echo/printf.
 function hasPinnedOsUpgrade(source) {
   const runtimeStage = source.split(/^FROM[ \t]+[^\r\n]+$/m).at(-1);
+  // The pinned base's default shell is part of the execution contract. A
+  // stage-local override can report success without running any RUN payload.
+  if (/^[ \t]*SHELL[ \t]+/im.test(runtimeStage)) return false;
   const runs = runtimeStage.match(/^RUN[ \t]+(?:[^\n]*\\\r?\n)*[^\n]*/gm) || [];
   return runs.some((run) => {
     // Mask shell strings/escapes before inspecting command boundaries. Keep a
@@ -326,6 +329,8 @@ function selfTest() {
     "RUN unused() { true && apt-get -y --no-install-recommends upgrade; }; true",
     "RUN exit 0 && apt-get -y --no-install-recommends upgrade",
     "RUN exec true && apt-get -y --no-install-recommends upgrade",
+    'FROM base\nSHELL ["/bin/sh", "-c", "exit 0"]\nRUN apt-get -y --no-install-recommends upgrade',
+    'FROM base\nshell ["/bin/echo"]\nRUN apt-get -y --no-install-recommends upgrade',
   ]) {
     if (hasPinnedOsUpgrade(source)) throw new Error("accepted inert OS upgrade text");
   }
