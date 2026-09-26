@@ -93,7 +93,7 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
             | "/automations/v2/runs/{run_id}/backlog/tasks/{task_id}/claim"
             | "/automations/v2/runs/{run_id}/backlog/tasks/{task_id}/requeue",
         ) => Some(HostedAutomationExecute),
-        ("POST", "/automations/v2")
+        ("POST", "/automations/v2" | "/workflow-plans/apply")
         | ("POST", "/automations/v2/{id}/webhook-triggers")
         | ("PATCH" | "DELETE", "/automations/v2/{id}/webhook-triggers/{trigger_id}")
         | (
@@ -120,8 +120,10 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
             | "/workflow-hooks",
         ) if read => Some(HostedWorkflowRead),
         ("POST", "/workflows/simulate") => Some(HostedWorkflowRead),
-        ("POST", "/workflows/validate" | "/workflows/{id}/run" | "/workflows/runs/{id}/gate")
-        | ("PATCH", "/workflow-hooks/{id}") => Some(HostedUse),
+        ("POST", "/workflows/validate" | "/workflows/{id}/run" | "/workflows/runs/{id}/gate") => {
+            Some(HostedUse)
+        }
+        ("PATCH", "/workflow-hooks/{id}") => Some(HostedWorkflowShare),
         _ => None,
     }
 }

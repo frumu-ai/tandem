@@ -336,10 +336,16 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
         .configure_test_source("org-a", "dep-a", path.clone());
     let app = super::super::routes_automation_webhook_management::apply(
         super::super::routes_channel_automation_drafts::apply(
-            super::super::routes_workflows::apply(
+            super::super::routes_workflows::apply(super::super::routes_workflow_planner::apply(
                 super::super::routes_routines_automations::apply(Router::new()),
-            ),
+            )),
         ),
+    )
+    // Exercise the shared handler outside the production route classifier,
+    // as the operator materialization tool does.
+    .route(
+        "/direct-plan-apply",
+        axum::routing::post(super::super::workflow_planner::workflow_plan_apply),
     )
     .route("/probe", get(probe))
     .layer(axum::middleware::from_fn_with_state(state.clone(), ingress))
@@ -366,6 +372,28 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
         assert_eq!(
             automation_request(&app, &bob, "GET", path).await.status(),
             StatusCode::OK
+        );
+    }
+    // Ordinary use/read permission must not create executable automations or
+    // change deployment-wide hooks. Admins still reach handler validation.
+    for (method, path) in [
+        ("POST", "/workflow-plans/apply"),
+        ("POST", "/direct-plan-apply"),
+        ("PATCH", "/workflow-hooks/missing"),
+    ] {
+        assert_eq!(
+            automation_request(&app, &bob, method, path).await.status(),
+            StatusCode::FORBIDDEN,
+            "member must not mutate {path}"
+        );
+        let response = automation_request(&app, &alice, method, path).await;
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+            ),
+            "admin must reach handler validation for {path}: {}",
+            response.status()
         );
     }
 
@@ -437,6 +465,7 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
         ("POST", "/workflows/runs/missing/gate"),
         ("GET", "/workflow-hooks"),
         ("PATCH", "/workflow-hooks/missing"),
+        ("POST", "/workflow-plans/apply"),
         ("GET", "/automations/v2/private-alice/webhook-triggers"),
         ("HEAD", "/automations/v2/private-alice/webhook-triggers"),
         ("POST", "/automations/v2/private-alice/webhook-triggers"),
@@ -592,6 +621,20 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
     std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
     state.reload_hosted_policy().await.unwrap();
     let fresh = sign("alice", "viewer", 6);
+    for path in ["/workflow-plans/apply", "/direct-plan-apply"] {
+        assert_eq!(
+            automation_request(&app, &fresh, "POST", path)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        automation_request(&app, &fresh, "PATCH", "/workflow-hooks/missing")
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
     assert_ne!(
         automation_request(
             &app,
@@ -654,6 +697,24 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
     );
     assert!(state.get_automation_v2("private-alice").await.is_none());
     assert!(state.get_automation_v2("private-bob").await.is_some());
+    policy["policy_version"] = json!(7);
+    policy["deployment_grants"][0]["permissions"] = json!(["workflow.share"]);
+    std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    state.reload_hosted_policy().await.unwrap();
+    let fresh = sign("alice", "viewer", 7);
+    // Workflow delegation is distinct from automation authoring delegation.
+    assert_eq!(
+        automation_request(&app, &fresh, "PATCH", "/workflow-hooks/missing")
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        automation_request(&app, &fresh, "POST", "/workflow-plans/apply")
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
 }
 
 #[tokio::test]

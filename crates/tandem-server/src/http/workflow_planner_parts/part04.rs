@@ -1,12 +1,26 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
+fn require_hosted_plan_write(
+    state: &AppState,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    state.enterprise.hosted_policy.authorize_permission(
+        verified, tandem_types::AccessPermission::HostedAutomationWrite,
+    ).map_err(|code| (StatusCode::FORBIDDEN, Json(json!({
+        "error": "hosted automation write authority is required", "code": code,
+    }))))
+}
+
 pub(super) async fn workflow_plan_apply(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<tandem_types::TenantContext>,
     verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanApplyRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // The operator materialization tool calls this handler directly, without
+    // HTTP route classification. Draft creation is still automation authoring.
+    require_hosted_plan_write(&state, verified_tenant_context.as_ref().map(|value| &value.0))?;
     let requested_creator_id = input.creator_id.clone();
     let apply_idempotency_key = input
         .idempotency_key
@@ -374,6 +388,16 @@ pub(super) async fn workflow_plan_apply(
             }
             recovered_automation = Some(existing);
         }
+    }
+    if let Err(error) = require_hosted_plan_write(&state, verified_tenant_context.as_ref().map(|value| &value.0)) {
+        if let (Some(key), Some(fingerprint)) = (
+            apply_idempotency_key.as_deref(), apply_idempotency_fingerprint.as_deref(),
+        ) {
+            let _ = state.release_reserved_idempotency_key(
+                &tenant_context, "workflow_plan.apply", key, fingerprint,
+            ).await;
+        }
+        return Err(error);
     }
     let (stored, inserted_by_this_attempt) = match recovered_automation {
         Some(existing) => (existing, false),
