@@ -1711,6 +1711,12 @@ export interface PacksListResponse {
   packs: PackInstallRecord[];
 }
 
+export interface SolutionPackInspection {
+  blueprint: JsonObject;
+  runtime_materialized: boolean;
+  activation_required: boolean;
+}
+
 export interface PackInspectionResponse {
   pack: {
     installed: PackInstallRecord;
@@ -1718,6 +1724,7 @@ export interface PackInspectionResponse {
     trust?: JsonObject;
     risk?: JsonObject;
     permission_sheet?: JsonObject;
+    solution?: SolutionPackInspection;
   };
 }
 
