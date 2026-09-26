@@ -245,10 +245,20 @@ impl AppState {
         if !releasable {
             return Ok(false);
         }
-        records.remove(&record_id);
+        let removed = records.remove(&record_id);
         let snapshot = records.clone();
         drop(records);
-        self.persist_idempotency_keys_locked(snapshot).await?;
+        if let Err(error) = self.persist_idempotency_keys_locked(snapshot).await {
+            // Keep memory consistent with the durable reservation so a later
+            // explicit release can retry after the storage failure is repaired.
+            if let Some(record) = removed {
+                self.idempotency_keys
+                    .write()
+                    .await
+                    .insert(record_id, record);
+            }
+            return Err(error);
+        }
         Ok(true)
     }
 
@@ -555,6 +565,47 @@ mod tests {
             .expect("stored conflict");
         assert_eq!(record.status, IdempotencyKeyStatus::Conflicted);
         let _ = tokio::fs::remove_file(&state.idempotency_keys_path).await;
+    }
+
+    #[tokio::test]
+    async fn failed_reservation_release_preserves_state_and_can_be_retried() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = temp_state();
+        let durable = directory.path().join("keys.json");
+        state.idempotency_keys_path = durable.clone();
+        let tenant = tenant("org-release", "workspace-release");
+        state
+            .reserve_idempotency_key(input(
+                tenant.clone(),
+                "workflow_plan.apply",
+                "key",
+                "fingerprint",
+            ))
+            .await
+            .unwrap();
+        let before = tokio::fs::read(&durable).await.unwrap();
+        let blocked = directory.path().join("not-a-directory");
+        tokio::fs::write(&blocked, b"blocked").await.unwrap();
+        state.idempotency_keys_path = blocked.join("keys.json");
+        assert!(state
+            .release_reserved_idempotency_key(&tenant, "workflow_plan.apply", "key", "fingerprint")
+            .await
+            .is_err());
+        assert!(state
+            .get_idempotency_key(&tenant, "workflow_plan.apply", "key")
+            .await
+            .is_some());
+        assert_eq!(tokio::fs::read(&durable).await.unwrap(), before);
+        state.idempotency_keys_path = durable;
+        assert!(state
+            .release_reserved_idempotency_key(&tenant, "workflow_plan.apply", "key", "fingerprint")
+            .await
+            .unwrap());
+        state.load_idempotency_keys().await.unwrap();
+        assert!(state
+            .get_idempotency_key(&tenant, "workflow_plan.apply", "key")
+            .await
+            .is_none());
     }
 
     #[tokio::test]

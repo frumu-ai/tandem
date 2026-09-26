@@ -393,9 +393,17 @@ pub(super) async fn workflow_plan_apply(
         if let (Some(key), Some(fingerprint)) = (
             apply_idempotency_key.as_deref(), apply_idempotency_fingerprint.as_deref(),
         ) {
-            let _ = state.release_reserved_idempotency_key(
+            state.release_reserved_idempotency_key(
                 &tenant_context, "workflow_plan.apply", key, fingerprint,
-            ).await;
+            ).await.map_err(|release_error| {
+                tracing::error!(error = ?release_error, "failed to release denied workflow apply reservation");
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                    "error": "Workflow apply was denied, but its reservation could not be durably released",
+                    "code": "WORKFLOW_PLAN_APPLY_RESERVATION_RELEASE_FAILED",
+                    "operationApplied": false,
+                    "retryable": false,
+                })))
+            })?;
         }
         return Err(error);
     }
