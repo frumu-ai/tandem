@@ -2,7 +2,8 @@
 // Licensed under the Business Source License 1.1
 
 //! Signed HTTP ingress with the actual key verifier, durable replay store and
-//! file-backed policy reload. Uses disposable state; no environment overrides.
+//! file-backed policy reload. Uses disposable state; grant-key overrides are
+//! serialized and restored after the test.
 use super::*;
 use axum::{
     body::{to_bytes, Body},
@@ -145,6 +146,177 @@ async fn automation_request(app: &Router, assertion: &str, method: &str, path: &
         )
         .await
         .unwrap()
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn hosted_policy_prompt_admission_refreshes_owned_idle_sessions() {
+    use ed25519_dalek::Signer;
+    use tandem_types::{
+        CrossTenantGrant, CrossTenantGrantClaims, CrossTenantGrantHeader, CrossTenantGrantParty,
+        CrossTenantGrantRecord, PrincipalRef, ResourceKind, ResourceRef, ResourceScope,
+    };
+    struct GrantKeyGuard(Option<std::ffi::OsString>);
+    impl Drop for GrantKeyGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("TANDEM_CROSS_TENANT_GRANT_PUBLIC_KEYS", value),
+                None => std::env::remove_var("TANDEM_CROSS_TENANT_GRANT_PUBLIC_KEYS"),
+            }
+        }
+    }
+    let _grant_key_guard = GrantKeyGuard(std::env::var_os("TANDEM_CROSS_TENANT_GRANT_PUBLIC_KEYS"));
+    let state = crate::test_support::test_state().await;
+    let temp = tempfile::tempdir().unwrap();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    let raw = json!({"key-a": {"purpose": "context_assertion",
+        "public_key": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes()),
+        "organization_id": "org-a", "deployment_id": "dep-a", "allowed_audiences": ["tandem-runtime"], "status": "active"}}).to_string();
+    let security = crate::context_assertion_security::RuntimeContextAssertionSecurity::from_test_metadata_keyring(&raw, &temp.path().join("replay.json"));
+    *state.context_assertion_security.write().unwrap() = Some(std::sync::Arc::new(security));
+    let path = temp.path().join("policy.json");
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", path.clone());
+    let now = crate::now_ms();
+    let grant_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+    std::env::set_var(
+        "TANDEM_CROSS_TENANT_GRANT_PUBLIC_KEYS",
+        format!(
+            "prompt-grant-key={}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(grant_key.verifying_key().to_bytes())
+        ),
+    );
+    let shared_resource = ResourceRef::new(
+        "org-other",
+        "workspace-other",
+        ResourceKind::DocumentCollection,
+        "shared-documents",
+    );
+    let issuer =
+        TenantContext::explicit_user_workspace("org-other", "workspace-other", None, "owner");
+    let audience = claims("alice", "member", 2, now).tenant_context;
+    let grant_claims = CrossTenantGrantClaims::new_v1(
+        "prompt-shared-grant",
+        CrossTenantGrantParty::from_tenant_context(&issuer),
+        CrossTenantGrantParty::from_tenant_context(&audience),
+        PrincipalRef::human_user("alice"),
+        ResourceScope::root(shared_resource.clone()),
+        vec![AccessPermission::Read],
+        vec![DataClass::Internal],
+        now,
+        now + 60_000,
+        PrincipalRef::human_user("owner"),
+    );
+    let grant_header = CrossTenantGrantHeader::ed25519("prompt-grant-key");
+    let encoded_header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&grant_header).unwrap());
+    let encoded_claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&grant_claims).unwrap());
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        grant_key
+            .sign(format!("{encoded_header}.{encoded_claims}").as_bytes())
+            .to_bytes(),
+    );
+    state.enterprise.cross_tenant_grants.write().await.insert(
+        "prompt-shared-grant".into(),
+        CrossTenantGrantRecord::active(
+            CrossTenantGrant::new(grant_header, grant_claims, signature),
+            now,
+        ),
+    );
+    write_policy(&path, 1, Some("member"), now);
+    state.reload_hosted_policy().await.unwrap();
+    let app = super::super::routes_sessions::apply(Router::new())
+        .layer(axum::middleware::from_fn_with_state(state.clone(), ingress))
+        .with_state(state.clone());
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let mut verified: VerifiedTenantContext = claims("alice", "member", 1, now).into();
+        state
+            .enterprise
+            .hosted_policy
+            .project(&mut verified)
+            .unwrap();
+        let mut session = tandem_types::Session::new(Some("authority refresh".into()), None);
+        session.tenant_context = verified.tenant_context.clone();
+        session.verified_tenant_context = Some(verified);
+        ids.push(session.id.clone());
+        state.storage.save_session(session).await.unwrap();
+    }
+    write_policy(&path, 2, Some("member"), now);
+    state.reload_hosted_policy().await.unwrap();
+    let request = |actor: &str, uri: String| {
+        let mut fresh = claims(actor, "member", 2, now);
+        fresh.assertion_id = uuid::Uuid::new_v4().to_string();
+        let assertion = super::tests::sign_test_context_assertion(&key, "key-a", fresh);
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("x-tandem-context-assertion", assertion)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"parts":[{"type":"text","text":"hello"}]}).to_string(),
+            ))
+            .unwrap()
+    };
+    for (id, endpoint) in ids.iter().zip(["prompt_async", "prompt_sync"]) {
+        let uri = format!("/session/{id}/{endpoint}");
+        let response = app
+            .clone()
+            .oneshot(request("bob", uri.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        state
+            .run_registry
+            .acquire(id, "held".into(), None, None, None)
+            .await
+            .unwrap();
+        let response = app
+            .clone()
+            .oneshot(request("alice", uri.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            state
+                .storage
+                .get_session(id)
+                .await
+                .unwrap()
+                .verified_tenant_context
+                .unwrap()
+                .policy_version,
+            Some(1)
+        );
+        state.run_registry.finish_if_match(id, "held").await;
+        let response = app.clone().oneshot(request("alice", uri)).await.unwrap();
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
+        let stored = state.storage.get_session(id).await.unwrap();
+        let verified = stored.verified_tenant_context.as_ref().unwrap();
+        assert_eq!(verified.policy_version, Some(2));
+        assert_eq!(verified.human_actor.actor_id, "alice");
+        let decision = verified
+            .strict_projection
+            .as_ref()
+            .unwrap()
+            .evaluate_access(
+                &shared_resource,
+                AccessPermission::Read,
+                DataClass::Internal,
+                crate::now_ms(),
+            );
+        assert_eq!(decision.decision, tandem_types::AccessDecision::Allow);
+        assert_eq!(decision.grant_id.as_deref(), Some("prompt-shared-grant"));
+        state
+            .enterprise
+            .hosted_policy
+            .authorize_execution(Some(verified))
+            .unwrap();
+    }
 }
 
 #[tokio::test]

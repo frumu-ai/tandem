@@ -2,7 +2,7 @@
 // Licensed under the Business Source License 1.1
 
 use axum::http::StatusCode;
-use tandem_types::TenantContext;
+use tandem_types::{TenantContext, VerifiedTenantContext};
 
 use super::tenant_matches;
 
@@ -42,4 +42,69 @@ pub(super) fn ensure_same_session_actor(
     } else {
         Err(StatusCode::NOT_FOUND)
     }
+}
+
+/// Called only after acquiring the idle session's run slot. A rejected or
+/// replayed submission must never replace authority used by an active run.
+pub(super) async fn refresh_prompt_authority(
+    state: &super::AppState,
+    session_id: &str,
+    request_tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+) -> Result<(), super::HttpError> {
+    let mut session = state
+        .storage
+        .get_session(session_id)
+        .await
+        .ok_or_else(super::session_not_found_error)?;
+    ensure_same_session_actor(request_tenant, &session.tenant_context)
+        .map_err(|_| super::session_not_found_error())?;
+    let denied = || {
+        super::http_error(
+            StatusCode::FORBIDDEN,
+            "Current verified session authority is required",
+            super::ErrorCode::TenantContextDenied,
+        )
+    };
+    state
+        .enterprise
+        .hosted_policy
+        .authorize_execution(verified)
+        .map_err(|_| denied())?;
+    let Some(verified) = verified else {
+        if !request_tenant.is_local_implicit() && session.verified_tenant_context.is_some() {
+            return Err(denied());
+        }
+        return Ok(());
+    };
+    ensure_same_session_actor(&verified.tenant_context, &session.tenant_context)
+        .map_err(|_| super::session_not_found_error())?;
+    let now = crate::now_ms();
+    if verified.issued_at_ms > now
+        || verified.is_expired_at(now)
+        || (!request_tenant.is_local_implicit()
+            && tenant_actor_id(&verified.tenant_context)
+                != Some(verified.human_actor.actor_id.trim()))
+    {
+        return Err(denied());
+    }
+    let mut current = verified.clone();
+    state
+        .enterprise
+        .hosted_policy
+        .project(&mut current)
+        .map_err(|_| denied())?;
+    // Hosted reprojection replaces the strict context. Restore only currently
+    // valid, signed inbound grants, just as authenticated ingress does.
+    super::cross_tenant_grants::enrich_verified_context_with_inbound_cross_tenant_grants(
+        state,
+        &mut current,
+    )
+    .await;
+    session.verified_tenant_context = Some(current);
+    state
+        .storage
+        .save_session(session)
+        .await
+        .map_err(|_| super::persistence_error("Failed to refresh session authority"))
 }

@@ -616,6 +616,7 @@ pub(super) async fn session_messages(
 pub(super) async fn prompt_async(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
     Query(query): Query<PromptAsyncQuery>,
     headers: HeaderMap,
@@ -697,6 +698,29 @@ pub(super) async fn prompt_async(
         }
     };
 
+    if let Err(error) = super::sessions_actor_scope::refresh_prompt_authority(
+        &state,
+        &id,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await
+    {
+        state.run_registry.finish_if_match(&id, &run_id).await;
+        if let Some(super::session_run_idempotency::PromptSubmissionDecision::Reserved(
+            reservation,
+        )) = prompt_submission.as_ref()
+        {
+            super::session_run_idempotency::release_prompt_submission(
+                &state,
+                &session.tenant_context,
+                reservation,
+            )
+            .await?;
+        }
+        return Err(error);
+    }
+
     tracing::info!(
         target: "tandem.obs",
         event = "server.prompt_async.start",
@@ -774,6 +798,7 @@ pub(super) async fn prompt_async(
 pub(super) async fn prompt_sync(
     State(state): State<AppState>,
     Extension(request_tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(req): Json<SendMessageRequest>,
@@ -864,6 +889,17 @@ pub(super) async fn prompt_sync(
             return Ok((StatusCode::CONFLICT, Json(payload)).into_response());
         }
     };
+    if let Err(error) = super::sessions_actor_scope::refresh_prompt_authority(
+        &state,
+        &id,
+        &request_tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await
+    {
+        state.run_registry.finish_if_match(&id, &run_id).await;
+        return Err(error);
+    }
     publish_tenant_event(
         &state,
         &tenant_context,
