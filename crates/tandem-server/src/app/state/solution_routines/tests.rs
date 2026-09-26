@@ -29,6 +29,71 @@ fn state(directory: &std::path::Path) -> AppState {
 }
 
 #[tokio::test]
+async fn solution_routine_staging_preserves_legacy_store_and_detects_drift() {
+    const CHILD: &str = "TANDEM_TEST_LEGACY_ROUTINE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::state::solution_routines::tests::solution_routine_staging_preserves_legacy_store_and_detects_drift",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("TANDEM_STATE_DIR", directory.path())
+            .env("TANDEM_HOME", directory.path().join("home"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let root = std::path::PathBuf::from(std::env::var_os("TANDEM_STATE_DIR").unwrap());
+    let original = state(&root.join("data"));
+    let (mut legacy, _) = fixture("org-a");
+    legacy.routine_id = "manual-review".into();
+    let mut rows = HashMap::from([("legacy-key".to_string(), legacy.clone())]);
+    let legacy_path = root.join("routines.json");
+    let initial = bytes(&rows).unwrap();
+    std::fs::write(&legacy_path, &initial).unwrap();
+    original.load_routines().await.unwrap();
+    assert!(!original.routines_path.exists());
+    let (routine, owner) = fixture("org-a");
+    // A real external edit must still fail before canonical publication.
+    rows.get_mut("legacy-key").unwrap().name = "externally changed".into();
+    std::fs::write(&legacy_path, bytes(&rows).unwrap()).unwrap();
+    assert!(original
+        .stage_solution_routine(routine.clone(), owner.clone())
+        .await
+        .is_err());
+    assert!(!original.routines_path.exists());
+    std::fs::write(&legacy_path, &initial).unwrap();
+    let receipt = original
+        .stage_solution_routine(routine.clone(), owner.clone())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&legacy_path).unwrap(), initial);
+    let restarted = state(&root.join("data"));
+    restarted.load_routines().await.unwrap();
+    let restored = restarted
+        .get_routine_for_tenant(&legacy.routine_id, &legacy.tenant_context)
+        .await
+        .unwrap();
+    assert_eq!(bytes(&restored).unwrap(), bytes(&legacy).unwrap());
+    assert_eq!(
+        restarted
+            .stage_solution_routine(routine, owner)
+            .await
+            .unwrap(),
+        receipt
+    );
+}
+
+#[tokio::test]
 async fn solution_routine_staging_is_scoped_durable_and_idempotent() {
     let directory = tempfile::tempdir().unwrap();
     let original = state(directory.path());

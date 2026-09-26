@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use tandem_solutions::{canonical_json, sha256, MAX_ARTIFACT_BYTES};
 
-use super::{normalize_routine, routine_store_index, AppState};
+use super::{normalize_routine, read_state_file_with_legacy, routine_store_index, AppState};
 use crate::routines::errors::RoutineStoreError;
 use crate::routines::types::{
     solution_routine_id, RoutineIdentity, RoutineMisfirePolicy, RoutineSchedule, RoutineSpec,
@@ -160,10 +160,13 @@ impl AppState {
         // The existing native routine store has one AppState writer per host.
         // Detect external edits or stale recovery snapshots instead of silently
         // replacing them with this process's cached map.
-        let persisted = match tokio::fs::read(&self.routines_path).await {
-            Ok(raw) => {
+        let persisted = match read_state_file_with_legacy(&self.routines_path, "routines.json")
+            .await
+            .map_err(managed)?
+        {
+            Some(raw) => {
                 let rows: HashMap<String, RoutineSpec> =
-                    serde_json::from_slice(&raw).map_err(managed)?;
+                    serde_json::from_str(&raw).map_err(managed)?;
                 let count = rows.len();
                 let indexed = routine_store_index(rows);
                 if indexed.len() != count {
@@ -173,8 +176,7 @@ impl AppState {
                 }
                 indexed
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-            Err(error) => return Err(managed(error)),
+            None => HashMap::new(),
         };
         let cached = self.routines.read().await.clone();
         if bytes(&persisted)? != bytes(&cached)? {
