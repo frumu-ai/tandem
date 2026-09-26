@@ -32,12 +32,52 @@ function countMatches(source, pattern) {
 
 // Require the pinned command as a RUN instruction or a continued RUN command,
 // not merely as prose, an ENV value, or an argument to echo/printf.
+function dockerInstructions(source) {
+  // Only the default Dockerfile escape syntax is supported by this policy.
+  // Reject heredocs/custom directives rather than interpreting payload as code.
+  if (/^\s*#\s*(?:escape|syntax)\s*=/im.test(source) || source.includes("<<")) return [];
+  const instructions = [];
+  let pending = "";
+  for (const line of source.split(/\r?\n/)) {
+    if (/^\s*(?:#|$)/.test(line)) continue;
+    const continued = line.endsWith("\\");
+    pending += (continued ? line.slice(0, -1) : line) + " ";
+    if (!continued) {
+      instructions.push(pending.trim());
+      pending = "";
+    }
+  }
+  return pending ? [] : instructions;
+}
+
+function runtimeInstructions(source) {
+  const instructions = dockerInstructions(source);
+  const lastFrom = instructions.findLastIndex((line) => /^FROM\s/i.test(line));
+  return instructions.slice(lastFrom + 1);
+}
+
+function finalRuntimeUser(source) {
+  return runtimeInstructions(source).filter((line) => /^USER\s/i.test(line))
+    .at(-1)?.replace(/^USER\s+/i, "").trim();
+}
+
 function hasPinnedOsUpgrade(source) {
-  const runtimeStage = source.split(/^[ \t]*FROM[ \t]+[^\r\n]+$/im).at(-1);
+  const runtime = runtimeInstructions(source);
   // The pinned base's default shell is part of the execution contract. A
   // stage-local override can report success without running any RUN payload.
-  if (/^[ \t]*SHELL[ \t]+/im.test(runtimeStage)) return false;
-  const runs = runtimeStage.match(/^[ \t]*RUN[ \t]+(?:[^\n]*\\\r?\n)*[^\n]*/gim) || [];
+  if (runtime.some((line) => /^SHELL\s/i.test(line))) return false;
+  const firstRun = runtime.findIndex((line) => /^RUN\s/i.test(line));
+  if (firstRun < 0) return false;
+  // No earlier executable/filesystem/configuration instruction may replace
+  // apt-get or its lookup. Permit only the current harmless metadata inputs;
+  // PATH, loader variables, build mounts and custom shells are not supported.
+  if (!runtime.slice(0, firstRun).every((line) =>
+    /^ARG (?:TARGETARCH|TANDEM_ENGINE_INSTALL_SOURCE=release|TANDEM_ENGINE_CANDIDATE_SHA256)$/.test(line) ||
+    (/^ENV\s/.test(line) && line.slice(4).trim().split(/\s+/).every((entry) =>
+      /^(?:DEBIAN_FRONTEND=noninteractive|TANDEM_ENGINE_VERSION=[0-9A-Za-z.+-]+|TANDEM_ENGINE_BINARY_SHA256=[0-9a-f]{64}|HOME=\/var\/lib\/tandem\/(?:engine|panel)|XDG_CACHE_HOME=\/var\/lib\/tandem\/(?:engine|panel)\/\.cache|npm_config_(?:update_notifier|fund|audit)=false)$/.test(entry)
+    ))
+  )) return false;
+  const runs = [runtime[firstRun]];
   return runs.some((run) => {
     // Mask shell strings/escapes before inspecting command boundaries. Keep a
     // placeholder for quoted arguments so they cannot disappear into a command.
@@ -141,7 +181,7 @@ export async function verifyContainerHardening(
     ["engine Dockerfile", engineDockerfile],
     ["control-panel Dockerfile", panelDockerfile],
   ]) {
-    const fromLines = source.match(/^[ \t]*FROM[ \t]+[^\r\n]+/gim) || [];
+    const fromLines = dockerInstructions(source).filter((line) => /^FROM\s/i.test(line));
     if (fromLines.length === 0) errors.push(`${name} has no FROM instruction`);
     for (const line of fromLines) {
       const base = line.match(/^[ \t]*FROM[ \t]+(\S+)(?:[ \t]+AS[ \t]+\S+)?[ \t]*$/i)?.[1];
@@ -149,9 +189,7 @@ export async function verifyContainerHardening(
         errors.push(`${name} uses an unapproved or non-digest-pinned base: ${line}`);
       }
     }
-    const runtimeStage = source.split(/^[ \t]*FROM[ \t]+[^\r\n]+$/im).at(-1);
-    const users = [...runtimeStage.matchAll(/^[ \t]*USER[ \t]+([^\r\n]+)$/gim)];
-    if (users.at(-1)?.[1].trim() !== "node") errors.push(`${name} must run as USER node`);
+    if (finalRuntimeUser(source) !== "node") errors.push(`${name} must run as USER node`);
     if (/@latest\b|ENGINE_VERSION=latest\b/.test(source)) {
       errors.push(`${name} contains a floating latest dependency`);
     }
@@ -319,6 +357,9 @@ function selfTest() {
     if (!hasPinnedOsUpgrade(source)) throw new Error("missing real OS upgrade instruction");
   }
   for (const source of [
+    "RUN ln -sf /bin/true /usr/bin/apt-get\nRUN apt-get -y --no-install-recommends upgrade",
+    "COPY fake-apt /usr/bin/apt-get\nRUN apt-get -y --no-install-recommends upgrade",
+    "ENV PATH=/fake\nRUN apt-get -y --no-install-recommends upgrade",
     "# RUN apt-get -y --no-install-recommends upgrade",
     'RUN echo "apt-get -y --no-install-recommends upgrade"',
     'ENV NOTE="apt-get -y --no-install-recommends upgrade"',
@@ -339,6 +380,12 @@ function selfTest() {
     "FROM base\nRUN apt-get -y --no-install-recommends upgrade\n  from alpine:3.20\nRUN true",
   ]) {
     if (hasPinnedOsUpgrade(source)) throw new Error("accepted inert OS upgrade text");
+  }
+  if (finalRuntimeUser(`FROM base\nUSER root\nRUN printf '%s\\n' ${slash}\nUSER node`) !== "root") {
+    throw new Error("continued RUN payload was treated as USER instruction");
+  }
+  if (finalRuntimeUser("FROM base\nUSER root\nuser node") !== "node") {
+    throw new Error("logical final USER instruction was not recognized");
   }
   const prerelease =
     `ENV A=1 ${slash}\n` +
