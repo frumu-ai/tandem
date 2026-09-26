@@ -489,9 +489,19 @@ async function runAddonCli(args, options = {}) {
 async function runAddonDoctorJson() {
   const addon = getAddonCommand();
   if (!addon) return null;
+  let result;
   try {
-    const res = await captureCommand(addon.command, ["doctor", "--json"], { timeoutMs: 2500 });
-    return JSON.parse(String(res.stdout || "{}"));
+    result = await captureCommand(addon.command, ["doctor", "--json"], { timeoutMs: 2500 });
+  } catch (error) {
+    // An unhealthy runtime is a completed diagnosis, not missing output.
+    // Spawn errors, signals and timeouts are not completed doctor reports.
+    if (!Number.isInteger(error.code) || error.code <= 0) return null;
+    result = error;
+  }
+  try {
+    const report = JSON.parse(String(result.stdout || ""));
+    if (!report || typeof report !== "object" || Array.isArray(report)) return null;
+    return { ...report, doctorExitCode: result.code };
   } catch {
     return null;
   }
@@ -722,13 +732,13 @@ async function handlePanelCommand(subcommand, cli, env = process.env) {
       if (report) {
         console.log(`[Tandem] panel: http://${report.panelHost}:${report.panelPort}`);
         console.log(`[Tandem] engine: ${report.engineUrl}`);
-        return 0;
+        return report.doctorExitCode;
       }
       console.log(`[Tandem] panel add-on is installed but did not return a quick status response.`);
       console.log(`[Tandem] try: tandem panel doctor`);
       return 0;
     }
-    await runCommand(addon.command, args.slice(1), { stdio: "inherit" });
+    await runCommand(addon.command, args, { stdio: "inherit" });
     return 0;
   }
   await runCommand(addon.command, [subcommand, ...cli.argv.slice(1)], { stdio: "inherit" });
