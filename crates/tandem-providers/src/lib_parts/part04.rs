@@ -147,6 +147,21 @@ mod tests {
 
     #[async_trait]
     impl Provider for CapturingCodexProvider {
+        async fn stream_with_auth_override(
+            &self,
+            _messages: Vec<ChatMessage>,
+            model_override: Option<&str>,
+            _tool_mode: ToolMode,
+            _tools: Option<Vec<ToolSchema>>,
+            _sampling: SamplingParams,
+            _cancel: CancellationToken,
+            auth_override: ProviderAuthOverride,
+        ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+            self.complete_with_auth_override("stream", model_override, auth_override)
+                .await?;
+            Ok(Box::pin(futures::stream::empty()))
+        }
+
         fn info(&self) -> ProviderInfo {
             ProviderInfo {
                 id: "openai-codex".to_string(),

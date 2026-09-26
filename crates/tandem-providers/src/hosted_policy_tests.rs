@@ -3,6 +3,80 @@ mod hosted_policy_tests {
     use super::*;
 
     #[tokio::test]
+    async fn hosted_policy_revocation_before_auth_recovery_prevents_callback() {
+        for streaming in [false, true] {
+            let registry = ProviderRegistry::new(cfg(&[], None, false));
+            let attempts = Arc::new(AtomicUsize::new(0));
+            registry
+                .replace_for_test(
+                    vec![Arc::new(CapturingCodexProvider {
+                        attempts: attempts.clone(),
+                        seen_auth: Arc::new(Mutex::new(Vec::new())),
+                        fail_auth_attempts: 1,
+                    })],
+                    Some("openai-codex".into()),
+                )
+                .await;
+            let refreshes = Arc::new(AtomicUsize::new(0));
+            let recovery = ProviderAuthRecovery::new({
+                let refreshes = refreshes.clone();
+                move |_| {
+                    let refreshes = refreshes.clone();
+                    async move {
+                        refreshes.fetch_add(1, Ordering::SeqCst);
+                        Ok(true)
+                    }
+                }
+            });
+            let authority = ProviderDispatchAuthority::new({
+                let attempts = attempts.clone();
+                move || {
+                    let attempts = attempts.clone();
+                    async move {
+                        anyhow::ensure!(
+                            attempts.load(Ordering::SeqCst) == 0,
+                            "hosted membership revoked"
+                        );
+                        Ok(())
+                    }
+                }
+            });
+            let error = authority
+                .scope(registry.scope_tenant_provider_auth_with_recovery(
+                    TenantContext::explicit("org-hosted", "workspace-hosted", None),
+                    recovery,
+                    false,
+                    async {
+                        if streaming {
+                            registry
+                                .stream_for_provider(
+                                    Some("openai-codex"),
+                                    None,
+                                    Vec::new(),
+                                    ToolMode::None,
+                                    None,
+                                    SamplingParams::default(),
+                                    CancellationToken::new(),
+                                )
+                                .await
+                                .map(|_| ())
+                        } else {
+                            registry
+                                .complete_for_provider(Some("openai-codex"), "request", None)
+                                .await
+                                .map(|_| ())
+                        }
+                    },
+                ))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("revoked"));
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
+            assert_eq!(refreshes.load(Ordering::SeqCst), 0, "streaming={streaming}");
+        }
+    }
+
+    #[tokio::test]
     async fn hosted_policy_revocation_during_auth_recovery_prevents_provider_retry() {
         let registry = ProviderRegistry::new(cfg(&[], None, false));
         let tenant = TenantContext::explicit("org-hosted", "workspace-hosted", None);
