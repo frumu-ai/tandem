@@ -1171,6 +1171,7 @@ impl AgentTeamRuntime {
         let templates_dir = self.templates_dir_for_loaded_workspace().await?;
         fs::create_dir_all(&templates_dir).await?;
         let path = templates_dir.join(Self::template_filename(&template.template_id));
+        Self::require_unmanaged_template_destination(&path).await?;
         let payload = serde_yaml::to_string(&template)?;
         fs::write(path, payload).await?;
         self.templates
@@ -1198,6 +1199,7 @@ impl AgentTeamRuntime {
         );
         let templates_dir = self.templates_dir_for_loaded_workspace().await?;
         let path = templates_dir.join(Self::template_filename(template_id));
+        Self::require_unmanaged_template_destination(&path).await?;
         let existed = self.templates.write().await.remove(template_id).is_some();
         if path.exists() {
             let _ = fs::remove_file(path).await;

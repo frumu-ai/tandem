@@ -15,6 +15,30 @@ use tandem_solutions::{canonical_json, sha256, solution_resource_id, MAX_ARTIFAC
 use super::AgentTeamRuntime;
 
 impl AgentTeamRuntime {
+    pub(super) async fn require_unmanaged_template_destination(path: &Path) -> anyhow::Result<()> {
+        match tokio::fs::symlink_metadata(path).await {
+            Ok(_) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        // Follow supported manual-template symlinks, but never interpret a
+        // dangling link, special file or unreadable document as an absent file.
+        ensure!(
+            tokio::fs::metadata(path).await?.is_file(),
+            "template destination is not a regular file"
+        );
+        let raw = tokio::fs::read_to_string(path).await?;
+        let existing: AgentTemplate = serde_yaml::from_str(&raw)?;
+        ensure!(
+            existing.solution_owner.is_none()
+                && !Self::template_filename(&existing.template_id)
+                    .to_ascii_lowercase()
+                    .starts_with("solution-"),
+            "solution templates require the installation lifecycle"
+        );
+        Ok(())
+    }
+
     /// Create or reconcile an exact disabled template without replacing a
     /// pre-existing resource. Generic template mutation cannot activate it.
     pub async fn stage_solution_template(
@@ -229,6 +253,186 @@ mod tests {
         )
         .unwrap();
         (template, owner)
+    }
+
+    #[tokio::test]
+    async fn generic_mutations_protect_managed_filename_aliases() {
+        for delete in [false, true] {
+            for warm_cache in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let workspace = dir.path().to_str().unwrap();
+                let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+                let (template, owner) = fixture();
+                let mut ordinary = template.clone();
+                ordinary.template_id = "worker".into();
+                if warm_cache {
+                    runtime
+                        .upsert_template(workspace, ordinary.clone())
+                        .await
+                        .unwrap();
+                }
+                let parent = dir.path().join(".tandem/agent-team/templates");
+                std::fs::create_dir_all(&parent).unwrap();
+                let alias = parent.join("worker.yaml");
+                let mut managed = template.clone();
+                managed.enabled = false;
+                managed.solution_owner = Some(owner.clone());
+                let original = canonical_json(&managed).unwrap();
+                std::fs::write(&alias, &original).unwrap();
+                runtime
+                    .stage_solution_template(workspace, template.clone(), owner)
+                    .await
+                    .unwrap();
+                let cached = canonical_json(&runtime.list_templates().await).unwrap();
+                let denied = if delete {
+                    runtime.delete_template(workspace, "worker").await.is_err()
+                } else {
+                    runtime.upsert_template(workspace, ordinary).await.is_err()
+                };
+                assert!(denied, "delete={delete}, warm_cache={warm_cache}");
+                assert_eq!(std::fs::read(&alias).unwrap(), original);
+                assert_eq!(
+                    canonical_json(&runtime.list_templates().await).unwrap(),
+                    cached
+                );
+                let restarted = AgentTeamRuntime::new(dir.path().join("restart-audit"));
+                let observed = restarted
+                    .get_template_for_workspace(workspace, &template.template_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(canonical_json(&observed).unwrap(), original);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_mutations_validate_actual_destination_before_changing_cache() {
+        for delete in [false, true] {
+            for representation in ["owner", "reserved", "malformed"] {
+                let dir = tempfile::tempdir().unwrap();
+                let workspace = dir.path().to_str().unwrap();
+                let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+                let (mut ordinary, owner) = fixture();
+                ordinary.template_id = "work/er".into();
+                runtime
+                    .upsert_template(workspace, ordinary.clone())
+                    .await
+                    .unwrap();
+                let cached = canonical_json(&runtime.list_templates().await).unwrap();
+                let path = dir.path().join(".tandem/agent-team/templates/work_er.yaml");
+                let mut observed = ordinary.clone();
+                let replacement = match representation {
+                    "owner" => {
+                        observed.solution_owner = Some(owner);
+                        canonical_json(&observed).unwrap()
+                    }
+                    "reserved" => {
+                        observed.template_id = " SOLUTION-legacy ".into();
+                        serde_yaml::to_string(&observed).unwrap().into_bytes()
+                    }
+                    _ => b"not: [valid YAML".to_vec(),
+                };
+                std::fs::write(&path, &replacement).unwrap();
+                let denied = if delete {
+                    runtime.delete_template(workspace, "work/er").await.is_err()
+                } else {
+                    runtime.upsert_template(workspace, ordinary).await.is_err()
+                };
+                assert!(denied, "delete={delete}, representation={representation}");
+                assert_eq!(std::fs::read(&path).unwrap(), replacement);
+                assert_eq!(
+                    canonical_json(&runtime.list_templates().await).unwrap(),
+                    cached
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_mutations_preserve_large_manual_template_crud() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_str().unwrap();
+        let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+        let mut template = fixture().0;
+        template.template_id = "manual".into();
+        template.system_prompt = Some("x".repeat(MAX_ARTIFACT_BYTES + 1));
+        runtime
+            .upsert_template(workspace, template.clone())
+            .await
+            .unwrap();
+        template.display_name = Some("Updated manual template".into());
+        runtime
+            .upsert_template(workspace, template.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime
+                .get_template_for_workspace(workspace, "manual")
+                .await
+                .unwrap()
+                .unwrap()
+                .display_name,
+            template.display_name
+        );
+        assert!(runtime.delete_template(workspace, "manual").await.unwrap());
+        assert!(!runtime.delete_template(workspace, "manual").await.unwrap());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generic_mutations_follow_manual_symlinks_but_protect_managed_targets() {
+        for managed in [false, true] {
+            for delete in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let workspace = dir.path().to_str().unwrap();
+                let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+                let (mut template, owner) = fixture();
+                template.template_id = "worker".into();
+                runtime
+                    .upsert_template(workspace, template.clone())
+                    .await
+                    .unwrap();
+                let alias = dir.path().join(".tandem/agent-team/templates/worker.yaml");
+                let target = dir.path().join("source.json");
+                let mut observed = template.clone();
+                if managed {
+                    observed.solution_owner = Some(owner);
+                }
+                let original = canonical_json(&observed).unwrap();
+                std::fs::write(&target, &original).unwrap();
+                std::fs::remove_file(&alias).unwrap();
+                std::os::unix::fs::symlink(&target, &alias).unwrap();
+                template.display_name = Some("changed".into());
+                let result = if delete {
+                    runtime
+                        .delete_template(workspace, "worker")
+                        .await
+                        .map(|_| ())
+                } else {
+                    runtime
+                        .upsert_template(workspace, template.clone())
+                        .await
+                        .map(|_| ())
+                };
+                assert_eq!(
+                    result.is_err(),
+                    managed,
+                    "managed={managed}, delete={delete}"
+                );
+                if managed || delete {
+                    assert_eq!(std::fs::read(&target).unwrap(), original);
+                } else {
+                    let actual: AgentTemplate =
+                        serde_yaml::from_slice(&std::fs::read(&target).unwrap()).unwrap();
+                    assert_eq!(actual.display_name, template.display_name);
+                }
+                assert_eq!(
+                    std::fs::symlink_metadata(&alias).is_ok(),
+                    managed || !delete
+                );
+            }
+        }
     }
 
     #[tokio::test]
