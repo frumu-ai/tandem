@@ -26,7 +26,7 @@ function fixture(exitCode = 0, stdout) {
         queueMicrotask(() => {
           if (bin === "tandem-setup") child.stdout.emit("data", Buffer.from(stdout ?? JSON.stringify({
             ok: exitCode === 0, engineHealth: { ready: exitCode === 0, healthy: exitCode === 0 },
-            panelHost: "127.0.0.1", panelPort: 45678,
+            panelHost: "127.0.0.1", panelPort: "45678",
             panelPublicUrl: "https://panel.example.test", engineUrl: "http://127.0.0.1:45679",
           })));
           child.emit("close", bin === "tandem-setup" ? exitCode : 0);
@@ -90,7 +90,7 @@ test("panel status rejects incomplete and wrongly typed doctor objects", async (
     invalid.push(missing);
   }
   for (const [field, values] of Object.entries({
-    ok: ["true", null], panelHost: [null, "", 123], panelPort: ["45678", 0, -1, 65536, 1.5],
+    ok: ["true", null], panelHost: [null, "", 123], panelPort: ["", "0", "65536", "1.5", "0x20", "4e2", 0, -1, 65536, 1.5],
     panelPublicUrl: [null, {}], engineUrl: [null, 123, ""],
     engineHealth: [null, {}, [], { ready: "true", healthy: true }, { ready: true },
       { ready: false, healthy: true }, { ready: true, healthy: false }],
@@ -112,4 +112,29 @@ test("panel status cannot turn a failed health report into success", async () =>
   }));
   assert.equal(await f.cli.handlePanelCommand("status", { argv: ["status"] }), 1);
   assert.ok(f.output.some((line) => line.includes("127.0.0.1:45678")));
+});
+
+test("wrapper consumes the real doctor report without losing configured addresses", async (t) => {
+  const { runDoctor } = await import("../../tandem-control-panel/lib/setup/doctor.js");
+  const root = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "tandem-wrapper-doctor-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const envFile = path.join(root, "panel.env");
+  const configuration = "TANDEM_CONTROL_PANEL_HOST=127.0.0.1\nTANDEM_CONTROL_PANEL_PORT=45678\nTANDEM_CONTROL_PANEL_PUBLIC_URL=https://panel.example.test\nTANDEM_ENGINE_URL=http://127.0.0.1:1\n";
+  fs.writeFileSync(envFile, configuration);
+  const report = await runDoctor({
+    cwd: root, envFile,
+    allowAmbientStateEnv: false, allowCwdEnvMerge: false,
+    env: {},
+  });
+  assert.equal(report.panelPort, "45678");
+  assert.equal(report.ok, false);
+  const f = fixture(1, JSON.stringify(report));
+  assert.equal(await f.cli.handlePanelCommand("status", { argv: ["status"] }), 1);
+  assert.ok(f.output.some((line) => line.includes("127.0.0.1:45678")));
+  assert.ok(f.output.some((line) => line.includes("127.0.0.1:1")));
+  assert.ok(f.output.every((line) => !line.includes("did not return")));
+  await f.cli.handlePanelCommand("open", { argv: ["open"] });
+  assert.deepEqual(f.calls.at(-1), ["xdg-open", "https://panel.example.test"]);
+  assert.deepEqual(fs.readdirSync(root), ["panel.env"]);
+  assert.equal(fs.readFileSync(envFile, "utf8"), configuration);
 });
