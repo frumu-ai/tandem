@@ -73,6 +73,21 @@ tandem panel doctor
 tandem panel open
 ```
 
+`tandem panel doctor --json` checks the installed panel/engine packages and the
+engine's current public health response. Its exit status is nonzero when the
+engine is unreachable, returns an invalid/error response, or reports either
+`ready` or `healthy` as false. Each check includes a stable code and a suggested
+next action. Doctor reads configuration without initializing state or changing
+credentials; use `init` explicitly when setup is missing.
+
+The result has `scope: "runtime-health"`. `ok` covers these basic checks only:
+it does not prove authenticated identity, current policy, functional model or
+storage access, backup recovery, or Company Brain activation. Those unperformed
+checks are represented by `authenticated: null`, `policyCurrent: null` and
+`solutionReady: false`. Every invocation fetches health again; no earlier green
+result is reused. Optional transcription/connector services are outside this
+basic health check and do not disable text-only diagnosis.
+
 ## Run Foreground
 
 ```bash
