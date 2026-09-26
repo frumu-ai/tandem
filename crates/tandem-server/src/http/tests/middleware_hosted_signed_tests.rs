@@ -163,7 +163,9 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
         .hosted_policy
         .configure_test_source("org-a", "dep-a", path.clone());
     let app = super::super::routes_automation_webhook_management::apply(
-        super::super::routes_routines_automations::apply(Router::new()),
+        super::super::routes_workflows::apply(super::super::routes_routines_automations::apply(
+            Router::new(),
+        )),
     )
     .route("/probe", get(probe))
     .layer(axum::middleware::from_fn_with_state(state.clone(), ingress))
@@ -186,6 +188,12 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
     );
     let bob = sign("bob", "member", 1);
     assert_eq!(request(&app, &bob).await.status(), StatusCode::OK);
+    for path in ["/workflows", "/automations", "/routines"] {
+        assert_eq!(
+            automation_request(&app, &bob, "GET", path).await.status(),
+            StatusCode::OK
+        );
+    }
 
     write_policy(&path, 2, Some("viewer"), now);
     state.reload_hosted_policy().await.unwrap();
@@ -240,6 +248,15 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
 
     // Ownership and default trigger scope must not bypass hosted operation grants.
     for (method, path) in [
+        ("GET", "/workflows"),
+        ("HEAD", "/workflows"),
+        ("GET", "/workflows/missing"),
+        ("POST", "/workflows/missing/run"),
+        ("POST", "/workflows/validate"),
+        ("POST", "/workflows/simulate"),
+        ("POST", "/workflows/runs/missing/gate"),
+        ("GET", "/workflow-hooks"),
+        ("PATCH", "/workflow-hooks/missing"),
         ("GET", "/automations/v2/private-alice/webhook-triggers"),
         ("HEAD", "/automations/v2/private-alice/webhook-triggers"),
         ("POST", "/automations/v2/private-alice/webhook-triggers"),
@@ -297,6 +314,37 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
             StatusCode::FORBIDDEN,
             "{method} {path}",
         );
+    }
+
+    for prefix in ["/automations", "/routines"] {
+        for (method, suffix) in [
+            ("GET", ""),
+            ("HEAD", ""),
+            ("POST", ""),
+            ("PATCH", "/missing"),
+            ("DELETE", "/missing"),
+            ("GET", "/events"),
+            ("GET", "/missing/history"),
+            ("GET", "/runs"),
+            ("GET", "/missing/runs"),
+            ("GET", "/runs/missing"),
+            ("POST", "/missing/run_now"),
+            ("POST", "/runs/missing/approve"),
+            ("POST", "/runs/missing/deny"),
+            ("POST", "/runs/missing/pause"),
+            ("POST", "/runs/missing/resume"),
+            ("GET", "/runs/missing/artifacts"),
+            ("POST", "/runs/missing/artifacts"),
+        ] {
+            let path = format!("{prefix}{suffix}");
+            assert_eq!(
+                automation_request(&app, &sign("alice", "viewer", 4), method, &path)
+                    .await
+                    .status(),
+                StatusCode::FORBIDDEN,
+                "{method} {path}"
+            );
+        }
     }
 
     // Explicit operation grants unlock only the corresponding surface. The
@@ -398,4 +446,25 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
     );
     assert!(state.get_automation_v2("private-alice").await.is_none());
     assert!(state.get_automation_v2("private-bob").await.is_some());
+}
+
+#[tokio::test]
+async fn hosted_policy_worker_readiness_waits_for_snapshot() {
+    let state = crate::test_support::test_state().await;
+    assert!(state.wait_until_ready_or_failed(0, 0).await);
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("policy.json");
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", path.clone());
+    assert!(!state.is_ready());
+    assert!(!state.wait_until_ready_or_failed(0, 0).await);
+    assert!(!state.wait_until_ready_or_failed(1, 0).await);
+    write_policy(&path, 1, Some("admin"), crate::now_ms());
+    state.reload_hosted_policy().await.unwrap();
+    assert!(state.is_ready());
+    assert!(state.wait_until_ready_or_failed(1, 0).await);
+    state.mark_failed("test", "expected failure").await;
+    assert!(!state.wait_until_ready_or_failed(1, 0).await);
 }

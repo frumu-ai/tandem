@@ -11,6 +11,40 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
     let method = request.method().as_str();
     let read = matches!(method, "GET" | "HEAD");
     use AccessPermission::*;
+    // The legacy automation and routine names are aliases for the same
+    // handlers and must preserve the same hosted operation boundary.
+    if let Some(suffix) = path
+        .strip_prefix("/automations")
+        .or_else(|| path.strip_prefix("/routines"))
+    {
+        let permission = match (method, suffix) {
+            (
+                _,
+                ""
+                | "/events"
+                | "/{id}/history"
+                | "/runs"
+                | "/{id}/runs"
+                | "/runs/{run_id}"
+                | "/runs/{run_id}/artifacts",
+            ) if read => Some(HostedAutomationRead),
+            ("POST", "" | "/runs/{run_id}/artifacts") | ("PATCH" | "DELETE", "/{id}") => {
+                Some(HostedAutomationWrite)
+            }
+            (
+                "POST",
+                "/{id}/run_now"
+                | "/runs/{run_id}/approve"
+                | "/runs/{run_id}/deny"
+                | "/runs/{run_id}/pause"
+                | "/runs/{run_id}/resume",
+            ) => Some(HostedAutomationExecute),
+            _ => None,
+        };
+        if permission.is_some() {
+            return permission;
+        }
+    }
     match (method, path) {
         (
             _,
@@ -65,9 +99,18 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
         }
         // Gate decisions keep their independent reviewer and governance checks.
         ("POST", "/automations/v2/runs/{run_id}/gate") => Some(HostedAutomationExecute),
-        (_, "/workflows/runs" | "/workflows/runs/{id}" | "/workflows/events") if read => {
-            Some(HostedWorkflowRead)
-        }
+        (
+            _,
+            "/workflows"
+            | "/workflows/{id}"
+            | "/workflows/runs"
+            | "/workflows/runs/{id}"
+            | "/workflows/events"
+            | "/workflow-hooks",
+        ) if read => Some(HostedWorkflowRead),
+        ("POST", "/workflows/simulate") => Some(HostedWorkflowRead),
+        ("POST", "/workflows/validate" | "/workflows/{id}/run" | "/workflows/runs/{id}/gate")
+        | ("PATCH", "/workflow-hooks/{id}") => Some(HostedUse),
         _ => None,
     }
 }
