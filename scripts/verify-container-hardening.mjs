@@ -82,6 +82,9 @@ function hasPinnedOsUpgrade(source) {
     // Mask shell strings/escapes before inspecting command boundaries. Keep a
     // placeholder for quoted arguments so they cannot disappear into a command.
     const shell = run.replace(/\\\r?\n/g, " ");
+    // The canonical upgrade instruction needs no expansion. Reject it even
+    // inside quotes: double-quoted substitutions still execute shell commands.
+    if (/[$`]/.test(shell)) return false;
     let quote = null;
     let commands = "";
     for (let i = 0; i < shell.length; i++) {
@@ -360,6 +363,8 @@ function selfTest() {
     "RUN ln -sf /bin/true /usr/bin/apt-get\nRUN apt-get -y --no-install-recommends upgrade",
     "COPY fake-apt /usr/bin/apt-get\nRUN apt-get -y --no-install-recommends upgrade",
     "ENV PATH=/fake\nRUN apt-get -y --no-install-recommends upgrade",
+    'RUN printf \'%s\\n\' "$(ln -sf /bin/true /usr/bin/apt-get)" > /etc/apt/sources.list && apt-get -y --no-install-recommends upgrade',
+    'RUN printf \'%s\\n\' "`ln -sf /bin/true /usr/bin/apt-get`" > /etc/apt/sources.list && apt-get -y --no-install-recommends upgrade',
     "# RUN apt-get -y --no-install-recommends upgrade",
     'RUN echo "apt-get -y --no-install-recommends upgrade"',
     'ENV NOTE="apt-get -y --no-install-recommends upgrade"',
