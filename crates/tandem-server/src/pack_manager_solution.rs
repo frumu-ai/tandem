@@ -249,6 +249,33 @@ pub(super) fn inspection(root: &Path, record: &PackInstallRecord) -> anyhow::Res
     }))
 }
 
+fn exceeds_import_compression_limit(size: u64, compressed_size: u64) -> bool {
+    size > compressed_size
+        .max(1)
+        .saturating_mul(MAX_ENTRY_COMPRESSION_RATIO.min(MAX_ARCHIVE_COMPRESSION_RATIO))
+}
+
+#[test]
+fn export_compression_limit_preserves_exact_boundary() {
+    let compressed = 30_521;
+    let limit = MAX_ENTRY_COMPRESSION_RATIO.min(MAX_ARCHIVE_COMPRESSION_RATIO);
+    assert!(!exceeds_import_compression_limit(
+        compressed * limit - 1,
+        compressed
+    ));
+    assert!(!exceeds_import_compression_limit(
+        compressed * limit,
+        compressed
+    ));
+    assert!(exceeds_import_compression_limit(
+        compressed * limit + 1,
+        compressed
+    ));
+    assert!(!exceeds_import_compression_limit(limit, 0));
+    assert!(exceeds_import_compression_limit(limit + 1, 0));
+    assert!(!exceeds_import_compression_limit(u64::MAX, u64::MAX));
+}
+
 pub(super) fn export(root: &Path, output: &Path, record: &PackInstallRecord) -> anyhow::Result<()> {
     let snapshot = snapshot(root)?;
     verify_installed(&snapshot, record)?;
@@ -269,9 +296,7 @@ pub(super) fn export(root: &Path, output: &Path, record: &PackInstallRecord) -> 
         std::io::Write::write_all(&mut candidate, bytes)?;
         let mut candidate = ZipArchive::new(candidate.finish()?)?;
         let entry = candidate.by_index(0)?;
-        if entry.size().saturating_div(entry.compressed_size().max(1))
-            > MAX_ENTRY_COMPRESSION_RATIO.min(MAX_ARCHIVE_COMPRESSION_RATIO)
-        {
+        if exceeds_import_compression_limit(entry.size(), entry.compressed_size()) {
             writer.start_file(path, options.compression_method(CompressionMethod::Stored))?;
             std::io::Write::write_all(&mut writer, bytes)?;
         } else {
