@@ -125,11 +125,12 @@ impl OrchestrationStateStore {
             }
             let prepared = prepare_customer_config(blueprint, config, CustomerConfigInput {
                 current_revision: current.as_ref().map(|stored| stored.version.sha256.as_str()),
+                current_solution_id: current.as_ref().map(|stored| stored.config.solution_id.as_str()),
                 ..input
             })?;
             let blueprint_sha256 = blueprint_hash(blueprint)?;
             if let Some(stored) = current.as_ref().filter(|stored|
-                stored.version.sha256 == prepared.request.customer_config_revision
+                stored.version.sha256 == prepared.revision()
                 && stored.blueprint_sha256 == blueprint_sha256) {
                 transaction.commit()?;
                 return Ok(stored.clone());
@@ -139,7 +140,7 @@ impl OrchestrationStateStore {
                 .ok_or_else(|| anyhow::anyhow!("customer configuration generation exhausted"))?;
             let stored = StoredCustomerConfig {
                 config: config.clone(),
-                version: CustomerConfigVersion { generation, sha256: prepared.request.customer_config_revision },
+                version: CustomerConfigVersion { generation, sha256: prepared.revision().to_owned() },
                 blueprint_sha256,
                 updated_by: input.verified_context.human_actor.actor_id.clone(),
                 updated_at_ms: input.now_ms,
@@ -200,7 +201,18 @@ UPDATE schema_metadata SET schema_version = 6;
 pub(super) fn migrate_sqlite(connection: &mut rusqlite::Connection) -> anyhow::Result<()> {
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    transaction.execute_batch(SCHEMA_V6)?;
+    // Another connection may have migrated after the caller read the version.
+    // Recheck while holding the write lock before applying any schema changes.
+    let version: i64 = transaction.query_row(
+        "SELECT schema_version FROM schema_metadata LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    match version {
+        5 => transaction.execute_batch(SCHEMA_V6)?,
+        6 => {}
+        _ => anyhow::bail!("unsupported schema version for customer config migration: {version}"),
+    }
     transaction.commit()?;
     Ok(())
 }
