@@ -21,6 +21,13 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
             | "/automations/v2/{id}/runs"
             | "/automations/v2/runs/{run_id}"
             | "/automations/v2/{id}/handoffs"
+            | "/automations/v2/{id}/webhook-triggers"
+            | "/automations/v2/{id}/webhook-triggers/{trigger_id}"
+            | "/automations/v2/{id}/webhook-triggers/{trigger_id}/deliveries"
+            | "/automations/v2/{id}/webhook-triggers/{trigger_id}/deliveries/{delivery_id}"
+            | "/automations/v2/webhook-events"
+            | "/automations/v2/webhook-events/{event_id}"
+            | "/automations/v2/runs/{run_id}/webhook-events"
             | "/automations/v2/graduation/summary"
             | "/automations/v2/runs/{run_id}/tasks/{node_id}/reset_preview",
         ) if read => Some(HostedAutomationRead),
@@ -42,6 +49,16 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
             | "/automations/v2/runs/{run_id}/backlog/tasks/{task_id}/requeue",
         ) => Some(HostedAutomationExecute),
         ("POST", "/automations/v2")
+        | ("POST", "/automations/v2/{id}/webhook-triggers")
+        | ("PATCH" | "DELETE", "/automations/v2/{id}/webhook-triggers/{trigger_id}")
+        | (
+            "POST",
+            "/automations/v2/{id}/webhook-triggers/{trigger_id}/disable"
+            | "/automations/v2/{id}/webhook-triggers/{trigger_id}/rotate-secret"
+            | "/automations/v2/{id}/webhook-triggers/{trigger_id}/reveal-verification-token"
+            | "/automations/v2/{id}/webhook-triggers/{trigger_id}/reset-verification"
+            | "/automations/v2/{id}/webhook-triggers/{trigger_id}/import-secret",
+        )
         | ("PATCH" | "DELETE", "/automations/v2/{id}")
         | ("PATCH", "/automations/v2/runs/{run_id}/tasks/{node_id}/disposition") => {
             Some(HostedAutomationWrite)

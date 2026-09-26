@@ -162,10 +162,12 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
         .enterprise
         .hosted_policy
         .configure_test_source("org-a", "dep-a", path.clone());
-    let app = super::super::routes_routines_automations::apply(Router::new())
-        .route("/probe", get(probe))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), ingress))
-        .with_state(state.clone());
+    let app = super::super::routes_automation_webhook_management::apply(
+        super::super::routes_routines_automations::apply(Router::new()),
+    )
+    .route("/probe", get(probe))
+    .layer(axum::middleware::from_fn_with_state(state.clone(), ingress))
+    .with_state(state.clone());
     let now = crate::now_ms();
     let sign = |actor, role, version| {
         super::tests::sign_test_context_assertion(&key, "key-a", claims(actor, role, version, now))
@@ -236,16 +238,127 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
         StatusCode::FORBIDDEN
     );
 
+    // Ownership and default trigger scope must not bypass hosted operation grants.
+    for (method, path) in [
+        ("GET", "/automations/v2/private-alice/webhook-triggers"),
+        ("HEAD", "/automations/v2/private-alice/webhook-triggers"),
+        ("POST", "/automations/v2/private-alice/webhook-triggers"),
+        (
+            "GET",
+            "/automations/v2/private-alice/webhook-triggers/trigger",
+        ),
+        (
+            "PATCH",
+            "/automations/v2/private-alice/webhook-triggers/trigger",
+        ),
+        (
+            "DELETE",
+            "/automations/v2/private-alice/webhook-triggers/trigger",
+        ),
+        (
+            "POST",
+            "/automations/v2/private-alice/webhook-triggers/trigger/disable",
+        ),
+        (
+            "POST",
+            "/automations/v2/private-alice/webhook-triggers/trigger/rotate-secret",
+        ),
+        (
+            "POST",
+            "/automations/v2/private-alice/webhook-triggers/trigger/reveal-verification-token",
+        ),
+        (
+            "POST",
+            "/automations/v2/private-alice/webhook-triggers/trigger/reset-verification",
+        ),
+        (
+            "POST",
+            "/automations/v2/private-alice/webhook-triggers/trigger/import-secret",
+        ),
+        (
+            "GET",
+            "/automations/v2/private-alice/webhook-triggers/trigger/deliveries",
+        ),
+        (
+            "GET",
+            "/automations/v2/private-alice/webhook-triggers/trigger/deliveries/delivery",
+        ),
+        ("GET", "/automations/v2/webhook-events"),
+        (
+            "GET",
+            "/automations/v2/webhook-events/event?includePayload=true",
+        ),
+        ("GET", "/automations/v2/runs/run/webhook-events"),
+    ] {
+        assert_eq!(
+            automation_request(&app, &sign("alice", "viewer", 4), method, path)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN,
+            "{method} {path}",
+        );
+    }
+
     // Explicit operation grants unlock only the corresponding surface. The
     // existing per-resource ownership check must still hide Bob's private row.
     write_policy(&path, 5, Some("viewer"), now);
     let mut policy: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     policy["deployment_grants"] = json!([{"id": "grant-alice", "deployment_id": "dep-a",
         "principal_kind": "member", "principal_id": "alice", "resource_kind": "deployment", "resource_id": "dep-a",
-        "permissions": ["automation.read", "automation.write"]}]);
+        "permissions": ["automation.read"]}]);
     std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
     state.reload_hosted_policy().await.unwrap();
     let fresh = sign("alice", "viewer", 5);
+    assert_eq!(
+        automation_request(
+            &app,
+            &fresh,
+            "GET",
+            "/automations/v2/private-alice/webhook-triggers"
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        automation_request(
+            &app,
+            &fresh,
+            "GET",
+            "/automations/v2/private-bob/webhook-triggers"
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        automation_request(
+            &app,
+            &fresh,
+            "POST",
+            "/automations/v2/private-alice/webhook-triggers/trigger/disable"
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    policy["policy_version"] = json!(6);
+    policy["deployment_grants"][0]["permissions"] = json!(["automation.read", "automation.write"]);
+    std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    state.reload_hosted_policy().await.unwrap();
+    let fresh = sign("alice", "viewer", 6);
+    // With write authority, the handler runs and still requires a real trigger.
+    assert_eq!(
+        automation_request(
+            &app,
+            &fresh,
+            "POST",
+            "/automations/v2/private-alice/webhook-triggers/trigger/disable"
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
     let response = automation_request(&app, &fresh, "GET", "/automations/v2").await;
     assert_eq!(response.status(), StatusCode::OK);
     let value: Value =
