@@ -1,5 +1,5 @@
 #[derive(Clone)]
-struct McpToolDispatchBinding {
+pub(crate) struct McpToolDispatchBinding {
     registry: McpRegistry,
     server_name: String,
     tool_name: String,
@@ -33,6 +33,16 @@ impl McpToolDispatchBinding {
         let server = servers
             .get(&self.server_name)
             .ok_or_else(|| "MCP connector was removed before dispatch".to_string())?;
+        let owner = McpPrincipalRef::from_tenant_context(&self.tenant);
+        let connection_id = mcp_connection_id(&self.server_name, &self.tenant, &owner);
+        self.validate_snapshot(server, connections.get(&connection_id))
+    }
+
+    fn validate_snapshot(
+        &self,
+        server: &McpServer,
+        connection: Option<&McpConnection>,
+    ) -> Result<(), String> {
         if !server.enabled
             || !mcp_tool_is_allowed(server, &self.tool_name)
             || server_dispatch_policy(server) != self.server_policy
@@ -42,9 +52,6 @@ impl McpToolDispatchBinding {
         // Both registries stay stable for this check, without waiting on a
         // mutation or holding either lock across network I/O.
         if let Some(expected) = &self.connection_generation {
-            let owner = McpPrincipalRef::from_tenant_context(&self.tenant);
-            let connection_id = mcp_connection_id(&self.server_name, &self.tenant, &owner);
-            let connection = connections.get(&connection_id);
             if !connection.is_some_and(|connection| {
                 connection.enabled && connection.connection_generation == *expected
             }) {
