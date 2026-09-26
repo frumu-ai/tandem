@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::ensure;
 use tandem_orchestrator::{AgentTemplate, SolutionTemplateOwner};
-use tandem_solutions::{canonical_json, sha256, MAX_ARTIFACT_BYTES};
+use tandem_solutions::{canonical_json, sha256, solution_resource_id, MAX_ARTIFACT_BYTES};
 
 use super::AgentTeamRuntime;
 
@@ -34,7 +34,7 @@ impl AgentTeamRuntime {
         let fingerprint = sha256(&payload);
         let _operation = self.template_persistence.lock().await;
         self.ensure_loaded_for_workspace(workspace_root).await?;
-        let path = PathBuf::from(workspace_root)
+        let path = PathBuf::from(workspace_root.trim())
             .join(".tandem/agent-team/templates")
             .join(Self::template_filename(&template.template_id));
         // Existing YAML/JSON aliases must not create duplicate template IDs.
@@ -90,6 +90,17 @@ fn validate_owner(template: &AgentTemplate, owner: &SolutionTemplateOwner) -> an
         template.solution_owner.is_none(),
         "artifact must not supply installation ownership"
     );
+    ensure!(
+        template.template_id
+            == solution_resource_id(
+                &owner.org_id,
+                &owner.workspace_id,
+                &owner.deployment_id,
+                &owner.instance_id,
+                &owner.component_id,
+            )?,
+        "solution template resource ID does not match its owner"
+    );
     Ok(())
 }
 
@@ -98,6 +109,11 @@ fn persist_disabled(path: &Path, payload: &[u8]) -> anyhow::Result<()> {
         .parent()
         .ok_or_else(|| anyhow::anyhow!("missing template directory"))?;
     std::fs::create_dir_all(parent)?;
+    let template: AgentTemplate = serde_json::from_slice(payload)?;
+    if let Some(existing) = existing_template_path(parent, &template.template_id)? {
+        // Verify the actual durable alias, not only a possibly stale cache.
+        return verify_disabled(&existing, payload);
+    }
     let temporary = parent.join(format!(".solution-{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| {
         let mut options = std::fs::OpenOptions::new();
@@ -118,34 +134,70 @@ fn persist_disabled(path: &Path, payload: &[u8]) -> anyhow::Result<()> {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
             Err(error) => return Err(error.into()),
         }
-        ensure!(
-            std::fs::symlink_metadata(path)?.file_type().is_file(),
-            "solution template destination is not a regular file"
-        );
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)?;
-        let mut existing = Vec::new();
-        (&file)
-            .take(MAX_ARTIFACT_BYTES as u64 + 1)
-            .read_to_end(&mut existing)?;
-        ensure!(
-            existing.len() <= MAX_ARTIFACT_BYTES,
-            "existing template is too large"
-        );
-        let observed: AgentTemplate = serde_yaml::from_slice(&existing)?;
-        ensure!(
-            canonical_json(&observed)? == payload,
-            "solution template ownership or content conflict"
-        );
-        file.sync_all()?;
-        #[cfg(unix)]
-        std::fs::File::open(parent)?.sync_all()?;
-        Ok(())
+        verify_disabled(path, payload)
     })();
     let _ = std::fs::remove_file(temporary);
     result
+}
+
+fn existing_template_path(parent: &Path, template_id: &str) -> anyhow::Result<Option<PathBuf>> {
+    let mut found = None;
+    for entry in std::fs::read_dir(parent)? {
+        let path = entry?.path();
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(extension.as_str(), "yaml" | "yml" | "json") {
+            continue;
+        }
+        // Match native discovery for unrelated templates (including symlinks and
+        // large user-authored templates). The selected destination is validated
+        // separately by verify_disabled before it can be adopted.
+        if !path.is_file() {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path)?;
+        let observed: AgentTemplate = serde_yaml::from_str(&raw)?;
+        if observed.template_id == template_id {
+            ensure!(found.is_none(), "duplicate solution template aliases");
+            found = Some(path);
+        }
+    }
+    Ok(found)
+}
+
+fn verify_disabled(path: &Path, payload: &[u8]) -> anyhow::Result<()> {
+    ensure!(
+        std::fs::symlink_metadata(path)?.file_type().is_file(),
+        "solution template destination is not a regular file"
+    );
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let mut existing = Vec::new();
+    (&file)
+        .take(MAX_ARTIFACT_BYTES as u64 + 1)
+        .read_to_end(&mut existing)?;
+    ensure!(
+        existing.len() <= MAX_ARTIFACT_BYTES,
+        "existing template is too large"
+    );
+    let observed: AgentTemplate = serde_yaml::from_slice(&existing)?;
+    ensure!(
+        canonical_json(&observed)? == payload,
+        "solution template ownership or content conflict"
+    );
+    file.sync_all()?;
+    #[cfg(unix)]
+    std::fs::File::open(
+        path.parent()
+            .ok_or_else(|| anyhow::anyhow!("missing template directory"))?,
+    )?
+    .sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -157,7 +209,6 @@ mod tests {
             "../../../tandem-solutions/fixtures/company-brain-text/agents/central-brain.json"
         ))
         .unwrap();
-        template.template_id = "solution-test-central-brain".into();
         let owner = SolutionTemplateOwner {
             org_id: "org-a".into(),
             workspace_id: "workspace-a".into(),
@@ -166,6 +217,14 @@ mod tests {
             component_id: "central-brain".into(),
             composition_sha256: "a".repeat(64),
         };
+        template.template_id = solution_resource_id(
+            &owner.org_id,
+            &owner.workspace_id,
+            &owner.deployment_id,
+            &owner.instance_id,
+            &owner.component_id,
+        )
+        .unwrap();
         (template, owner)
     }
 
@@ -325,7 +384,8 @@ mod tests {
         template.solution_owner = None;
         let path = dir
             .path()
-            .join(".tandem/agent-team/templates/solution-test-central-brain.yaml");
+            .join(".tandem/agent-team/templates")
+            .join(format!("{}.yaml", template.template_id));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let manual = canonical_json(&template).unwrap();
         std::fs::write(&path, &manual).unwrap();
@@ -334,5 +394,161 @@ mod tests {
             .await
             .is_err());
         assert_eq!(std::fs::read(&path).unwrap(), manual);
+    }
+
+    #[tokio::test]
+    async fn native_stage_rejects_resource_identity_substitution_without_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_str().unwrap();
+        let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+        let (template, owner) = fixture();
+        for field in ["org", "workspace", "deployment", "instance", "component"] {
+            let mut changed = owner.clone();
+            match field {
+                "org" => changed.org_id.push_str("-other"),
+                "workspace" => changed.workspace_id.push_str("-other"),
+                "deployment" => changed.deployment_id.push_str("-other"),
+                "instance" => changed.instance_id.push_str("-other"),
+                "component" => changed.component_id.push_str("-other"),
+                _ => unreachable!(),
+            }
+            assert!(
+                runtime
+                    .stage_solution_template(workspace, template.clone(), changed)
+                    .await
+                    .is_err(),
+                "{field}"
+            );
+        }
+        let mut arbitrary = template;
+        arbitrary.template_id = "solution-unbound-central-brain".into();
+        assert!(runtime
+            .stage_solution_template(workspace, arbitrary, owner)
+            .await
+            .is_err());
+        assert!(!dir.path().join(".tandem").exists());
+        assert!(runtime.templates.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_stage_reconciles_aliases_and_rechecks_durable_content() {
+        for extension in ["json", "yml", "YAML"] {
+            let dir = tempfile::tempdir().unwrap();
+            let workspace = dir.path().to_str().unwrap();
+            let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+            let (template, owner) = fixture();
+            let mut installed = template.clone();
+            installed.enabled = false;
+            installed.solution_owner = Some(owner.clone());
+            let directory = dir.path().join(".tandem/agent-team/templates");
+            std::fs::create_dir_all(&directory).unwrap();
+            let alias = directory.join(format!("existing-resource.{extension}"));
+            let bytes = canonical_json(&installed).unwrap();
+            std::fs::write(&alias, &bytes).unwrap();
+            assert_eq!(
+                runtime
+                    .stage_solution_template(workspace, template.clone(), owner.clone())
+                    .await
+                    .unwrap(),
+                sha256(&bytes)
+            );
+            assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+            assert_eq!(std::fs::read(&alias).unwrap(), bytes);
+            installed.system_prompt = Some("changed on disk after cache load".into());
+            std::fs::write(&alias, canonical_json(&installed).unwrap()).unwrap();
+            assert!(runtime
+                .stage_solution_template(workspace, template, owner)
+                .await
+                .is_err());
+            assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_stage_preserves_unrelated_large_templates() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_str().unwrap();
+        let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+        let directory = dir.path().join(".tandem/agent-team/templates");
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut unrelated = fixture().0;
+        unrelated.template_id = "user-worker".into();
+        unrelated.system_prompt = Some("x".repeat(MAX_ARTIFACT_BYTES + 1));
+        let bytes = canonical_json(&unrelated).unwrap();
+        let path = directory.join("worker.json");
+        std::fs::write(&path, &bytes).unwrap();
+        let (template, owner) = fixture();
+        runtime
+            .stage_solution_template(workspace, template, owner)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(runtime
+            .get_template_for_workspace(workspace, "user-worker")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_stage_preserves_unrelated_symlinks_but_rejects_matching_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_str().unwrap();
+        let directory = dir.path().join(".tandem/agent-team/templates");
+        std::fs::create_dir_all(&directory).unwrap();
+        let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+        let mut unrelated = fixture().0;
+        unrelated.template_id = "user-worker".into();
+        let external = dir.path().join("external.json");
+        let bytes = canonical_json(&unrelated).unwrap();
+        std::fs::write(&external, &bytes).unwrap();
+        let alias = directory.join("worker.json");
+        std::os::unix::fs::symlink(&external, &alias).unwrap();
+        let (template, owner) = fixture();
+        runtime
+            .stage_solution_template(workspace, template.clone(), owner.clone())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&external).unwrap(), bytes);
+        assert!(std::fs::symlink_metadata(&alias)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let mut matching = template.clone();
+        matching.enabled = false;
+        matching.solution_owner = Some(owner.clone());
+        let matching_bytes = canonical_json(&matching).unwrap();
+        std::fs::write(&external, &matching_bytes).unwrap();
+        assert!(runtime
+            .stage_solution_template(workspace, template, owner)
+            .await
+            .is_err());
+        assert_eq!(std::fs::read(&external).unwrap(), matching_bytes);
+    }
+
+    #[tokio::test]
+    async fn native_stage_persists_in_the_normalized_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_str().unwrap();
+        let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+        let (template, owner) = fixture();
+        runtime
+            .stage_solution_template(&format!(" {workspace} "), template.clone(), owner)
+            .await
+            .unwrap();
+        let restarted = AgentTeamRuntime::new(dir.path().join("audit"));
+        let restored = restarted
+            .get_template_for_workspace(workspace, &template.template_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!restored.enabled);
+        assert_eq!(
+            std::fs::read_dir(dir.path().join(".tandem/agent-team/templates"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 }

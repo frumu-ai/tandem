@@ -1565,6 +1565,22 @@ pub(crate) async fn execute_automation_v2_node(
     let start_prompt_tokens = run.prompt_tokens;
     let start_completion_tokens = run.completion_tokens;
 
+    // Validate before every execution path, including artifact reuse and
+    // deterministic output shortcuts that do not invoke the model runner.
+    let workspace_root = resolve_automation_v2_workspace_root(state, automation).await;
+    let template = if let Some(template_id) = agent.template_id.as_deref().map(str::trim) {
+        if template_id.is_empty() {
+            None
+        } else {
+            resolve_automation_agent_template(state, &workspace_root, template_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("agent template `{}` not found", template_id))
+                .map(Some)?
+        }
+    } else {
+        None
+    };
+
     // Phase 5: Check PreexistingArtifactRegistry (MWF-300)
     let prevalidated = {
         let scheduler = state.automation_scheduler.read().await;
@@ -1589,7 +1605,6 @@ pub(crate) async fn execute_automation_v2_node(
     };
 
     if let Some((Some(output_path), Some(content_digest))) = prevalidated {
-        let workspace_root = resolve_automation_v2_workspace_root(state, automation).await;
         let resolved =
             resolve_automation_output_path_for_run(&workspace_root, run_id, &output_path)?;
         if resolved.exists() {
@@ -1650,7 +1665,6 @@ pub(crate) async fn execute_automation_v2_node(
         .get(&node.node_id)
         .copied()
         .unwrap_or(1);
-    let workspace_root = resolve_automation_v2_workspace_root(state, automation).await;
     let upstream_inputs = build_automation_v2_upstream_inputs(&run, node, &workspace_root)?;
     let workspace_path = PathBuf::from(&workspace_root);
     if !workspace_path.exists() {
@@ -1754,18 +1768,6 @@ pub(crate) async fn execute_automation_v2_node(
         }
         return Ok(output);
     }
-    let template = if let Some(template_id) = agent.template_id.as_deref().map(str::trim) {
-        if template_id.is_empty() {
-            None
-        } else {
-            resolve_automation_agent_template(state, &workspace_root, template_id)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("agent template `{}` not found", template_id))
-                .map(Some)?
-        }
-    } else {
-        None
-    };
     let tenant_context = automation.tenant_context();
     let mut session = Session::new(
         Some(format!(
