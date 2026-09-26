@@ -60,7 +60,10 @@ function dockerInstructions(source) {
   const instructions = [];
   let pending = "";
   for (const line of source.split(/\r?\n/)) {
-    if (/^\s*(?:#|$)/.test(line)) continue;
+    if (/^[ \t]*(?:#|$)/.test(line)) continue;
+    // Docker/shell separators are not JavaScript's Unicode whitespace set.
+    // Reject unsupported whitespace before any trim or token normalization.
+    if (/[^\S \t]/u.test(line)) return [];
     const continued = line.endsWith("\\");
     pending += continued ? line.slice(0, -1) : line;
     if (!continued) {
@@ -119,8 +122,8 @@ function hasPinnedOsUpgrade(source, name) {
     // The canonical upgrade instruction needs no expansion. Reject it even
     // inside quotes: double-quoted substitutions still execute shell commands.
     if (/[$`]/.test(shell)) return false;
-    const literalSteps = shell.replace(/^RUN\s+/i, "").split(/\s*&&\s*/)
-      .map((step) => step.trim().replace(/\s+/g, " "));
+    const literalSteps = shell.replace(/^RUN[ \t]+/i, "").split(/[ \t]*&&[ \t]*/)
+      .map((step) => step.trim().replace(/[ \t]+/g, " "));
     if (!PINNED_OS_STEPS.every((step, index) => literalSteps[index] === step)) return false;
     const suffix = literalSteps.slice(PINNED_OS_STEPS.length);
     if (suffix[0] !== PINNED_OS_CLEANUP || !(
@@ -188,6 +191,35 @@ export function parsePinnedEngineVersion(source) {
   return EXACT_SEMVER.test(value) ? value : "";
 }
 
+// Keep the canonical physical layout consumed by release workflow sed commands,
+// but also inspect logical ENV assignments so hidden effective overrides cannot
+// evade either the image verifier or the candidate/release pin classifier.
+export function parsePinnedEngineRelease(source) {
+  const version = parsePinnedEngineVersion(source);
+  const hashes = [...source.matchAll(/^[ \t]*TANDEM_ENGINE_BINARY_SHA256=([0-9a-f]{64}) \\$/gm)];
+  const versions = [...source.matchAll(/^[ \t]*TANDEM_ENGINE_VERSION=/gm)];
+  const hash = hashes[0]?.[1];
+  if (!version || versions.length !== 1 || hashes.length !== 1) return null;
+  const assignments = new Map();
+  const instructions = dockerInstructions(source);
+  if (instructions.length === 0) return null;
+  for (const line of instructions) {
+    if (!/^ENV[ \t]/i.test(line)) continue;
+    for (const entry of line.slice(4).trim().split(/[ \t]+/)) {
+      const match = entry.match(/^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:+-]+)$/);
+      if (!match) return null;
+      const [, key, value] = match;
+      if (key === "TANDEM_ENGINE_VERSION" || key === "TANDEM_ENGINE_BINARY_SHA256") {
+        if (assignments.has(key)) return null;
+        assignments.set(key, value);
+      }
+    }
+  }
+  if (assignments.get("TANDEM_ENGINE_VERSION") !== version ||
+      assignments.get("TANDEM_ENGINE_BINARY_SHA256") !== hash) return null;
+  return { version, hash };
+}
+
 export async function verifyContainerHardening(
   root = process.cwd(),
   { expectedEngineVersion } = {}
@@ -249,6 +281,7 @@ export async function verifyContainerHardening(
   }
 
   const engineVersion = parsePinnedEngineVersion(engineDockerfile);
+  if (!parsePinnedEngineRelease(engineDockerfile)) errors.push("engine image must have exactly one canonical release version and SHA-256 ENV assignment");
   if (!engineVersion) errors.push("engine image must pin an exact semantic version in the image");
   if (engineVersion && engineVersion !== String(enginePackage.version || "")) {
     errors.push(
@@ -380,6 +413,10 @@ async function selfTest() {
     if (!hasPinnedOsUpgrade(source, `${name} Dockerfile`)) throw new Error(`unapproved current ${name} upgrade`);
     const role = name === "engine" ? "engine" : "panel";
     const opposite = role === "engine" ? "panel" : "engine";
+    for (const separator of ["\u00a0", "\u2003", "\ufeff", "\v", "\f"]) {
+      const mutation = source.replace(PINNED_OS_CLEANUP, `rm -rf /var/lib/apt/lists/*${separator}/etc/apt/sources.list`);
+      if (hasPinnedOsUpgrade(mutation, `${name} Dockerfile`)) throw new Error(`accepted non-shell whitespace in ${name}`);
+    }
     for (const mutation of [
       source.replace(`HOME=/var/lib/tandem/${role}`, `HOME=/var/lib/tandem/${opposite}`),
       source.replace(`XDG_CACHE_HOME=/var/lib/tandem/${role}/.cache`, `XDG_CACHE_HOME=/var/lib/tandem/${opposite}/.cache`),
