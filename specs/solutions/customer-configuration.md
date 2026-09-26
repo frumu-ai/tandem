@@ -1,9 +1,11 @@
 # Customer configuration contract (TAN-827)
 
 The existing `tandem-solutions` planner now accepts a separate versioned customer
-document through `parse_customer_config` and `prepare_customer_config`. Pass the
-prepared `InstallRequest` and narrowed `deployment_policy` to the existing
-`resolve` function. This remains pure planning; it does not install resources,
+document through `parse_customer_config` and `prepare_customer_config`. Call the
+opaque preparation's `resolve` method with fresh trusted `CustomerResolutionInput`.
+It rechecks the exact blueprint, current full authority and host policy. The raw
+`resolve` API remains available for legacy planning but does not attest customer
+preparation. This remains pure planning; it does not install resources,
 create identities, grant data access or persist configuration.
 
 `fixtures/company-brain-text/customer-a.yaml` and `customer-b.yaml` bind the same
@@ -45,7 +47,9 @@ endpoint. Never log this customer-owned document as public diagnostic output.
 
 All customer-owned fields participate in the canonical SHA-256 revision, including
 references and memory labels. The caller supplies current and expected revisions;
-`None`/`None` is an explicit new installation. A mismatch blocks preparation.
+`None`/`None` is an explicit new installation. The trusted `current_solution_id`
+must accompany an existing revision and match the document's stable solution ID;
+both current fields must be absent for a new installation. A mismatch blocks preparation.
 The future apply adapter must repeat authorization and compare-and-swap this
 revision within its persistence transaction. A pure comparison is not atomic
 installation evidence or a durable retry receipt.
@@ -56,11 +60,12 @@ with blueprint ceilings; it cannot enable forbidden egress, add a provider or
 raise token, concurrency or spending limits. A customer configuration revision
 is not itself a verified policy revision.
 
-The prepared result retains a customer-owned `customer_config` snapshot,
+The prepared result exposes a read-only `customer_config()` snapshot,
 including the validated profile, timezone/locale, secret/data references and
-concrete memory bindings. Its hash is `request.customer_config_revision`.
-Runtime adapters consume this snapshot alongside the resolved plan and narrowed
-`deployment_policy`; they must not reread a mutable document or treat the
+concrete memory bindings. Its hash is returned by `revision()`.
+The raw request and policy are private and the preparation is not serializable.
+Runtime adapters consume this snapshot alongside the resolved plan;
+they must not reread a mutable document or treat the
 snapshot as permission to activate. It must not be included in shareable exports.
 
 Every blueprint memory space requires a matching declaration. Private subjects,

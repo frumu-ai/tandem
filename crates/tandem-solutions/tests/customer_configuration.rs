@@ -74,6 +74,7 @@ impl Fixture {
                 selected_scope: &self.config.scope,
                 now_ms: 1500,
                 current_revision: current,
+                current_solution_id: current.map(|_| "tandem.company-brain"),
                 expected_revision: expected,
                 host_policy: &self.blueprint.constraints,
                 approved_references: &self.refs,
@@ -86,6 +87,12 @@ impl Fixture {
     }
     fn plan(&self) -> ResolvedPlan {
         let prepared = self.prepare(None, None).unwrap();
+        self.resolve_prepared(&prepared).unwrap()
+    }
+    fn resolve_prepared(
+        &self,
+        prepared: &PreparedCustomerConfig,
+    ) -> Result<ResolvedPlan, SolutionError> {
         let models = serde_json::from_str(include_str!(
             "../fixtures/company-brain-text/host-models.json"
         ))
@@ -94,21 +101,84 @@ impl Fixture {
             "central-brain".into(),
             include_bytes!("../fixtures/company-brain-text/agents/central-brain.json").to_vec(),
         )]);
-        resolve(
+        prepared.resolve(
             &self.blueprint,
-            ResolutionInput {
-                request: &prepared.request,
+            CustomerResolutionInput {
                 verified_context: &self.context,
                 now_ms: 1500,
                 engine_version: "0.7.2",
-                deployment_policy: &prepared.deployment_policy,
+                host_policy: &self.blueprint.constraints,
                 available_deployment_requirements: &self.blueprint.deployment_requirements,
                 approved_models: &models,
                 artifacts: &artifacts,
             },
         )
-        .unwrap()
     }
+}
+
+#[test]
+fn existing_customer_installation_cannot_switch_solution_identity() {
+    let mut f = Fixture::new(A, "a");
+    let revision = customer_config_revision(&f.config).unwrap();
+    f.config.solution_id = "different.solution".into();
+    f.blueprint.solution.id = f.config.solution_id.clone();
+    assert!(f.prepare(Some(&revision), Some(&revision)).is_err());
+}
+
+#[test]
+fn prepared_customer_configuration_cannot_cross_resolver_scope() {
+    let a = Fixture::new(A, "a");
+    let prepared = a.prepare(None, None).unwrap();
+    assert!(a.resolve_prepared(&prepared).is_ok());
+    let b = Fixture::new(B, "b");
+    assert!(b.resolve_prepared(&prepared).is_err());
+}
+
+#[test]
+fn preparation_rechecks_blueprint_and_current_authority_but_allows_assertion_rotation() {
+    let mut f = Fixture::new(A, "a");
+    let prepared = f.prepare(None, None).unwrap();
+    f.context.issued_at_ms = 1200;
+    f.context.expires_at_ms = 2200;
+    assert!(f.resolve_prepared(&prepared).is_ok());
+    let original = f.context.clone();
+    f.context.expires_at_ms = 1400;
+    assert!(f.resolve_prepared(&prepared).is_err());
+    f.context = original.clone();
+    f.context.issued_at_ms = 1600;
+    assert!(f.resolve_prepared(&prepared).is_err());
+    f.context = original.clone();
+    f.context.capabilities.push("new-capability".into());
+    assert_eq!(
+        f.resolve_prepared(&prepared).unwrap_err().code,
+        "customer_authority_changed"
+    );
+    f.context = original.clone();
+    f.context.tenant_context.workspace_id = "other-workspace".into();
+    assert_eq!(
+        f.resolve_prepared(&prepared).unwrap_err().code,
+        "customer_authority_changed"
+    );
+    f.context = original;
+    f.blueprint.solution.version = "0.2.0".into();
+    assert_eq!(
+        f.resolve_prepared(&prepared).unwrap_err().code,
+        "customer_blueprint_changed"
+    );
+    let upgraded = f.prepare(None, None).unwrap();
+    assert!(f.resolve_prepared(&upgraded).is_ok());
+}
+
+#[test]
+fn customer_memory_bindings_accept_authorized_enterprise_ids() {
+    let mut f = Fixture::new(A, "a");
+    let project_id = "P".repeat(96);
+    f.projects.insert(project_id.clone());
+    f.config.memory_spaces.insert(
+        "projects".into(),
+        CustomerMemorySpace::Project { project_id },
+    );
+    assert!(f.prepare(None, None).is_ok());
 }
 
 #[test]
@@ -304,18 +374,18 @@ fn prepared_customer_snapshot_preserves_validated_bindings_and_revision() {
         .insert("mail".into(), "secret-ref:synthetic-mail-a".into());
     f.refs.insert("secret-ref:synthetic-mail-a".into());
     let prepared = f.prepare(None, None).unwrap();
-    assert_eq!(prepared.customer_config, f.config);
+    assert_eq!(prepared.customer_config(), &f.config);
     assert_eq!(
-        customer_config_revision(&prepared.customer_config).unwrap(),
-        prepared.request.customer_config_revision,
+        customer_config_revision(prepared.customer_config()).unwrap(),
+        prepared.revision(),
     );
     // Later caller edits must not change the validated snapshot or its hash.
     f.config.profile_ref = "profile-ref:unapproved".into();
     f.config.locale = "fr".into();
     f.config.secret_refs.clear();
-    assert_ne!(prepared.customer_config, f.config);
+    assert_ne!(prepared.customer_config(), &f.config);
     assert_eq!(
-        prepared.customer_config.secret_refs["mail"],
+        prepared.customer_config().secret_refs["mail"],
         "secret-ref:synthetic-mail-a"
     );
     assert_eq!(
@@ -352,6 +422,7 @@ fn selected_install_expiry_and_connector_generation_cannot_come_from_config() {
             selected_scope: &selected,
             now_ms: 1500,
             current_revision: None,
+            current_solution_id: None,
             expected_revision: None,
             host_policy: &f.blueprint.constraints,
             approved_references: &f.refs,
