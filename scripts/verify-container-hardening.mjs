@@ -33,6 +33,12 @@ const APPROVED_RUNTIME_TAILS = new Map([
   ["engine Dockerfile", "a9f7a31d867873093d877e938f0c8e25a49e40331371043c9605072b2c080c0d"],
   ["control-panel Dockerfile", "35b82395e549c08644bf907f5974555e305b40a61dbf872db6c077ad036657c5"],
 ]);
+// Earlier stages supply artifacts copied into the runtime. Their complete
+// recipes, including stage headers and global inputs, require review as well.
+const APPROVED_BUILD_PREFIXES = new Map([
+  ["engine Dockerfile", "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
+  ["control-panel Dockerfile", "27e054f9b28f629b375f2875f5efe6742df1b12c8573a96f5ea84bf669031925"],
+]);
 const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
 const SEMVER_PRERELEASE_IDENTIFIER =
   "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
@@ -86,6 +92,12 @@ function finalRuntimeUser(source) {
 }
 
 function hasApprovedRuntimeTail(source, name) {
+  const instructions = dockerInstructions(source);
+  const lastFrom = instructions.findLastIndex((line) => /^FROM[ \t]/i.test(line));
+  if (lastFrom < 0) return false;
+  const buildDigest = createHash("sha256")
+    .update(JSON.stringify(instructions.slice(0, lastFrom))).digest("hex");
+  if (APPROVED_BUILD_PREFIXES.get(name) !== buildDigest) return false;
   const runtime = runtimeInstructions(source);
   const firstRun = runtime.findIndex((line) => /^RUN\s/i.test(line));
   if (firstRun < 0) return false;
@@ -277,7 +289,7 @@ export async function verifyContainerHardening(
       if (!source.includes(marker)) errors.push(`${name} is missing immutable OS input ${marker}`);
     }
     if (!hasPinnedOsUpgrade(source, name)) errors.push(`${name} must execute the pinned OS upgrade`);
-    if (!hasApprovedRuntimeTail(source, name)) errors.push(`${name} has an unreviewed post-upgrade runtime recipe`);
+    if (!hasApprovedRuntimeTail(source, name)) errors.push(`${name} has an unreviewed build or post-upgrade runtime recipe`);
   }
 
   const engineVersion = parsePinnedEngineVersion(engineDockerfile);
@@ -410,6 +422,14 @@ export async function verifyContainerHardening(
 async function selfTest() {
   for (const name of ["engine", "control-panel"]) {
     const source = await readFile(`packages/tandem-control-panel/docker/${name}.Dockerfile`, "utf8");
+    for (const mutation of [
+      `ARG UNREVIEWED_BUILD_INPUT=1\n${source}`,
+      name === "control-panel"
+        ? source.replace("\nFROM node:24.20.0-trixie-slim@", "\nRUN printf unreviewed > /workspace/packages/tandem-control-panel/dist/injected.js\n\nFROM node:24.20.0-trixie-slim@")
+        : `FROM ${PINNED_NODE_BASE} AS unreviewed\nRUN touch /unreviewed\n${source}`,
+    ]) {
+      if (hasApprovedRuntimeTail(mutation, `${name} Dockerfile`)) throw new Error(`accepted unreviewed build recipe in ${name}`);
+    }
     if (!hasPinnedOsUpgrade(source, `${name} Dockerfile`)) throw new Error(`unapproved current ${name} upgrade`);
     const role = name === "engine" ? "engine" : "panel";
     const opposite = role === "engine" ? "panel" : "engine";
