@@ -186,8 +186,11 @@ fn verify_disabled(path: &Path, payload: &[u8]) -> anyhow::Result<()> {
         "existing template is too large"
     );
     let observed: AgentTemplate = serde_yaml::from_slice(&existing)?;
+    // Typed deserialization ignores unknown fields. Bind the receipt to the
+    // complete document as well, including nested ownership/constraint data.
+    let document: serde_json::Value = serde_yaml::from_slice(&existing)?;
     ensure!(
-        canonical_json(&observed)? == payload,
+        canonical_json(&observed)? == payload && canonical_json(&document)? == payload,
         "solution template ownership or content conflict"
     );
     file.sync_all()?;
@@ -461,6 +464,49 @@ mod tests {
                 .await
                 .is_err());
             assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_stage_rejects_unhashed_alias_fields() {
+        for extension in ["json", "yml"] {
+            for nested in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let workspace = dir.path().to_str().unwrap();
+                let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+                let (template, owner) = fixture();
+                let mut installed = template.clone();
+                installed.enabled = false;
+                installed.solution_owner = Some(owner.clone());
+                let mut document = serde_json::to_value(installed).unwrap();
+                let target = if nested {
+                    &mut document["solution_owner"]
+                } else {
+                    &mut document
+                };
+                target.as_object_mut().unwrap().insert(
+                    "unreviewed".into(),
+                    serde_json::json!({"payload":"not in receipt"}),
+                );
+                let bytes = if extension == "json" {
+                    serde_json::to_vec(&document).unwrap()
+                } else {
+                    serde_yaml::to_string(&document).unwrap().into_bytes()
+                };
+                let directory = dir.path().join(".tandem/agent-team/templates");
+                std::fs::create_dir_all(&directory).unwrap();
+                let alias = directory.join(format!("existing-resource.{extension}"));
+                std::fs::write(&alias, &bytes).unwrap();
+                assert!(
+                    runtime
+                        .stage_solution_template(workspace, template, owner)
+                        .await
+                        .is_err(),
+                    "{extension}, nested={nested}"
+                );
+                assert_eq!(std::fs::read(&alias).unwrap(), bytes);
+                assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+            }
         }
     }
 
