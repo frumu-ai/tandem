@@ -4,10 +4,14 @@
 //! Pure solution planning. This crate does not provision identities, download
 //! packs, grant permissions, or mutate a running Tandem installation.
 mod contract;
+mod customer_config;
+mod customer_contract;
 mod resolve;
 mod validate;
 
 pub use contract::*;
+pub use customer_config::*;
+pub use customer_contract::*;
 pub use resolve::{resolve, ResolutionInput};
 pub use validate::{blueprint_hash, parse_blueprint, validate_blueprint};
 
