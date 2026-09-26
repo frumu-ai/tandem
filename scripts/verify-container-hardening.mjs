@@ -30,6 +30,40 @@ function countMatches(source, pattern) {
   return [...source.matchAll(pattern)].length;
 }
 
+// Require the pinned command as a RUN instruction or a continued RUN command,
+// not merely as prose, an ENV value, or an argument to echo/printf.
+function hasPinnedOsUpgrade(source) {
+  const runtimeStage = source.split(/^FROM[ \t]+[^\r\n]+$/m).at(-1);
+  const runs = runtimeStage.match(/^RUN[ \t]+(?:[^\n]*\\\r?\n)*[^\n]*/gm) || [];
+  return runs.some((run) => {
+    // Mask shell strings/escapes before inspecting command boundaries. Keep a
+    // placeholder for quoted arguments so they cannot disappear into a command.
+    const shell = run.replace(/\\\r?\n/g, " ");
+    let quote = null;
+    let commands = "";
+    for (let i = 0; i < shell.length; i++) {
+      const char = shell[i];
+      if (char === "\\" && quote !== "'") {
+        commands += "__";
+        i++;
+      } else if (quote) {
+        if (char === quote) quote = null;
+        commands += "_";
+      } else if (char === "'" || char === '"' || char === "`") {
+        quote = char;
+        commands += "_";
+      } else if (char === "#") {
+        break;
+      } else {
+        commands += char;
+      }
+    }
+    // Heredocs and command substitution are outside the supported pinned form.
+    if (quote || commands.includes("<<") || commands.includes("$(")) return false;
+    return /(?:^RUN\s+|&&\s+)apt-get -y --no-install-recommends upgrade\s*(?=&&|$)/.test(commands);
+  });
+}
+
 async function walk(directory, root = directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
@@ -109,7 +143,6 @@ export async function verifyContainerHardening(
     for (const marker of [
       "snapshot.debian.org/archive/debian/20260923T120000Z",
       "snapshot.debian.org/archive/debian-security/20260923T120000Z",
-      "apt-get -y --no-install-recommends upgrade",
       "ca-certificates=20250419",
       "curl=8.14.1-2+deb13u5",
       "libssl3t64=3.5.7-1~deb13u2",
@@ -118,6 +151,7 @@ export async function verifyContainerHardening(
     ]) {
       if (!source.includes(marker)) errors.push(`${name} is missing immutable OS input ${marker}`);
     }
+    if (!hasPinnedOsUpgrade(source)) errors.push(`${name} must execute the pinned OS upgrade`);
   }
 
   const engineVersion = parsePinnedEngineVersion(engineDockerfile);
@@ -263,6 +297,24 @@ function selfTest() {
     throw new Error("container hardening self-test classified a normal workflow as Kubernetes");
   }
   const slash = String.fromCharCode(92);
+  for (const source of [
+    "RUN apt-get -y --no-install-recommends upgrade",
+    `RUN apt-get update ${slash}\n  && apt-get -y --no-install-recommends upgrade ${slash}\n  && true`,
+  ]) {
+    if (!hasPinnedOsUpgrade(source)) throw new Error("missing real OS upgrade instruction");
+  }
+  for (const source of [
+    "# RUN apt-get -y --no-install-recommends upgrade",
+    'RUN echo "apt-get -y --no-install-recommends upgrade"',
+    'ENV NOTE="apt-get -y --no-install-recommends upgrade"',
+    "RUN true\n# && apt-get -y --no-install-recommends upgrade",
+    `RUN printf '%s' ' ${slash}\n  && apt-get -y --no-install-recommends upgrade ${slash}\n  '`,
+    `RUN echo " ${slash}\n  && apt-get -y --no-install-recommends upgrade ${slash}\n  "`,
+    "RUN true # && apt-get -y --no-install-recommends upgrade",
+    "FROM base AS build\nRUN apt-get -y --no-install-recommends upgrade\nFROM base\nRUN true",
+  ]) {
+    if (hasPinnedOsUpgrade(source)) throw new Error("accepted inert OS upgrade text");
+  }
   const prerelease =
     `ENV A=1 ${slash}\n` +
     `  TANDEM_ENGINE_VERSION=0.8.0-beta.1+build.01 ${slash}\n  B=2`;
