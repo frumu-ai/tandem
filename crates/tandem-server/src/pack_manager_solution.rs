@@ -261,10 +261,28 @@ pub(super) fn export(root: &Path, output: &Path, record: &PackInstallRecord) -> 
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
     for (path, bytes) in &snapshot.files {
-        writer.start_file(path, options)?;
-        std::io::Write::write_all(&mut writer, bytes)?;
+        // Measure the actual ZIP encoding, then copy it without recompression.
+        // Highly compressible, legitimate artifacts must remain importable under
+        // the same zip-bomb limits enforced on publisher archives.
+        let mut candidate = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        candidate.start_file(path, options)?;
+        std::io::Write::write_all(&mut candidate, bytes)?;
+        let mut candidate = ZipArchive::new(candidate.finish()?)?;
+        let entry = candidate.by_index(0)?;
+        if entry.size().saturating_div(entry.compressed_size().max(1))
+            > MAX_ENTRY_COMPRESSION_RATIO.min(MAX_ARCHIVE_COMPRESSION_RATIO)
+        {
+            writer.start_file(path, options.compression_method(CompressionMethod::Stored))?;
+            std::io::Write::write_all(&mut writer, bytes)?;
+        } else {
+            writer.raw_copy_file(entry)?;
+        }
     }
-    writer.finish()?;
+    let file = writer.finish()?;
+    ensure!(
+        file.metadata()?.len() <= MAX_ARCHIVE_BYTES,
+        "export exceeds maximum import archive size"
+    );
     Ok(())
 }
 
