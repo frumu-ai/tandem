@@ -59,14 +59,89 @@ impl Snapshot {
 
 fn portable_path(value: &str) -> anyhow::Result<String> {
     ensure!(
-        !value.contains(['\\', ':'])
-            && value
-                .split('/')
-                .all(|part| !part.is_empty() && part != "." && part != ".."),
+        value.split('/').all(portable_filename_component),
         "solution entry must be a portable relative file path"
     );
     safe_relative_pack_path(value)?;
     Ok(value.into())
+}
+
+fn portable_filename_component(part: &str) -> bool {
+    // Apply the Win32 filename contract on every host, including directory
+    // components and reserved device basenames followed by an extension.
+    if part.is_empty()
+        || part.ends_with([' ', '.'])
+        || part
+            .chars()
+            .any(|ch| ch <= '\u{1f}' || "<>:\"\\|?*".contains(ch))
+    {
+        return false;
+    }
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let device_number = stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"));
+    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !matches!(
+            device_number,
+            Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+        )
+}
+
+#[test]
+fn solution_paths_reject_nonportable_filename_components() {
+    for component in [
+        "solution?.json",
+        "solution*.json",
+        "a<b",
+        "a>b",
+        "a\"b",
+        "a|b",
+        "a:b",
+        "a\\b",
+        "a\0b",
+        "a\u{1f}b",
+        "trailing.",
+        "trailing ",
+        "CON",
+        "con.json",
+        "PRN.txt",
+        "AUX",
+        "NUL.tar.gz",
+        "COM1",
+        "com9.json",
+        "LPT1",
+        "lpt9.txt",
+        "COM¹",
+        "COM².json",
+        "COM³",
+        "LPT¹",
+        "LPT²",
+        "LPT³.txt",
+    ] {
+        for path in [
+            component.to_string(),
+            format!("{component}/artifact.json"),
+            format!("agents/{component}"),
+        ] {
+            assert!(portable_path(&path).is_err(), "accepted {path:?}");
+        }
+    }
+    for path in [
+        "solution.json",
+        ".config/agent.json",
+        "agents/my agent.json",
+        "资料/agent.json",
+        "COM10.json",
+        "console.json",
+        "nested/component.v2.json",
+    ] {
+        assert_eq!(portable_path(path).unwrap(), path);
+    }
 }
 
 #[test]

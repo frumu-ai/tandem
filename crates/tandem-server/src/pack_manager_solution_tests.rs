@@ -62,6 +62,40 @@ fn export_request(name: &str) -> PackExportRequest {
 
 #[tokio::test]
 #[serial_test::serial(pack_signature_env)]
+async fn solution_pack_enforces_portable_entrypoint_names_before_publication() {
+    for (entrypoint, valid) in [
+        ("solution?.json", false),
+        ("CON", false),
+        ("nested./solution.json", false),
+        ("LPT²/solution.json", false),
+        ("资料/solution.json", true),
+        (".config/solution.v2.json", true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut entries = fixture();
+        entries[0].1 = entries[0].1.replace(
+            "solution: solution.json",
+            &format!("solution: {entrypoint}"),
+        );
+        entries[1].0 = entrypoint.into();
+        let archive = root.path().join("solution.zip");
+        let key = signed(&archive, &entries);
+        let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+        let manager = PackManager::new(root.path().join("packs"));
+        let result = manager.install(request(&archive)).await;
+        assert_eq!(result.is_ok(), valid, "{entrypoint}: {result:?}");
+        assert_eq!(manager.list().await.unwrap().len(), usize::from(valid));
+        if valid {
+            assert!(manager
+                .solution_artifacts("tandem.company-brain")
+                .await
+                .is_ok());
+        }
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn solution_pack_export_round_trips_highly_compressible_artifacts() {
     let root = tempfile::tempdir().unwrap();
     let mut entries = fixture();
