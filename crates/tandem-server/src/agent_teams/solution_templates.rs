@@ -68,12 +68,8 @@ impl AgentTeamRuntime {
             tokio::task::spawn_blocking(move || managed_directories(&opening_workspace)).await??;
         self.load_staging_workspace(workspace_root, &agent_team, &directory)
             .await?;
-        if let Some(existing) = self.templates.read().await.get(&template.template_id) {
-            ensure!(
-                canonical_json(existing)? == payload,
-                "solution template ownership or content conflict"
-            );
-        }
+        // Reconcile against the held directory, not a cache that may predate
+        // an operator's on-disk repair. Persistence verifies the full document.
         let filename = format!("{}.yaml", template.template_id);
         tokio::task::spawn_blocking(move || {
             persist_in_directory(&directory, &workspace, &filename, &payload)
@@ -1215,6 +1211,46 @@ mod tests {
             .is_err());
         assert!(!dir.path().join(".tandem").exists());
         assert!(runtime.templates.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_stage_reconciles_disk_repair_without_restarting_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_str().unwrap();
+        let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+        let (template, owner) = fixture();
+        let directory = dir.path().join(".tandem/agent-team/templates");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("operator-alias.json");
+        std::fs::write(&path, canonical_json(&template).unwrap()).unwrap();
+        assert!(runtime
+            .stage_solution_template(workspace, template.clone(), owner.clone())
+            .await
+            .is_err());
+        assert!(runtime
+            .templates
+            .read()
+            .await
+            .contains_key(&template.template_id));
+
+        let mut repaired = template.clone();
+        repaired.enabled = false;
+        repaired.solution_owner = Some(owner.clone());
+        let bytes = canonical_json(&repaired).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            runtime
+                .stage_solution_template(workspace, template.clone(), owner)
+                .await
+                .unwrap(),
+            sha256(&bytes)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        assert_eq!(
+            canonical_json(&runtime.templates.read().await[&template.template_id]).unwrap(),
+            bytes
+        );
     }
 
     #[tokio::test]
