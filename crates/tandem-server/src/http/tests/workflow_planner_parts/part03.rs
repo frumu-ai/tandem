@@ -371,6 +371,79 @@ async fn workflow_plan_apply_can_materialize_a_disabled_draft_with_planner_metad
 }
 
 #[tokio::test]
+async fn workflow_plan_apply_retries_failed_release_after_storage_repair() {
+    let plan = llm_plan_json(
+        "Retry cleanup",
+        "Create exactly one report workflow after storage repair.",
+        manual_schedule_json(),
+        "/tmp/workspace",
+        vec![step_json(
+            "generate_report", "report", "Generate the report.", &[], "writer",
+            json!([]), "report_markdown",
+        )],
+        None,
+    );
+    let payload = json!({
+        "plan": plan,
+        "creator_id": "control-panel",
+        "idempotency_key": "repair-release",
+    });
+    let request = || Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/apply")
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+    let tenant = tandem_types::TenantContext::local_implicit();
+
+    // Obtain the endpoint's real request fingerprint in an independent state,
+    // rather than duplicating its canonicalization rules in this test.
+    let probe = test_state().await;
+    let response = app_router(probe.clone()).oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let record = probe.get_idempotency_key(&tenant, "workflow_plan.apply", "repair-release")
+        .await.unwrap();
+
+    let state = test_state().await;
+    state.reserve_idempotency_key(crate::app::state::IdempotencyReservationInput {
+        tenant_context: tenant.clone(),
+        operation: "workflow_plan.apply".into(),
+        key: "repair-release".into(),
+        owner: record.owner,
+        request_fingerprint: record.request_fingerprint.clone(),
+        first_seen_event_id: None,
+        now_ms: crate::now_ms(),
+        expires_at_ms: None,
+    }).await.unwrap();
+    let app = app_router(state.clone());
+    let response = app.clone().oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT, "active reservation must not be stolen");
+    assert!(state.list_automations_v2().await.is_empty());
+
+    let directory = tempfile::tempdir().unwrap();
+    let blocked = directory.path().join("not-a-directory");
+    tokio::fs::write(&blocked, b"blocked").await.unwrap();
+    let mut unavailable = state.clone();
+    unavailable.idempotency_keys_path = blocked.join("keys.json");
+    assert!(unavailable.release_reserved_idempotency_key(
+        &tenant, "workflow_plan.apply", "repair-release", &record.request_fingerprint,
+    ).await.is_err());
+    let response = app_router(unavailable).oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(state.list_automations_v2().await.is_empty());
+
+    // The original state uses the repaired, writable storage path but shares
+    // the pending reservation with the failed request.
+    for _ in 0..2 {
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.list_automations_v2().await.len(), 1);
+    }
+    assert!(state.get_idempotency_key(&tenant, "workflow_plan.apply", "repair-release")
+        .await.unwrap().outcome.is_some());
+}
+
+#[tokio::test]
 async fn workflow_plan_apply_rolls_back_when_protected_audit_persistence_fails() {
     let state = test_state().await;
     tokio::fs::create_dir_all(&state.protected_audit_path)

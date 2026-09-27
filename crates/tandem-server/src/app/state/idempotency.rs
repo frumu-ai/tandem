@@ -26,6 +26,7 @@ struct IdempotencyKeysFile {
 #[serde(rename_all = "snake_case")]
 pub enum IdempotencyKeyStatus {
     Reserved,
+    ReleasePending,
     Completed,
     Conflicted,
 }
@@ -227,6 +228,29 @@ impl AppState {
         key: &str,
         request_fingerprint: &str,
     ) -> anyhow::Result<bool> {
+        self.release_idempotency_key(tenant_context, operation, key, request_fingerprint, false)
+            .await
+    }
+
+    pub(crate) async fn retry_pending_idempotency_release(
+        &self,
+        tenant_context: &TenantContext,
+        operation: &str,
+        key: &str,
+        request_fingerprint: &str,
+    ) -> anyhow::Result<bool> {
+        self.release_idempotency_key(tenant_context, operation, key, request_fingerprint, true)
+            .await
+    }
+
+    async fn release_idempotency_key(
+        &self,
+        tenant_context: &TenantContext,
+        operation: &str,
+        key: &str,
+        request_fingerprint: &str,
+        pending_only: bool,
+    ) -> anyhow::Result<bool> {
         let operation = normalized_non_empty(operation, "idempotency operation")?;
         let key = normalized_non_empty(key, "idempotency key")?;
         let request_fingerprint =
@@ -238,7 +262,11 @@ impl AppState {
             .get(&record_id)
             .map(|record| {
                 record.tenant_matches(tenant_context)
-                    && record.status == IdempotencyKeyStatus::Reserved
+                    && (!pending_only || record.status == IdempotencyKeyStatus::ReleasePending)
+                    && matches!(
+                        record.status,
+                        IdempotencyKeyStatus::Reserved | IdempotencyKeyStatus::ReleasePending
+                    )
                     && record.request_fingerprint == request_fingerprint
             })
             .unwrap_or(false);
@@ -249,9 +277,11 @@ impl AppState {
         let snapshot = records.clone();
         drop(records);
         if let Err(error) = self.persist_idempotency_keys_locked(snapshot).await {
-            // Keep memory consistent with the durable reservation so a later
-            // explicit release can retry after the storage failure is repaired.
-            if let Some(record) = removed {
+            // Retain the reservation, but distinguish cleanup requested by its
+            // owner from an operation that is still running. A caller may retry
+            // this release after storage repair without stealing active work.
+            if let Some(mut record) = removed {
+                record.status = IdempotencyKeyStatus::ReleasePending;
                 self.idempotency_keys
                     .write()
                     .await
@@ -591,14 +621,22 @@ mod tests {
             .release_reserved_idempotency_key(&tenant, "workflow_plan.apply", "key", "fingerprint")
             .await
             .is_err());
-        assert!(state
-            .get_idempotency_key(&tenant, "workflow_plan.apply", "key")
-            .await
-            .is_some());
+        assert_eq!(
+            state
+                .get_idempotency_key(&tenant, "workflow_plan.apply", "key")
+                .await
+                .unwrap()
+                .status,
+            IdempotencyKeyStatus::ReleasePending
+        );
         assert_eq!(tokio::fs::read(&durable).await.unwrap(), before);
         state.idempotency_keys_path = durable;
+        assert!(!state
+            .retry_pending_idempotency_release(&tenant, "workflow_plan.apply", "key", "other")
+            .await
+            .unwrap());
         assert!(state
-            .release_reserved_idempotency_key(&tenant, "workflow_plan.apply", "key", "fingerprint")
+            .retry_pending_idempotency_release(&tenant, "workflow_plan.apply", "key", "fingerprint")
             .await
             .unwrap());
         state.load_idempotency_keys().await.unwrap();
@@ -622,6 +660,15 @@ mod tests {
             .await
             .expect("reserve key");
 
+        assert!(!state
+            .retry_pending_idempotency_release(
+                &tenant_a,
+                "session.prompt_async",
+                "prompt-1",
+                "fingerprint-a",
+            )
+            .await
+            .expect("do not release active reservation"));
         assert!(!state
             .release_reserved_idempotency_key(
                 &tenant_a,

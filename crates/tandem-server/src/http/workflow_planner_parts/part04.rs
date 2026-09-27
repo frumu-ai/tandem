@@ -166,6 +166,16 @@ pub(super) async fn workflow_plan_apply(
         apply_idempotency_key.as_deref(),
         apply_idempotency_fingerprint.as_deref(),
     ) {
+        state.retry_pending_idempotency_release(
+            &tenant_context, "workflow_plan.apply", key, fingerprint,
+        ).await.map_err(|error| {
+            tracing::error!(error = ?error, "failed to retry workflow apply reservation cleanup");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "error": "Workflow apply reservation cleanup is still pending storage repair",
+                "code": "WORKFLOW_PLAN_APPLY_RESERVATION_RELEASE_FAILED",
+                "retryable": false,
+            })))
+        })?;
         if let Some(record) = state
             .get_idempotency_key(&tenant_context, "workflow_plan.apply", key)
             .await
@@ -446,7 +456,19 @@ pub(super) async fn workflow_plan_apply(
     )
     .await
     {
-        let release_error = if let (Some(key), Some(fingerprint)) = (
+        // Do not expose a retryable reservation while rollback is still running
+        // or has failed: another request could otherwise repeat the operation.
+        let rollback_error = if inserted_by_this_attempt {
+            state
+                .rollback_automation_v2_creation(&stored.automation_id)
+                .await
+                .err()
+        } else {
+            None
+        };
+        let release_error = if rollback_error.is_some() {
+            None
+        } else if let (Some(key), Some(fingerprint)) = (
             apply_idempotency_key.as_deref(),
             apply_idempotency_fingerprint.as_deref(),
         ) {
@@ -457,14 +479,6 @@ pub(super) async fn workflow_plan_apply(
                     key,
                     fingerprint,
                 )
-                .await
-                .err()
-        } else {
-            None
-        };
-        let rollback_error = if inserted_by_this_attempt {
-            state
-                .rollback_automation_v2_creation(&stored.automation_id)
                 .await
                 .err()
         } else {
@@ -507,7 +521,7 @@ pub(super) async fn workflow_plan_apply(
                     "Automation creation was rolled back after its required audit record failed, but retry state could not be released"
                 },
                 "code": "PROTECTED_AUDIT_PERSISTENCE_FAILED",
-                "retryable": release_error.is_none(),
+                "retryable": rollback_error.is_none() && release_error.is_none(),
                 "operationApplied": operation_applied,
             })),
         ));
