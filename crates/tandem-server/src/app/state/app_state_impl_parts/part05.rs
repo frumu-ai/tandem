@@ -1374,7 +1374,28 @@ impl AppState {
         detail: String,
         metadata: Value,
     ) -> Option<AutomationV2RunRecord> {
-        let current = self.get_automation_v2_run(run_id).await?;
+        self.requeue_automation_v2_run_from_stateful_wait_wake_matching(
+            run_id, None, wait_id, event_type, event_seq, detail, metadata,
+        ).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn requeue_automation_v2_run_from_stateful_wait_wake_matching(
+        &self,
+        run_id: &str,
+        expected: Option<&AutomationV2RunRecord>,
+        wait_id: &str,
+        event_type: &str,
+        event_seq: u64,
+        detail: String,
+        metadata: Value,
+    ) -> Option<AutomationV2RunRecord> {
+        // Startup supplies the snapshot used to establish lost-wake eligibility.
+        // Live callers retain their already-admitted wake completion semantics.
+        let current = match expected {
+            Some(run) => run.clone(),
+            None => self.get_automation_v2_run(run_id).await?,
+        };
         let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
             &self.runtime_events_path,
         );
@@ -1398,7 +1419,7 @@ impl AppState {
         let output_metadata = bounded_automation_wait_output_metadata(metadata.clone());
         let mut applied = false;
         let updated = self
-            .update_automation_v2_run(run_id, |row| {
+            .update_automation_v2_run_matching(run_id, expected, |row| {
                 if automation_run_is_terminal_status(&row.status)
                     || matches!(
                         row.status,

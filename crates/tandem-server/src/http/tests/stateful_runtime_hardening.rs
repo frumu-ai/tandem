@@ -1392,6 +1392,84 @@ fn woken_wait(
 }
 
 #[tokio::test]
+async fn hosted_lost_wake_recovery_rechecks_policy_at_final_write() {
+    for restore_policy in [false, true] {
+        let state = test_state().await;
+        let tenant = tenant("org-wake-recovery", "workspace-a", "operator-a");
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+        let run_id = "run-hosted-lost-wake";
+        let paths =
+            StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+        let before = paused_run(run_id, tenant, 2_000);
+        state
+            .automation_v2_runs
+            .write()
+            .await
+            .insert(run_id.into(), before.clone());
+        upsert_stateful_wait(
+            &paths.waits_path,
+            woken_wait("hosted-wait", run_id, scope, 2_500),
+        )
+        .await
+        .unwrap();
+        let guard = state.automation_v2_runs.read().await;
+        let recovery = state.recover_in_flight_runs();
+        tokio::pin!(recovery);
+        assert!(futures::poll!(recovery.as_mut()).is_pending());
+        let temp = tempfile::tempdir().unwrap();
+        state.enterprise.hosted_policy.configure_test_source(
+            "org-a",
+            "dep-a",
+            temp.path().join("missing-policy.json"),
+        );
+        drop(guard);
+        assert!(futures::poll!(recovery.as_mut()).is_pending());
+        let after = state.get_automation_v2_run(run_id).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(before).unwrap(),
+            "lost-wake recovery must not queue a run during a policy outage"
+        );
+        if restore_policy {
+            let path = temp.path().join("missing-policy.json");
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&json!({
+                    "schema_version": 1, "policy_version": 1,
+                    "organization_id": "org-a", "deployment_id": "dep-a",
+                    "generated_at": chrono::Utc::now(), "users": [], "org_units": [],
+                    "org_unit_memberships": [], "deployment_grants": []
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            state.reload_hosted_policy().await.unwrap();
+        } else {
+            state.set_automation_scheduler_stopping(true);
+        }
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), recovery)
+                .await
+                .unwrap(),
+            usize::from(restore_policy)
+        );
+        assert_eq!(
+            state.get_automation_v2_run(run_id).await.unwrap().status,
+            if restore_policy {
+                AutomationRunStatus::Queued
+            } else {
+                AutomationRunStatus::Paused
+            }
+        );
+    }
+}
+
+#[tokio::test]
 async fn lost_stateful_wait_wake_requeues_paused_run_on_restart() {
     let state = test_state().await;
     let tenant = tenant("org-wake-recovery", "workspace-a", "operator-a");
