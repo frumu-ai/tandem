@@ -83,14 +83,24 @@ impl AppState {
             .automation_v2_runs
             .read()
             .await
-            .values()
+            .keys()
             .cloned()
             .collect::<Vec<_>>();
         let mut recovered = 0usize;
-        for run in runs {
-            if !self.enterprise.hosted_policy.is_ready() {
-                return recovered;
-            }
+        for run_id in runs {
+            // Recovery runs only once per executor startup. A policy outage
+            // pauses it; only shutdown/startup failure may abandon the pass.
+            let run = loop {
+                if !self.wait_for_worker_ready_or_failed(120, 250).await {
+                    return recovered;
+                }
+                let run = self.automation_v2_runs.read().await.get(&run_id).cloned();
+                if self.enterprise.hosted_policy.is_ready() {
+                    break run;
+                }
+            };
+            // A run may have been removed or changed while policy was absent.
+            let Some(run) = run else { continue };
             match run.status {
                 AutomationRunStatus::Running => {
                     if self.recover_running_run_after_restart(&run).await {
@@ -211,19 +221,19 @@ impl AppState {
                 _ => {}
             }
         }
-        if !self.enterprise.hosted_policy.is_ready() {
+        if !self.wait_for_worker_ready_or_failed(120, 250).await {
             return recovered;
         }
         recovered += self
             .recover_missing_automation_v2_wait_registrations()
             .await;
-        if !self.enterprise.hosted_policy.is_ready() {
+        if !self.wait_for_worker_ready_or_failed(120, 250).await {
             return recovered;
         }
         recovered += self.recover_lost_stateful_wait_wakes().await;
         // TAN-564: re-drive any dead letters whose retry was requested before a
         // crash so the failed effect actually re-executes on restart.
-        if self.enterprise.hosted_policy.is_ready() {
+        if self.wait_for_worker_ready_or_failed(120, 250).await {
             recovered += self.dispatch_ready_stateful_dead_letter_retries().await;
         }
         recovered

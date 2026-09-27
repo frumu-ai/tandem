@@ -429,6 +429,88 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
+    async fn hosted_startup_recovery_resumes_after_policy_outage() {
+        let state = ready_test_state().await;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("policy.json");
+        let mut automation = test_automation(temp.path().to_str().unwrap());
+        automation.agents.clear();
+        automation.flow.nodes.clear();
+        let run = state
+            .create_automation_v2_run(&automation, "manual")
+            .await
+            .unwrap();
+        state
+            .claim_specific_automation_v2_run(&run.run_id)
+            .await
+            .unwrap();
+        state
+            .update_automation_v2_run(&run.run_id, |row| {
+                row.status = AutomationRunStatus::Pausing;
+            })
+            .await
+            .unwrap();
+        let guard = state.automation_v2_runs.write().await;
+        let pending = state.recover_in_flight_runs();
+        tokio::pin!(pending);
+        assert!(futures::poll!(pending.as_mut()).is_pending());
+        state
+            .enterprise
+            .hosted_policy
+            .configure_test_source("org-a", "dep-a", path.clone());
+        drop(guard);
+        assert!(
+            futures::poll!(pending.as_mut()).is_pending(),
+            "recovery must wait, not report completion"
+        );
+        assert_eq!(
+            state
+                .get_automation_v2_run(&run.run_id)
+                .await
+                .unwrap()
+                .status,
+            AutomationRunStatus::Pausing
+        );
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "schema_version": 1, "policy_version": 1,
+                "organization_id": "org-a", "deployment_id": "dep-a",
+                "generated_at": chrono::Utc::now(), "users": [], "org_units": [],
+                "org_unit_memberships": [], "deployment_grants": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        state.reload_hosted_policy().await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), pending)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            state
+                .get_automation_v2_run(&run.run_id)
+                .await
+                .unwrap()
+                .status,
+            AutomationRunStatus::Paused
+        );
+        assert!(!state
+            .automation_scheduler
+            .read()
+            .await
+            .locked_workspaces
+            .contains_key(temp.path().to_str().unwrap()));
+    }
+
+    #[tokio::test]
     async fn hosted_readiness_loss_during_run_lock_wait_blocks_claim_and_recovery() {
         for recovery in [false, true] {
             let state = ready_test_state().await;
@@ -464,7 +546,14 @@ mod tests {
                 assert!(futures::poll!(pending.as_mut()).is_pending());
                 make_unready();
                 drop(guard);
-                assert_eq!(pending.await, 0);
+                assert!(futures::poll!(pending.as_mut()).is_pending());
+                state.set_automation_scheduler_stopping(true);
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(5), pending)
+                        .await
+                        .unwrap(),
+                    0
+                );
             } else {
                 let pending = state.claim_specific_automation_v2_run(&run.run_id);
                 tokio::pin!(pending);
