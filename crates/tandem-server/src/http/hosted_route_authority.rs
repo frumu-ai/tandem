@@ -12,6 +12,10 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
     let read = matches!(method, "GET" | "HEAD");
     use AccessPermission::*;
     match (method, path) {
+        ("PATCH", "/config/incident-monitor")
+        | ("POST", "/incident-monitor/pause" | "/incident-monitor/resume") => {
+            return Some(HostedAdmin);
+        }
         // These mutate the deployment-wide registry, not a caller-owned
         // automation. Export also writes a caller-selected filesystem target.
         ("POST", "/presets/fork" | "/presets/export_overrides")

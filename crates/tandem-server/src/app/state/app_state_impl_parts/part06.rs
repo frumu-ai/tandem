@@ -466,7 +466,16 @@ impl AppState {
 
     pub async fn put_incident_monitor_config(
         &self,
+        config: IncidentMonitorConfig,
+    ) -> anyhow::Result<IncidentMonitorConfig> {
+        self.put_incident_monitor_config_checked(config, || Ok(()))
+            .await
+    }
+
+    pub(crate) async fn put_incident_monitor_config_checked(
+        &self,
         mut config: IncidentMonitorConfig,
+        authorize: impl FnOnce() -> anyhow::Result<()>,
     ) -> anyhow::Result<IncidentMonitorConfig> {
         config.workspace_root = config
             .workspace_root
@@ -490,8 +499,13 @@ impl AppState {
         }
         validate_incident_monitor_monitored_projects(self, &mut config).await?;
         config.updated_at_ms = now_ms();
-        let previous = self.incident_monitor_config.read().await.clone();
-        *self.incident_monitor_config.write().await = config.clone();
+        let previous = {
+            let mut current = self.incident_monitor_config.write().await;
+            // Validation and lock acquisition may await. Reauthorize at the
+            // shared state mutation boundary, with no intervening await.
+            authorize()?;
+            std::mem::replace(&mut *current, config.clone())
+        };
         self.persist_incident_monitor_config().await?;
         self.note_incident_monitor_config_reassessment_triggers(&previous, &config)
             .await;

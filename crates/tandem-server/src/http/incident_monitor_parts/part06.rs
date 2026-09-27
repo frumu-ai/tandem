@@ -748,6 +748,7 @@ pub(super) async fn get_incident_monitor_config(
 
 pub(super) async fn patch_incident_monitor_config(
     State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<IncidentMonitorConfigInput>,
 ) -> Response {
     let Some(config) = input.incident_monitor else {
@@ -760,10 +761,13 @@ pub(super) async fn patch_incident_monitor_config(
         )
             .into_response();
     };
-    match state.put_incident_monitor_config(config).await {
+    match put_authorized_incident_monitor_config(&state, verified.as_deref(), config).await {
         Ok(saved) => {
             emit_incident_monitor_config_audit(&state, &saved).await;
             Json(json!({ "incident_monitor": saved })).into_response()
+        }
+        Err(error) if error.is::<IncidentMonitorConfigDenied>() => {
+            StatusCode::FORBIDDEN.into_response()
         }
         Err(error) => (
             StatusCode::BAD_REQUEST,
@@ -1039,11 +1043,17 @@ pub(super) async fn bulk_delete_incident_monitor_posts(
     }
 }
 
-pub(super) async fn pause_incident_monitor(State(state): State<AppState>) -> Response {
+pub(super) async fn pause_incident_monitor(
+    State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Response {
     let mut config = state.incident_monitor_config().await;
     config.paused = true;
-    match state.put_incident_monitor_config(config).await {
+    match put_authorized_incident_monitor_config(&state, verified.as_deref(), config).await {
         Ok(saved) => Json(json!({ "ok": true, "incident_monitor": saved })).into_response(),
+        Err(error) if error.is::<IncidentMonitorConfigDenied>() => {
+            StatusCode::FORBIDDEN.into_response()
+        }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -1056,11 +1066,17 @@ pub(super) async fn pause_incident_monitor(State(state): State<AppState>) -> Res
     }
 }
 
-pub(super) async fn resume_incident_monitor(State(state): State<AppState>) -> Response {
+pub(super) async fn resume_incident_monitor(
+    State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Response {
     let mut config = state.incident_monitor_config().await;
     config.paused = false;
-    match state.put_incident_monitor_config(config).await {
+    match put_authorized_incident_monitor_config(&state, verified.as_deref(), config).await {
         Ok(saved) => Json(json!({ "ok": true, "incident_monitor": saved })).into_response(),
+        Err(error) if error.is::<IncidentMonitorConfigDenied>() => {
+            StatusCode::FORBIDDEN.into_response()
+        }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
