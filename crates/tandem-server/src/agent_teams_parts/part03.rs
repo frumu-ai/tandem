@@ -401,6 +401,7 @@ impl AgentTeamRuntime {
         policy: Option<SpawnPolicy>,
         templates: Vec<AgentTemplate>,
     ) {
+        let _operation = self.template_persistence.lock().await;
         *self.policy.write().await = policy;
         let mut by_id = HashMap::new();
         for template in templates {

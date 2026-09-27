@@ -1118,6 +1118,15 @@ impl AgentTeamRuntime {
         rows
     }
 
+    pub async fn list_templates_for_workspace(
+        &self,
+        workspace_root: &str,
+    ) -> anyhow::Result<Vec<AgentTemplate>> {
+        let _operation = self.template_persistence.lock().await;
+        self.ensure_loaded_for_workspace_locked(workspace_root).await?;
+        Ok(self.list_templates().await)
+    }
+
     async fn templates_dir_for_loaded_workspace(&self) -> anyhow::Result<PathBuf> {
         let workspace = self
             .loaded_workspace
@@ -1162,7 +1171,7 @@ impl AgentTeamRuntime {
                 && template.solution_owner.is_none(),
             "solution templates require the installation lifecycle"
         );
-        self.ensure_loaded_for_workspace(workspace_root).await?;
+        self.ensure_loaded_for_workspace_locked(workspace_root).await?;
         anyhow::ensure!(
             self.templates.read().await.get(&template.template_id)
                 .is_none_or(|existing| existing.solution_owner.is_none()),
@@ -1191,7 +1200,7 @@ impl AgentTeamRuntime {
             !Self::template_filename(template_id).to_ascii_lowercase().starts_with("solution-"),
             "solution templates require the installation lifecycle"
         );
-        self.ensure_loaded_for_workspace(workspace_root).await?;
+        self.ensure_loaded_for_workspace_locked(workspace_root).await?;
         anyhow::ensure!(
             self.templates.read().await.get(template_id)
                 .is_none_or(|existing| existing.solution_owner.is_none()),
@@ -1212,7 +1221,8 @@ impl AgentTeamRuntime {
         workspace_root: &str,
         template_id: &str,
     ) -> anyhow::Result<Option<AgentTemplate>> {
-        self.ensure_loaded_for_workspace(workspace_root).await?;
+        let _operation = self.template_persistence.lock().await;
+        self.ensure_loaded_for_workspace_locked(workspace_root).await?;
         Ok(self.templates.read().await.get(template_id).cloned())
     }
 
@@ -1342,6 +1352,13 @@ impl AgentTeamRuntime {
     }
 
     pub async fn ensure_loaded_for_workspace(&self, workspace_root: &str) -> anyhow::Result<()> {
+        let _operation = self.template_persistence.lock().await;
+        self.ensure_loaded_for_workspace_locked(workspace_root).await
+    }
+
+    // Callers must hold template_persistence across both loading and consuming
+    // the cache. A load alone cannot reserve this shared cache for its caller.
+    async fn ensure_loaded_for_workspace_locked(&self, workspace_root: &str) -> anyhow::Result<()> {
         let normalized = workspace_root.trim().to_string();
         let already_loaded = self
             .loaded_workspace
@@ -1411,7 +1428,8 @@ impl AgentTeamRuntime {
         approval_override: bool,
     ) -> SpawnResult {
         let workspace_root = state.workspace_index.snapshot().await.root;
-        if let Err(err) = self.ensure_loaded_for_workspace(&workspace_root).await {
+        let operation = self.template_persistence.lock().await;
+        if let Err(err) = self.ensure_loaded_for_workspace_locked(&workspace_root).await {
             return SpawnResult {
                 decision: SpawnDecision {
                     allowed: false,
@@ -1461,6 +1479,10 @@ impl AgentTeamRuntime {
                 .as_deref()
                 .and_then(|id| templates.get(id).cloned())
         };
+
+        // The policy and template are now an owned snapshot of the same
+        // workspace. Do not hold the persistence lock while executing a spawn.
+        drop(operation);
 
         // A reserved solution ID may have been durably published by another
         // process (or not yet inserted into this cache). Never substitute the

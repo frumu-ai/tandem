@@ -57,7 +57,8 @@ impl AgentTeamRuntime {
         );
         let fingerprint = sha256(&payload);
         let _operation = self.template_persistence.lock().await;
-        self.ensure_loaded_for_workspace(workspace_root).await?;
+        self.ensure_loaded_for_workspace_locked(workspace_root)
+            .await?;
         let path = PathBuf::from(workspace_root.trim())
             .join(".tandem/agent-team/templates")
             // Managed IDs are already validated portable filenames. Preserve
@@ -461,6 +462,96 @@ mod tests {
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(result.unwrap(), sha256(&original));
         assert!(unchanged);
+    }
+
+    #[test]
+    fn native_stage_cannot_insert_into_another_workspaces_cache() {
+        // Reserve the sole blocking worker so persistence pauses after A has
+        // loaded its cache, without relying on filesystem timing or sleeps.
+        let executor = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        executor.block_on(async {
+            let workspace_a = tempfile::tempdir().unwrap();
+            let workspace_b = tempfile::tempdir().unwrap();
+            let a = workspace_a.path().to_str().unwrap();
+            let b = workspace_b.path().to_str().unwrap();
+            let runtime = AgentTeamRuntime::new(workspace_a.path().join("audit"));
+            runtime.ensure_loaded_for_workspace(a).await.unwrap();
+            let (release, waiting) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = waiting.recv();
+            });
+            ready.await.unwrap();
+            let (template, owner) = fixture();
+            let staging = runtime.stage_solution_template(a, template.clone(), owner);
+            tokio::pin!(staging);
+            assert!(futures::poll!(&mut staging).is_pending());
+            let switching = runtime.ensure_loaded_for_workspace(b);
+            tokio::pin!(switching);
+            let switched = futures::poll!(&mut switching);
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            staging.await.unwrap();
+            match switched {
+                std::task::Poll::Ready(result) => result.unwrap(),
+                std::task::Poll::Pending => switching.await.unwrap(),
+            }
+            assert!(runtime
+                .get_template_for_workspace(b, &template.template_id)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(runtime
+                .get_template_for_workspace(a, &template.template_id)
+                .await
+                .unwrap()
+                .is_some());
+        });
+    }
+
+    #[tokio::test]
+    async fn workspace_reads_keep_same_id_templates_separate() {
+        let workspace_a = tempfile::tempdir().unwrap();
+        let workspace_b = tempfile::tempdir().unwrap();
+        let runtime = AgentTeamRuntime::new(workspace_a.path().join("audit"));
+        let (template, owner) = fixture();
+        let check_workspace = |workspace: String, name: &'static str| {
+            let runtime = runtime.clone();
+            let mut template = template.clone();
+            let owner = owner.clone();
+            async move {
+                template.display_name = Some(name.into());
+                runtime
+                    .stage_solution_template(&workspace, template.clone(), owner)
+                    .await
+                    .unwrap();
+                for _ in 0..20 {
+                    let observed = runtime
+                        .get_template_for_workspace(&workspace, &template.template_id)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(observed.display_name.as_deref(), Some(name));
+                    let listed = runtime
+                        .list_templates_for_workspace(&workspace)
+                        .await
+                        .unwrap();
+                    assert_eq!(listed.len(), 1);
+                    assert_eq!(listed[0].display_name.as_deref(), Some(name));
+                    tokio::task::yield_now().await;
+                }
+            }
+        };
+        tokio::join!(
+            check_workspace(workspace_a.path().to_str().unwrap().into(), "Workspace A"),
+            check_workspace(workspace_b.path().to_str().unwrap().into(), "Workspace B"),
+        );
     }
 
     #[tokio::test]
