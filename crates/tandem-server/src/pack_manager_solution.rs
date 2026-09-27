@@ -66,6 +66,74 @@ fn portable_path(value: &str) -> anyhow::Result<String> {
     Ok(value.into())
 }
 
+fn register_portable_path(
+    paths: &mut BTreeMap<String, (String, bool)>,
+    path: &str,
+    is_directory: bool,
+) -> anyhow::Result<()> {
+    portable_path(path)?;
+    let parts = path.split('/').collect::<Vec<_>>();
+    ensure!(
+        parts.len() <= MAX_PATH_DEPTH,
+        "solution path exceeds depth limit"
+    );
+    let mut prefix = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(part);
+        let directory = index + 1 < parts.len() || is_directory;
+        let folded = prefix.to_uppercase();
+        if let Some((existing, existing_directory)) = paths.get(&folded) {
+            ensure!(
+                existing == &prefix && *existing_directory == directory,
+                "solution paths collide on a case-insensitive filesystem"
+            );
+        } else {
+            paths.insert(folded, (prefix.clone(), directory));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_archive_paths(path: &Path) -> anyhow::Result<()> {
+    let mut archive = ZipArchive::new(File::open(path)?)?;
+    ensure!(
+        archive.len() <= MAX_FILES,
+        "solution archive exceeds entry limit"
+    );
+    let mut paths = BTreeMap::new();
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index)?;
+        let name = entry.name().trim_end_matches('/');
+        register_portable_path(&mut paths, name, entry.is_dir())?;
+    }
+    Ok(())
+}
+
+#[test]
+fn solution_paths_reject_case_and_file_directory_collisions() {
+    for (first, second) in [
+        ("agents/Worker.json", "agents/worker.json"),
+        ("Agents/one.json", "agents/two.json"),
+        ("agents", "agents/worker.json"),
+        ("agents/worker.json", "agents"),
+        ("agents/Ä.json", "agents/ä.json"),
+    ] {
+        let mut paths = BTreeMap::new();
+        register_portable_path(&mut paths, first, false).unwrap();
+        assert!(
+            register_portable_path(&mut paths, second, false).is_err(),
+            "{first}, {second}"
+        );
+    }
+    let mut paths = BTreeMap::new();
+    register_portable_path(&mut paths, "agents", true).unwrap();
+    register_portable_path(&mut paths, "agents/one.json", false).unwrap();
+    register_portable_path(&mut paths, "agents/two.json", false).unwrap();
+}
+
 fn portable_filename_component(part: &str) -> bool {
     // Apply the Win32 filename contract on every host, including directory
     // components and reserved device basenames followed by an extension.
@@ -85,11 +153,13 @@ fn portable_filename_component(part: &str) -> bool {
     let device_number = stem
         .strip_prefix("COM")
         .or_else(|| stem.strip_prefix("LPT"));
-    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        && !matches!(
-            device_number,
-            Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
-        )
+    !matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
+    ) && !matches!(
+        device_number,
+        Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+    )
 }
 
 #[test]
@@ -112,6 +182,12 @@ fn solution_paths_reject_nonportable_filename_components() {
         "PRN.txt",
         "AUX",
         "NUL.tar.gz",
+        "CONIN$",
+        "conin$.json",
+        "CONOUT$",
+        "conout$.txt",
+        "CLOCK$",
+        "clock$.json",
         "COM1",
         "com9.json",
         "LPT1",
@@ -197,6 +273,7 @@ fn artifact_loading_moves_unique_buffers_and_preserves_shared_paths() {
 fn snapshot(root: &Path) -> anyhow::Result<Snapshot> {
     reject_symlink_path(root, "solution pack")?;
     let mut files = BTreeMap::new();
+    let mut portable_paths = BTreeMap::new();
     let mut stack = vec![root.to_path_buf()];
     let mut total = 0usize;
     let mut entries_seen = 0usize;
@@ -214,6 +291,13 @@ fn snapshot(root: &Path) -> anyhow::Result<Snapshot> {
             );
             let kind = entry.file_type()?;
             ensure!(!kind.is_symlink(), "solution pack contains a symbolic link");
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)?
+                .to_str()
+                .ok_or_else(|| anyhow!("solution pack path must be UTF-8"))?
+                .replace('\\', "/");
+            register_portable_path(&mut portable_paths, &relative, kind.is_dir())?;
             if kind.is_dir() {
                 stack.push(entry.path());
                 continue;

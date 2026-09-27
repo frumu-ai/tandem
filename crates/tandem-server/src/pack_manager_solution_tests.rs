@@ -66,6 +66,9 @@ async fn solution_pack_enforces_portable_entrypoint_names_before_publication() {
     for (entrypoint, valid) in [
         ("solution?.json", false),
         ("CON", false),
+        ("CONIN$", false),
+        ("conout$.json", false),
+        ("CLOCK$", false),
         ("nested./solution.json", false),
         ("LPT²/solution.json", false),
         ("资料/solution.json", true),
@@ -91,6 +94,26 @@ async fn solution_pack_enforces_portable_entrypoint_names_before_publication() {
                 .await
                 .is_ok());
         }
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_pack_rejects_case_collisions_before_publication() {
+    for alias in ["agents/CENTRAL-BRAIN.json", "Agents/extra.json", "AGENTS"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut entries = fixture();
+        entries.push((alias.into(), "{}".into()));
+        let archive = root.path().join("solution.zip");
+        let key = signed(&archive, &entries);
+        let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+        let manager = PackManager::new(root.path().join("packs"));
+        let error = manager.install(request(&archive)).await.unwrap_err();
+        assert!(
+            error.to_string().contains("paths collide"),
+            "{alias}: {error:?}"
+        );
+        assert!(manager.list().await.unwrap().is_empty());
     }
 }
 
