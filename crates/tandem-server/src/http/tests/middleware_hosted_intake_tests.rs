@@ -330,7 +330,7 @@ async fn local_intake_key_persistence_serializes_concurrent_writers() {
 }
 
 #[test]
-fn local_intake_key_persistence_keeps_lock_after_request_cancellation() {
+fn local_intake_key_slow_persistence_does_not_delay_disable() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(1)
@@ -350,25 +350,87 @@ fn local_intake_key_persistence_keeps_lock_after_request_cancellation() {
             let pending = state.persist_incident_monitor_intake_keys();
             tokio::pin!(pending);
             assert!(futures::poll!(&mut pending).is_pending());
-            assert!(state.incident_monitor_intake_keys.try_write().is_err());
+            assert!(
+                state.incident_monitor_intake_keys.try_write().is_ok(),
+                "a queued filesystem write must not hold the authorization map lock",
+            );
         }
         assert!(
-            state.incident_monitor_intake_keys.try_write().is_err(),
-            "cancelling the caller must not unlock a queued or running file write",
+            state.incident_monitor_intake_keys.try_write().is_ok(),
+            "cancelled persistence must not block key management",
         );
+        assert!(
+            state
+                .incident_monitor_intake_keys_persistence
+                .try_lock()
+                .is_err(),
+            "cancelling the caller must not release publication order before IO finishes",
+        );
+        let queued = state.persist_incident_monitor_intake_keys();
+        tokio::pin!(queued);
+        assert!(futures::poll!(&mut queued).is_pending());
+        let disable = state.disable_incident_monitor_intake_key_checked("existing", || Ok(()));
+        tokio::pin!(disable);
+        assert!(futures::poll!(&mut disable).is_pending());
+        assert!(!state.incident_monitor_intake_keys.try_read().unwrap()["existing"].enabled);
+        let validation = state.validate_incident_monitor_intake_key(
+            "existing-raw",
+            "payments",
+            "incident_monitor:report",
+        );
+        tokio::pin!(validation);
+        assert!(matches!(
+            futures::poll!(&mut validation),
+            std::task::Poll::Ready(None)
+        ));
+        let listing = state.list_incident_monitor_intake_keys_checked(|| Ok(()));
+        tokio::pin!(listing);
+        assert!(matches!(
+            futures::poll!(&mut listing),
+            std::task::Poll::Ready(Ok(_))
+        ));
         release_tx.send(()).unwrap();
         occupied.await.unwrap();
-        // Acquiring the guard proves the detached write has finished its IO.
-        let current = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            state.incident_monitor_intake_keys.write(),
-        )
-        .await
-        .unwrap();
+        let (saved_queue, disabled) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(&mut queued, &mut disable)
+            })
+            .await
+            .unwrap();
+        saved_queue.unwrap();
+        assert!(!disabled.unwrap().unwrap().enabled);
+        let current = state.incident_monitor_intake_keys.read().await;
         let saved: Value = serde_json::from_slice(
             &std::fs::read(&state.incident_monitor_intake_keys_path).unwrap(),
         )
         .unwrap();
         assert_eq!(saved, serde_json::to_value(&*current).unwrap());
+        drop(current);
+        state.load_incident_monitor_intake_keys().await.unwrap();
+        assert!(!state.incident_monitor_intake_keys.read().await["existing"].enabled);
     });
+}
+
+#[tokio::test]
+async fn local_intake_key_queued_persistence_snapshots_after_publication_lock() {
+    let (state, _temp, _key) = intake_fixture().await;
+    let held = state.incident_monitor_intake_keys_persistence.lock().await;
+    let queued = state.persist_incident_monitor_intake_keys();
+    tokio::pin!(queued);
+    assert!(futures::poll!(&mut queued).is_pending());
+    {
+        let disable = state.disable_incident_monitor_intake_key_checked("existing", || Ok(()));
+        tokio::pin!(disable);
+        assert!(futures::poll!(&mut disable).is_pending());
+        assert!(!state.incident_monitor_intake_keys.try_read().unwrap()["existing"].enabled);
+        // Cancel this caller before publication; the older queued writer must
+        // still snapshot the latest map, not the enabled state at enqueue time.
+    }
+    drop(held);
+    tokio::time::timeout(std::time::Duration::from_secs(10), queued)
+        .await
+        .unwrap()
+        .unwrap();
+    state.load_incident_monitor_intake_keys().await.unwrap();
+    assert!(!state.incident_monitor_intake_keys.read().await["existing"].enabled);
 }

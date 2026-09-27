@@ -282,6 +282,7 @@ pub struct AppState {
     pub incident_monitor_log_evidence_dir: PathBuf,
     pub incident_monitor_intake_keys:
         Arc<RwLock<std::collections::HashMap<String, IncidentMonitorProjectIntakeKey>>>,
+    pub(crate) incident_monitor_intake_keys_persistence: Arc<tokio::sync::Mutex<()>>,
     pub incident_monitor_intake_keys_path: PathBuf,
     pub external_actions: Arc<RwLock<std::collections::HashMap<String, ExternalActionRecord>>>,
     pub policy_decisions: Arc<RwLock<std::collections::HashMap<String, PolicyDecisionRecord>>>,
