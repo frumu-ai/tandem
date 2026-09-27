@@ -327,6 +327,11 @@ impl AppState {
         let _operation = self.routine_persistence.lock().await;
         let mut plans = Vec::new();
         let mut guard = self.routines.write().await;
+        // Admission must follow lock acquisition: an outage while waiting must
+        // leave due occurrences available for the next healthy scheduler tick.
+        if !self.enterprise.hosted_policy.is_ready() {
+            return plans;
+        }
         for routine in guard.values_mut() {
             if routine.status != RoutineStatus::Active {
                 continue;

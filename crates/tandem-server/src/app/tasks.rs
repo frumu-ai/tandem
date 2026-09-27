@@ -304,6 +304,10 @@ use tasks_context_run::*;
 #[path = "tasks_core_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "tasks_misfire_tests.rs"]
+mod misfire_tests;
+
 pub async fn run_session_part_persister(state: AppState) {
     if !state.wait_for_worker_ready_or_failed(120, 250).await {
         tracing::warn!("session part persister: skipped because runtime did not become ready");
@@ -1096,149 +1100,157 @@ pub async fn run_routine_scheduler(state: AppState) {
         }
         let now = now_ms();
         let plans = state.evaluate_routine_misfires(now).await;
-        for plan in plans {
-            let Some(routine) = state.get_routine_by_identity(&plan.identity).await else {
-                continue;
-            };
-            if !state.is_ready() {
-                break;
+        materialize_routine_timer_batch(&state, plans, now).await;
+    }
+}
+
+async fn materialize_routine_timer_batch(
+    state: &AppState,
+    plans: Vec<crate::routines::types::RoutineTriggerPlan>,
+    now: u64,
+) {
+    // Evaluation already advanced these schedules. Finish recording the admitted
+    // batch even if policy expires during persistence; execution is separately
+    // gated at run claim time. Dropping the batch here would lose occurrences.
+    for plan in plans {
+        let Some(routine) = state.get_routine_by_identity(&plan.identity).await else {
+            continue;
+        };
+        match crate::app::state::evaluate_routine_execution_policy(&routine, "scheduled") {
+            crate::app::state::RoutineExecutionDecision::Allowed => {
+                let _ = state
+                    .mark_routine_fired_by_identity(&plan.identity, now)
+                    .await;
+                let run = state
+                    .create_routine_run(
+                        &routine,
+                        "scheduled",
+                        plan.run_count,
+                        RoutineRunStatus::Queued,
+                        None,
+                    )
+                    .await;
+                state
+                    .append_routine_history(RoutineHistoryEvent {
+                        routine_id: plan.identity.routine_id.clone(),
+                        tenant_context: plan.tenant_context.clone(),
+                        trigger_type: "scheduled".to_string(),
+                        run_count: plan.run_count,
+                        fired_at_ms: now,
+                        status: "queued".to_string(),
+                        detail: None,
+                    })
+                    .await;
+                state
+                    .event_bus
+                    .publish(crate::routines::types::tenant_scoped_engine_event(
+                        "routine.fired",
+                        &plan.tenant_context,
+                        serde_json::json!({
+                            "routineID": plan.identity.routine_id,
+                            "runID": run.run_id,
+                            "runCount": plan.run_count,
+                            "scheduledAtMs": plan.scheduled_at_ms,
+                            "nextFireAtMs": plan.next_fire_at_ms,
+                        }),
+                    ));
+                state
+                    .event_bus
+                    .publish(crate::routines::types::tenant_scoped_engine_event(
+                        "routine.run.created",
+                        &plan.tenant_context,
+                        serde_json::json!({
+                            "run": run,
+                        }),
+                    ));
             }
-            match crate::app::state::evaluate_routine_execution_policy(&routine, "scheduled") {
-                crate::app::state::RoutineExecutionDecision::Allowed => {
-                    let _ = state
-                        .mark_routine_fired_by_identity(&plan.identity, now)
-                        .await;
-                    let run = state
-                        .create_routine_run(
-                            &routine,
-                            "scheduled",
-                            plan.run_count,
-                            RoutineRunStatus::Queued,
-                            None,
-                        )
-                        .await;
-                    state
-                        .append_routine_history(RoutineHistoryEvent {
-                            routine_id: plan.identity.routine_id.clone(),
-                            tenant_context: plan.tenant_context.clone(),
-                            trigger_type: "scheduled".to_string(),
-                            run_count: plan.run_count,
-                            fired_at_ms: now,
-                            status: "queued".to_string(),
-                            detail: None,
-                        })
-                        .await;
-                    state
-                        .event_bus
-                        .publish(crate::routines::types::tenant_scoped_engine_event(
-                            "routine.fired",
-                            &plan.tenant_context,
-                            serde_json::json!({
-                                "routineID": plan.identity.routine_id,
-                                "runID": run.run_id,
-                                "runCount": plan.run_count,
-                                "scheduledAtMs": plan.scheduled_at_ms,
-                                "nextFireAtMs": plan.next_fire_at_ms,
-                            }),
-                        ));
-                    state
-                        .event_bus
-                        .publish(crate::routines::types::tenant_scoped_engine_event(
-                            "routine.run.created",
-                            &plan.tenant_context,
-                            serde_json::json!({
-                                "run": run,
-                            }),
-                        ));
-                }
-                crate::app::state::RoutineExecutionDecision::RequiresApproval { reason } => {
-                    let run = state
-                        .create_routine_run(
-                            &routine,
-                            "scheduled",
-                            plan.run_count,
-                            RoutineRunStatus::PendingApproval,
-                            Some(reason.clone()),
-                        )
-                        .await;
-                    state
-                        .append_routine_history(RoutineHistoryEvent {
-                            routine_id: plan.identity.routine_id.clone(),
-                            tenant_context: plan.tenant_context.clone(),
-                            trigger_type: "scheduled".to_string(),
-                            run_count: plan.run_count,
-                            fired_at_ms: now,
-                            status: "pending_approval".to_string(),
-                            detail: Some(reason.clone()),
-                        })
-                        .await;
-                    state
-                        .event_bus
-                        .publish(crate::routines::types::tenant_scoped_engine_event(
-                            "routine.approval_required",
-                            &plan.tenant_context,
-                            serde_json::json!({
-                                "routineID": plan.identity.routine_id,
-                                "runID": run.run_id,
-                                "runCount": plan.run_count,
-                                "triggerType": "scheduled",
-                                "reason": reason,
-                            }),
-                        ));
-                    state
-                        .event_bus
-                        .publish(crate::routines::types::tenant_scoped_engine_event(
-                            "routine.run.created",
-                            &plan.tenant_context,
-                            serde_json::json!({
-                                "run": run,
-                            }),
-                        ));
-                }
-                crate::app::state::RoutineExecutionDecision::Blocked { reason } => {
-                    let run = state
-                        .create_routine_run(
-                            &routine,
-                            "scheduled",
-                            plan.run_count,
-                            RoutineRunStatus::BlockedPolicy,
-                            Some(reason.clone()),
-                        )
-                        .await;
-                    state
-                        .append_routine_history(RoutineHistoryEvent {
-                            routine_id: plan.identity.routine_id.clone(),
-                            tenant_context: plan.tenant_context.clone(),
-                            trigger_type: "scheduled".to_string(),
-                            run_count: plan.run_count,
-                            fired_at_ms: now,
-                            status: "blocked_policy".to_string(),
-                            detail: Some(reason.clone()),
-                        })
-                        .await;
-                    state
-                        .event_bus
-                        .publish(crate::routines::types::tenant_scoped_engine_event(
-                            "routine.blocked",
-                            &plan.tenant_context,
-                            serde_json::json!({
-                                "routineID": plan.identity.routine_id,
-                                "runID": run.run_id,
-                                "runCount": plan.run_count,
-                                "triggerType": "scheduled",
-                                "reason": reason,
-                            }),
-                        ));
-                    state
-                        .event_bus
-                        .publish(crate::routines::types::tenant_scoped_engine_event(
-                            "routine.run.created",
-                            &plan.tenant_context,
-                            serde_json::json!({
-                                "run": run,
-                            }),
-                        ));
-                }
+            crate::app::state::RoutineExecutionDecision::RequiresApproval { reason } => {
+                let run = state
+                    .create_routine_run(
+                        &routine,
+                        "scheduled",
+                        plan.run_count,
+                        RoutineRunStatus::PendingApproval,
+                        Some(reason.clone()),
+                    )
+                    .await;
+                state
+                    .append_routine_history(RoutineHistoryEvent {
+                        routine_id: plan.identity.routine_id.clone(),
+                        tenant_context: plan.tenant_context.clone(),
+                        trigger_type: "scheduled".to_string(),
+                        run_count: plan.run_count,
+                        fired_at_ms: now,
+                        status: "pending_approval".to_string(),
+                        detail: Some(reason.clone()),
+                    })
+                    .await;
+                state
+                    .event_bus
+                    .publish(crate::routines::types::tenant_scoped_engine_event(
+                        "routine.approval_required",
+                        &plan.tenant_context,
+                        serde_json::json!({
+                            "routineID": plan.identity.routine_id,
+                            "runID": run.run_id,
+                            "runCount": plan.run_count,
+                            "triggerType": "scheduled",
+                            "reason": reason,
+                        }),
+                    ));
+                state
+                    .event_bus
+                    .publish(crate::routines::types::tenant_scoped_engine_event(
+                        "routine.run.created",
+                        &plan.tenant_context,
+                        serde_json::json!({
+                            "run": run,
+                        }),
+                    ));
+            }
+            crate::app::state::RoutineExecutionDecision::Blocked { reason } => {
+                let run = state
+                    .create_routine_run(
+                        &routine,
+                        "scheduled",
+                        plan.run_count,
+                        RoutineRunStatus::BlockedPolicy,
+                        Some(reason.clone()),
+                    )
+                    .await;
+                state
+                    .append_routine_history(RoutineHistoryEvent {
+                        routine_id: plan.identity.routine_id.clone(),
+                        tenant_context: plan.tenant_context.clone(),
+                        trigger_type: "scheduled".to_string(),
+                        run_count: plan.run_count,
+                        fired_at_ms: now,
+                        status: "blocked_policy".to_string(),
+                        detail: Some(reason.clone()),
+                    })
+                    .await;
+                state
+                    .event_bus
+                    .publish(crate::routines::types::tenant_scoped_engine_event(
+                        "routine.blocked",
+                        &plan.tenant_context,
+                        serde_json::json!({
+                            "routineID": plan.identity.routine_id,
+                            "runID": run.run_id,
+                            "runCount": plan.run_count,
+                            "triggerType": "scheduled",
+                            "reason": reason,
+                        }),
+                    ));
+                state
+                    .event_bus
+                    .publish(crate::routines::types::tenant_scoped_engine_event(
+                        "routine.run.created",
+                        &plan.tenant_context,
+                        serde_json::json!({
+                            "run": run,
+                        }),
+                    ));
             }
         }
     }
@@ -1458,6 +1470,34 @@ pub(crate) fn routine_execution_session(run: &RoutineRunRecord, workspace_root: 
     session
 }
 
+async fn materialize_automation_timer_batch(state: &AppState, due: Vec<String>) {
+    // As with routine timers, retain the entire already-admitted batch during a
+    // policy outage. Queuing does not bypass the executor's readiness checks.
+    for automation_id in due {
+        let Some(automation) = state.get_automation_v2(&automation_id).await else {
+            continue;
+        };
+        if let Ok(run) = state
+            .create_automation_v2_run(&automation, "scheduled")
+            .await
+        {
+            let tenant_context = run.tenant_context.clone();
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "automation.v2.run.created",
+                    &tenant_context,
+                    serde_json::json!({
+                        "automationID": automation_id,
+                        "run": run,
+                        "tenantContext": tenant_context,
+                        "triggerType": "scheduled",
+                    }),
+                ));
+        }
+    }
+}
+
 pub async fn run_automation_v2_scheduler(state: AppState) {
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1472,32 +1512,7 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
 
         // --- Existing: timer-based misfires ---
         let due = state.evaluate_automation_v2_misfires(now).await;
-        for automation_id in due {
-            let Some(automation) = state.get_automation_v2(&automation_id).await else {
-                continue;
-            };
-            if !state.is_ready() {
-                break;
-            }
-            if let Ok(run) = state
-                .create_automation_v2_run(&automation, "scheduled")
-                .await
-            {
-                let tenant_context = run.tenant_context.clone();
-                state
-                    .event_bus
-                    .publish(crate::routines::types::tenant_scoped_engine_event(
-                        "automation.v2.run.created",
-                        &tenant_context,
-                        serde_json::json!({
-                            "automationID": automation_id,
-                            "run": run,
-                            "tenantContext": tenant_context,
-                            "triggerType": "scheduled",
-                        }),
-                    ));
-            }
-        }
+        materialize_automation_timer_batch(&state, due).await;
 
         // --- New (Phase 1): watch-condition-based triggers ---
         if !state.is_ready() {
