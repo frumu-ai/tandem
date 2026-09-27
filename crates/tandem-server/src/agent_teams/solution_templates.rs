@@ -60,7 +60,9 @@ impl AgentTeamRuntime {
         self.ensure_loaded_for_workspace(workspace_root).await?;
         let path = PathBuf::from(workspace_root.trim())
             .join(".tandem/agent-team/templates")
-            .join(Self::template_filename(&template.template_id));
+            // Managed IDs are already validated portable filenames. Preserve
+            // dots so distinct component IDs never share a sanitized basename.
+            .join(format!("{}.yaml", template.template_id));
         // Existing YAML/JSON aliases must not create duplicate template IDs.
         if let Some(existing) = self.templates.read().await.get(&template.template_id) {
             ensure!(
@@ -84,7 +86,7 @@ fn validate_owner(template: &AgentTemplate, owner: &SolutionTemplateOwner) -> an
             && template
                 .template_id
                 .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')),
         "solution template requires a portable stable resource ID"
     );
     for reference in [
@@ -459,6 +461,61 @@ mod tests {
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(result.unwrap(), sha256(&original));
         assert!(unchanged);
+    }
+
+    #[tokio::test]
+    async fn native_stage_preserves_distinct_dotted_component_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_str().unwrap();
+        let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+        let mut staged = Vec::new();
+        for component in ["central.brain", "central_brain"] {
+            let (mut template, mut owner) = fixture();
+            owner.component_id = component.into();
+            template.template_id = solution_resource_id(
+                &owner.org_id,
+                &owner.workspace_id,
+                &owner.deployment_id,
+                &owner.instance_id,
+                &owner.component_id,
+            )
+            .unwrap();
+            let receipt = runtime
+                .stage_solution_template(workspace, template.clone(), owner.clone())
+                .await
+                .unwrap();
+            staged.push((template, owner, receipt));
+        }
+        let directory = dir.path().join(".tandem/agent-team/templates");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        let restarted = AgentTeamRuntime::new(dir.path().join("restart-audit"));
+        for (template, owner, receipt) in staged {
+            assert!(directory
+                .join(format!("{}.yaml", template.template_id))
+                .is_file());
+            let observed = restarted
+                .get_template_for_workspace(workspace, &template.template_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(observed.solution_owner, Some(owner.clone()));
+            assert!(!observed.enabled);
+            assert_eq!(
+                restarted
+                    .stage_solution_template(workspace, template.clone(), owner)
+                    .await
+                    .unwrap(),
+                receipt
+            );
+            assert!(restarted
+                .upsert_template(workspace, template.clone())
+                .await
+                .is_err());
+            assert!(restarted
+                .delete_template(workspace, &template.template_id)
+                .await
+                .is_err());
+        }
     }
 
     #[tokio::test]
