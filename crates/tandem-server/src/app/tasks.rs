@@ -1091,12 +1091,18 @@ pub async fn run_routine_scheduler(state: AppState) {
     }
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
+        if !state.is_ready() {
+            continue;
+        }
         let now = now_ms();
         let plans = state.evaluate_routine_misfires(now).await;
         for plan in plans {
             let Some(routine) = state.get_routine_by_identity(&plan.identity).await else {
                 continue;
             };
+            if !state.is_ready() {
+                break;
+            }
             match crate::app::state::evaluate_routine_execution_policy(&routine, "scheduled") {
                 crate::app::state::RoutineExecutionDecision::Allowed => {
                     let _ = state
@@ -1244,6 +1250,9 @@ pub async fn run_routine_executor(state: AppState) {
     }
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
+        if !state.is_ready() {
+            continue;
+        }
         let Some(run) = state.claim_next_queued_routine_run().await else {
             continue;
         };
@@ -1455,8 +1464,7 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
         if state.is_automation_scheduler_stopping() {
             break;
         }
-        let startup = state.startup_snapshot().await;
-        if !matches!(startup.status, crate::app::startup::StartupStatus::Ready) {
+        if !state.is_ready() {
             continue;
         }
         let tick_started = std::time::Instant::now();
@@ -1468,6 +1476,9 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
             let Some(automation) = state.get_automation_v2(&automation_id).await else {
                 continue;
             };
+            if !state.is_ready() {
+                break;
+            }
             if let Ok(run) = state
                 .create_automation_v2_run(&automation, "scheduled")
                 .await
@@ -1489,17 +1500,26 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
         }
 
         // --- New (Phase 1): watch-condition-based triggers ---
+        if !state.is_ready() {
+            continue;
+        }
         let watch_due = state.evaluate_automation_v2_watches().await;
         for (automation_id, trigger_reason, maybe_handoff) in watch_due {
             let Some(automation) = state.get_automation_v2(&automation_id).await else {
                 continue;
             };
+            if !state.is_ready() {
+                break;
+            }
 
             // If this watch was triggered by a handoff, consume it before creating
             // the run so no other automation on this tick can claim the same handoff.
             let consumed_handoff_id = if let Some(ref handoff) = maybe_handoff {
                 let workspace_root = state.workspace_index.snapshot().await.root;
                 let handoff_cfg = automation.effective_handoff_config();
+                if !state.is_ready() {
+                    break;
+                }
                 match state
                     .consume_automation_v2_handoff(
                         &workspace_root,
@@ -1578,8 +1598,7 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
 pub async fn run_optimization_scheduler(state: AppState) {
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let startup = state.startup_snapshot().await;
-        if !matches!(startup.status, crate::app::startup::StartupStatus::Ready) {
+        if !state.is_ready() {
             continue;
         }
         if let Err(error) = state.reconcile_optimization_campaigns().await {

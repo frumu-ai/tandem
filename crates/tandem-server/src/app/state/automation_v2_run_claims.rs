@@ -190,6 +190,9 @@ impl AppState {
             stored_runtime_context,
         ) = {
             let mut guard = self.automation_v2_runs.write().await;
+            if !self.enterprise.hosted_policy.is_ready() {
+                return None;
+            }
             let run = guard.get_mut(run_id)?;
             if run.status != AutomationRunStatus::Queued {
                 return None;
@@ -230,6 +233,9 @@ impl AppState {
         let runtime_context = computed_runtime_context.or(stored_runtime_context);
         if runtime_context_required && runtime_context.is_none() {
             let mut guard = self.automation_v2_runs.write().await;
+            if !self.enterprise.hosted_policy.is_ready() {
+                return None;
+            }
             let run = guard.get_mut(run_id)?;
             if run.status != AutomationRunStatus::Queued {
                 return None;
@@ -268,6 +274,9 @@ impl AppState {
         if let Some(automation) = automation_for_context.as_ref() {
             if self.run_launch_blocked_by_spend_pause(automation).await {
                 let mut guard = self.automation_v2_runs.write().await;
+                if !self.enterprise.hosted_policy.is_ready() {
+                    return None;
+                }
                 let run = guard.get_mut(run_id)?;
                 if run.status != AutomationRunStatus::Queued {
                     return None;
@@ -318,6 +327,12 @@ impl AppState {
             None
         };
         let mut guard = self.automation_v2_runs.write().await;
+        // Policy may expire while waiting on governance or run locks.
+        // Check at the queued-to-running mutation, without changing local-mode
+        // callers that do not configure a hosted policy source.
+        if !self.enterprise.hosted_policy.is_ready() {
+            return None;
+        }
         let run = guard.get_mut(run_id)?;
         if run.status != AutomationRunStatus::Queued {
             return None;

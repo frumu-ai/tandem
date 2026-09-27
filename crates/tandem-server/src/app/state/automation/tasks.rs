@@ -52,7 +52,7 @@ async fn run_automation_v2_executor_supervised(state: AppState) {
             return;
         }
         let startup = state.startup_snapshot().await;
-        if matches!(startup.status, crate::app::startup::StartupStatus::Ready) {
+        if state.is_ready() {
             break;
         }
         if matches!(startup.status, crate::app::startup::StartupStatus::Failed) {
@@ -136,6 +136,39 @@ async fn process_automation_webhook_inbox_tick(state: &AppState) {
     }
 }
 
+async fn process_ready_executor_maintenance(state: &AppState) {
+    if !state.is_ready() {
+        return;
+    }
+    let _ = state
+        .reap_stale_running_automation_runs(STALE_RUNNING_AUTOMATION_RUN_MS)
+        .await;
+    if !state.is_ready() {
+        return;
+    }
+    let _ = state.process_awaiting_approval_gate_policies().await;
+    if !state.is_ready() {
+        return;
+    }
+    let _ = state.mark_stale_awaiting_approval_runs().await;
+    if !state.is_ready() {
+        return;
+    }
+    let _ = state.auto_resume_stale_reaped_runs().await;
+    if !state.is_ready() {
+        return;
+    }
+    process_stateful_wait_scheduler_tick(state).await;
+    if !state.is_ready() {
+        return;
+    }
+    process_automation_webhook_inbox_tick(state).await;
+    if !state.is_ready() {
+        return;
+    }
+    process_dead_letter_retry_tick(state).await;
+}
+
 async fn run_automation_v2_executor_single(state: AppState) {
     let mut active = JoinSet::new();
     loop {
@@ -153,21 +186,14 @@ async fn run_automation_v2_executor_single(state: AppState) {
             continue;
         }
 
-        let _ = state
-            .reap_stale_running_automation_runs(STALE_RUNNING_AUTOMATION_RUN_MS)
-            .await;
+        if !state.is_ready() {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
 
-        let _ = state.process_awaiting_approval_gate_policies().await;
+        process_ready_executor_maintenance(&state).await;
 
-        let _ = state.mark_stale_awaiting_approval_runs().await;
-
-        let _ = state.auto_resume_stale_reaped_runs().await;
-
-        process_stateful_wait_scheduler_tick(&state).await;
-        process_automation_webhook_inbox_tick(&state).await;
-        process_dead_letter_retry_tick(&state).await;
-
-        if active.is_empty() {
+        if active.is_empty() && state.is_ready() {
             if let Some(run) = state.claim_next_queued_automation_v2_run().await {
                 active.spawn(execute_run_and_release_wrapped(state.clone(), run));
             }
@@ -194,26 +220,19 @@ async fn run_automation_v2_executor_multi(state: AppState) {
             continue;
         }
 
-        let _ = state
-            .reap_stale_running_automation_runs(STALE_RUNNING_AUTOMATION_RUN_MS)
-            .await;
+        if !state.is_ready() {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
 
-        let _ = state.process_awaiting_approval_gate_policies().await;
-
-        let _ = state.mark_stale_awaiting_approval_runs().await;
-
-        let _ = state.auto_resume_stale_reaped_runs().await;
-
-        process_stateful_wait_scheduler_tick(&state).await;
-        process_automation_webhook_inbox_tick(&state).await;
-        process_dead_letter_retry_tick(&state).await;
+        process_ready_executor_maintenance(&state).await;
 
         let capacity = {
             let scheduler = state.automation_scheduler.read().await;
             scheduler.max_concurrent_runs
         };
 
-        while active.len() < capacity {
+        while active.len() < capacity && state.is_ready() {
             let queued = queued_runs_for_admission(&state).await;
             if queued.is_empty() {
                 break;
@@ -221,7 +240,7 @@ async fn run_automation_v2_executor_multi(state: AppState) {
 
             let mut admitted_any = false;
             for run in queued {
-                if active.len() >= capacity {
+                if active.len() >= capacity || !state.is_ready() {
                     break;
                 }
 
@@ -239,6 +258,9 @@ async fn run_automation_v2_executor_multi(state: AppState) {
 
                 match admission {
                     Ok(()) => {
+                        if !state.is_ready() {
+                            break;
+                        }
                         if let Some(claimed) =
                             state.claim_specific_automation_v2_run(&run.run_id).await
                         {
@@ -405,6 +427,166 @@ mod tests {
         AutomationV2ScheduleType, AutomationV2Spec, AutomationV2Status, RoutineMisfirePolicy,
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn hosted_readiness_loss_during_run_lock_wait_blocks_claim_and_recovery() {
+        for recovery in [false, true] {
+            let state = ready_test_state().await;
+            let temp = tempfile::tempdir().unwrap();
+            let mut automation = test_automation(temp.path().to_str().unwrap());
+            automation.agents.clear();
+            automation.flow.nodes.clear();
+            let run = state
+                .create_automation_v2_run(&automation, "manual")
+                .await
+                .unwrap();
+            if recovery {
+                state
+                    .update_automation_v2_run(&run.run_id, |row| {
+                        row.status = AutomationRunStatus::Pausing;
+                    })
+                    .await
+                    .unwrap();
+            }
+            let before = state.get_automation_v2_run(&run.run_id).await.unwrap();
+            assert!(state.is_ready());
+            let guard = state.automation_v2_runs.write().await;
+            let make_unready = || {
+                state.enterprise.hosted_policy.configure_test_source(
+                    "org-a",
+                    "dep-a",
+                    temp.path().join("missing-policy.json"),
+                )
+            };
+            if recovery {
+                let pending = state.recover_in_flight_runs();
+                tokio::pin!(pending);
+                assert!(futures::poll!(pending.as_mut()).is_pending());
+                make_unready();
+                drop(guard);
+                assert_eq!(pending.await, 0);
+            } else {
+                let pending = state.claim_specific_automation_v2_run(&run.run_id);
+                tokio::pin!(pending);
+                assert!(futures::poll!(pending.as_mut()).is_pending());
+                make_unready();
+                drop(guard);
+                assert!(pending.await.is_none());
+            }
+            assert!(!state.is_ready());
+            let after = state.get_automation_v2_run(&run.run_id).await.unwrap();
+            assert_eq!(
+                serde_json::to_value(after).unwrap(),
+                serde_json::to_value(before).unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_unready_executors_leave_queued_runs_untouched_and_stop() {
+        for multi in [false, true] {
+            let state = ready_test_state().await;
+            let temp = tempfile::tempdir().unwrap();
+            let mut automation = test_automation(temp.path().to_str().unwrap());
+            // No provider or tool work is possible even if admission regresses.
+            automation.agents.clear();
+            automation.flow.nodes.clear();
+            let run = state
+                .create_automation_v2_run(&automation, "manual")
+                .await
+                .unwrap();
+            state.enterprise.hosted_policy.configure_test_source(
+                "org-a",
+                "dep-a",
+                temp.path().join("missing-policy.json"),
+            );
+            assert!(!state.is_ready());
+            let worker_state = state.clone();
+            let worker = tokio::spawn(async move {
+                if multi {
+                    run_automation_v2_executor_multi(worker_state).await;
+                } else {
+                    run_automation_v2_executor_single(worker_state).await;
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(650)).await;
+            state.set_automation_scheduler_stopping(true);
+            tokio::time::timeout(Duration::from_secs(5), worker)
+                .await
+                .unwrap()
+                .unwrap();
+            let stored = state.get_automation_v2_run(&run.run_id).await.unwrap();
+            assert_eq!(stored.status, AutomationRunStatus::Queued, "multi={multi}");
+            assert_eq!(stored.updated_at_ms, run.updated_at_ms, "multi={multi}");
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_executor_resumes_after_policy_becomes_ready() {
+        let state = ready_test_state().await;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("policy.json");
+        let mut automation = test_automation(temp.path().to_str().unwrap());
+        automation.agents.clear();
+        automation.flow.nodes.clear();
+        let run = state
+            .create_automation_v2_run(&automation, "manual")
+            .await
+            .unwrap();
+        state
+            .enterprise
+            .hosted_policy
+            .configure_test_source("org-a", "dep-a", path.clone());
+        let worker = tokio::spawn(run_automation_v2_executor_supervised(state.clone()));
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert_eq!(
+            state
+                .get_automation_v2_run(&run.run_id)
+                .await
+                .unwrap()
+                .status,
+            AutomationRunStatus::Queued
+        );
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "schema_version": 1, "policy_version": 1,
+                "organization_id": "org-a", "deployment_id": "dep-a",
+                "generated_at": chrono::Utc::now(), "users": [], "org_units": [],
+                "org_unit_memberships": [], "deployment_grants": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        state.reload_hosted_policy().await.unwrap();
+        assert!(state.is_ready());
+        let completed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if state
+                    .get_automation_v2_run(&run.run_id)
+                    .await
+                    .unwrap()
+                    .status
+                    == AutomationRunStatus::Completed
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        state.set_automation_scheduler_stopping(true);
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        completed.expect("fresh policy must resume queued work");
+    }
 
     fn test_automation(workspace_root: &str) -> AutomationV2Spec {
         AutomationV2Spec {

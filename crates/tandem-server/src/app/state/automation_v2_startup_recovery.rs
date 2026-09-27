@@ -88,6 +88,9 @@ impl AppState {
             .collect::<Vec<_>>();
         let mut recovered = 0usize;
         for run in runs {
+            if !self.enterprise.hosted_policy.is_ready() {
+                return recovered;
+            }
             match run.status {
                 AutomationRunStatus::Running => {
                     if self.recover_running_run_after_restart(&run).await {
@@ -208,13 +211,21 @@ impl AppState {
                 _ => {}
             }
         }
+        if !self.enterprise.hosted_policy.is_ready() {
+            return recovered;
+        }
         recovered += self
             .recover_missing_automation_v2_wait_registrations()
             .await;
+        if !self.enterprise.hosted_policy.is_ready() {
+            return recovered;
+        }
         recovered += self.recover_lost_stateful_wait_wakes().await;
         // TAN-564: re-drive any dead letters whose retry was requested before a
         // crash so the failed effect actually re-executes on restart.
-        recovered += self.dispatch_ready_stateful_dead_letter_retries().await;
+        if self.enterprise.hosted_policy.is_ready() {
+            recovered += self.dispatch_ready_stateful_dead_letter_retries().await;
+        }
         recovered
     }
 
