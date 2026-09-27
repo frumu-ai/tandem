@@ -11,7 +11,6 @@ use futures::Stream;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use crate::{execute_workflow, simulate_workflow_event};
@@ -168,7 +167,7 @@ pub(super) async fn workflows_run(
     Ok(Json(json!({ "run": run })))
 }
 
-fn workflow_run_visible_to_caller(
+pub(super) fn workflow_run_visible_to_caller(
     run: &tandem_workflows::WorkflowRunRecord,
     tenant_context: &TenantContext,
     request_principal: &tandem_types::RequestPrincipal,
@@ -637,17 +636,10 @@ pub(super) async fn workflow_run_gate_decide(
     Ok(Json(json!({ "ok": true, "run": updated })))
 }
 
-fn workflow_event_tenant_context(event: &EngineEvent) -> TenantContext {
-    event
-        .properties
-        .get("tenantContext")
-        .and_then(|value| serde_json::from_value(value.clone()).ok())
-        .unwrap_or_else(TenantContext::local_implicit)
-}
-
 pub(super) fn workflow_events_stream(
     state: AppState,
     tenant_context: TenantContext,
+    verified: Option<VerifiedTenantContext>,
     workflow_id: Option<String>,
     run_id: Option<String>,
 ) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
@@ -659,52 +651,58 @@ pub(super) fn workflow_events_stream(
         }))
         .unwrap_or_default(),
     )));
-    let rx = state.event_bus.subscribe();
-    let live = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event) => {
-            if !event.event_type.starts_with("workflow.") {
-                return None;
-            }
-            if !super::tenant_matches(&tenant_context, &workflow_event_tenant_context(&event)) {
-                return None;
-            }
-            if let Some(expected) = workflow_id.as_deref() {
-                let actual = event
-                    .properties
-                    .get("workflowID")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                if actual != expected {
-                    return None;
-                }
-            }
-            if let Some(expected) = run_id.as_deref() {
-                let actual = event
-                    .properties
-                    .get("runID")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                if actual != expected {
-                    return None;
-                }
-            }
-            Some(Ok(
-                Event::default().data(serde_json::to_string(&event).unwrap_or_default())
-            ))
+    let live = super::event_stream_authority::subscribe(
+        state.clone(),
+        tenant_context.clone(),
+        verified.clone(),
+    )
+    .filter_map(move |event| {
+        if !event.event_type.starts_with("workflow.") {
+            return None;
         }
-        Err(_) => None,
+        if let Some(expected) = workflow_id.as_deref() {
+            let actual = event
+                .properties
+                .get("workflowID")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if actual != expected {
+                return None;
+            }
+        }
+        if let Some(expected) = run_id.as_deref() {
+            let actual = event
+                .properties
+                .get("runID")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if actual != expected {
+                return None;
+            }
+        }
+        Some(Ok(
+            Event::default().data(serde_json::to_string(&event).unwrap_or_default())
+        ))
     });
-    ready.chain(live)
+    super::event_stream_authority::guard(
+        ready.chain(live),
+        state,
+        tenant_context,
+        verified,
+        Some(AccessPermission::HostedWorkflowRead),
+    )
 }
 
 pub(super) async fn workflow_events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<WorkflowEventsQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
     Sse::new(workflow_events_stream(
         state,
         tenant_context,
+        verified.map(|Extension(value)| value),
         query.workflow_id,
         query.run_id,
     ))

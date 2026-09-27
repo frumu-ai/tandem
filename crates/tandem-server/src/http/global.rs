@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path as StdPath, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
-use tokio_stream::{wrappers::BroadcastStream, StreamExt};
+use tokio_stream::StreamExt;
 
 use super::*;
 use crate::action_authorization::{
@@ -615,10 +615,10 @@ pub(super) fn event_visible_to_tenant(event: &EngineEvent, request_tenant: &Tena
 fn sse_stream(
     state: AppState,
     request_tenant: TenantContext,
+    verified: Option<tandem_types::VerifiedTenantContext>,
     filter: EventFilterQuery,
 ) -> impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>
 {
-    let rx = state.event_bus.subscribe();
     let initial = tokio_stream::once(Ok(axum::response::sse::Event::default().data(
         serde_json::to_string(&EngineEvent::new("server.connected", json!({}))).unwrap_or_default(),
     )));
@@ -633,50 +633,61 @@ fn sse_stream(
         ))
         .unwrap_or_default(),
     )));
-    let live = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event) => {
-            if !event_matches_filter(&event, &filter) {
-                return None;
-            }
-            if !event_visible_to_tenant(&event, &request_tenant) {
-                return None;
-            }
-            let normalized = if let Some(run_id) = filter.run_id.as_deref() {
-                let session_hint = filter
-                    .session_id
-                    .as_deref()
-                    .or_else(|| {
-                        event
-                            .properties
-                            .get("sessionID")
-                            .or_else(|| event.properties.get("sessionId"))
-                            .and_then(|v| v.as_str())
-                    })
-                    .unwrap_or_default()
-                    .to_string();
-                let tenant_context = event_tenant_context(&event);
-                normalize_run_event(event, &session_hint, run_id, &tenant_context)
-            } else {
-                event
-            };
-            let payload = serde_json::to_string(&normalized).unwrap_or_default();
-            let payload = truncate_for_stream(&payload, 16_000);
-            Some(Ok(axum::response::sse::Event::default().data(payload)))
+    let live = super::event_stream_authority::subscribe(
+        state.clone(),
+        request_tenant.clone(),
+        verified.clone(),
+    )
+    .filter_map(move |event| {
+        if !event_matches_filter(&event, &filter) {
+            return None;
         }
-        Err(_) => None,
+        let normalized = if let Some(run_id) = filter.run_id.as_deref() {
+            let session_hint = filter
+                .session_id
+                .as_deref()
+                .or_else(|| {
+                    event
+                        .properties
+                        .get("sessionID")
+                        .or_else(|| event.properties.get("sessionId"))
+                        .and_then(|v| v.as_str())
+                })
+                .unwrap_or_default()
+                .to_string();
+            let tenant_context = event_tenant_context(&event);
+            normalize_run_event(event, &session_hint, run_id, &tenant_context)
+        } else {
+            event
+        };
+        let payload = serde_json::to_string(&normalized).unwrap_or_default();
+        let payload = truncate_for_stream(&payload, 16_000);
+        Some(Ok(axum::response::sse::Event::default().data(payload)))
     });
-    initial.chain(ready).chain(live)
+    super::event_stream_authority::guard(
+        initial.chain(ready).chain(live),
+        state,
+        request_tenant,
+        verified,
+        None,
+    )
 }
 
 pub(super) async fn events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Query(filter): Query<EventFilterQuery>,
 ) -> axum::response::Sse<
     impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
 > {
-    axum::response::Sse::new(sse_stream(state, tenant_context, filter))
-        .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10)))
+    axum::response::Sse::new(sse_stream(
+        state,
+        tenant_context,
+        verified.map(|Extension(value)| value),
+        filter,
+    ))
+    .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10)))
 }
 
 fn event_matches_filter(event: &EngineEvent, filter: &EventFilterQuery) -> bool {

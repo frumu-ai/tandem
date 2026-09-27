@@ -74,6 +74,7 @@ pub(crate) mod context_types;
 pub(crate) mod cross_tenant_grants;
 mod data_boundary_monitoring;
 mod discord_interactions;
+mod event_stream_authority;
 mod external_actions;
 mod global;
 mod goal_capability_learning;
@@ -82,6 +83,9 @@ mod goals_projection;
 pub(crate) mod governance;
 pub(crate) mod host_authority;
 mod hosted_admin_authority;
+#[cfg(test)]
+#[path = "http/tests/hosted_event_stream_tests.rs"]
+mod hosted_event_stream_tests;
 mod hosted_route_authority;
 pub(crate) mod incident_monitor;
 mod marketplace;
