@@ -126,8 +126,92 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
         .unwrap();
     assert_eq!(projected.expires_at_ms, Some(policy.expires_at_ms()));
 
+    // Prompt admission must preserve the same current local data grants as ingress.
+    let temp = tempfile::tempdir().unwrap();
+    let policy_path = temp.path().join("policy.json");
+    std::fs::write(&policy_path, serde_json::to_vec(&input).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&policy_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", policy_path);
+    state.reload_hosted_policy().await.unwrap();
+    let mut session = tandem_types::Session::new(Some("local grant refresh".into()), None);
+    session.tenant_context = verified.tenant_context.clone();
+    session.verified_tenant_context = Some(verified.clone());
+    let session_id = session.id.clone();
+    state.storage.save_session(session).await.unwrap();
+    super::super::sessions_actor_scope::refresh_prompt_authority(
+        &state,
+        &session_id,
+        &verified.tenant_context,
+        Some(&verified),
+    )
+    .await
+    .unwrap();
+    let refreshed = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .unwrap()
+        .verified_tenant_context
+        .unwrap();
+    assert_eq!(
+        access(&refreshed),
+        AccessDecision::Allow,
+        "prompt refresh must retain current local hosted data grants"
+    );
+    assert!(!refreshed
+        .strict_projection
+        .as_ref()
+        .unwrap()
+        .has_permission(AccessPermission::HostedAdmin));
+    let removed_grant = state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .remove("data-grant-eng")
+        .unwrap();
+    super::super::sessions_actor_scope::refresh_prompt_authority(
+        &state,
+        &session_id,
+        &verified.tenant_context,
+        Some(&verified),
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        access(
+            &state
+                .storage
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .verified_tenant_context
+                .unwrap()
+        ),
+        AccessDecision::Allow
+    );
+    state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .insert("data-grant-eng".into(), removed_grant);
+
     input.policy_version = 2;
     input.org_unit_memberships.clear();
+    std::fs::write(
+        temp.path().join("policy.json"),
+        serde_json::to_vec(&input).unwrap(),
+    )
+    .unwrap();
+    state.reload_hosted_policy().await.unwrap();
     let removed = input
         .validate("org-a", "dep-a", now, Some(policy.revision()))
         .unwrap();
@@ -139,6 +223,26 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
         .await;
     assert_ne!(access(&verified), AccessDecision::Allow);
     assert_eq!(state.enterprise.org_unit_memberships.read().await.len(), 1);
+    super::super::sessions_actor_scope::refresh_prompt_authority(
+        &state,
+        &session_id,
+        &verified.tenant_context,
+        Some(&verified),
+    )
+    .await
+    .unwrap();
+    let refreshed = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .unwrap()
+        .verified_tenant_context
+        .unwrap();
+    assert_ne!(
+        access(&refreshed),
+        AccessDecision::Allow,
+        "prompt refresh must not revive removed hosted membership from local rows"
+    );
 
     // Unconfigured local policy enrichment preserves its existing behavior.
     enrich_verified_context_with_org_unit_grants(&state, &mut verified, None).await;

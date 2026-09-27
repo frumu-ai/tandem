@@ -91,13 +91,19 @@ pub(super) async fn refresh_prompt_authority(
         return Err(denied());
     }
     let mut current = verified.clone();
-    state
+    let hosted_memberships = state
         .enterprise
         .hosted_policy
         .project(&mut current)
         .map_err(|_| denied())?;
-    // Hosted reprojection replaces the strict context. Restore only currently
-    // valid, signed inbound grants, just as authenticated ingress does.
+    // Rebuild enrichment from current memberships and grants, never from the
+    // old strict projection. Some(empty) must not fall back to local membership.
+    super::middleware::enrich_verified_context_with_org_unit_grants(
+        state,
+        &mut current,
+        hosted_memberships,
+    )
+    .await;
     super::cross_tenant_grants::enrich_verified_context_with_inbound_cross_tenant_grants(
         state,
         &mut current,
