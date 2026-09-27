@@ -255,6 +255,9 @@ pub(super) fn workflow_reviewer_is_eligible(
     {
         return false;
     }
+    if verified.policy_version.is_some() {
+        return super::hosted_admin_authority::allowed(verified);
+    }
     verified
         .roles
         .iter()

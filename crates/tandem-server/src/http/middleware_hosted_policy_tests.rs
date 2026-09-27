@@ -57,7 +57,7 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
             "grant-eng".into(),
             OrganizationUnitAccessGrant::active(
                 "grant-eng",
-                tenant,
+                tenant.clone(),
                 tandem_enterprise_contract::hosted_policy::hosted_unit_principal("eng"),
                 document.clone(),
                 now,
@@ -70,7 +70,8 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
             .with_data_classes(vec![DataClass::Internal]),
         );
     verified.strict_projection = Some(policy.project_identity(&verified, now).unwrap());
-    enrich_verified_context_with_org_unit_grants(&state, &mut verified, Some(memberships)).await;
+    enrich_verified_context_with_org_unit_grants(&state, &mut verified, Some(memberships.clone()))
+        .await;
     let access = |verified: &VerifiedTenantContext| {
         verified
             .strict_projection
@@ -84,6 +85,46 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
     assert!(strict.has_permission(AccessPermission::HostedUse));
     assert!(!strict.has_permission(AccessPermission::Admin));
     assert!(!strict.has_permission(AccessPermission::HostedAdmin));
+
+    // Local data grants must work for current hosted members without allowing
+    // the mixed hosted-operation grant above to confer deployment authority.
+    state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .insert(
+            "data-grant-eng".into(),
+            OrganizationUnitAccessGrant::active(
+                "data-grant-eng",
+                tenant,
+                tandem_enterprise_contract::hosted_policy::hosted_unit_principal("eng"),
+                document.clone(),
+                now,
+            )
+            .with_permissions(vec![
+                AccessPermission::Read,
+                AccessPermission::Admin,
+                AccessPermission::Delegate,
+            ])
+            .with_data_classes(vec![DataClass::Internal]),
+        );
+    enrich_verified_context_with_org_unit_grants(&state, &mut verified, Some(memberships)).await;
+    assert_eq!(access(&verified), AccessDecision::Allow);
+    let strict = verified.strict_projection.as_ref().unwrap();
+    assert!(strict.has_permission(AccessPermission::HostedUse));
+    assert!(strict.has_permission(AccessPermission::Admin));
+    assert!(!strict.has_permission(AccessPermission::HostedAdmin));
+    assert!(!super::super::workflows::workflow_reviewer_is_eligible(
+        &verified.tenant_context,
+        Some(&verified),
+    ));
+    let projected = strict
+        .grants
+        .iter()
+        .find(|grant| grant.grant_id.ends_with("::data-grant-eng"))
+        .unwrap();
+    assert_eq!(projected.expires_at_ms, Some(policy.expires_at_ms()));
 
     input.policy_version = 2;
     input.org_unit_memberships.clear();

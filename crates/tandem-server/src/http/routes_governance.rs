@@ -96,7 +96,7 @@ fn governance_route_error(
     )
 }
 
-fn governance_mutation_admin_allowed(
+pub(super) fn governance_mutation_admin_allowed(
     tenant_context: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
@@ -110,6 +110,9 @@ fn governance_mutation_admin_allowed(
         || !super::tenant_matches(tenant_context, &verified.tenant_context)
     {
         return false;
+    }
+    if verified.policy_version.is_some() {
+        return super::hosted_admin_authority::allowed(verified);
     }
     verified
         .roles

@@ -281,19 +281,23 @@ async fn enrich_verified_context_with_org_unit_grants(
     verified: &mut VerifiedTenantContext,
     hosted_memberships: Option<Vec<OrganizationUnitMembership>>,
 ) {
-    // Hosted projection already contains the control-plane grants. Local rows
-    // must not augment its memberships, even if they use the reserved unit ID.
-    if verified.strict_projection.is_none() || hosted_memberships.is_some() {
+    if verified.strict_projection.is_none() {
         return;
     }
-    let memberships = state
-        .enterprise
-        .org_unit_memberships
-        .read()
-        .await
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
+    // Some(empty) is authoritative: retained local memberships cannot restore
+    // membership removed by the control plane.
+    let hosted = hosted_memberships.is_some();
+    let memberships = match hosted_memberships {
+        Some(memberships) => memberships,
+        None => state
+            .enterprise
+            .org_unit_memberships
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect(),
+    };
     let access_grants = state
         .enterprise
         .org_unit_access_grants
@@ -305,9 +309,28 @@ async fn enrich_verified_context_with_org_unit_grants(
     project_org_unit_grants_into_verified_context(
         verified,
         memberships.iter(),
-        access_grants.iter(),
+        access_grants
+            .iter()
+            .filter(|grant| !hosted || local_hosted_data_grant(grant)),
         crate::util::time::now_ms(),
     );
+}
+
+fn local_hosted_data_grant(grant: &OrganizationUnitAccessGrant) -> bool {
+    // Deployment operations remain exclusively control-plane authored. Reject
+    // mixed grants rather than silently changing their permission semantics.
+    grant.resource.resource_kind != tandem_types::ResourceKind::HostedDeployment
+        && grant.permissions.iter().all(|permission| {
+            matches!(
+                permission,
+                AccessPermission::View
+                    | AccessPermission::Read
+                    | AccessPermission::Edit
+                    | AccessPermission::Execute
+                    | AccessPermission::Delegate
+                    | AccessPermission::Admin
+            )
+        })
 }
 
 fn project_org_unit_grants_into_verified_context<'a>(

@@ -190,7 +190,7 @@ fn request_is_text_only(req: &SendMessageRequest) -> bool {
         .all(|part| matches!(part, MessagePartInput::Text { .. }))
 }
 
-fn session_permission_rules_allowed(
+pub(super) fn session_permission_rules_allowed(
     tenant_context: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
@@ -204,6 +204,9 @@ fn session_permission_rules_allowed(
         || !super::tenant_matches(tenant_context, &verified.tenant_context)
     {
         return false;
+    }
+    if verified.policy_version.is_some() {
+        return super::hosted_admin_authority::allowed(verified);
     }
     verified
         .roles
