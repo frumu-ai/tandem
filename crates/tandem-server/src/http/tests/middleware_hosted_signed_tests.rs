@@ -248,8 +248,8 @@ async fn hosted_policy_prompt_admission_refreshes_owned_idle_sessions() {
     }
     write_policy(&path, 2, Some("member"), now);
     state.reload_hosted_policy().await.unwrap();
-    let request = |actor: &str, uri: String| {
-        let mut fresh = claims(actor, "member", 2, now);
+    let request = |actor: &str, uri: String, future_skew_ms: u64| {
+        let mut fresh = claims(actor, "member", 2, crate::now_ms() + future_skew_ms);
         fresh.assertion_id = uuid::Uuid::new_v4().to_string();
         let assertion = super::tests::sign_test_context_assertion(&key, "key-a", fresh);
         Request::builder()
@@ -264,9 +264,16 @@ async fn hosted_policy_prompt_admission_refreshes_owned_idle_sessions() {
     };
     for (id, endpoint) in ids.iter().zip(["prompt_async", "prompt_sync"]) {
         let uri = format!("/session/{id}/{endpoint}");
+        // Ingress must still reject timestamps beyond its configured allowance.
         let response = app
             .clone()
-            .oneshot(request("bob", uri.clone()))
+            .oneshot(request("alice", uri.clone(), 120_000))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = app
+            .clone()
+            .oneshot(request("bob", uri.clone(), 0))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -277,7 +284,7 @@ async fn hosted_policy_prompt_admission_refreshes_owned_idle_sessions() {
             .unwrap();
         let response = app
             .clone()
-            .oneshot(request("alice", uri.clone()))
+            .oneshot(request("alice", uri.clone(), 0))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT);
@@ -293,7 +300,13 @@ async fn hosted_policy_prompt_admission_refreshes_owned_idle_sessions() {
             Some(1)
         );
         state.run_registry.finish_if_match(id, "held").await;
-        let response = app.clone().oneshot(request("alice", uri)).await.unwrap();
+        // A correctly signed request within the verifier's allowance must
+        // remain valid when prompt admission refreshes stored authority.
+        let response = app
+            .clone()
+            .oneshot(request("alice", uri, 5_000))
+            .await
+            .unwrap();
         assert_ne!(response.status(), StatusCode::FORBIDDEN);
         let stored = state.storage.get_session(id).await.unwrap();
         let verified = stored.verified_tenant_context.as_ref().unwrap();

@@ -80,8 +80,10 @@ pub(super) async fn refresh_prompt_authority(
     ensure_same_session_actor(&verified.tenant_context, &session.tenant_context)
         .map_err(|_| super::session_not_found_error())?;
     let now = crate::now_ms();
-    if verified.issued_at_ms > now
-        || verified.is_expired_at(now)
+    // Ingress has already verified issued_at_ms with its configured clock-skew
+    // allowance. Do not impose a contradictory zero-skew rule at admission;
+    // expiry still needs rechecking after waiting for session storage.
+    if verified.is_expired_at(now)
         || (!request_tenant.is_local_implicit()
             && tenant_actor_id(&verified.tenant_context)
                 != Some(verified.human_actor.actor_id.trim()))
