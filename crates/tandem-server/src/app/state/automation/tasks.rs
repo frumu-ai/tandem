@@ -429,6 +429,121 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
+    async fn hosted_startup_recovery_rejects_stale_snapshots_and_preserves_completion_updates() {
+        let state = ready_test_state().await;
+        let temp = tempfile::tempdir().unwrap();
+        let mut automation = test_automation(temp.path().to_str().unwrap());
+        automation.agents.clear();
+        automation.flow.nodes.clear();
+        let run = state
+            .create_automation_v2_run(&automation, "manual")
+            .await
+            .unwrap();
+        let expected = state.get_automation_v2_run(&run.run_id).await.unwrap();
+        {
+            let mut guard = state.automation_v2_runs.write().await;
+            // Same status and timestamp: neither alone is a sufficient revision guard.
+            guard.get_mut(&run.run_id).unwrap().detail = Some("newer checkpoint detail".into());
+        }
+        let current = state.get_automation_v2_run(&run.run_id).await.unwrap();
+        assert!(state
+            .update_automation_v2_run_matching(&run.run_id, Some(&expected), |_| {
+                panic!("stale recovery must never invoke the mutation");
+            })
+            .await
+            .is_none());
+        assert_eq!(
+            serde_json::to_value(state.get_automation_v2_run(&run.run_id).await.unwrap()).unwrap(),
+            serde_json::to_value(&current).unwrap()
+        );
+        state.enterprise.hosted_policy.configure_test_source(
+            "org-a",
+            "dep-a",
+            temp.path().join("missing-policy.json"),
+        );
+        assert!(state
+            .update_automation_v2_run_matching(&run.run_id, Some(&current), |_| {
+                panic!("unavailable policy must reject recovery");
+            })
+            .await
+            .is_none());
+        let completed = state
+            .update_automation_v2_run(&run.run_id, |row| {
+                row.status = AutomationRunStatus::Completed;
+            })
+            .await
+            .expect("already-admitted completion bookkeeping remains available");
+        assert_eq!(completed.status, AutomationRunStatus::Completed);
+        state.automation_v2_runs.write().await.remove(&run.run_id);
+        assert!(state
+            .update_automation_v2_run_matching(&run.run_id, Some(&completed), |_| {
+                panic!("recovery must not resurrect a removed run");
+            })
+            .await
+            .is_none());
+        assert!(!state
+            .automation_v2_runs
+            .read()
+            .await
+            .contains_key(&run.run_id));
+    }
+
+    #[tokio::test]
+    async fn hosted_startup_recovery_rechecks_policy_at_final_write() {
+        let state = ready_test_state().await;
+        let temp = tempfile::tempdir().unwrap();
+        let mut automation = test_automation(temp.path().to_str().unwrap());
+        automation.agents.clear();
+        automation.flow.nodes.clear();
+        let run = state
+            .create_automation_v2_run(&automation, "manual")
+            .await
+            .unwrap();
+        state
+            .claim_specific_automation_v2_run(&run.run_id)
+            .await
+            .unwrap();
+        state
+            .update_automation_v2_run(&run.run_id, |row| {
+                row.status = AutomationRunStatus::Pausing;
+            })
+            .await
+            .unwrap();
+        let before = state.get_automation_v2_run(&run.run_id).await.unwrap();
+        // Reads can complete; only the mutation's write lock is blocked.
+        let guard = state.automation_v2_runs.read().await;
+        let recovery = state.recover_in_flight_runs();
+        tokio::pin!(recovery);
+        assert!(futures::poll!(recovery.as_mut()).is_pending());
+        state.enterprise.hosted_policy.configure_test_source(
+            "org-a",
+            "dep-a",
+            temp.path().join("missing-policy.json"),
+        );
+        drop(guard);
+        assert!(futures::poll!(recovery.as_mut()).is_pending());
+        let after = state.get_automation_v2_run(&run.run_id).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(before).unwrap(),
+            "policy loss while waiting for the final write must leave the run untouched"
+        );
+        assert!(state
+            .automation_scheduler
+            .read()
+            .await
+            .locked_workspaces
+            .contains_key(temp.path().to_str().unwrap()));
+        state.set_automation_scheduler_stopping(true);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), recovery)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn hosted_startup_recovery_resumes_after_policy_outage() {
         let state = ready_test_state().await;
         let temp = tempfile::tempdir().unwrap();

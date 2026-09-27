@@ -1613,7 +1613,20 @@ impl AppState {
         run_id: &str,
         update: impl FnOnce(&mut AutomationV2RunRecord),
     ) -> Option<AutomationV2RunRecord> {
+        self.update_automation_v2_run_matching(run_id, None, update).await
+    }
+
+    pub(super) async fn update_automation_v2_run_matching(
+        &self,
+        run_id: &str,
+        expected: Option<&AutomationV2RunRecord>,
+        update: impl FnOnce(&mut AutomationV2RunRecord),
+    ) -> Option<AutomationV2RunRecord> {
         let mut guard = self.automation_v2_runs.write().await;
+        // Recovery must not resurrect a run removed since its snapshot.
+        if expected.is_some() && !guard.contains_key(run_id) {
+            return None;
+        }
         let check_time_ms = crate::now_ms();
         if !guard.contains_key(run_id) {
             drop(guard);
@@ -1636,6 +1649,14 @@ impl AppState {
             }
         }
         let run = guard.get_mut(run_id)?;
+        if let Some(expected) = expected {
+            if self.is_automation_scheduler_stopping()
+                || !self.enterprise.hosted_policy.is_ready()
+                || serde_json::to_value(&*run).ok()? != serde_json::to_value(expected).ok()?
+            {
+                return None;
+            }
+        }
         let previous_status = run.status.clone();
         let previous_gate = run.checkpoint.awaiting_gate.clone();
         update(run);
