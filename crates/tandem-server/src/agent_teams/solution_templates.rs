@@ -723,6 +723,10 @@ mod tests {
         {
             // Junctions do not require Windows Developer Mode or the symlink
             // privilege and exercise the relevant reparse-point boundary.
+            // mklink interprets forward slashes as switches, unlike Rust's
+            // filesystem APIs. Rebuild components with native separators.
+            let link = link.components().collect::<PathBuf>();
+            let target = target.components().collect::<PathBuf>();
             let output = std::process::Command::new("cmd")
                 .args(["/D", "/C", "mklink", "/J"])
                 .arg(link)
