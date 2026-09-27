@@ -3,6 +3,9 @@
 
 use super::*;
 
+#[path = "middleware_hosted_intake_tests.rs"]
+mod intake_tests;
+
 #[tokio::test]
 async fn hosted_incident_config_requires_admin_for_patch_pause_and_resume() {
     let state = crate::test_support::test_state().await;

@@ -117,6 +117,7 @@ mod automation_webhook_verification;
 pub mod channel_user_capabilities;
 pub mod enterprise_state;
 mod idempotency;
+mod incident_monitor_intake_keys;
 mod oauth_state;
 mod prompt_context_blocks;
 mod prompt_context_hook;

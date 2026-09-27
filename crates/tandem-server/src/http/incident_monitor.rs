@@ -20,6 +20,7 @@ use axum::{
 };
 
 include!("incident_monitor_config_authority.rs");
+include!("incident_monitor_intake_key_authority.rs");
 include!("incident_monitor_parts/part01.rs");
 include!("incident_monitor_parts/part05.rs");
 include!("incident_monitor_parts/part06.rs");
