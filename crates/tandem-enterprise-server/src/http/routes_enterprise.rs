@@ -1154,6 +1154,11 @@ pub(super) fn enterprise_admin_allowed_for_mutation(
     verified_tenant_context: Option<&VerifiedTenantContext>,
 ) -> bool {
     if let Some(verified) = verified_tenant_context {
+        // Hosted identities carry a versioned, scoped policy projection from
+        // ingress. A missing or denied projection must not fall back to roles.
+        if verified.policy_version.is_some() {
+            return super::hosted_admin_authority::allowed(verified);
+        }
         return verified
             .roles
             .iter()

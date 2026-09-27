@@ -43,6 +43,8 @@ jobs:
         run: cargo test -p tandem-enterprise-server hosted_policy --lib
       - name: Verify native organization registry HTTP compatibility
         run: cargo test -p tandem-enterprise-server --test enterprise_http enterprise_org_unit
+      - name: Verify scoped hosted administration compatibility
+        run: cargo test -p tandem-enterprise-server --test hosted_admin_compatibility
       - name: Verify provider retry revocation and request isolation
         run: cargo test -p tandem-providers --lib
       - name: Verify MCP revocation after readiness and before network dispatch
