@@ -429,6 +429,132 @@ async fn automation_draft_rejects_raw_creation_before_dispatch() {
 }
 
 #[tokio::test]
+async fn hosted_automation_draft_requires_write_but_preserves_validation() {
+    let state = test_state().await;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("policy.json");
+    let now = crate::now_ms();
+    let users: Vec<_> = ["member", "admin"]
+        .into_iter()
+        .map(|role| {
+            json!({
+                "id": role, "email": null, "username": null, "role": role,
+                "capabilities": tandem_enterprise_contract::hosted_policy::role_capabilities(role),
+                "is_active": true, "email_verified": true,
+            })
+        })
+        .collect();
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "schema_version": 1, "policy_version": 1,
+            "organization_id": "org-a", "deployment_id": "dep-a",
+            "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+            "users": users, "org_units": [], "org_unit_memberships": [], "deployment_grants": [],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", path.clone());
+    state.reload_hosted_policy().await.unwrap();
+    for role in ["member", "admin"] {
+        let tenant =
+            TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".into()), role);
+        let mut verified = verified_context(
+            tenant.clone(),
+            role,
+            vec![format!("hosted:role:{role}")],
+            tandem_enterprise_contract::hosted_policy::role_capabilities(role)
+                .iter()
+                .map(|capability| capability.to_string())
+                .collect(),
+        );
+        verified.policy_version = Some(1);
+        let session = chat_session(&state, tenant.clone(), Some(verified)).await;
+        let source_id = format!("source-{role}");
+        let mut source = minimal_automation(&source_id, &tenant);
+        source.flow.nodes.push(
+            serde_json::from_value(json!({
+                "node_id": "step", "agent_id": "agent", "objective": "Write a brief",
+            }))
+            .unwrap(),
+        );
+        state.put_automation_v2(source.clone()).await.unwrap();
+        let tool = operator_tool(state.clone(), "automation_manage_draft");
+        for action in ["duplicate", "revise", "validate"] {
+            let result = tool
+                .execute_for_tenant(
+                    json!({
+                        "chat_session_id": session.id, "__dispatch_session_id": session.id,
+                        "action": action, "automation_id": source_id,
+                        "new_automation_id": format!("copy-{role}"),
+                        "idempotency_key": format!("{role}-{action}"),
+                    }),
+                    tenant.clone(),
+                )
+                .await;
+            if role == "member" && action != "validate" {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("hosted automation write authority"));
+                assert!(state.get_automation_v2("copy-member").await.is_none());
+                assert_eq!(
+                    state
+                        .get_automation_v2(&source_id)
+                        .await
+                        .unwrap()
+                        .creator_id,
+                    source.creator_id
+                );
+            } else {
+                let result = result.unwrap().metadata;
+                assert_eq!(
+                    result["status"],
+                    if action == "validate" {
+                        "valid"
+                    } else {
+                        "draft_saved"
+                    }
+                );
+                if action == "duplicate" {
+                    assert!(state.get_automation_v2("copy-admin").await.is_some());
+                }
+            }
+        }
+        if role == "admin" {
+            let mut policy: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            policy["policy_version"] = json!(2);
+            policy["users"][1]["is_active"] = json!(false);
+            std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
+            state.reload_hosted_policy().await.unwrap();
+            let error = tool
+                .execute_for_tenant(
+                    json!({
+                        "chat_session_id": session.id, "__dispatch_session_id": session.id,
+                        "action": "duplicate", "automation_id": source_id,
+                        "new_automation_id": "copy-admin", "idempotency_key": "admin-duplicate",
+                    }),
+                    tenant.clone(),
+                )
+                .await
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("hosted automation write authority"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn hosted_automation_control_requires_operator_authority() {
     let state = test_state().await;
     let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "member-a");

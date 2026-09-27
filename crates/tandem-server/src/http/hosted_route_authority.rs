@@ -93,7 +93,7 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
             | "/automations/v2/runs/{run_id}/backlog/tasks/{task_id}/claim"
             | "/automations/v2/runs/{run_id}/backlog/tasks/{task_id}/requeue",
         ) => Some(HostedAutomationExecute),
-        ("POST", "/automations/v2" | "/workflow-plans/apply")
+        ("POST", "/automations/v2" | "/workflow-plans/apply" | "/mission-builder/apply")
         | ("POST", "/automations/v2/{id}/webhook-triggers")
         | ("PATCH" | "DELETE", "/automations/v2/{id}/webhook-triggers/{trigger_id}")
         | (

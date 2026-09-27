@@ -1057,12 +1057,25 @@ async fn automation_draft(
     tenant: &TenantContext,
     chat_session: &Session,
 ) -> anyhow::Result<Value> {
-    let (actor, _) = mutation_actor(args, tenant, chat_session)?;
+    let (actor, verified) = mutation_actor(args, tenant, chat_session)?;
     let action = required_str(args, "action")?;
     if action == "create" {
         bail!(
             "raw automation creation is not supported; use workflow_plan_start and workflow_plan_materialize"
         );
+    }
+    let requires_write = matches!(action, "duplicate" | "revise");
+    if requires_write {
+        state
+            .enterprise
+            .hosted_policy
+            .authorize_permission(
+                verified.as_ref(),
+                tandem_types::AccessPermission::HostedAutomationWrite,
+            )
+            .map_err(|code| {
+                anyhow::anyhow!("hosted automation write authority is required: {code}")
+            })?;
     }
     let key = required_str(args, "idempotency_key")?;
     let fingerprint = operator_args_fingerprint(args, action);
@@ -1207,6 +1220,22 @@ async fn automation_draft(
             details,
         )
         .await;
+    }
+    // Source lookup and reservation await storage. Revalidate the current
+    // policy immediately before authoring; validation-only requests never write.
+    if let Err(code) = state.enterprise.hosted_policy.authorize_permission(
+        verified.as_ref(),
+        tandem_types::AccessPermission::HostedAutomationWrite,
+    ) {
+        release_idempotent(
+            state,
+            tenant,
+            "operator.automation_draft",
+            key,
+            &fingerprint,
+        )
+        .await?;
+        bail!("hosted automation write authority is required: {code}");
     }
     let stored = match state.put_automation_v2(automation).await {
         Ok(stored) => stored,

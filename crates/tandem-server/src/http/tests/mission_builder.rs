@@ -282,6 +282,28 @@ async fn mission_builder_preview_returns_compiled_automation() {
 }
 
 #[tokio::test]
+async fn mission_builder_apply_direct_handler_requires_hosted_authority() {
+    let state = test_state().await;
+    let temp = tempfile::tempdir().unwrap();
+    state.enterprise.hosted_policy.configure_test_source(
+        "org-a",
+        "dep-a",
+        temp.path().join("policy.json"),
+    );
+    let tenant =
+        TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".into()), "user-a");
+    let input = serde_json::from_value(json!({"blueprint": sample_blueprint()})).unwrap();
+    let result = crate::http::mission_builder::mission_builder_apply(
+        axum::extract::State(state),
+        axum::Extension(tenant),
+        None,
+        Json(input),
+    )
+    .await;
+    assert_eq!(result.unwrap_err().0, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn mission_builder_apply_persists_draft_automation() {
     let state = test_state().await;
     let app = app_router(state.clone());

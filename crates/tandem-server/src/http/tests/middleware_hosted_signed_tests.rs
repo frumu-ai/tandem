@@ -343,6 +343,7 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
     )
     // Exercise the shared handler outside the production route classifier,
     // as the operator materialization tool does.
+    .merge(super::super::routes_mission_builder::apply(Router::new()))
     .route(
         "/direct-plan-apply",
         axum::routing::post(super::super::workflow_planner::workflow_plan_apply),
@@ -378,6 +379,7 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
     // change deployment-wide hooks. Admins still reach handler validation.
     for (method, path) in [
         ("POST", "/workflow-plans/apply"),
+        ("POST", "/mission-builder/apply"),
         ("POST", "/direct-plan-apply"),
         ("PATCH", "/workflow-hooks/missing"),
     ] {
