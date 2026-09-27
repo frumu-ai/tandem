@@ -281,6 +281,16 @@ fn tenant_scoped_provider_id(tenant_context: &TenantContext, provider_id: &str) 
         .unwrap_or(normalized)
 }
 
+/// Canonical flat storage identity for coordinating credential operations.
+/// Callers must not reconstruct tenant/provider keys: a local provider name can
+/// itself be an encoded tenant-scoped key. This function grants no authority.
+pub fn provider_credential_storage_key(
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> String {
+    tenant_scoped_provider_id(tenant_context, provider_id)
+}
+
 fn strip_tenant_scoped_provider_id(
     tenant_context: &TenantContext,
     scoped_provider_id: &str,

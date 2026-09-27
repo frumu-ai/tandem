@@ -151,6 +151,7 @@ pub struct McpRegistry {
     connections: Arc<RwLock<HashMap<String, McpConnection>>>,
     processes: Arc<Mutex<HashMap<String, Child>>>,
     credential_mutation_lock: Arc<Mutex<()>>,
+    oauth_refreshes: Arc<Mutex<McpOAuthRefreshCoordinators>>,
     state_file: Arc<PathBuf>,
     oauth_security_dir: Arc<PathBuf>,
     standalone_private_endpoint_access: Arc<std::sync::atomic::AtomicBool>,
@@ -228,6 +229,7 @@ impl McpRegistry {
             connections: Arc::new(RwLock::new(loaded_connections)),
             processes: Arc::new(Mutex::new(HashMap::new())),
             credential_mutation_lock: Arc::new(Mutex::new(())),
+            oauth_refreshes: Arc::new(Mutex::new(HashMap::new())),
             state_file: Arc::new(state_file),
             oauth_security_dir: Arc::new(oauth_security_dir),
             standalone_private_endpoint_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1677,9 +1679,48 @@ impl McpRegistry {
         force: bool,
         binding: Option<&mut McpToolDispatchBinding>,
     ) -> Result<bool, String> {
+        let Some(admitted) = self.capture_oauth_refresh_predecessor(name, current_tenant).await? else {
+            return Ok(false);
+        };
+        let registry = self.clone();
+        let name = name.to_string();
+        let tenant = current_tenant.clone();
+        let mut owned_binding = binding.as_deref().cloned();
+        // A rotating-token exchange is not cancel-safe once sent. Let the
+        // authorized operation finish even when one waiting caller disappears;
+        // it retains both the keyed lock and the existing commit-time checks.
+        let (result, successor) = tokio::spawn(async move {
+            let result = registry.refresh_oauth_credential_serialized(
+                &name, &tenant, force, admitted, owned_binding.as_mut(),
+            ).await;
+            (result, owned_binding)
+        }).await.map_err(|_| "MCP OAuth refresh task failed".to_string())?;
+        if let (Some(binding), Some(successor)) = (binding, successor) {
+            *binding = successor;
+        }
+        result
+    }
+
+    async fn refresh_oauth_credential_serialized(
+        &self,
+        name: &str,
+        current_tenant: &TenantContext,
+        force: bool,
+        admitted: McpOAuthRefreshPredecessor,
+        mut binding: Option<&mut McpToolDispatchBinding>,
+    ) -> Result<bool, String> {
+        let key = McpOAuthCredentialKey::new(current_tenant, &admitted.oauth.provider_id);
+        let coordinator = self.oauth_refreshes.lock().await
+            .entry(key.clone()).or_default().clone();
+        // Serialize before loading the rotating token, but leave revocation and
+        // unrelated credentials free to proceed while the endpoint is awaited.
+        let mut refresh_state = coordinator.lock().await;
         let Some(predecessor) = self.capture_oauth_refresh_predecessor(name, current_tenant).await? else {
             return Ok(false);
         };
+        if McpOAuthCredentialKey::new(current_tenant, &predecessor.oauth.provider_id) != key {
+            return Err("MCP OAuth configuration changed while awaiting refresh".into());
+        }
         let oauth = &predecessor.oauth;
         let credential = if current_tenant.is_local_implicit() {
             tandem_core::load_provider_oauth_credential_in_dir(
@@ -1704,6 +1745,34 @@ impl McpRegistry {
             return Ok(false);
         };
 
+        let connection_id = self.connection_id_for_tenant(name, current_tenant);
+        if let Some(transition) = refresh_state.transitions.get(&connection_id) {
+            if transition.matches_successor(&predecessor, &credential)? {
+                if let Some(binding) = binding.as_deref_mut() {
+                    if binding.server_policy == transition.predecessor.server_policy
+                        && binding.connection_generation == transition.predecessor.connection_generation
+                    {
+                        let mut successor = binding.clone();
+                        successor.server_policy = transition.server_policy.clone();
+                        successor.connection_generation = transition.connection_generation.clone();
+                        // Revalidate this waiter's own authority and the exact
+                        // recorded successor, never blindly adopt current state.
+                        successor.revalidate()?;
+                        *binding = successor;
+                        return Ok(true);
+                    }
+                } else if admitted.server_policy == transition.predecessor.server_policy
+                    && admitted.connection_generation == transition.predecessor.connection_generation
+                    && admitted.oauth == transition.predecessor.oauth
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        if let Some(binding) = binding.as_deref() {
+            binding.revalidate()?;
+        }
+
         let should_refresh = force
             || credential.expires_at_ms <= now_ms().saturating_add(60_000)
             || credential.access_token.trim().is_empty();
@@ -1720,7 +1789,8 @@ impl McpRegistry {
             &endpoint_authorization,
         )
         .await?;
-        self.commit_oauth_refresh(name, current_tenant, predecessor, refreshed, binding).await?;
+        let transition = self.commit_oauth_refresh(name, current_tenant, predecessor, refreshed, binding).await?;
+        refresh_state.transitions.insert(connection_id, transition);
         Ok(true)
     }
 }

@@ -10,5 +10,8 @@ include!("mcp_oauth_refresh.rs");
 #[path = "mcp_hosted_policy_tests.rs"]
 mod hosted_policy_tests;
 #[cfg(test)]
+#[path = "mcp_oauth_concurrency_tests.rs"]
+mod oauth_concurrency_tests;
+#[cfg(test)]
 #[path = "mcp_oauth_dispatch_tests.rs"]
 mod oauth_dispatch_tests;

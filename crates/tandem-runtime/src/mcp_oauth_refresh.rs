@@ -1,9 +1,51 @@
 // A refresh may advance only its own exact predecessor. Public credential
 // replacement still rotates generation and invalidates all older requests.
+#[derive(Clone)]
 struct McpOAuthRefreshPredecessor {
     server_policy: Value,
     connection_generation: Option<String>,
     oauth: McpOAuthConfig,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct McpOAuthCredentialKey(String);
+
+impl McpOAuthCredentialKey {
+    fn new(tenant: &TenantContext, provider: &str) -> Self {
+        Self(tandem_core::provider_credential_storage_key(tenant, provider))
+    }
+}
+
+type McpOAuthRefreshCoordinators = HashMap<McpOAuthCredentialKey, Arc<Mutex<McpOAuthRefreshState>>>;
+
+#[derive(Default)]
+struct McpOAuthRefreshState {
+    transitions: HashMap<String, McpOAuthRefreshTransition>,
+}
+
+struct McpOAuthRefreshTransition {
+    predecessor: McpOAuthRefreshPredecessor,
+    server_policy: Value,
+    connection_generation: Option<String>,
+    credential_digest: String,
+}
+
+fn oauth_credential_digest(credential: &tandem_core::OAuthProviderCredential) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(&(
+        &credential.access_token, &credential.refresh_token, credential.expires_at_ms,
+    )).map_err(|error| error.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+impl McpOAuthRefreshTransition {
+    fn matches_successor(&self, current: &McpOAuthRefreshPredecessor,
+        credential: &tandem_core::OAuthProviderCredential) -> Result<bool, String> {
+        Ok(self.server_policy == current.server_policy
+            && self.connection_generation == current.connection_generation
+            && self.predecessor.oauth == current.oauth
+            && self.credential_digest == oauth_credential_digest(credential)?)
+    }
 }
 
 impl McpRegistry {
@@ -38,7 +80,8 @@ impl McpRegistry {
         predecessor: McpOAuthRefreshPredecessor,
         refreshed: tandem_core::OAuthProviderCredential,
         binding: Option<&mut McpToolDispatchBinding>,
-    ) -> Result<(), String> {
+    ) -> Result<McpOAuthRefreshTransition, String> {
+        let credential_digest = oauth_credential_digest(&refreshed)?;
         let _credential_guard = self.credential_mutation_lock.lock().await;
         // Keep both authority registries stable through comparison, credential
         // writes and successor construction. No network I/O under these locks.
@@ -133,15 +176,21 @@ impl McpRegistry {
         }
         connection.connection_generation = new_mcp_connection_generation();
         connection.updated_at_ms = now;
+        let transition = McpOAuthRefreshTransition {
+            predecessor,
+            server_policy: server_dispatch_policy(server),
+            connection_generation: Some(connection.connection_generation.clone()),
+            credential_digest,
+        };
         if let Some(binding) = binding {
             // These are the deterministic changes made above, not a new
             // authorization captured after an uncontrolled network wait.
-            binding.server_policy = server_dispatch_policy(server);
-            binding.connection_generation = Some(connection.connection_generation.clone());
+            binding.server_policy = transition.server_policy.clone();
+            binding.connection_generation = transition.connection_generation.clone();
         }
         drop(connections);
         drop(servers);
         self.persist_state().await;
-        Ok(())
+        Ok(transition)
     }
 }
