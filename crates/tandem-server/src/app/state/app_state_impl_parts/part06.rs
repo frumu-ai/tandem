@@ -628,17 +628,6 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn persist_incident_monitor_intake_keys(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.incident_monitor_intake_keys_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        let payload = {
-            let guard = self.incident_monitor_intake_keys.read().await;
-            serde_json::to_string_pretty(&*guard)?
-        };
-        write_state_file_atomically(&self.incident_monitor_intake_keys_path, payload).await
-    }
-
     pub async fn list_incident_monitor_intake_keys(&self) -> Vec<IncidentMonitorProjectIntakeKey> {
         let mut rows = self
             .incident_monitor_intake_keys
@@ -661,31 +650,6 @@ impl AppState {
             .insert(key.key_id.clone(), key.clone());
         self.persist_incident_monitor_intake_keys().await?;
         Ok(key)
-    }
-
-    pub async fn validate_incident_monitor_intake_key(
-        &self,
-        raw_key: &str,
-        project_id: &str,
-        required_scope: &str,
-    ) -> Option<IncidentMonitorProjectIntakeKey> {
-        let key_hash = crate::sha256_hex(&[raw_key.trim()]);
-        let mut matched = {
-            self.incident_monitor_intake_keys
-                .read()
-                .await
-                .values()
-                .find(|row| {
-                    row.enabled
-                        && row.project_id == project_id
-                        && crate::constant_time_str_eq(&row.key_hash, &key_hash)
-                        && row.scopes.iter().any(|scope| scope == required_scope)
-                })
-                .cloned()
-        }?;
-        matched.last_used_at_ms = Some(now_ms());
-        let _ = self.put_incident_monitor_intake_key(matched.clone()).await;
-        Some(matched)
     }
 
     pub async fn load_incident_monitor_drafts(&self) -> anyhow::Result<()> {

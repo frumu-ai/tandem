@@ -66,27 +66,34 @@ async fn write_state_file_atomically(
     payload: String,
 ) -> anyhow::Result<()> {
     let path = path.clone();
-    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-        use std::io::Write;
-        let tmp = path.with_extension("tmp");
-        // Write to a temp file and fsync it before the rename so a crash
-        // mid-write cannot leave a torn/partial file in place of the real state.
-        {
-            let mut file = std::fs::File::create(&tmp)?;
-            file.write_all(payload.as_bytes())?;
-            file.sync_all()?;
-        }
-        std::fs::rename(&tmp, &path)?;
-        // fsync the parent directory so the rename itself is durable across a
-        // crash.
-        if let Some(parent) = path.parent() {
-            if let Ok(dir) = std::fs::File::open(parent) {
-                let _ = dir.sync_all();
-            }
-        }
-        Ok(())
+    tokio::task::spawn_blocking(move || {
+        write_state_file_atomically_blocking(&path, &payload)
     })
     .await??;
+    Ok(())
+}
+
+fn write_state_file_atomically_blocking(
+    path: &std::path::Path,
+    payload: &str,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    // Write to a temp file and fsync it before the rename so a crash
+    // mid-write cannot leave a torn/partial file in place of the real state.
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(payload.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    // fsync the parent directory so the rename itself is durable across a
+    // crash.
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 

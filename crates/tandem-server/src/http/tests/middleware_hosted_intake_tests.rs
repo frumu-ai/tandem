@@ -262,3 +262,113 @@ async fn hosted_intake_key_management_rechecks_authority_after_lock_wait() {
         );
     }
 }
+
+#[tokio::test]
+async fn local_intake_key_usage_cannot_restore_a_concurrently_disabled_key() {
+    let (state, _temp, _key) = intake_fixture().await;
+    let held = state.incident_monitor_intake_keys.write().await;
+    let validation = state.validate_incident_monitor_intake_key(
+        "existing-raw",
+        "payments",
+        "incident_monitor:report",
+    );
+    let disable = state.disable_incident_monitor_intake_key_checked("existing", || Ok(()));
+    tokio::pin!(validation);
+    tokio::pin!(disable);
+    // Queue validation first and disable second. With the old read/clone/put
+    // sequence, validation then queues a second write behind the disable.
+    assert!(futures::poll!(&mut validation).is_pending());
+    assert!(futures::poll!(&mut disable).is_pending());
+    drop(held);
+    assert!(futures::poll!(&mut validation).is_pending());
+    let (disabled, validated) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(&mut disable, &mut validation)
+    })
+    .await
+    .expect("queued key operations must finish");
+    assert!(
+        !state.incident_monitor_intake_keys.read().await["existing"].enabled,
+        "usage bookkeeping restored a disabled credential",
+    );
+    assert!(!disabled.unwrap().unwrap().enabled);
+    // The report was admitted before disable; its completed authorization may
+    // return, but it must never restore the old credential record.
+    assert!(validated.is_some());
+    state.load_incident_monitor_intake_keys().await.unwrap();
+    assert!(
+        state
+            .validate_incident_monitor_intake_key(
+                "existing-raw",
+                "payments",
+                "incident_monitor:report",
+            )
+            .await
+            .is_none(),
+        "disabled state must survive reload"
+    );
+}
+
+#[tokio::test]
+async fn local_intake_key_persistence_serializes_concurrent_writers() {
+    let (state, _temp, _key) = intake_fixture().await;
+    state
+        .disable_incident_monitor_intake_key_checked("existing", || Ok(()))
+        .await
+        .unwrap();
+    for _ in 0..8 {
+        let (first, second, third) = tokio::join!(
+            state.persist_incident_monitor_intake_keys(),
+            state.persist_incident_monitor_intake_keys(),
+            state.persist_incident_monitor_intake_keys(),
+        );
+        first.unwrap();
+        second.unwrap();
+        third.unwrap();
+        state.load_incident_monitor_intake_keys().await.unwrap();
+        assert!(!state.incident_monitor_intake_keys.read().await["existing"].enabled);
+    }
+}
+
+#[test]
+fn local_intake_key_persistence_keeps_lock_after_request_cancellation() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (state, _temp, _key) = intake_fixture().await;
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let occupied = tokio::task::spawn_blocking(move || {
+            let _ = entered_tx.send(());
+            // Dropping the sender also releases the worker on test failure.
+            let _ = release_rx.recv();
+        });
+        entered_rx.await.unwrap();
+        {
+            let pending = state.persist_incident_monitor_intake_keys();
+            tokio::pin!(pending);
+            assert!(futures::poll!(&mut pending).is_pending());
+            assert!(state.incident_monitor_intake_keys.try_write().is_err());
+        }
+        assert!(
+            state.incident_monitor_intake_keys.try_write().is_err(),
+            "cancelling the caller must not unlock a queued or running file write",
+        );
+        release_tx.send(()).unwrap();
+        occupied.await.unwrap();
+        // Acquiring the guard proves the detached write has finished its IO.
+        let current = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            state.incident_monitor_intake_keys.write(),
+        )
+        .await
+        .unwrap();
+        let saved: Value = serde_json::from_slice(
+            &std::fs::read(&state.incident_monitor_intake_keys_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved, serde_json::to_value(&*current).unwrap());
+    });
+}
