@@ -1000,6 +1000,36 @@ async fn record_external_action_dedupes_under_retry_storm() {
 }
 
 #[tokio::test]
+async fn hosted_routine_claim_rechecks_policy_after_run_lock_wait() {
+    let mut state = ready_test_state().await;
+    let temp = tempfile::tempdir().unwrap();
+    state.routine_runs_path = temp.path().join("runs.json");
+    let before: RoutineRunRecord = serde_json::from_value(serde_json::json!({
+        "run_id": "hosted-lock-wait", "routine_id": "routine", "trigger_type": "manual",
+        "run_count": 1, "status": "queued", "created_at_ms": 1, "updated_at_ms": 1,
+        "requires_approval": false, "entrypoint": "mission.default"
+    }))
+    .unwrap();
+    let mut guard = state.routine_runs.write().await;
+    guard.insert(before.run_id.clone(), before.clone());
+    let pending = state.claim_next_queued_routine_run();
+    tokio::pin!(pending);
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    state.enterprise.hosted_policy.configure_test_source(
+        "org-a",
+        "dep-a",
+        temp.path().join("missing.json"),
+    );
+    drop(guard);
+    assert!(pending.await.is_none());
+    let after = state.get_routine_run(&before.run_id).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(after).unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
+}
+
+#[tokio::test]
 async fn claim_next_queued_routine_run_marks_oldest_running() {
     let mut state = AppState::new_starting("routine-claim".to_string(), true);
     state.routine_runs_path = tmp_routines_file("routine-claim-runs");

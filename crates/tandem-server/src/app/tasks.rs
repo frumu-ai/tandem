@@ -26,7 +26,7 @@ use crate::stateful_runtime::{
 use crate::util::time::now_ms;
 
 async fn wait_for_runtime_ready_or_exit(state: &AppState, component: &str) -> bool {
-    if state.wait_until_ready_or_failed(120, 250).await {
+    if state.wait_for_worker_ready_or_failed(120, 250).await {
         return true;
     }
     let startup = state.startup_snapshot().await;
@@ -305,7 +305,7 @@ use tasks_context_run::*;
 mod tests;
 
 pub async fn run_session_part_persister(state: AppState) {
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         tracing::warn!("session part persister: skipped because runtime did not become ready");
         return;
     }
@@ -338,7 +338,7 @@ pub async fn run_session_part_persister(state: AppState) {
 }
 
 pub async fn run_status_indexer(state: AppState) {
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         tracing::warn!("status indexer: skipped because runtime did not become ready");
         return;
     }
@@ -368,7 +368,7 @@ pub async fn run_status_indexer(state: AppState) {
 }
 
 pub async fn run_session_context_run_journaler(state: AppState) {
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         tracing::warn!(
             "session context run journaler: skipped because runtime did not become ready"
         );
@@ -738,7 +738,7 @@ mod runtime_event_log_persister_tests {
 }
 
 pub async fn run_agent_team_supervisor(state: AppState) {
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         tracing::warn!("agent team supervisor: skipped because runtime did not become ready");
         return;
     }
@@ -1012,7 +1012,7 @@ pub async fn run_usage_aggregator(state: AppState) {
     if crate::benchmarking::benchmark_config_from_env().profiling_enabled {
         tokio::spawn(crate::benchmarking::run_benchmark_profiler(state.clone()));
     }
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         tracing::warn!("usage aggregator: skipped because runtime did not become ready");
         return;
     }

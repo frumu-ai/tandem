@@ -553,6 +553,11 @@ impl AppState {
 
     pub async fn claim_next_queued_routine_run(&self) -> Option<RoutineRunRecord> {
         let mut guard = self.routine_runs.write().await;
+        // The policy can become unavailable while this task waits for the lock.
+        // Local callers without a hosted source retain their existing behavior.
+        if !self.enterprise.hosted_policy.is_ready() {
+            return None;
+        }
         let next_run_id = guard
             .values()
             .filter(|row| row.status == RoutineRunStatus::Queued)

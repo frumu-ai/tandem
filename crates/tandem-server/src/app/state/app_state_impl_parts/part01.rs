@@ -445,6 +445,33 @@ impl AppState {
             && self.enterprise.hosted_policy.is_ready()
     }
 
+    /// Keep persistent workers alive through a recoverable hosted-policy outage.
+    /// The retry budget still bounds runtime startup; it is not consumed while
+    /// an installed, ready runtime is waiting for its first fresh policy.
+    pub async fn wait_for_worker_ready_or_failed(&self, attempts: usize, sleep_ms: u64) -> bool {
+        let mut startup_attempts = 0;
+        loop {
+            if self.is_automation_scheduler_stopping() {
+                return false;
+            }
+            let startup = self.startup_snapshot().await;
+            if matches!(startup.status, StartupStatus::Failed) {
+                return false;
+            }
+            if matches!(startup.status, StartupStatus::Ready) && self.runtime.get().is_some() {
+                if self.enterprise.hosted_policy.is_ready() {
+                    return true;
+                }
+            } else {
+                if startup_attempts >= attempts {
+                    return false;
+                }
+                startup_attempts += 1;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+        }
+    }
+
     pub fn mode_label(&self) -> &'static str {
         if self.in_process_mode.load(Ordering::Relaxed) {
             "in-process"

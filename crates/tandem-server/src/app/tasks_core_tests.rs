@@ -9,6 +9,80 @@ fn runtime_event(event_type: &str, properties: Value, seq: u64) -> EngineEvent {
 }
 
 #[tokio::test]
+async fn hosted_routine_workers_wait_through_initial_policy_delay() {
+    let state = crate::test_support::test_state().await;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("policy.json");
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", path.clone());
+    let pending = wait_for_runtime_ready_or_exit(&state, "delayed-policy-test");
+    tokio::pin!(pending);
+    // Exceed the production 120 * 250ms startup window. Missing policy is
+    // recoverable and must not permanently discard a healthy worker.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(35), pending.as_mut())
+            .await
+            .is_err()
+    );
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1, "policy_version": 1,
+            "organization_id": "org-a", "deployment_id": "dep-a",
+            "generated_at": chrono::Utc::now(), "users": [], "org_units": [],
+            "org_unit_memberships": [], "deployment_grants": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    state.reload_hosted_policy().await.unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(2), pending)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn hosted_routine_worker_wait_preserves_startup_and_shutdown_exits() {
+    let starting = AppState::new_starting("worker-startup-budget".into(), true);
+    assert!(!starting.wait_for_worker_ready_or_failed(1, 0).await);
+    let ready = crate::test_support::test_state().await;
+    assert!(ready.wait_for_worker_ready_or_failed(0, 0).await);
+    for shutdown in [false, true] {
+        let state = crate::test_support::test_state().await;
+        let temp = tempfile::tempdir().unwrap();
+        state.enterprise.hosted_policy.configure_test_source(
+            "org-a",
+            "dep-a",
+            temp.path().join("missing.json"),
+        );
+        // The separately exposed bounded readiness API retains its timeout.
+        assert!(!state.wait_until_ready_or_failed(0, 0).await);
+        let waiting = state.wait_for_worker_ready_or_failed(0, 1);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), waiting.as_mut())
+                .await
+                .is_err()
+        );
+        if shutdown {
+            state.set_automation_scheduler_stopping(true);
+        } else {
+            state.mark_failed("test_failed", "startup failed").await;
+        }
+        assert!(!tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap());
+    }
+}
+
+#[tokio::test]
 async fn routine_background_tasks_exit_without_runtime_when_startup_failed() {
     let state = AppState::new_starting("routine-startup-guard-test".to_string(), true);
     state.mark_failed("test_failed", "startup failed").await;

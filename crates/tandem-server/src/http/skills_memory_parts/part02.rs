@@ -1282,7 +1282,7 @@ pub(super) fn ingested_memory_owner_subject(
 }
 
 pub(super) async fn run_global_memory_ingestor(state: AppState) {
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         tracing::warn!("global memory ingestor: skipped because runtime did not become ready");
         return;
     }

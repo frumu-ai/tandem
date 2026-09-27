@@ -654,7 +654,7 @@ pub async fn dispatch_workflow_event(state: &AppState, event: &EngineEvent) {
 }
 
 pub async fn run_workflow_dispatcher(state: AppState) {
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         let startup = state.startup_snapshot().await;
         tracing::warn!(
             component = "workflow_dispatcher",

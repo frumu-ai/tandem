@@ -539,7 +539,7 @@ pub async fn serve_with_route_extensions(
     });
     let app = build_router_with_extensions(state.clone(), route_extensions);
     let reaper = tokio::spawn(async move {
-        if !reaper_state.wait_until_ready_or_failed(120, 250).await {
+        if !reaper_state.wait_for_worker_ready_or_failed(120, 250).await {
             let startup = reaper_state.startup_snapshot().await;
             tracing::warn!(
                 component = "run_reaper",
@@ -860,7 +860,7 @@ impl crate::app::approval_outbound::PendingApprovalsSource for AppStatePendingAp
 }
 
 async fn run_approval_outbound(state: AppState, cancel: Arc<AtomicBool>) {
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         let startup = state.startup_snapshot().await;
         tracing::warn!(
             component = "approval_outbound",
