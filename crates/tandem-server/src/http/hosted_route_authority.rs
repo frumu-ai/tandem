@@ -16,6 +16,16 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
         // automation. Export also writes a caller-selected filesystem target.
         ("POST", "/presets/fork" | "/presets/export_overrides")
         | ("PUT" | "DELETE", "/presets/overrides/{kind}/{id}") => return Some(HostedAdmin),
+        // Both project (process cwd) and global skill roots are shared registry
+        // state. Include the legacy import alias; discovery remains separate.
+        (
+            "POST",
+            "/skills"
+            | "/skills/import"
+            | "/skills/generate/install"
+            | "/skills/templates/{id}/install",
+        )
+        | ("DELETE", "/skills/{name}") => return Some(HostedAdmin),
         (_, "/automations/channel-drafts/pending") if read => return Some(HostedAutomationRead),
         (
             "POST",

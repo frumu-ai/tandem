@@ -20,6 +20,9 @@ mod incident_tests;
 #[path = "middleware_hosted_preset_tests.rs"]
 mod preset_tests;
 
+#[path = "middleware_hosted_skill_tests.rs"]
+mod skill_tests;
+
 fn claims(actor: &str, role: &str, version: u64, now: u64) -> TenantContextAssertionClaims {
     let mut claims = TenantContextAssertionClaims::new_v1(
         "tandem-web",
