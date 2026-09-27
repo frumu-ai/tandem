@@ -938,13 +938,20 @@ fn automations_sse_stream(
 pub(super) async fn automations_events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<AutomationEventsQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    Sse::new(automations_sse_stream(
-        state,
+    let stream = automations_sse_stream(
+        state.clone(),
         query.automation_id,
         query.run_id,
+        tenant_context.clone(),
+    );
+    Sse::new(guard_automation_events(
+        stream,
+        state,
         tenant_context,
+        verified.map(|Extension(value)| value),
     ))
     .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
 }

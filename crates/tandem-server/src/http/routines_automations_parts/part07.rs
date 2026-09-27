@@ -146,10 +146,17 @@ fn routines_sse_stream(
 pub(super) async fn routines_events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<RoutineEventsQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    Sse::new(routines_sse_stream(state, query.routine_id, tenant_context))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
+    let stream = routines_sse_stream(state.clone(), query.routine_id, tenant_context.clone());
+    Sse::new(guard_automation_events(
+        stream,
+        state,
+        tenant_context,
+        verified.map(|Extension(value)| value),
+    ))
+    .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
 }
 
 pub(super) fn routine_to_automation_wire(routine: RoutineSpec) -> Value {
