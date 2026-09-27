@@ -110,6 +110,16 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
         }
         // Gate decisions keep their independent reviewer and governance checks.
         ("POST", "/automations/v2/runs/{run_id}/gate") => Some(HostedAutomationExecute),
+        // Each of these may materialize and queue the system-owned triage
+        // automation. Replay is an execution entrypoint too, not a read.
+        // Draft approval and downstream governance checks remain independent.
+        (
+            "POST",
+            "/incident-monitor/drafts/{id}/triage-run"
+            | "/incident-monitor/drafts/{id}/approve"
+            | "/incident-monitor/incidents/{id}/replay"
+            | "/incident-monitor/log-sources/{project_id}/{source_id}/replay-latest",
+        ) => Some(HostedAutomationExecute),
         (
             _,
             "/workflows"

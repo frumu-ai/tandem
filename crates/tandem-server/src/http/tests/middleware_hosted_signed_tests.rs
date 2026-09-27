@@ -14,6 +14,9 @@ use serde_json::Value;
 use tandem_types::{AuthorityChain, HumanActor};
 use tower::ServiceExt;
 
+#[path = "middleware_hosted_incident_tests.rs"]
+mod incident_tests;
+
 fn claims(actor: &str, role: &str, version: u64, now: u64) -> TenantContextAssertionClaims {
     let mut claims = TenantContextAssertionClaims::new_v1(
         "tandem-web",
