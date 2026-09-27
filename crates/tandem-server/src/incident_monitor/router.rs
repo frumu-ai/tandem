@@ -334,15 +334,18 @@ pub async fn publish_draft(
     state: &AppState,
     request: IncidentMonitorPublishRequest,
 ) -> anyhow::Result<incident_monitor_github::PublishOutcome> {
+    super::require_current_policy(state)?;
     let mut draft = state
         .get_incident_monitor_draft(&request.draft_id)
         .await
         .ok_or_else(|| anyhow::anyhow!("Incident Monitor draft not found"))?;
+    super::require_current_policy(state)?;
     let incident = match request.incident_id.as_deref() {
         Some(incident_id) => state.get_incident_monitor_incident(incident_id).await,
         None => None,
     };
     let status = state.incident_monitor_status_snapshot().await;
+    super::require_current_policy(state)?;
     let context = build_route_context(
         None,
         None,
@@ -470,6 +473,7 @@ pub async fn publish_draft(
         ));
     }
 
+    super::require_current_policy(state)?;
     let outcome = match &selected_destination.kind {
         IncidentMonitorDestinationKind::GithubIssue => {
             incident_monitor_github::publish_draft(

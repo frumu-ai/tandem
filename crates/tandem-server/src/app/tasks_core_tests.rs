@@ -9,6 +9,36 @@ fn runtime_event(event_type: &str, properties: Value, seq: u64) -> EngineEvent {
 }
 
 #[tokio::test]
+async fn hosted_incident_worker_waits_for_policy_and_honors_shutdown() {
+    for missing_policy in [false, true] {
+        let state = crate::test_support::test_state().await;
+        let temp = tempfile::tempdir().unwrap();
+        if missing_policy {
+            state.enterprise.hosted_policy.configure_test_source(
+                "org-a",
+                "dep-a",
+                temp.path().join("missing.json"),
+            );
+        }
+        let worker = tokio::spawn(run_incident_monitor(state.clone()));
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        if missing_policy {
+            let runtime = state.incident_monitor_runtime_status.read().await;
+            assert!(!runtime.monitoring_active);
+            assert!(runtime
+                .last_runtime_error
+                .as_deref()
+                .is_some_and(|message| message.contains("Waiting for runtime readiness")));
+        }
+        state.set_automation_scheduler_stopping(true);
+        tokio::time::timeout(Duration::from_secs(3), worker)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn hosted_routine_workers_wait_through_initial_policy_delay() {
     let state = crate::test_support::test_state().await;
     let temp = tempfile::tempdir().unwrap();

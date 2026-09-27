@@ -810,8 +810,11 @@ fn is_automation_v2_context_mirror_failure(event: &EngineEvent) -> bool {
 pub async fn run_incident_monitor(state: AppState) {
     let mut wait_ms = 250u64;
     loop {
+        if state.is_automation_scheduler_stopping() {
+            return;
+        }
         let startup = state.startup_snapshot().await;
-        if matches!(startup.status, crate::app::startup::StartupStatus::Ready) {
+        if state.is_ready() {
             break;
         }
         if matches!(startup.status, crate::app::startup::StartupStatus::Failed) {
@@ -845,10 +848,20 @@ pub async fn run_incident_monitor(state: AppState) {
         .await;
     let mut rx = state.event_bus.subscribe();
     loop {
-        match rx.recv().await {
+        if !wait_for_runtime_ready_or_exit(&state, "incident_monitor").await {
+            return;
+        }
+        let event = tokio::select! {
+            event = rx.recv() => event,
+            _ = tokio::time::sleep(Duration::from_millis(250)) => continue,
+        };
+        match event {
             Ok(event) => {
                 if !is_incident_monitor_candidate_event(&event) {
                     continue;
+                }
+                if !wait_for_runtime_ready_or_exit(&state, "incident_monitor").await {
+                    return;
                 }
                 let status = state.incident_monitor_status().await;
                 if !status.config.enabled || status.config.paused || !status.readiness.repo_valid {
@@ -954,6 +967,9 @@ pub async fn run_incident_monitor_recovery_sweep(state: AppState) {
     }
     loop {
         tokio::time::sleep(Duration::from_secs(30)).await;
+        if !wait_for_runtime_ready_or_exit(&state, "incident_monitor_recovery").await {
+            return;
+        }
         let status = state.incident_monitor_status_snapshot().await;
         if !status.config.enabled || status.config.paused {
             continue;
@@ -999,6 +1015,9 @@ pub async fn run_incident_monitor_recovery_sweep(state: AppState) {
                 }
             };
         for (draft_id, incident_id) in recovered {
+            if !wait_for_runtime_ready_or_exit(&state, "incident_monitor_recovery").await {
+                return;
+            }
             if let Err(error) =
                 publish_incident_monitor_recovery_draft(&state, draft_id.clone(), incident_id).await
             {

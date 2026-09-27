@@ -314,6 +314,9 @@ async fn incident_monitor_incident_for_draft(
 pub async fn recover_overdue_incident_monitor_triage_runs(
     state: &AppState,
 ) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    if !state.enterprise.hosted_policy.is_ready() {
+        return Ok(Vec::new());
+    }
     let config = state.incident_monitor_config().await;
     let Some(timeout_ms) = config.triage_timeout_ms else {
         return Ok(Vec::new());
@@ -330,6 +333,9 @@ pub async fn recover_overdue_incident_monitor_triage_runs(
 
     let mut recovered = Vec::new();
     for draft in drafts {
+        if !state.enterprise.hosted_policy.is_ready() {
+            break;
+        }
         let Some(triage_run_id) = draft.triage_run_id.clone() else {
             continue;
         };
@@ -352,7 +358,13 @@ pub async fn recover_overdue_incident_monitor_triage_runs(
             let backoff_ms = incident_monitor_recovery_backoff_ms(updated.recovery_attempts);
             updated.recovery_attempts = updated.recovery_attempts.saturating_add(1);
             updated.next_recovery_at_ms = Some(now.saturating_add(backoff_ms));
-            if let Err(error) = state.put_incident_monitor_draft(updated).await {
+            if let Err(error) = state
+                .put_incident_monitor_draft_with_current_policy(updated)
+                .await
+            {
+                if error.is::<super::HostedPolicyUnavailable>() {
+                    break;
+                }
                 tracing::warn!(
                     draft_id = %draft.draft_id,
                     error = %error,
@@ -872,6 +884,7 @@ pub async fn process_event(
     event: &EngineEvent,
     config: &IncidentMonitorConfig,
 ) -> anyhow::Result<IncidentMonitorIncidentRecord> {
+    super::require_current_policy(state)?;
     if let Some(reason) = recursive_triage_skip_reason(event) {
         if let Some(incident) = recover_stale_incident_monitor_triage_event(state, event).await? {
             return Ok(incident);
@@ -927,6 +940,7 @@ pub async fn process_event(
         .find(|row| row.fingerprint == fingerprint)
         .cloned();
 
+    super::require_current_policy(state)?;
     let mut incident = if let Some(mut row) = existing {
         row.occurrence_count = row.occurrence_count.saturating_add(1);
         row.updated_at_ms = now;
@@ -999,7 +1013,7 @@ pub async fn process_event(
         }
     };
     state
-        .put_incident_monitor_incident(incident.clone())
+        .put_incident_monitor_incident_with_current_policy(incident.clone())
         .await?;
 
     if !duplicate_matches.is_empty() {
@@ -1012,7 +1026,7 @@ pub async fn process_event(
         incident.duplicate_matches = Some(duplicate_matches.clone());
         incident.updated_at_ms = crate::util::time::now_ms();
         state
-            .put_incident_monitor_incident(incident.clone())
+            .put_incident_monitor_incident_with_current_policy(incident.clone())
             .await?;
         state.event_bus.publish(EngineEvent::new(
             "incident_monitor.incident.duplicate_suppressed",
@@ -1030,6 +1044,7 @@ pub async fn process_event(
 
     let draft = match state.submit_incident_monitor_draft(submission).await {
         Ok(draft) => draft,
+        Err(error) if error.is::<super::HostedPolicyUnavailable>() => return Err(error),
         Err(error) => {
             incident.status = "draft_failed".to_string();
             incident.last_error = Some(truncate_text(&error.to_string(), 500));
@@ -1055,7 +1070,7 @@ pub async fn process_event(
     incident.draft_id = Some(draft.draft_id.clone());
     incident.status = "draft_created".to_string();
     state
-        .put_incident_monitor_incident(incident.clone())
+        .put_incident_monitor_incident_with_current_policy(incident.clone())
         .await?;
 
     match crate::http::incident_monitor::ensure_incident_monitor_triage_run(
@@ -1098,6 +1113,7 @@ pub async fn process_event(
                 incident.status = outcome.action;
                 incident.last_error = None;
             }
+            Err(error) if error.is::<super::HostedPolicyUnavailable>() => return Err(error),
             Err(error) => {
                 let detail = truncate_text(&error.to_string(), 500);
                 incident.last_error = Some(detail.clone());
@@ -1737,6 +1753,9 @@ fn spawn_triage_deadline_task(
     tokio::spawn(async move {
         if timeout_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)).await;
+        }
+        if !state.wait_for_worker_ready_or_failed(120, 250).await {
+            return;
         }
         if crate::http::incident_monitor::incident_monitor_triage_run_is_terminal(
             &state,

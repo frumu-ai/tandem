@@ -6,6 +6,7 @@ impl AppState {
         &self,
         mut submission: IncidentMonitorSubmission,
     ) -> anyhow::Result<IncidentMonitorDraftRecord> {
+        crate::incident_monitor::require_current_policy(self)?;
         submission.repo = normalize_incident_monitor_submission_optional(submission.repo);
         submission.project_id = normalize_incident_monitor_submission_optional(submission.project_id);
         submission.workspace_root =
@@ -117,6 +118,7 @@ impl AppState {
         }
 
         let mut drafts = self.incident_monitor_drafts.write().await;
+        crate::incident_monitor::require_current_policy(self)?;
         if let Some(existing_id) = drafts
             .values()
             .find(|row| {

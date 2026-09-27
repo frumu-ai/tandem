@@ -81,7 +81,7 @@ fn resolve_incident_monitor_state_read_path(
 /// (by mtime), walking the project/source subdirectories. Best-effort: I/O
 /// errors on individual entries are skipped so one unreadable file can't stall
 /// retention pruning (TAN-556).
-async fn prune_incident_monitor_evidence_dir(dir: &std::path::Path, cutoff_ms: u64) -> usize {
+async fn prune_incident_monitor_evidence_dir(state: &AppState, dir: &std::path::Path, cutoff_ms: u64) -> usize {
     let mut removed = 0usize;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
@@ -102,6 +102,9 @@ async fn prune_incident_monitor_evidence_dir(dir: &std::path::Path, cutoff_ms: u
                 continue;
             };
             if let Ok(elapsed) = modified.duration_since(std::time::UNIX_EPOCH) {
+                if !state.enterprise.hosted_policy.is_ready() {
+                    return removed;
+                }
                 if (elapsed.as_millis() as u64) < cutoff_ms && fs::remove_file(&path).await.is_ok()
                 {
                     removed += 1;
@@ -860,11 +863,13 @@ impl AppState {
         if retention_days == 0 {
             return Ok((0, 0, 0));
         }
+        crate::incident_monitor::require_current_policy(self)?;
         let cutoff =
             crate::now_ms().saturating_sub(retention_days.saturating_mul(24 * 60 * 60 * 1_000));
 
         let removed_posts = {
             let mut guard = self.incident_monitor_posts.write().await;
+            crate::incident_monitor::require_current_policy(self)?;
             let before = guard.len();
             guard.retain(|_, post| post.updated_at_ms >= cutoff);
             before - guard.len()
@@ -875,6 +880,7 @@ impl AppState {
 
         let removed_incidents = {
             let mut guard = self.incident_monitor_incidents.write().await;
+            crate::incident_monitor::require_current_policy(self)?;
             let before = guard.len();
             guard.retain(|_, incident| incident.updated_at_ms >= cutoff);
             before - guard.len()
@@ -884,7 +890,7 @@ impl AppState {
         }
 
         let removed_artifacts =
-            prune_incident_monitor_evidence_dir(&self.incident_monitor_log_evidence_dir, cutoff)
+            prune_incident_monitor_evidence_dir(self, &self.incident_monitor_log_evidence_dir, cutoff)
                 .await;
 
         Ok((removed_posts, removed_incidents, removed_artifacts))
@@ -1165,6 +1171,7 @@ impl AppState {
         let pending_claim_ttl_ms = 10 * 60 * 1000;
         let result = {
             let mut guard = self.incident_monitor_posts.write().await;
+            crate::incident_monitor::require_current_policy(self)?;
             if let Some(existing) = guard
                 .values()
                 .find(|row| {
