@@ -13,7 +13,7 @@ use tokio_stream::wrappers::BroadcastStream;
 
 // Evaluate one current immutable revision. Never reuse connection-time roles,
 // group claims, or a strict projection for resource visibility after an await.
-fn current_context(
+pub(super) fn current_context(
     state: &AppState,
     tenant: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
@@ -97,6 +97,64 @@ where
                         let item = item?;
                         current_context(&state, &tenant, verified.as_ref(), permission).ok()?;
                         return Some((item, (stream, state, tenant, verified, timer)));
+                    }
+                }
+            }
+        },
+    )
+    .fuse()
+}
+
+// A run stream must retain the resolved session identity after the active
+// registry slot is released, and must recheck its durable owner and current
+// hosted grants before queued frames as well as while the stream is idle.
+pub(super) fn guard_run<S>(
+    stream: S,
+    state: AppState,
+    tenant: TenantContext,
+    verified: Option<VerifiedTenantContext>,
+    resource: super::context_run_authority::RunStreamResource,
+) -> impl Stream<Item = Result<Event, Infallible>>
+where
+    S: Stream<Item = Result<Event, Infallible>> + Send + 'static,
+{
+    futures::stream::unfold(
+        (
+            Box::pin(stream),
+            state,
+            tenant,
+            verified,
+            resource,
+            tokio::time::interval(Duration::from_secs(1)),
+        ),
+        |(mut stream, state, tenant, verified, resource, mut timer)| async move {
+            loop {
+                if !super::context_run_authority::run_stream_resource_visible(
+                    &state,
+                    &tenant,
+                    verified.as_ref(),
+                    &resource,
+                )
+                .await
+                {
+                    return None;
+                }
+                tokio::select! {
+                    biased;
+                    _ = timer.tick() => continue,
+                    item = stream.next() => {
+                        let item = item?;
+                        if !super::context_run_authority::run_stream_resource_visible(
+                            &state,
+                            &tenant,
+                            verified.as_ref(),
+                            &resource,
+                        )
+                        .await
+                        {
+                            return None;
+                        }
+                        return Some((item, (stream, state, tenant, verified, resource, timer)));
                     }
                 }
             }

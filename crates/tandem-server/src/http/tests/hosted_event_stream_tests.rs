@@ -76,13 +76,37 @@ impl StreamFixture {
     }
 
     fn router(&self) -> Router {
-        Router::new()
+        super::routes_context::apply(Router::new(), self.state.clone())
             .route("/event", get(global::events))
             .route("/global/event", get(global::events))
+            .route("/run/{id}/events", get(global::run_events))
+            .route("/api/run/{id}/events", get(global::run_events))
             .route("/workflows/events", get(workflows::workflow_events))
             .layer(Extension(stream_tenant("alice")))
             .layer(Extension(self.verified.clone()))
             .with_state(self.state.clone())
+    }
+
+    async fn context_run(&self, id: &str, owner: &str, run_type: &str) {
+        let workspace = tandem_core::normalize_workspace_path(
+            &self.state.workspace_index.snapshot().await.root,
+        )
+        .unwrap();
+        let run = serde_json::from_value(json!({
+            "run_id": id,
+            "run_type": run_type,
+            "tenant_context": stream_tenant(owner),
+            "status": "queued",
+            "objective": id,
+            "workspace": {"workspace_id":"", "canonical_path":workspace, "lease_epoch":0},
+            "revision": 1,
+            "created_at_ms": 1,
+            "updated_at_ms": 1
+        }))
+        .unwrap();
+        super::context_runs::save_context_run_state(&self.state, &run)
+            .await
+            .unwrap();
     }
 
     async fn revoke(&mut self) {
@@ -169,6 +193,432 @@ impl StreamFixture {
         .unwrap();
         run
     }
+}
+
+#[tokio::test]
+async fn run_event_stream_aliases_reject_another_actors_active_session() {
+    for route in ["/run", "/api/run"] {
+        let fixture = StreamFixture::new(&[]).await;
+        for (actor, run_id) in [("alice", "own-run"), ("bob", "other-run")] {
+            let mut session = tandem_types::Session::new(None, None);
+            session.tenant_context = stream_tenant(actor);
+            let session_id = session.id.clone();
+            fixture.state.storage.save_session(session).await.unwrap();
+            fixture
+                .state
+                .run_registry
+                .acquire(&session_id, run_id.into(), None, None, None)
+                .await
+                .unwrap();
+        }
+
+        let denied = fixture
+            .router()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{route}/other-run/events"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::NOT_FOUND, "{route}");
+
+        let allowed = fixture
+            .router()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{route}/own-run/events"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK, "{route}");
+        let mut body = allowed.into_body().into_data_stream();
+        let connected = body.next().await.unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&connected).contains("run.stream.connected"));
+        fixture.publish(
+            "session.run.started",
+            "alice",
+            json!({"runID":"own-run", "marker":"owner-event"}),
+        );
+        let next = tokio::time::timeout(Duration::from_secs(2), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&next).contains("owner-event"));
+
+        let missing = fixture
+            .router()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{route}/missing-run/events"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND, "{route}");
+    }
+}
+
+#[tokio::test]
+async fn run_event_stream_aliases_keep_standalone_local_sessions() {
+    for route in ["/run", "/api/run"] {
+        let state = crate::test_support::test_state().await;
+        let session = tandem_types::Session::new(None, None);
+        let session_id = session.id.clone();
+        state.storage.save_session(session).await.unwrap();
+        state
+            .run_registry
+            .acquire(&session_id, "local-run".into(), None, None, None)
+            .await
+            .unwrap();
+        let app = Router::new()
+            .route("/run/{id}/events", get(global::run_events))
+            .route("/api/run/{id}/events", get(global::run_events))
+            .layer(Extension(TenantContext::local_implicit()))
+            .with_state(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{route}/local-run/events"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let mut body = response.into_body().into_data_stream();
+        body.next().await.unwrap().unwrap();
+        state.event_bus.publish(EngineEvent::new(
+            "session.run.started",
+            json!({"runID":"local-run", "marker":"standalone-event"}),
+        ));
+        let event = tokio::time::timeout(Duration::from_secs(2), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&event).contains("standalone-event"));
+    }
+}
+
+#[tokio::test]
+async fn context_run_reads_and_rollback_do_not_cross_actors() {
+    let fixture = StreamFixture::new(&[]).await;
+    fixture
+        .context_run("own-context", "alice", "interactive")
+        .await;
+    fixture
+        .context_run("other-context", "bob", "interactive")
+        .await;
+
+    for path in [
+        "/run/other-context/events",
+        "/api/run/other-context/events",
+        "/context/runs/other-context",
+        "/context/runs/other-context/events",
+        "/context/runs/other-context/events/stream",
+        "/context/runs/other-context/checkpoints/mutations",
+    ] {
+        let response = fixture
+            .router()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    let rollback = fixture
+        .router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/context/runs/other-context/checkpoints/mutations/rollback-execute")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"confirm":"ROLLBACK"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rollback.status(), StatusCode::NOT_FOUND);
+    let owner_without_admin = fixture
+        .router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/context/runs/own-context/checkpoints/mutations/rollback-execute")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"confirm":"ROLLBACK"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(owner_without_admin.status(), StatusCode::NOT_FOUND);
+
+    for path in ["/run/own-context/events", "/context/runs/own-context"] {
+        let response = fixture
+            .router()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+    }
+    let listed = fixture
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri("/context/runs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(listed.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("own-context"));
+    assert!(!text.contains("other-context"));
+
+    let workspace = fixture.state.workspace_index.snapshot().await.root;
+    let uri = format!(
+        "/context/runs/events/stream?workspace={}",
+        urlencoding::encode(&workspace)
+    );
+    let multiplex = fixture
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri(uri.as_str())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(multiplex.status(), StatusCode::OK);
+    let mut body = multiplex.into_body().into_data_stream();
+    let ready = body.next().await.unwrap().unwrap();
+    let ready = String::from_utf8_lossy(&ready);
+    assert!(ready.contains("own-context"));
+    assert!(!ready.contains("other-context"));
+
+    let explicit = fixture
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{uri}&run_ids=other-context"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(explicit.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn context_run_create_cannot_claim_managed_projection_identity() {
+    let fixture = StreamFixture::new(&[]).await;
+    for (run_id, run_type) in [
+        ("session-forged", "interactive"),
+        ("custom-forged", "session"),
+        ("automation-v2-forged", "automation_v2"),
+        ("x/../workflow-forged", "interactive"),
+        ("x\\..\\workflow-forged", "interactive"),
+        ("../forged", "interactive"),
+        (".", "interactive"),
+    ] {
+        let response = fixture
+            .router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/context/runs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"run_id":run_id, "run_type":run_type, "objective":"forged"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{run_id}");
+    }
+    assert!(
+        !super::context_runs::context_run_state_path(&fixture.state, "workflow-forged").exists()
+    );
+}
+
+#[tokio::test]
+async fn context_run_loader_rejects_mismatched_stored_identity() {
+    let fixture = StreamFixture::new(&["workflow.read"]).await;
+    fixture
+        .context_run("workflow-stored-id", "alice", "workflow")
+        .await;
+    let path = super::context_runs::context_run_state_path(&fixture.state, "workflow-stored-id");
+    let mut stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    stored["run_id"] = json!("interactive-forged");
+    std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+    assert!(matches!(
+        super::context_runs::load_context_run_state(&fixture.state, "workflow-stored-id").await,
+        Err(StatusCode::NOT_FOUND)
+    ));
+    let response = fixture
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri("/context/runs/workflow-stored-id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn hosted_routine_projections_rebind_legacy_tenant_to_canonical_run() {
+    let fixture = StreamFixture::new(&["automation.read"]).await;
+    let canonical: crate::RoutineRunRecord = serde_json::from_value(json!({
+        "run_id":"hosted-routine-run", "routine_id":"routine", "tenant_context":stream_tenant("alice"),
+        "trigger_type":"manual", "run_count":1, "status":"running", "created_at_ms":1,
+        "updated_at_ms":1, "requires_approval":false, "entrypoint":"main"
+    }))
+    .unwrap();
+    fixture
+        .state
+        .routine_runs
+        .write()
+        .await
+        .insert(canonical.run_id.clone(), canonical.clone());
+    let context_id = super::context_runs::sync_routine_run_blackboard(&fixture.state, &canonical)
+        .await
+        .unwrap();
+    let mut projection =
+        super::context_runs::load_context_run_state_sync(&fixture.state, &context_id).unwrap();
+    assert_eq!(projection.tenant_context, stream_tenant("alice"));
+
+    // Simulate a projection written before the tenant binding was corrected.
+    projection.tenant_context = TenantContext::local_implicit();
+    super::context_runs::save_context_run_state_sync(&fixture.state, &projection).unwrap();
+    for path in [
+        format!("/context/runs/{context_id}"),
+        format!("/run/{context_id}/events"),
+    ] {
+        let response = fixture
+            .router()
+            .oneshot(
+                Request::builder()
+                    .uri(path.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+    }
+    let migrated =
+        super::context_runs::load_context_run_state_sync(&fixture.state, &context_id).unwrap();
+    assert_eq!(migrated.tenant_context, canonical.tenant_context);
+}
+
+#[tokio::test]
+async fn run_stream_preserves_shared_automation_and_workflow_reviewer_reads() {
+    let fixture = StreamFixture::new(&["automation.read", "workflow.read", "hosted.admin"]).await;
+    fixture.automation_run_and_goal("shared-run", "bob").await;
+    fixture.automation("shared-run", "bob", "org").await;
+    fixture
+        .context_run("automation-v2-shared-run", "bob", "automation_v2")
+        .await;
+    fixture.workflow("reviewed-run", "bob").await;
+    fixture
+        .context_run("workflow-reviewed-run", "bob", "workflow")
+        .await;
+
+    for id in ["automation-v2-shared-run", "workflow-reviewed-run"] {
+        let response = fixture
+            .router()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/run/{id}/events"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{id}");
+    }
+
+    fixture
+        .context_run("workflow-missing-canonical", "bob", "workflow")
+        .await;
+    let forged = fixture
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri("/run/workflow-missing-canonical/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forged.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn run_stream_rechecks_idle_policy_and_keeps_terminal_session_event() {
+    let mut fixture = StreamFixture::new(&[]).await;
+    let mut session = tandem_types::Session::new(None, None);
+    session.tenant_context = stream_tenant("alice");
+    let session_id = session.id.clone();
+    fixture.state.storage.save_session(session).await.unwrap();
+    fixture
+        .state
+        .run_registry
+        .acquire(&session_id, "terminal-run".into(), None, None, None)
+        .await
+        .unwrap();
+    let response = fixture
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri("/run/terminal-run/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    body.next().await.unwrap().unwrap();
+    fixture
+        .state
+        .run_registry
+        .finish_if_match(&session_id, "terminal-run")
+        .await;
+    fixture.publish(
+        "session.run.finished",
+        "alice",
+        json!({"sessionID":session_id, "runID":"terminal-run", "marker":"terminal"}),
+    );
+    let event = tokio::time::timeout(Duration::from_secs(2), body.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&event).contains("terminal"));
+    let next = body.next();
+    tokio::pin!(next);
+    assert!(futures::poll!(&mut next).is_pending());
+    fixture.revoke().await;
+    assert!(tokio::time::timeout(Duration::from_secs(2), next)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

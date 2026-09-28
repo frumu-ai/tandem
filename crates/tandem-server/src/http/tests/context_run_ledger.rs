@@ -113,8 +113,24 @@ async fn context_run_ledger_endpoint_returns_records_and_summary() {
 async fn governance_evidence_export_requires_premium_governance() {
     let mut state = test_state().await;
     state.governance_engine = Arc::new(UnavailableGovernanceEngine);
+    let app = app_router(state);
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/context/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"run_id":"ctx-run-ledger-1", "objective":"inspect ledger"}).to_string(),
+                ))
+                .expect("create request"),
+        )
+        .await
+        .expect("create response");
+    assert_eq!(created.status(), StatusCode::OK);
 
-    let response = app_router(state)
+    let response = app
         .oneshot(
             Request::builder()
                 .method("GET")

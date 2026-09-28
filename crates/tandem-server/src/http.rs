@@ -67,6 +67,7 @@ mod channels_api;
 mod coder;
 pub(crate) mod config_providers;
 pub(crate) mod context_packs;
+mod context_run_authority;
 mod context_run_ledger;
 mod context_run_mutation_checkpoints;
 pub(crate) mod context_runs;

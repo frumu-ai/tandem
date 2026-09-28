@@ -937,25 +937,26 @@ pub(super) async fn instance_dispose() -> Json<Value> {
 pub(super) async fn run_events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Some(session_id) = state.run_registry.session_for_run(&id).await {
-        let Some(session) = state.storage.get_session(&session_id).await else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        if ensure_same_tenant(&tenant_context, &session.tenant_context).is_err() {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-    } else if let Ok(run) = super::context_runs::load_context_run_state(&state, &id).await {
-        if ensure_same_tenant(&tenant_context, &run.tenant_context).is_err() {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-    } else {
+    let verified = verified.map(|Extension(value)| value);
+    let Some(resource) =
+        super::context_run_authority::resolve_run_stream_resource(&state, &id).await
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !super::context_run_authority::run_stream_resource_visible(
+        &state,
+        &tenant_context,
+        verified.as_ref(),
+        &resource,
+    )
+    .await
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let rx = state.event_bus.subscribe();
-    let stream_tenant = tenant_context.clone();
     let stream_run_id = id.clone();
     let initial = tokio_stream::once(Ok::<_, std::convert::Infallible>(
         axum::response::sse::Event::default().data(
@@ -966,25 +967,32 @@ pub(super) async fn run_events(
             .unwrap_or_default(),
         ),
     ));
-    let live = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event) => {
-            let event_run = event
-                .properties
-                .get("runID")
-                .or_else(|| event.properties.get("run_id"))
-                .and_then(|v| v.as_str());
-            if event_run == Some(stream_run_id.as_str())
-                && event_visible_to_tenant(&event, &stream_tenant)
-            {
-                let payload = serde_json::to_string(&event).unwrap_or_default();
-                Some(Ok(axum::response::sse::Event::default().data(payload)))
-            } else {
-                None
-            }
+    let live = super::event_stream_authority::subscribe(
+        state.clone(),
+        tenant_context.clone(),
+        verified.clone(),
+    )
+    .filter_map(move |event| {
+        let event_run = event
+            .properties
+            .get("runID")
+            .or_else(|| event.properties.get("run_id"))
+            .and_then(|v| v.as_str());
+        if event_run == Some(stream_run_id.as_str()) {
+            let payload = serde_json::to_string(&event).unwrap_or_default();
+            Some(Ok(axum::response::sse::Event::default().data(payload)))
+        } else {
+            None
         }
-        Err(_) => None,
     });
-    axum::response::Sse::new(initial.chain(live))
+    let stream = super::event_stream_authority::guard_run(
+        initial.chain(live),
+        state,
+        tenant_context,
+        verified,
+        resource,
+    );
+    axum::response::Sse::new(stream)
         .keep_alive(
             axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(10)),
         )

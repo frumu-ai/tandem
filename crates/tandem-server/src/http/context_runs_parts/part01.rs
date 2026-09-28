@@ -297,6 +297,9 @@ pub(super) async fn ensure_context_run_dir(
     state: &AppState,
     run_id: &str,
 ) -> Result<(), StatusCode> {
+    if !super::context_run_authority::valid_context_run_id(run_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let run_dir = context_run_dir(state, run_id);
     tokio::fs::create_dir_all(&run_dir)
         .await
@@ -308,7 +311,36 @@ pub(super) async fn load_context_run_state(
     state: &AppState,
     run_id: &str,
 ) -> Result<ContextRunState, StatusCode> {
-    load_and_repair_context_run_state(state, run_id)
+    let run = load_and_repair_context_run_state(state, run_id)?;
+    // Older routine projections were written with a local tenant even when
+    // their canonical routine run was hosted. Rebind only projections that
+    // carry the runtime's marker, under the same lock as event mutations.
+    if run.run_type != "routine"
+        || run.source_client.as_deref() != Some("routine_runtime")
+        || run.tenant_context != TenantContext::local_implicit()
+    {
+        return Ok(run);
+    }
+    let Some(native_id) = run_id.strip_prefix("routine-") else {
+        return Ok(run);
+    };
+    let Some(canonical) = state.get_routine_run(native_id).await else {
+        return Ok(run);
+    };
+    if canonical.tenant_context == run.tenant_context {
+        return Ok(run);
+    }
+    let lock = context_run_engine().lock_for(run_id).await;
+    let _guard = lock.lock().await;
+    let mut current = load_and_repair_context_run_state(state, run_id)?;
+    if current.run_type == "routine"
+        && current.source_client.as_deref() == Some("routine_runtime")
+        && current.tenant_context == TenantContext::local_implicit()
+    {
+        current.tenant_context = canonical.tenant_context;
+        save_context_run_state_sync(state, &current)?;
+    }
+    Ok(current)
 }
 
 fn write_string_atomically(path: &FsPath, payload: &str) -> Result<(), StatusCode> {
@@ -413,6 +445,9 @@ pub(super) fn decode_context_stream_cursor(raw: Option<&str>) -> ContextRunsStre
 }
 
 pub(super) fn load_context_run_workspace_sync(state: &AppState, run_id: &str) -> Option<String> {
+    if !super::context_run_authority::valid_context_run_id(run_id) {
+        return None;
+    }
     let path = context_run_state_path(state, run_id);
     let raw = std::fs::read_to_string(path).ok()?;
     let value = serde_json::from_str::<Value>(&raw).ok()?;
@@ -429,15 +464,26 @@ pub(super) fn load_context_run_state_sync(
     state: &AppState,
     run_id: &str,
 ) -> Result<ContextRunState, StatusCode> {
+    if !super::context_run_authority::valid_context_run_id(run_id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let path = context_run_state_path(state, run_id);
     let raw = std::fs::read_to_string(path).map_err(|_| StatusCode::NOT_FOUND)?;
-    serde_json::from_str::<ContextRunState>(&raw).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    let run = serde_json::from_str::<ContextRunState>(&raw)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if run.run_id != run_id {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(run)
 }
 
 pub(super) fn save_context_run_state_sync(
     state: &AppState,
     run: &ContextRunState,
 ) -> Result<(), StatusCode> {
+    if !super::context_run_authority::valid_context_run_id(&run.run_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let path = context_run_state_path(state, &run.run_id);
     let payload =
         serde_json::to_string_pretty(run).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1474,9 +1520,23 @@ pub(super) async fn context_run_create_impl(
     tenant_context: TenantContext,
     input: ContextRunCreateInput,
 ) -> Result<Json<Value>, StatusCode> {
+    if input
+        .run_id
+        .as_deref()
+        .is_some_and(super::context_run_authority::reserved_projection_id)
+        || input
+            .run_type
+            .as_deref()
+            .is_some_and(super::context_run_authority::managed_projection_type)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let run_id = input
         .run_id
         .unwrap_or_else(|| format!("run-{}", Uuid::new_v4()));
+    if !super::context_run_authority::valid_context_run_id(&run_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     ensure_context_run_dir(&state, &run_id).await?;
     let run_path = context_run_state_path(&state, &run_id);
     if run_path.exists() {
@@ -1532,6 +1592,7 @@ pub(super) async fn context_run_create_impl(
 pub(super) async fn context_run_list(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Query(query): Query<ContextRunListQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let workspace_filter = query
@@ -1547,7 +1608,15 @@ pub(super) async fn context_run_list(
     let mut rows = Vec::<ContextRunState>::new();
     for candidate in list_context_run_state_candidates(&state).await? {
         if let Ok(run) = load_context_run_state(&state, &candidate.run_id).await {
-            if !super::tenant_matches(&tenant_context, &run.tenant_context) {
+            if !super::context_run_authority::context_run_visible(
+                &state,
+                &run,
+                &tenant_context,
+                verified.as_ref().map(|Extension(value)| value),
+                false,
+            )
+            .await
+            {
                 continue;
             }
             if let Some(workspace) = workspace_filter.as_deref() {
@@ -1625,6 +1694,17 @@ pub(super) async fn context_run_put(
     }
     if let Ok(existing) = load_context_run_state(&state, &run_id).await {
         ensure_context_run_tenant(&tenant_context, &existing)?;
+        if existing.run_type != run.run_type
+            && (super::context_run_authority::reserved_projection_id(&run_id)
+                || super::context_run_authority::managed_projection_type(&existing.run_type)
+                || super::context_run_authority::managed_projection_type(&run.run_type))
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    } else if super::context_run_authority::reserved_projection_id(&run_id)
+        || super::context_run_authority::managed_projection_type(&run.run_type)
+    {
+        return Err(StatusCode::BAD_REQUEST);
     }
     run.tenant_context = tenant_context;
     let status = run.status.clone();

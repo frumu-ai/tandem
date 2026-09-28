@@ -293,19 +293,39 @@ pub(super) fn context_run_events_sse_stream(
 pub(super) async fn context_run_events_stream(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(run_id): Path<String>,
     Query(query): Query<super::RunEventsQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, StatusCode> {
     let run = load_context_run_state(&state, &run_id).await?;
-    ensure_context_run_tenant(&tenant_context, &run)?;
+    let verified = verified.map(|Extension(value)| value);
+    if !super::context_run_authority::context_run_visible(
+        &state,
+        &run,
+        &tenant_context,
+        verified.as_ref(),
+        false,
+    )
+    .await
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
     Ok(
-        Sse::new(context_run_events_sse_stream(state, run_id, query))
+        Sse::new(super::event_stream_authority::guard_run(
+            context_run_events_sse_stream(state.clone(), run_id.clone(), query),
+            state,
+            tenant_context,
+            verified,
+            super::context_run_authority::RunStreamResource::ContextRun(run_id),
+        ))
             .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10))),
     )
 }
 
 pub(super) fn context_runs_events_multiplex_sse_stream(
     state: AppState,
+    tenant_context: TenantContext,
+    verified: Option<tandem_types::VerifiedTenantContext>,
     workspace: String,
     subscribed_run_ids: Vec<String>,
     cursor: ContextRunsStreamCursor,
@@ -313,11 +333,24 @@ pub(super) fn context_runs_events_multiplex_sse_stream(
 ) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(512);
     tokio::spawn(async move {
-        let subscribed_set: HashSet<String> = subscribed_run_ids.iter().cloned().collect();
+        let mut current_ids = Vec::new();
+        for run_id in subscribed_run_ids {
+            if super::context_run_authority::run_stream_resource_visible(
+                &state,
+                &tenant_context,
+                verified.as_ref(),
+                &super::context_run_authority::RunStreamResource::ContextRun(run_id.clone()),
+            )
+            .await
+            {
+                current_ids.push(run_id);
+            }
+        }
+        let subscribed_set: HashSet<String> = current_ids.iter().cloned().collect();
         let ready = serde_json::to_string(&json!({
             "kind":"ready",
             "workspace": workspace,
-            "subscribed_run_ids": subscribed_run_ids,
+            "subscribed_run_ids": current_ids,
             "timestamp_ms": crate::now_ms(),
         }))
         .unwrap_or_default();
@@ -327,6 +360,16 @@ pub(super) fn context_runs_events_multiplex_sse_stream(
 
         let mut replay = Vec::<ContextRunsStreamEnvelope>::new();
         for run_id in &subscribed_set {
+            if !super::context_run_authority::run_stream_resource_visible(
+                &state,
+                &tenant_context,
+                verified.as_ref(),
+                &super::context_run_authority::RunStreamResource::ContextRun(run_id.clone()),
+            )
+            .await
+            {
+                continue;
+            }
             let run_events = load_context_run_events_jsonl(
                 &context_run_events_path(&state, run_id),
                 cursor.events.get(run_id).copied(),
@@ -375,6 +418,16 @@ pub(super) fn context_runs_events_multiplex_sse_stream(
                 .then_with(|| a.seq.cmp(&b.seq))
         });
         for row in replay {
+            if !super::context_run_authority::run_stream_resource_visible(
+                &state,
+                &tenant_context,
+                verified.as_ref(),
+                &super::context_run_authority::RunStreamResource::ContextRun(row.run_id.clone()),
+            )
+            .await
+            {
+                continue;
+            }
             let payload = serde_json::to_string(&row).unwrap_or_default();
             if tx.send(payload).await.is_err() {
                 return;
@@ -406,6 +459,18 @@ pub(super) fn context_runs_events_multiplex_sse_stream(
                     if event_workspace != workspace {
                         continue;
                     }
+                    if !super::context_run_authority::run_stream_resource_visible(
+                        &state,
+                        &tenant_context,
+                        verified.as_ref(),
+                        &super::context_run_authority::RunStreamResource::ContextRun(
+                            run_id.to_owned(),
+                        ),
+                    )
+                    .await
+                    {
+                        continue;
+                    }
                     let payload = serde_json::to_string(&event.properties).unwrap_or_default();
                     if tx.send(payload).await.is_err() {
                         return;
@@ -422,8 +487,10 @@ pub(super) fn context_runs_events_multiplex_sse_stream(
 pub(super) async fn context_runs_events_stream(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Query(query): Query<ContextRunsEventsStreamQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, StatusCode> {
+    let verified = verified.map(|Extension(value)| value);
     let workspace = query
         .workspace
         .as_deref()
@@ -431,22 +498,41 @@ pub(super) async fn context_runs_events_stream(
         .ok_or(StatusCode::BAD_REQUEST)?;
     let requested = parse_context_run_ids_csv(query.run_ids.as_deref());
     let subscribed_run_ids = if requested.is_empty() {
-        list_context_runs_for_workspace(&state, &workspace, 1000)
-            .await?
-            .into_iter()
-            .filter(|run| super::tenant_matches(&tenant_context, &run.tenant_context))
-            .map(|run| run.run_id)
-            .collect::<Vec<_>>()
+        let mut accepted = Vec::new();
+        for run in list_context_runs_for_workspace(&state, &workspace, 1000).await? {
+            if super::context_run_authority::context_run_visible(
+                &state,
+                &run,
+                &tenant_context,
+                verified.as_ref(),
+                false,
+            )
+            .await
+            {
+                accepted.push(run.run_id);
+            }
+        }
+        accepted
     } else {
         let mut accepted = Vec::<String>::new();
         for run_id in requested {
             let run = load_context_run_state(&state, &run_id)
                 .await
-                .map_err(|_| StatusCode::BAD_REQUEST)?;
+                .map_err(|_| StatusCode::NOT_FOUND)?;
+            if !super::context_run_authority::context_run_visible(
+                &state,
+                &run,
+                &tenant_context,
+                verified.as_ref(),
+                false,
+            )
+            .await
+            {
+                return Err(StatusCode::NOT_FOUND);
+            }
             if run.workspace.canonical_path.trim() != workspace {
                 return Err(StatusCode::BAD_REQUEST);
             }
-            ensure_context_run_tenant(&tenant_context, &run)?;
             accepted.push(run_id);
         }
         accepted.sort();
@@ -455,12 +541,21 @@ pub(super) async fn context_runs_events_stream(
     };
     let cursor = decode_context_stream_cursor(query.cursor.as_deref());
     let tail = query.tail.map(|value| value.clamp(1, 2000));
-    Ok(Sse::new(context_runs_events_multiplex_sse_stream(
-        state,
+    let stream = context_runs_events_multiplex_sse_stream(
+        state.clone(),
+        tenant_context.clone(),
+        verified.clone(),
         workspace,
         subscribed_run_ids,
         cursor,
         tail,
+    );
+    Ok(Sse::new(super::event_stream_authority::guard(
+        stream,
+        state,
+        tenant_context,
+        verified,
+        None,
     ))
     .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10))))
 }
