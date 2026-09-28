@@ -3,6 +3,42 @@
 
 use super::*;
 
+#[cfg(test)]
+mod preference_route_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn channel_preference_mutation_requires_hosted_admin_route_grant() {
+        use tower::ServiceExt;
+        let router = axum::Router::new().route(
+            "/channels/{name}/tool-preferences",
+            axum::routing::any(|request: axum::extract::Request| async move {
+                let expected = (request.method() == axum::http::Method::PUT)
+                    .then_some(tandem_types::AccessPermission::HostedAdmin);
+                assert_eq!(
+                    crate::http::hosted_route_authority::required_permission(&request),
+                    expected
+                );
+                StatusCode::NO_CONTENT
+            }),
+        );
+        for method in ["PUT", "GET", "HEAD"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri("/channels/slack/tool-preferences")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        }
+    }
+}
+
 #[test]
 fn public_demo_sanitizes_enabled_tools_and_mcp_servers() {
     let prefs = ChannelToolPreferences {

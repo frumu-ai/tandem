@@ -12,6 +12,7 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
     let read = matches!(method, "GET" | "HEAD");
     use AccessPermission::*;
     match (method, path) {
+        ("PUT", "/channels/{name}/tool-preferences") => return Some(HostedAdmin),
         ("GET" | "HEAD" | "POST", "/incident-monitor/intake/keys")
         | ("POST", "/incident-monitor/intake/keys/{id}/disable") => return Some(HostedAdmin),
         ("PATCH", "/config/incident-monitor")
