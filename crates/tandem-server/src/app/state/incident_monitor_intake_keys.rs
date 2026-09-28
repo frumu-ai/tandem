@@ -3,35 +3,75 @@
 
 use super::*;
 
+pub(crate) type IntakeKeyPublicationBatch =
+    tokio::sync::watch::Receiver<Option<Result<(), String>>>;
+
 impl AppState {
     pub async fn persist_incident_monitor_intake_keys(&self) -> anyhow::Result<()> {
-        let publication_order = self.incident_monitor_intake_keys_persistence.clone();
-        let keys = self.incident_monitor_intake_keys.clone();
-        let path = self.incident_monitor_intake_keys_path.clone();
-        // Own publication before its first wait. Cancellation while queued
-        // must not discard a disable behind an older enabled snapshot. Dropping
-        // this JoinHandle detaches the task; callers that wait still receive
-        // the actual persistence result, not an enqueue acknowledgement.
-        tokio::spawn(async move {
-            let guard = publication_order.lock_owned().await;
-            // Snapshot after acquiring order, then release the authorization
-            // map before serialization/fsync so in-memory revocation is prompt.
-            let snapshot = keys.read().await.clone();
-            // The blocking task retains publication order through completion,
-            // even if the async task is dropped during runtime shutdown.
-            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                let payload = serde_json::to_string_pretty(&snapshot)?;
-                let result = write_state_file_atomically_blocking(&path, &payload)
-                    .map_err(anyhow::Error::from);
-                drop(guard);
-                result
-            })
-            .await?
-        })
-        .await?
+        let mut completion = {
+            // Register before the first await. Only one not-yet-snapshotted
+            // publication owns a task; other callers share its completion.
+            let mut pending = self
+                .incident_monitor_intake_keys_pending
+                .lock()
+                .map_err(|_| anyhow::anyhow!("intake publication queue poisoned"))?;
+            if let Some(completion) = pending
+                .as_ref()
+                .filter(|receiver| receiver.has_changed().is_ok())
+            {
+                completion.clone()
+            } else {
+                let (sender, completion) = tokio::sync::watch::channel(None);
+                *pending = Some(completion.clone());
+                let publication_order = self.incident_monitor_intake_keys_persistence.clone();
+                let pending_batch = self.incident_monitor_intake_keys_pending.clone();
+                let keys = self.incident_monitor_intake_keys.clone();
+                let path = self.incident_monitor_intake_keys_path.clone();
+                // The task owns publication even if all request receivers disappear.
+                tokio::spawn(async move {
+                    let result = async {
+                        let guard = publication_order.lock_owned().await;
+                        // Requests after this boundary join one follow-up batch. Clear
+                        // before reading the map so every member's mutation is included.
+                        pending_batch
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("intake publication queue poisoned"))?
+                            .take();
+                        // Snapshot after acquiring order, then release the authorization
+                        // map before serialization/fsync so in-memory revocation is prompt.
+                        let snapshot = keys.read().await.clone();
+                        // The blocking task retains publication order through completion,
+                        // even if the async task is dropped during runtime shutdown.
+                        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
+                            let payload = serde_json::to_string_pretty(&snapshot)?;
+                            let result = write_state_file_atomically_blocking(&path, &payload)
+                                .map_err(anyhow::Error::from);
+                            drop(guard);
+                            result
+                        })
+                        .await?
+                    }
+                    .await;
+                    sender.send_replace(Some(
+                        result.map_err(|error: anyhow::Error| format!("{error:#}")),
+                    ));
+                });
+                completion
+            }
+        };
+        loop {
+            let result = completion.borrow_and_update().clone();
+            if let Some(result) = result {
+                return result.map_err(anyhow::Error::msg);
+            }
+            completion
+                .changed()
+                .await
+                .map_err(|_| anyhow::anyhow!("intake publication task ended before completion"))?;
+        }
     }
 
     pub async fn validate_incident_monitor_intake_key(

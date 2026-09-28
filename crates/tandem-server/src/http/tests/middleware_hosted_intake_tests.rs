@@ -329,6 +329,56 @@ async fn local_intake_key_persistence_serializes_concurrent_writers() {
     }
 }
 
+#[tokio::test]
+async fn local_intake_key_report_burst_coalesces_management_publication() {
+    let (state, _temp, _key) = intake_fixture().await;
+    let held = state.incident_monitor_intake_keys_persistence.lock().await;
+    let mut reports = Vec::new();
+    for _ in 0..128 {
+        let mut report = Box::pin(state.validate_incident_monitor_intake_key(
+            "existing-raw",
+            "payments",
+            "incident_monitor:report",
+        ));
+        assert!(futures::poll!(&mut report).is_pending());
+        reports.push(report);
+        tokio::task::yield_now().await;
+    }
+    // This read-only barrier is behind the burst but before the disable.
+    // Coalescing must include the disable in the already pending snapshot,
+    // rather than queue another filesystem job behind this barrier.
+    let barrier = state.incident_monitor_intake_keys_persistence.lock();
+    tokio::pin!(barrier);
+    assert!(futures::poll!(&mut barrier).is_pending());
+    let disable = state.disable_incident_monitor_intake_key_checked("existing", || Ok(()));
+    tokio::pin!(disable);
+    assert!(futures::poll!(&mut disable).is_pending());
+    assert!(!state.incident_monitor_intake_keys.try_read().unwrap()["existing"].enabled);
+    drop(held);
+    let barrier = tokio::time::timeout(std::time::Duration::from_secs(20), barrier)
+        .await
+        .unwrap();
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(1), &mut disable).await;
+    drop(barrier);
+    // Drain original behavior before asserting so failure leaves no writers
+    // racing fixture cleanup. This is not an extra persistence operation.
+    if completed.is_err() {
+        (&mut disable).await.unwrap();
+    }
+    for report in reports {
+        assert!(report.await.is_some());
+    }
+    assert!(
+        completed.is_ok(),
+        "disable was queued as a separate publication after the report burst"
+    );
+    assert!(!completed.unwrap().unwrap().unwrap().enabled);
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(&state.incident_monitor_intake_keys_path).unwrap())
+            .unwrap();
+    assert_eq!(saved["existing"]["enabled"], false);
+}
+
 #[test]
 fn local_intake_key_slow_persistence_does_not_delay_disable() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -541,4 +591,35 @@ fn local_intake_key_cancelled_queued_disable_survives_reload() {
             "restart must not resurrect the disabled key"
         );
     });
+}
+
+#[tokio::test]
+async fn local_intake_key_coalesced_errors_reach_all_callers_and_allow_retry() {
+    let (mut state, temp, _key) = intake_fixture().await;
+    let original_path = state.incident_monitor_intake_keys_path.clone();
+    let blocked_parent = temp.path().join("coalesced-not-a-directory");
+    std::fs::write(&blocked_parent, "fixture").unwrap();
+    state.incident_monitor_intake_keys_path = blocked_parent.join("keys.json");
+    {
+        let held = state.incident_monitor_intake_keys_persistence.lock().await;
+        let first = state.persist_incident_monitor_intake_keys();
+        tokio::pin!(first);
+        assert!(futures::poll!(&mut first).is_pending());
+        let disable = state.disable_incident_monitor_intake_key_checked("existing", || Ok(()));
+        tokio::pin!(disable);
+        assert!(futures::poll!(&mut disable).is_pending());
+        assert!(!state.incident_monitor_intake_keys.try_read().unwrap()["existing"].enabled);
+        drop(held);
+        let (first, disable) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(first, disable)
+        })
+        .await
+        .unwrap();
+        assert!(first.is_err());
+        assert!(disable.is_err());
+    }
+    state.incident_monitor_intake_keys_path = original_path;
+    state.persist_incident_monitor_intake_keys().await.unwrap();
+    state.load_incident_monitor_intake_keys().await.unwrap();
+    assert!(!state.incident_monitor_intake_keys.read().await["existing"].enabled);
 }

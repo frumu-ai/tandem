@@ -333,6 +333,7 @@ impl AppState {
                 config::paths::resolve_incident_monitor_log_evidence_dir(),
             incident_monitor_intake_keys: Arc::new(RwLock::new(std::collections::HashMap::new())),
             incident_monitor_intake_keys_persistence: Arc::new(tokio::sync::Mutex::new(())),
+            incident_monitor_intake_keys_pending: Arc::new(std::sync::Mutex::new(None)),
             incident_monitor_intake_keys_path:
                 config::paths::resolve_incident_monitor_intake_keys_path(),
             external_actions: Arc::new(RwLock::new(std::collections::HashMap::new())),
