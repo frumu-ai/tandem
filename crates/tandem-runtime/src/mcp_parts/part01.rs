@@ -539,30 +539,10 @@ impl McpRegistry {
         name: &str,
         current_tenant: &TenantContext,
     ) -> bool {
-        let _credential_guard = self.credential_mutation_lock.lock().await;
-        let removed_server = {
-            let mut servers = self.servers.write().await;
-            servers.remove(name)
-        };
-        let Some(server) = removed_server else {
-            return false;
-        };
-        self.remove_connections_for_server(name).await;
-        delete_secret_header_refs(&server.secret_headers, current_tenant);
-        delete_oauth_secret_ref(server.oauth.as_ref(), current_tenant);
-        delete_oauth_credential(
-            name,
-            server.oauth.as_ref(),
-            current_tenant,
-            &self.oauth_security_dir,
-        );
-
-        if let Some(mut child) = self.processes.lock().await.remove(name) {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-        }
-        self.persist_state().await;
-        true
+        self.prepare_remove_for_tenant(name, current_tenant).await
+            .commit_checked(|| Ok::<(), std::convert::Infallible>(()))
+            .expect("trusted connector removal is infallible")
+            .finish().await
     }
 
     pub async fn connect(&self, name: &str) -> bool {

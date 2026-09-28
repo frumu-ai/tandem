@@ -239,7 +239,22 @@ impl ToolRegistry {
     }
 
     pub async fn unregister_by_prefix(&self, prefix: &str) -> usize {
+        self.unregister_by_prefix_checked(prefix, || Ok::<(), std::convert::Infallible>(()))
+            .await
+            .expect("trusted prefix removal is infallible")
+    }
+
+    /// Revalidate after both registry waits and before either representation
+    /// is mutated. The callback must not await or reenter this registry.
+    pub async fn unregister_by_prefix_checked<E>(
+        &self,
+        prefix: &str,
+        authorize: impl FnOnce() -> Result<(), E>,
+    ) -> Result<usize, E> {
+        // Retrieval holds vectors before tools; preserve that lock order.
+        let mut vectors = self.tool_vectors.write().await;
         let mut tools = self.tools.write().await;
+        authorize()?;
         let keys = tools
             .keys()
             .filter(|name| name.starts_with(prefix))
@@ -252,12 +267,10 @@ impl ToolRegistry {
                 removed_schema_names.push(tool.schema().name);
             }
         }
-        drop(tools);
-        let mut vectors = self.tool_vectors.write().await;
         vectors.retain(|name, _| {
             !name.starts_with(prefix) && !removed_schema_names.iter().any(|schema| schema == name)
         });
-        removed
+        Ok(removed)
     }
 
     pub async fn index_all(&self) {

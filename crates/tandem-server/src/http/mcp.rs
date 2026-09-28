@@ -1733,8 +1733,18 @@ pub(super) async fn delete_mcp(
     {
         return super::protected_audit_error_response(error).into_response();
     }
-    let removed_tool_count = unregister_mcp_bridge_tools_for_server(&state, &name).await;
-    let ok = state.mcp.remove_for_tenant(&name, &tenant_context).await;
+    let (ok, removed_tool_count) =
+        match bridge_registry::delete_mcp_server_checked(&state, &name, &tenant_context, || {
+            grant.revalidate(&state, &effect)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                return crate::http::host_authority::host_authorization_status(error)
+                    .into_response()
+            }
+        };
     if ok {
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.deleted",

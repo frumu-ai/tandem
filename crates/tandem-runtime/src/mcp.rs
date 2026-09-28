@@ -7,6 +7,7 @@ include!("mcp_parts/part06.rs");
 include!("mcp_tool_authority.rs");
 include!("mcp_oauth_refresh.rs");
 include!("mcp_oauth_publication.rs");
+include!("mcp_removal.rs");
 #[cfg(test)]
 #[path = "mcp_hosted_policy_tests.rs"]
 mod hosted_policy_tests;

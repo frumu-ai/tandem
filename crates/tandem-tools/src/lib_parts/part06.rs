@@ -570,6 +570,62 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn unregister_prefix_checked_rechecks_after_either_lock_wait() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        for wait_on_vectors in [false, true] {
+            let registry = ToolRegistry::new();
+            let name = "mcp.checked.search";
+            registry.tools.write().await.insert(
+                name.into(),
+                Arc::new(TestTool {
+                    schema: ToolSchema::new(name, "search", json!({})),
+                }),
+            );
+            registry.tool_vectors.write().await.insert(name.into(), vec![1.0]);
+            let held_vectors = if wait_on_vectors {
+                Some(registry.tool_vectors.read().await)
+            } else {
+                None
+            };
+            let held_tools = if wait_on_vectors {
+                None
+            } else {
+                Some(registry.tools.read().await)
+            };
+            let allowed = AtomicBool::new(true);
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let removal = registry.unregister_by_prefix_checked("mcp.checked.", || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                if allowed.load(Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err("revoked")
+                }
+            });
+            tokio::pin!(removal);
+            let first_poll = std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(std::future::Future::poll(removal.as_mut(), cx))
+            })
+            .await;
+            assert!(first_poll.is_pending());
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            allowed.store(false, Ordering::SeqCst);
+            drop(held_tools);
+            drop(held_vectors);
+            assert_eq!(removal.await, Err("revoked"));
+            assert!(registry.tools.read().await.contains_key(name));
+            assert!(registry.tool_vectors.read().await.contains_key(name));
+            let removed = registry
+                .unregister_by_prefix_checked("mcp.checked.", || Ok::<(), &str>(()))
+                .await
+                .unwrap();
+            assert_eq!(removed, 1);
+            assert!(!registry.tools.read().await.contains_key(name));
+            assert!(!registry.tool_vectors.read().await.contains_key(name));
+        }
+    }
+
     #[test]
     fn websearch_limit_extraction_clamps_and_reads_nested_fields() {
         assert_eq!(extract_websearch_limit(&json!({"limit": 100})), Some(10));
