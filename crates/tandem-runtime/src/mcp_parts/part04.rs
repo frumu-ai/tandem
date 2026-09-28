@@ -353,7 +353,14 @@ impl McpRegistry {
         self.connections
             .write()
             .await
-            .retain(|_, connection| connection.server_id != server_id);
+            .retain(|id, connection| {
+                if connection.server_id == server_id {
+                    self.invalidate_oauth_refresh_connection(id);
+                    false
+                } else {
+                    true
+                }
+            });
     }
 
     async fn update_connection_enabled_for_server(&self, server_id: &str, enabled: bool) {

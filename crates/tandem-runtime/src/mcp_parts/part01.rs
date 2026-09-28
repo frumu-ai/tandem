@@ -151,7 +151,7 @@ pub struct McpRegistry {
     connections: Arc<RwLock<HashMap<String, McpConnection>>>,
     processes: Arc<Mutex<HashMap<String, Child>>>,
     credential_mutation_lock: Arc<Mutex<()>>,
-    oauth_refreshes: Arc<Mutex<McpOAuthRefreshCoordinators>>,
+    oauth_refreshes: Arc<std::sync::Mutex<McpOAuthRefreshCoordinators>>,
     state_file: Arc<PathBuf>,
     oauth_security_dir: Arc<PathBuf>,
     standalone_private_endpoint_access: Arc<std::sync::atomic::AtomicBool>,
@@ -229,7 +229,7 @@ impl McpRegistry {
             connections: Arc::new(RwLock::new(loaded_connections)),
             processes: Arc::new(Mutex::new(HashMap::new())),
             credential_mutation_lock: Arc::new(Mutex::new(())),
-            oauth_refreshes: Arc::new(Mutex::new(HashMap::new())),
+            oauth_refreshes: Arc::new(std::sync::Mutex::new(HashMap::new())),
             state_file: Arc::new(state_file),
             oauth_security_dir: Arc::new(oauth_security_dir),
             standalone_private_endpoint_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -857,6 +857,7 @@ impl McpRegistry {
                 connection.upstream_account = None;
                 connection.reset_transient_runtime_state();
                 connection.updated_at_ms = now_ms();
+                self.invalidate_oauth_refresh_connection(&connection_id);
                 (secret_headers, oauth)
             };
             delete_secret_header_refs(&secret_headers, current_tenant);
@@ -899,6 +900,7 @@ impl McpRegistry {
         server.tool_cache.clear();
         server.tools_fetched_at_ms = None;
         server.pending_auth_by_tool.clear();
+        self.invalidate_oauth_refresh_connection(&self.connection_id_for_tenant(name, current_tenant));
         drop(servers);
         self.upsert_compatibility_connection_for_server(name, current_tenant)
             .await;
@@ -1213,12 +1215,25 @@ impl McpRegistry {
                 "ToolDenied {{ reason: TenantScope }}: blocked MCP tool `{server_name}.{tool_name}` because local-implicit tenant context is not permitted in hosted/enterprise mode."
             ));
         }
-        let server = {
+        let (server, _oauth_refresh_admission, connection_generation) = {
             let servers = self.servers.read().await;
             let Some(server) = servers.get(server_name) else {
                 return Err(format!("MCP server '{server_name}' not found"));
             };
-            server.clone()
+            let connections = self.connections.read().await;
+            let connection = connections.get(&self.connection_id_for_tenant(server_name, current_tenant));
+            let oauth = if current_tenant.is_local_implicit() {
+                server.oauth.as_ref()
+            } else {
+                connection.and_then(|row| row.oauth.as_ref())
+            };
+            // A delayed 401 can arrive after another call has refreshed. Retain
+            // its exact-successor receipt for this entire admitted tool call,
+            // not only while this call itself is exchanging a token.
+            let admission = oauth.map(|oauth| self.admit_oauth_refresh(
+                McpOAuthCredentialKey::new(current_tenant, &oauth.provider_id),
+            ));
+            (server.clone(), admission, connection.map(|row| row.connection_generation.clone()))
         };
         if !server.enabled {
             return Err(format!("MCP server '{server_name}' is disabled"));
@@ -1241,8 +1256,7 @@ impl McpRegistry {
         let mut dispatch_binding = McpToolDispatchBinding {
             registry: self.clone(), server_name: server_name.into(), tool_name: tool_name.into(),
             server_policy: server_dispatch_policy(&server), tenant: current_tenant.clone(),
-            connection_generation: self.connection_for_tenant(server_name, current_tenant).await
-                .map(|connection| connection.connection_generation),
+            connection_generation,
             request_authority,
         };
         if !current_tenant.is_local_implicit() && dispatch_binding.connection_generation.is_none() {

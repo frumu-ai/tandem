@@ -27,77 +27,90 @@ async fn oauth_dispatch_case(
     let server_refreshing = refreshing.clone();
     let server_release = release.clone();
     let revoke_before_refresh = mutation == Some("pre-revoke");
-    let pause_refresh = mutation.is_some() && !revoke_before_refresh;
+    let delayed_401 = mutation == Some("delayed-401");
+    let pause_refresh = mutation.is_some() && !revoke_before_refresh && !delayed_401;
+    let old_requests = Arc::new(AtomicUsize::new(0));
     let server = tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut bytes = Vec::new();
-            loop {
-                let mut chunk = [0; 4096];
-                let count = socket.read(&mut chunk).await.unwrap();
-                assert!(count > 0 && bytes.len() < 16384);
-                bytes.extend_from_slice(&chunk[..count]);
-                let text = String::from_utf8_lossy(&bytes);
-                if let Some((head, body)) = text.split_once("\r\n\r\n") {
-                    let length = head
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|value| value.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap_or(0);
-                    if body.len() >= length {
-                        break;
+            let server_refreshes = server_refreshes.clone();
+            let server_calls = server_calls.clone();
+            let server_refreshing = server_refreshing.clone();
+            let server_release = server_release.clone();
+            let old_requests = old_requests.clone();
+            tokio::spawn(async move {
+                let mut bytes = Vec::new();
+                loop {
+                    let mut chunk = [0; 4096];
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    assert!(count > 0 && bytes.len() < 16384);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    let text = String::from_utf8_lossy(&bytes);
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let length = head
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= length {
+                            break;
+                        }
                     }
                 }
-            }
-            let text = String::from_utf8(bytes).unwrap();
-            let (head, body) = text.split_once("\r\n\r\n").unwrap();
-            let (status, response) = if head.starts_with("POST /token ") {
-                server_refreshes.fetch_add(1, Ordering::SeqCst);
-                if pause_refresh {
-                    server_refreshing.notify_one();
-                    server_release.notified().await;
-                }
-                (
-                    "200 OK",
-                    json!({"access_token":"renewed-test-token", "expires_in":3600}),
-                )
-            } else {
-                let request: Value = serde_json::from_str(body).unwrap();
-                let method = request["method"].as_str().unwrap();
-                if method == "tools/call"
-                    && force_401
-                    && !head
-                        .to_ascii_lowercase()
-                        .contains("authorization: bearer renewed-test-token")
-                {
-                    ("401 Unauthorized", json!({"error":"expired token"}))
-                } else {
-                    let result = match method {
-                        "initialize" => {
-                            json!({"protocolVersion":MCP_PROTOCOL_VERSION, "capabilities":{},
-                            "serverInfo":{"name":"oauth-test", "version":"1"}})
-                        }
-                        "tools/list" => {
-                            json!({"tools":[{"name":"get_me", "inputSchema":{"type":"object"}}]})
-                        }
-                        "tools/call" => {
-                            server_calls.fetch_add(1, Ordering::SeqCst);
-                            json!({"content":[{"type":"text", "text":"success"}]})
-                        }
-                        _ => json!({}),
-                    };
+                let text = String::from_utf8(bytes).unwrap();
+                let (head, body) = text.split_once("\r\n\r\n").unwrap();
+                let (status, response) = if head.starts_with("POST /token ") {
+                    server_refreshes.fetch_add(1, Ordering::SeqCst);
+                    if pause_refresh {
+                        server_refreshing.notify_one();
+                        server_release.notified().await;
+                    }
                     (
                         "200 OK",
-                        json!({"jsonrpc":"2.0", "id":request["id"], "result":result}),
+                        json!({"access_token":"renewed-test-token", "expires_in":3600}),
                     )
-                }
-            };
-            let response = response.to_string();
-            let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len());
-            socket.write_all(response.as_bytes()).await.unwrap();
+                } else {
+                    let request: Value = serde_json::from_str(body).unwrap();
+                    let method = request["method"].as_str().unwrap();
+                    if method == "tools/call"
+                        && force_401
+                        && !head
+                            .to_ascii_lowercase()
+                            .contains("authorization: bearer renewed-test-token")
+                    {
+                        if delayed_401 && old_requests.fetch_add(1, Ordering::SeqCst) == 0 {
+                            server_refreshing.notify_one();
+                            server_release.notified().await;
+                        }
+                        ("401 Unauthorized", json!({"error":"expired token"}))
+                    } else {
+                        let result = match method {
+                            "initialize" => {
+                                json!({"protocolVersion":MCP_PROTOCOL_VERSION, "capabilities":{},
+                            "serverInfo":{"name":"oauth-test", "version":"1"}})
+                            }
+                            "tools/list" => {
+                                json!({"tools":[{"name":"get_me", "inputSchema":{"type":"object"}}]})
+                            }
+                            "tools/call" => {
+                                server_calls.fetch_add(1, Ordering::SeqCst);
+                                json!({"content":[{"type":"text", "text":"success"}]})
+                            }
+                            _ => json!({}),
+                        };
+                        (
+                            "200 OK",
+                            json!({"jsonrpc":"2.0", "id":request["id"], "result":result}),
+                        )
+                    }
+                };
+                let response = response.to_string();
+                let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len());
+                socket.write_all(response.as_bytes()).await.unwrap();
+            });
         }
     });
     let directory =
@@ -192,7 +205,22 @@ async fn oauth_dispatch_case(
             )
             .await
     });
-    if let Some(mutation) = mutation.filter(|_| !revoke_before_refresh) {
+    if delayed_401 {
+        tokio::time::timeout(std::time::Duration::from_secs(10), refreshing.notified())
+            .await
+            .unwrap();
+        // The first call already sent the old credential but has not received
+        // its 401. Let a second complete its refresh and successful retry first.
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            registry.call_tool_for_tenant(&name, "get_me", json!({}), &tenant),
+        )
+        .await
+        .unwrap();
+        assert!(second.is_ok(), "second request: {second:?}");
+        release.notify_one();
+    }
+    if let Some(mutation) = mutation.filter(|_| !revoke_before_refresh && !delayed_401) {
         tokio::time::timeout(std::time::Duration::from_secs(10), refreshing.notified())
             .await
             .unwrap();
@@ -234,6 +262,7 @@ async fn oauth_dispatch_case(
         tandem_core::load_provider_oauth_credential_in_dir(&registry.oauth_security_dir, &name)
     };
     let auth = tandem_core::load_provider_auth_for_tenant(&tenant);
+    let drained = registry.oauth_refreshes.lock().unwrap().is_empty();
     let bearer = auth
         .get(&mcp_header_secret_id_for_tenant(
             &name,
@@ -251,7 +280,7 @@ async fn oauth_dispatch_case(
         usize::from(!revoke_before_refresh),
         "revoked requests must not send refresh credentials"
     );
-    if let Some(mutation) = mutation {
+    if let Some(mutation) = mutation.filter(|_| !delayed_401) {
         assert!(outcome.is_err(), "{mutation}: {outcome:?}");
         assert_eq!(calls.load(Ordering::SeqCst), 0, "{mutation}");
         assert!(
@@ -268,7 +297,21 @@ async fn oauth_dispatch_case(
         }
     } else {
         assert!(outcome.is_ok(), "{outcome:?}");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            if delayed_401 { 2 } else { 1 }
+        );
+    }
+    assert!(
+        drained,
+        "completed tool requests must release refresh receipts"
+    );
+}
+
+#[tokio::test]
+async fn oauth_dispatch_delayed_401_adopts_completed_refresh() {
+    for explicit in [false, true] {
+        oauth_dispatch_case(explicit, true, true, Some("delayed-401")).await;
     }
 }
 

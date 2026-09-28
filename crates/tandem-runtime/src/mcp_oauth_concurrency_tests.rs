@@ -17,6 +17,16 @@ async fn concurrent_refresh_case_with_cancellation(
     revoke_waiter: bool,
     cancel_first: bool,
 ) {
+    concurrent_refresh_case_with_deletion(explicit, force, revoke_waiter, cancel_first, None).await;
+}
+
+async fn concurrent_refresh_case_with_deletion(
+    explicit: bool,
+    force: bool,
+    revoke_waiter: bool,
+    cancel_first: bool,
+    remove_server: Option<bool>,
+) {
     let _auth_guard = super::tests::provider_auth_test_guard().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/token", listener.local_addr().unwrap());
@@ -86,14 +96,9 @@ async fn concurrent_refresh_case_with_cancellation(
         TenantContext::local_implicit()
     };
     // A refresh for an unrelated stored credential must not block this one.
-    let other_coordinator = registry
-        .oauth_refreshes
-        .lock()
-        .await
-        .entry(McpOAuthCredentialKey::new(&tenant, "unrelated-provider"))
-        .or_default()
-        .clone();
-    let _unrelated_refresh = other_coordinator.lock().await;
+    let other_admission =
+        registry.admit_oauth_refresh(McpOAuthCredentialKey::new(&tenant, "unrelated-provider"));
+    let _unrelated_refresh = other_admission.coordinator.exchange.lock().await;
     registry
         .add_or_update(name.clone(), endpoint.clone(), HashMap::new(), true)
         .await;
@@ -104,7 +109,7 @@ async fn concurrent_refresh_case_with_cancellation(
             name.clone(),
             endpoint,
             "test-client".into(),
-            None,
+            Some("test-client-secret".into()),
             &tenant,
         )
         .await
@@ -189,6 +194,28 @@ async fn concurrent_refresh_case_with_cancellation(
         .await
         .ok();
     revoked.store(revoke_waiter, Ordering::SeqCst);
+    if let Some(remove_server) = remove_server {
+        let deletion = async {
+            if remove_server {
+                registry.remove_for_tenant(&name, &tenant).await
+            } else {
+                registry
+                    .clear_auth_material_for_tenant(&name, &tenant)
+                    .await
+            }
+        };
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), deletion)
+                .await
+                .unwrap(),
+            "deletion must not wait for the token endpoint"
+        );
+        let index = registry.oauth_refreshes.lock().unwrap();
+        let entry = index
+            .get(&McpOAuthCredentialKey::new(&tenant, &name))
+            .expect("deletion must retain an active credential's serialization lock");
+        assert!(entry.coordinator.transitions.lock().unwrap().is_empty());
+    }
     release.notify_one();
     let first = if let Some(first) = first {
         Some(
@@ -207,6 +234,11 @@ async fn concurrent_refresh_case_with_cancellation(
             .unwrap()
             .unwrap(),
     };
+    let drained_before_clear = !registry
+        .oauth_refreshes
+        .lock()
+        .unwrap()
+        .contains_key(&McpOAuthCredentialKey::new(&tenant, &name));
     // A receipt must never let an old binding adopt a later public replacement.
     registry
         .set_bearer_token_for_tenant(&name, "external-replacement", &tenant)
@@ -218,6 +250,11 @@ async fn concurrent_refresh_case_with_cancellation(
     registry
         .clear_auth_material_for_tenant(&name, &tenant)
         .await;
+    let completed_refresh_retained = registry
+        .oauth_refreshes
+        .lock()
+        .unwrap()
+        .contains_key(&McpOAuthCredentialKey::new(&tenant, &name));
     server.abort();
     std::fs::remove_dir_all(&directory).unwrap();
     assert_eq!(
@@ -226,10 +263,24 @@ async fn concurrent_refresh_case_with_cancellation(
         "a rotating credential must be sent once"
     );
     if let Some(first) = first {
-        assert!(first.0.is_ok() && first.1.is_ok(), "first: {first:?}");
+        if remove_server.is_some() {
+            assert!(
+                first.0.is_err() && first.1.is_err(),
+                "removed first: {first:?}"
+            );
+        } else {
+            assert!(first.0.is_ok() && first.1.is_ok(), "first: {first:?}");
+        }
     }
-    assert!(replaced.is_err(), "external replacement cannot be adopted");
-    if revoke_waiter {
+    if remove_server != Some(false) {
+        assert!(replaced.is_err(), "external replacement cannot be adopted");
+    }
+    if remove_server.is_some() {
+        assert!(
+            second.1.is_err(),
+            "deleted waiter must lose dispatch authority"
+        );
+    } else if revoke_waiter {
         assert!(
             second.0.is_err() && second.1.is_err(),
             "revoked waiter: {second:?}"
@@ -237,8 +288,71 @@ async fn concurrent_refresh_case_with_cancellation(
     } else {
         assert!(second.0.is_ok() && second.1.is_ok(), "waiter: {second:?}");
     }
-    if force && !revoke_waiter {
+    if force && !revoke_waiter && remove_server.is_none() {
         assert!(second.0.unwrap(), "coalesced 401 refresh must enable retry");
+    }
+    assert!(
+        drained_before_clear && !completed_refresh_retained,
+        "completed refresh cohorts must release their coordinator and credential transition"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_oauth_deletion_during_exchange_releases_cohort() {
+    for explicit in [false, true] {
+        for remove_server in [false, true] {
+            concurrent_refresh_case_with_deletion(
+                explicit,
+                true,
+                false,
+                false,
+                Some(remove_server),
+            )
+            .await;
+        }
+    }
+}
+
+#[test]
+fn oauth_refresh_receipt_digest_includes_unserialized_secret() {
+    let mut oauth = McpOAuthConfig {
+        provider_id: "provider".into(),
+        token_endpoint: "https://example.com/token".into(),
+        client_id: "client".into(),
+        client_secret_ref: None,
+        client_secret_value: Some("first".into()),
+    };
+    let original = oauth.clone();
+    oauth.client_secret_value = Some("replacement".into());
+    assert_eq!(
+        serde_json::to_value(&original).unwrap(),
+        serde_json::to_value(&oauth).unwrap()
+    );
+    assert_ne!(
+        oauth_config_digest(&original).unwrap(),
+        oauth_config_digest(&oauth).unwrap()
+    );
+    oauth.client_secret_value = None;
+    let absent = oauth_config_digest(&oauth).unwrap();
+    oauth.client_secret_value = Some(String::new());
+    assert_ne!(absent, oauth_config_digest(&oauth).unwrap());
+}
+
+#[tokio::test]
+async fn oauth_refresh_admission_churn_releases_all_keys() {
+    let directory =
+        std::env::temp_dir().join(format!("mcp-refresh-churn-{}", uuid::Uuid::new_v4()));
+    let registry = McpRegistry::new_with_state_file(directory.join("state.json"));
+    for n in 0..100 {
+        let tenant = TenantContext::explicit("org", format!("workspace-{n}"), None);
+        let key = McpOAuthCredentialKey::new(&tenant, "provider");
+        let first = registry.admit_oauth_refresh(key.clone());
+        let second = registry.admit_oauth_refresh(key.clone());
+        assert!(Arc::ptr_eq(&first.coordinator, &second.coordinator));
+        drop(first);
+        assert!(registry.oauth_refreshes.lock().unwrap().contains_key(&key));
+        drop(second);
+        assert!(registry.oauth_refreshes.lock().unwrap().is_empty());
     }
 }
 

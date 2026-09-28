@@ -18,18 +18,58 @@ impl McpOAuthCredentialKey {
     }
 }
 
-type McpOAuthRefreshCoordinators = HashMap<McpOAuthCredentialKey, Arc<Mutex<McpOAuthRefreshState>>>;
+type McpOAuthRefreshCoordinators = HashMap<McpOAuthCredentialKey, McpOAuthRefreshEntry>;
+
+struct McpOAuthRefreshEntry {
+    coordinator: Arc<McpOAuthRefreshState>,
+    admitted: usize,
+}
+
+// Registered before capturing the admitted predecessor and owned by the
+// detached exchange. Drop also covers cancellation before the task is spawned.
+struct McpOAuthRefreshAdmission {
+    index: Arc<std::sync::Mutex<McpOAuthRefreshCoordinators>>,
+    key: McpOAuthCredentialKey,
+    coordinator: Arc<McpOAuthRefreshState>,
+}
+
+impl Drop for McpOAuthRefreshAdmission {
+    fn drop(&mut self) {
+        let mut index = self.index.lock().expect("OAuth refresh index poisoned");
+        if let Some(entry) = index.get_mut(&self.key) {
+            if Arc::ptr_eq(&entry.coordinator, &self.coordinator) {
+                entry.admitted -= 1;
+                if entry.admitted == 0 {
+                    index.remove(&self.key);
+                }
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 struct McpOAuthRefreshState {
-    transitions: HashMap<String, McpOAuthRefreshTransition>,
+    exchange: Mutex<()>,
+    transitions: std::sync::Mutex<HashMap<String, McpOAuthRefreshTransition>>,
 }
 
+#[derive(Clone)]
 struct McpOAuthRefreshTransition {
-    predecessor: McpOAuthRefreshPredecessor,
+    predecessor_policy: Value,
+    predecessor_generation: Option<String>,
+    oauth_digest: String,
     server_policy: Value,
     connection_generation: Option<String>,
     credential_digest: String,
+}
+
+fn oauth_config_digest(oauth: &McpOAuthConfig) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    // The secret value is skipped by McpOAuthConfig's serializer, but remains
+    // part of its equality contract. Include it explicitly in the receipt.
+    let bytes = serde_json::to_vec(&(oauth, &oauth.client_secret_value))
+        .map_err(|error| error.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn oauth_credential_digest(
@@ -53,12 +93,49 @@ impl McpOAuthRefreshTransition {
     ) -> Result<bool, String> {
         Ok(self.server_policy == current.server_policy
             && self.connection_generation == current.connection_generation
-            && self.predecessor.oauth == current.oauth
+            && self.oauth_digest == oauth_config_digest(&current.oauth)?
             && self.credential_digest == oauth_credential_digest(credential)?)
     }
 }
 
 impl McpRegistry {
+    fn admit_oauth_refresh(&self, key: McpOAuthCredentialKey) -> McpOAuthRefreshAdmission {
+        let mut index = self
+            .oauth_refreshes
+            .lock()
+            .expect("OAuth refresh index poisoned");
+        let entry = index
+            .entry(key.clone())
+            .or_insert_with(|| McpOAuthRefreshEntry {
+                coordinator: Arc::new(McpOAuthRefreshState::default()),
+                admitted: 0,
+            });
+        entry.admitted += 1;
+        McpOAuthRefreshAdmission {
+            index: self.oauth_refreshes.clone(),
+            key,
+            coordinator: entry.coordinator.clone(),
+        }
+    }
+
+    // Never await the exchange mutex here: credential deletion must remain free
+    // to revoke an exchange while its endpoint is blocked. Keep active keyed
+    // coordinators in place so aliases cannot open a second exchange lock.
+    fn invalidate_oauth_refresh_connection(&self, connection_id: &str) {
+        let index = self
+            .oauth_refreshes
+            .lock()
+            .expect("OAuth refresh index poisoned");
+        for entry in index.values() {
+            entry
+                .coordinator
+                .transitions
+                .lock()
+                .expect("OAuth receipts poisoned")
+                .remove(connection_id);
+        }
+    }
+
     async fn ensure_oauth_bearer_token_fresh(
         &self,
         name: &str,
@@ -75,12 +152,27 @@ impl McpRegistry {
         force: bool,
         binding: Option<&mut McpToolDispatchBinding>,
     ) -> Result<bool, String> {
+        let Some(initial) = self
+            .capture_oauth_refresh_predecessor(name, current_tenant)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let admission = self.admit_oauth_refresh(McpOAuthCredentialKey::new(
+            current_tenant,
+            &initial.oauth.provider_id,
+        ));
+        drop(initial);
         let Some(admitted) = self
             .capture_oauth_refresh_predecessor(name, current_tenant)
             .await?
         else {
             return Ok(false);
         };
+        if McpOAuthCredentialKey::new(current_tenant, &admitted.oauth.provider_id) != admission.key
+        {
+            return Err("MCP OAuth configuration changed during refresh admission".into());
+        }
         let registry = self.clone();
         let name = name.to_string();
         let tenant = current_tenant.clone();
@@ -95,6 +187,7 @@ impl McpRegistry {
                     &tenant,
                     force,
                     admitted,
+                    &admission,
                     owned_binding.as_mut(),
                 )
                 .await;
@@ -114,19 +207,14 @@ impl McpRegistry {
         current_tenant: &TenantContext,
         force: bool,
         admitted: McpOAuthRefreshPredecessor,
+        admission: &McpOAuthRefreshAdmission,
         mut binding: Option<&mut McpToolDispatchBinding>,
     ) -> Result<bool, String> {
         let key = McpOAuthCredentialKey::new(current_tenant, &admitted.oauth.provider_id);
-        let coordinator = self
-            .oauth_refreshes
-            .lock()
-            .await
-            .entry(key.clone())
-            .or_default()
-            .clone();
+        let coordinator = &admission.coordinator;
         // Serialize before loading the rotating token, but leave revocation and
         // unrelated credentials free to proceed while the endpoint is awaited.
-        let mut refresh_state = coordinator.lock().await;
+        let _exchange = coordinator.exchange.lock().await;
         let Some(predecessor) = self
             .capture_oauth_refresh_predecessor(name, current_tenant)
             .await?
@@ -161,12 +249,17 @@ impl McpRegistry {
         };
 
         let connection_id = self.connection_id_for_tenant(name, current_tenant);
-        if let Some(transition) = refresh_state.transitions.get(&connection_id) {
+        let transition = coordinator
+            .transitions
+            .lock()
+            .expect("OAuth receipts poisoned")
+            .get(&connection_id)
+            .cloned();
+        if let Some(transition) = transition {
             if transition.matches_successor(&predecessor, &credential)? {
                 if let Some(binding) = binding.as_deref_mut() {
-                    if binding.server_policy == transition.predecessor.server_policy
-                        && binding.connection_generation
-                            == transition.predecessor.connection_generation
+                    if binding.server_policy == transition.predecessor_policy
+                        && binding.connection_generation == transition.predecessor_generation
                     {
                         let mut successor = binding.clone();
                         successor.server_policy = transition.server_policy.clone();
@@ -177,10 +270,9 @@ impl McpRegistry {
                         *binding = successor;
                         return Ok(true);
                     }
-                } else if admitted.server_policy == transition.predecessor.server_policy
-                    && admitted.connection_generation
-                        == transition.predecessor.connection_generation
-                    && admitted.oauth == transition.predecessor.oauth
+                } else if admitted.server_policy == transition.predecessor_policy
+                    && admitted.connection_generation == transition.predecessor_generation
+                    && oauth_config_digest(&admitted.oauth)? == transition.oauth_digest
                 {
                     return Ok(true);
                 }
@@ -202,10 +294,15 @@ impl McpRegistry {
 
         let refreshed =
             refresh_mcp_oauth_credential(oauth, &credential, &endpoint_authorization).await?;
-        let transition = self
-            .commit_oauth_refresh(name, current_tenant, predecessor, refreshed, binding)
-            .await?;
-        refresh_state.transitions.insert(connection_id, transition);
+        self.commit_oauth_refresh(
+            name,
+            current_tenant,
+            predecessor,
+            refreshed,
+            binding,
+            coordinator,
+        )
+        .await?;
         Ok(true)
     }
 
@@ -240,8 +337,10 @@ impl McpRegistry {
         predecessor: McpOAuthRefreshPredecessor,
         refreshed: tandem_core::OAuthProviderCredential,
         binding: Option<&mut McpToolDispatchBinding>,
-    ) -> Result<McpOAuthRefreshTransition, String> {
+        coordinator: &McpOAuthRefreshState,
+    ) -> Result<(), String> {
         let credential_digest = oauth_credential_digest(&refreshed)?;
+        let oauth_digest = oauth_config_digest(&predecessor.oauth)?;
         let _credential_guard = self.credential_mutation_lock.lock().await;
         // Keep both authority registries stable through comparison, credential
         // writes and successor construction. No network I/O under these locks.
@@ -310,7 +409,7 @@ impl McpRegistry {
             server.headers.remove(&header_name);
         }
         let now = now_ms();
-        let connection = connections.entry(connection_id).or_insert_with(|| {
+        let connection = connections.entry(connection_id.clone()).or_insert_with(|| {
             McpConnection::tenant_connection_from_server(name, server, tenant.clone(), owner, now)
         });
         if tenant.is_local_implicit() {
@@ -337,7 +436,9 @@ impl McpRegistry {
         connection.connection_generation = new_mcp_connection_generation();
         connection.updated_at_ms = now;
         let transition = McpOAuthRefreshTransition {
-            predecessor,
+            predecessor_policy: predecessor.server_policy,
+            predecessor_generation: predecessor.connection_generation,
+            oauth_digest,
             server_policy: server_dispatch_policy(server),
             connection_generation: Some(connection.connection_generation.clone()),
             credential_digest,
@@ -348,9 +449,16 @@ impl McpRegistry {
             binding.server_policy = transition.server_policy.clone();
             binding.connection_generation = transition.connection_generation.clone();
         }
+        // Publish while the authority registries remain locked, so deletion
+        // cannot purge the receipt and then have this commit reinsert it.
+        coordinator
+            .transitions
+            .lock()
+            .expect("OAuth receipts poisoned")
+            .insert(connection_id, transition);
         drop(connections);
         drop(servers);
         self.persist_state().await;
-        Ok(transition)
+        Ok(())
     }
 }
