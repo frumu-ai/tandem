@@ -515,6 +515,11 @@ async fn persist_incident_monitor_telemetry(
     file.write_all(line.as_bytes())
         .await
         .with_context(|| format!("append telemetry record to {}", path.display()))?;
+    // Tokio may return from write_all while the blocking file write is still
+    // pending. Finish it (and surface its errors) before reporting success.
+    file.flush()
+        .await
+        .with_context(|| format!("flush telemetry record to {}", path.display()))?;
     Ok(())
 }
 
@@ -856,6 +861,28 @@ fn redact_sensitive_line(line: &str) -> String {
 #[cfg(test)]
 mod hosted_policy_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn telemetry_append_is_visible_before_success_returns() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = crate::app::state::tests::test_state_with_path(temp.path().join("state.json"));
+        let sink = temp.path().join("telemetry/events.jsonl");
+        for sequence in 0..32 {
+            let receipt = json!({"event": "write-completion", "sequence": sequence});
+            persist_incident_monitor_telemetry(&state, &sink, &receipt)
+                .await
+                .unwrap();
+            // Read synchronously: an async read would give a pending background
+            // write another scheduling opportunity and could hide the race.
+            let contents = std::fs::read_to_string(&sink).unwrap();
+            let lines = contents.lines().collect::<Vec<_>>();
+            assert_eq!(lines.len(), sequence + 1);
+            assert_eq!(
+                serde_json::from_str::<Value>(lines.last().unwrap()).unwrap(),
+                receipt
+            );
+        }
+    }
 
     #[tokio::test]
     async fn hosted_incident_paused_local_claim_is_retryable_and_preserves_completed_receipts() {
