@@ -8,5 +8,6 @@ use serde::Serialize;
 pub enum RoutineStoreError {
     InvalidRoutineId { routine_id: String },
     InvalidSchedule { detail: String },
+    AccessDenied,
     PersistFailed { message: String },
 }

@@ -347,6 +347,7 @@ fn apply_automation_v2_share_metadata(
 pub(super) async fn automations_patch(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
     Json(input): Json<AutomationPatchInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -392,79 +393,87 @@ pub(super) async fn automations_patch(
                 })),
             )
         })?;
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let updated = state
-        .update_routine_for_tenant(&id, &tenant_context, move |routine| {
-            if let Some(name) = input.name {
-                routine.name = name;
-            }
-            if let Some(status) = input.status {
-                routine.status = status;
-            }
-            if let Some(schedule) = input.schedule {
-                routine.schedule = schedule;
-            }
-            if let Some(timezone) = input.timezone {
-                routine.timezone = timezone;
-            }
-            if let Some(misfire_policy) = input.misfire_policy {
-                routine.misfire_policy = misfire_policy;
-            }
-            if let Some(next_fire_at_ms) = input.next_fire_at_ms {
-                routine.next_fire_at_ms = Some(next_fire_at_ms);
-            }
-            if let Some(output_targets) = input.output_targets {
-                routine.output_targets = output_targets;
-            }
-            if let Some(model_policy) = input.model_policy {
-                let mut args = routine.args.as_object().cloned().unwrap_or_default();
-                if model_policy.as_object().is_some_and(|obj| obj.is_empty()) {
-                    args.remove("model_policy");
-                } else {
-                    args.insert("model_policy".to_string(), model_policy);
+        .update_routine_for_tenant_checked(
+            &id,
+            &tenant_context,
+            |routine| {
+                state.legacy_routine_write_allowed(&tenant_context, verified, Some(routine))
+            },
+            move |routine| {
+                if let Some(name) = input.name {
+                    routine.name = name;
                 }
-                routine.args = Value::Object(args);
-            }
-            if let Some(policy) = input.policy {
-                if let Some(allowed) = policy.tool.run_allowlist {
-                    routine.allowed_tools = allowed;
+                if let Some(status) = input.status {
+                    routine.status = status;
                 }
-                if let Some(external_allowed) = policy.tool.external_integrations_allowed {
-                    routine.external_integrations_allowed = external_allowed;
+                if let Some(schedule) = input.schedule {
+                    routine.schedule = schedule;
                 }
-                if let Some(requires_approval) = policy.approval.requires_approval {
-                    routine.requires_approval = requires_approval;
+                if let Some(timezone) = input.timezone {
+                    routine.timezone = timezone;
                 }
-                if let Some(orchestrator_only) = policy.tool.orchestrator_only_tool_calls {
+                if let Some(misfire_policy) = input.misfire_policy {
+                    routine.misfire_policy = misfire_policy;
+                }
+                if let Some(next_fire_at_ms) = input.next_fire_at_ms {
+                    routine.next_fire_at_ms = Some(next_fire_at_ms);
+                }
+                if let Some(output_targets) = input.output_targets {
+                    routine.output_targets = output_targets;
+                }
+                if let Some(model_policy) = input.model_policy {
                     let mut args = routine.args.as_object().cloned().unwrap_or_default();
-                    args.insert(
-                        "orchestrator_only_tool_calls".to_string(),
-                        Value::Bool(orchestrator_only),
-                    );
+                    if model_policy.as_object().is_some_and(|obj| obj.is_empty()) {
+                        args.remove("model_policy");
+                    } else {
+                        args.insert("model_policy".to_string(), model_policy);
+                    }
                     routine.args = Value::Object(args);
                 }
-            }
-            if let Some(normalized_mode) = normalized_mode {
-                let mut args = routine.args.as_object().cloned().unwrap_or_default();
-                args.insert("mode".to_string(), Value::String(normalized_mode));
-                routine.args = Value::Object(args);
-            }
-            if let Some(mission) = input.mission {
-                let mut args = routine.args.as_object().cloned().unwrap_or_default();
-                if let Some(objective) = mission.objective {
-                    args.insert("prompt".to_string(), Value::String(objective));
+                if let Some(policy) = input.policy {
+                    if let Some(allowed) = policy.tool.run_allowlist {
+                        routine.allowed_tools = allowed;
+                    }
+                    if let Some(external_allowed) = policy.tool.external_integrations_allowed {
+                        routine.external_integrations_allowed = external_allowed;
+                    }
+                    if let Some(requires_approval) = policy.approval.requires_approval {
+                        routine.requires_approval = requires_approval;
+                    }
+                    if let Some(orchestrator_only) = policy.tool.orchestrator_only_tool_calls {
+                        let mut args = routine.args.as_object().cloned().unwrap_or_default();
+                        args.insert(
+                            "orchestrator_only_tool_calls".to_string(),
+                            Value::Bool(orchestrator_only),
+                        );
+                        routine.args = Value::Object(args);
+                    }
                 }
-                if let Some(success_criteria) = mission.success_criteria {
-                    args.insert("success_criteria".to_string(), json!(success_criteria));
+                if let Some(normalized_mode) = normalized_mode {
+                    let mut args = routine.args.as_object().cloned().unwrap_or_default();
+                    args.insert("mode".to_string(), Value::String(normalized_mode));
+                    routine.args = Value::Object(args);
                 }
-                if let Some(briefing) = mission.briefing {
-                    args.insert("briefing".to_string(), Value::String(briefing));
+                if let Some(mission) = input.mission {
+                    let mut args = routine.args.as_object().cloned().unwrap_or_default();
+                    if let Some(objective) = mission.objective {
+                        args.insert("prompt".to_string(), Value::String(objective));
+                    }
+                    if let Some(success_criteria) = mission.success_criteria {
+                        args.insert("success_criteria".to_string(), json!(success_criteria));
+                    }
+                    if let Some(briefing) = mission.briefing {
+                        args.insert("briefing".to_string(), Value::String(briefing));
+                    }
+                    if let Some(entrypoint) = mission.entrypoint_compat {
+                        routine.entrypoint = entrypoint;
+                    }
+                    routine.args = Value::Object(args);
                 }
-                if let Some(entrypoint) = mission.entrypoint_compat {
-                    routine.entrypoint = entrypoint;
-                }
-                routine.args = Value::Object(args);
-            }
-        })
+            },
+        )
         .await
         .map_err(routine_error_response)?
         .ok_or_else(|| {
@@ -485,10 +494,14 @@ pub(super) async fn automations_patch(
 pub(super) async fn automations_delete(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let deleted = state
-        .delete_routine_for_tenant(&id, &tenant_context)
+        .delete_routine_for_tenant_checked(&id, &tenant_context, |routine| {
+            state.legacy_routine_write_allowed(&tenant_context, verified, Some(routine))
+        })
         .await
         .map_err(routine_error_response)?
         .ok_or_else(|| {

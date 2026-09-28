@@ -896,6 +896,13 @@ pub(super) fn routine_error_response(error: RoutineStoreError) -> (StatusCode, J
                 "detail": detail,
             })),
         ),
+        RoutineStoreError::AccessDenied => (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Routine access denied",
+                "code": "ROUTINE_ACCESS_DENIED",
+            })),
+        ),
         RoutineStoreError::PersistFailed { message } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
@@ -951,6 +958,7 @@ pub(super) async fn routines_create(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     headers: HeaderMap,
     Json(input): Json<RoutineCreateInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -958,9 +966,11 @@ pub(super) async fn routines_create(
     // rather than trusting client-supplied creator fields.
     let actor =
         ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "creation")?;
-    let creator_id = actor
-        .actor_id
-        .clone()
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    let creator_id = verified
+        .map(|context| context.human_actor.actor_id.trim().to_string())
+        .filter(|actor_id| !actor_id.is_empty())
+        .or_else(|| actor.actor_id.clone())
         .or(input.creator_id)
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -987,11 +997,18 @@ pub(super) async fn routines_create(
         next_fire_at_ms: input.next_fire_at_ms,
         last_fired_at_ms: None,
     };
-    let previous = state
-        .get_routine_for_tenant(&routine.routine_id, &tenant_context)
-        .await;
-    let stored = state
-        .put_routine(routine)
+    let (stored, previous) = state
+        .put_routine_checked(routine, |existing, incoming| {
+            if !state.legacy_routine_write_allowed(&tenant_context, verified, existing) {
+                return false;
+            }
+            if let Some(existing) = existing {
+                incoming.tenant_context = existing.tenant_context.clone();
+                incoming.creator_type = existing.creator_type.clone();
+                incoming.creator_id = existing.creator_id.clone();
+            }
+            true
+        })
         .await
         .map_err(routine_error_response)?;
     if let Err(audit_error) = crate::audit::append_protected_audit_event(
@@ -1052,48 +1069,57 @@ pub(super) async fn routines_list(
 pub(super) async fn routines_patch(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
     Json(input): Json<RoutinePatchInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let stored = state
-        .update_routine_for_tenant(&id, &tenant_context, move |routine| {
-            if let Some(name) = input.name {
-                routine.name = name;
-            }
-            if let Some(status) = input.status {
-                routine.status = status;
-            }
-            if let Some(schedule) = input.schedule {
-                routine.schedule = schedule;
-            }
-            if let Some(timezone) = input.timezone {
-                routine.timezone = timezone;
-            }
-            if let Some(misfire_policy) = input.misfire_policy {
-                routine.misfire_policy = misfire_policy;
-            }
-            if let Some(entrypoint) = input.entrypoint {
-                routine.entrypoint = entrypoint;
-            }
-            if let Some(args) = input.args {
-                routine.args = args;
-            }
-            if let Some(allowed_tools) = input.allowed_tools {
-                routine.allowed_tools = allowed_tools;
-            }
-            if let Some(output_targets) = input.output_targets {
-                routine.output_targets = output_targets;
-            }
-            if let Some(requires_approval) = input.requires_approval {
-                routine.requires_approval = requires_approval;
-            }
-            if let Some(external_integrations_allowed) = input.external_integrations_allowed {
-                routine.external_integrations_allowed = external_integrations_allowed;
-            }
-            if let Some(next_fire_at_ms) = input.next_fire_at_ms {
-                routine.next_fire_at_ms = Some(next_fire_at_ms);
-            }
-        })
+        .update_routine_for_tenant_checked(
+            &id,
+            &tenant_context,
+            |routine| {
+                state.legacy_routine_write_allowed(&tenant_context, verified, Some(routine))
+            },
+            move |routine| {
+                if let Some(name) = input.name {
+                    routine.name = name;
+                }
+                if let Some(status) = input.status {
+                    routine.status = status;
+                }
+                if let Some(schedule) = input.schedule {
+                    routine.schedule = schedule;
+                }
+                if let Some(timezone) = input.timezone {
+                    routine.timezone = timezone;
+                }
+                if let Some(misfire_policy) = input.misfire_policy {
+                    routine.misfire_policy = misfire_policy;
+                }
+                if let Some(entrypoint) = input.entrypoint {
+                    routine.entrypoint = entrypoint;
+                }
+                if let Some(args) = input.args {
+                    routine.args = args;
+                }
+                if let Some(allowed_tools) = input.allowed_tools {
+                    routine.allowed_tools = allowed_tools;
+                }
+                if let Some(output_targets) = input.output_targets {
+                    routine.output_targets = output_targets;
+                }
+                if let Some(requires_approval) = input.requires_approval {
+                    routine.requires_approval = requires_approval;
+                }
+                if let Some(external_integrations_allowed) = input.external_integrations_allowed {
+                    routine.external_integrations_allowed = external_integrations_allowed;
+                }
+                if let Some(next_fire_at_ms) = input.next_fire_at_ms {
+                    routine.next_fire_at_ms = Some(next_fire_at_ms);
+                }
+            },
+        )
         .await
         .map_err(routine_error_response)?
         .ok_or_else(|| {
@@ -1125,10 +1151,14 @@ pub(super) async fn routines_patch(
 pub(super) async fn routines_delete(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let deleted = state
-        .delete_routine_for_tenant(&id, &tenant_context)
+        .delete_routine_for_tenant_checked(&id, &tenant_context, |routine| {
+            state.legacy_routine_write_allowed(&tenant_context, verified, Some(routine))
+        })
         .await
         .map_err(routine_error_response)?;
     if let Some(routine) = deleted {

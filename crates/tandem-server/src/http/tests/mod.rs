@@ -27,6 +27,7 @@ pub(super) mod governance_adversarial;
 pub(super) mod governance_policy_decisions;
 pub(super) mod incident_monitor;
 pub(super) mod intra_tenant_authority;
+pub(super) mod legacy_routine_authority;
 pub(super) mod marketplace;
 pub(super) mod mcp;
 pub(super) mod mcp_admin_hardening;

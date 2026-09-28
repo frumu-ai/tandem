@@ -419,6 +419,18 @@ impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
             .canonical_tool
             .clone()
             .unwrap_or_else(|| context.requested_tool.clone());
+        // Pack Builder stages and installs into process-wide pack, connector,
+        // and automation stores without hosted object provenance. Match the
+        // local-only boundary enforced by the dedicated pack HTTP API.
+        if dispatch_tool == "pack_builder"
+            && (!context.tenant_context.is_local_implicit()
+                || context.verified_tenant_context.is_some()
+                || !matches!(self.state.enterprise.hosted_policy.current(), Ok(None)))
+        {
+            return Ok(ToolDispatchDecision::deny(
+                "pack_builder requires the local single-user runtime",
+            ));
+        }
         let Some(runtime) = self.state.runtime.get() else {
             return Ok(ToolDispatchDecision::deny(
                 "server runtime permissions are not initialized",

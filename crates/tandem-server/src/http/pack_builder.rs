@@ -66,7 +66,13 @@ pub(super) async fn run_pack_builder_tool(
         .await
         .map_err(|e| {
             tracing::warn!("pack_builder tool execution failed: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            if e.downcast_ref::<tandem_tools::ToolDispatchBlocked>()
+                .is_some()
+            {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         })?;
     let mut metadata = result.metadata;
     if let Some(obj) = metadata.as_object_mut() {
