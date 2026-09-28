@@ -19,6 +19,10 @@ use crate::event_bus::EventBus;
 const PERMISSION_STATE_SCHEMA_VERSION: u32 = 3;
 const PERMISSION_REQUEST_TTL_MS: u64 = 15 * 60 * 1000;
 
+#[cfg(test)]
+#[path = "permissions_checked_tests.rs"]
+mod checked_rule_tests;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionAction {
@@ -659,6 +663,28 @@ impl PermissionManager {
         .await
     }
 
+    /// Revalidate after both mutation locks, immediately before installing a
+    /// session rule. The callback must not await or reenter this manager.
+    pub async fn add_rule_for_session_checked<E>(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: &str,
+        permission: impl Into<String>,
+        pattern: impl Into<String>,
+        action: PermissionAction,
+        authorize: impl FnOnce() -> Result<(), E>,
+    ) -> Result<PermissionRule, E> {
+        self.add_rule_for_scope_checked(
+            tenant_context,
+            Some(session_id.to_string()),
+            permission,
+            pattern,
+            action,
+            authorize,
+        )
+        .await
+    }
+
     async fn add_rule_for_scope(
         &self,
         tenant_context: &TenantContext,
@@ -667,6 +693,27 @@ impl PermissionManager {
         pattern: impl Into<String>,
         action: PermissionAction,
     ) -> PermissionRule {
+        self.add_rule_for_scope_checked(
+            tenant_context,
+            session_id,
+            permission,
+            pattern,
+            action,
+            || Ok::<(), std::convert::Infallible>(()),
+        )
+        .await
+        .expect("trusted rule insertion is infallible")
+    }
+
+    async fn add_rule_for_scope_checked<E>(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: Option<String>,
+        permission: impl Into<String>,
+        pattern: impl Into<String>,
+        action: PermissionAction,
+        authorize: impl FnOnce() -> Result<(), E>,
+    ) -> Result<PermissionRule, E> {
         let rule = PermissionRule {
             id: Uuid::new_v4().to_string(),
             tenant_context: tenant_context.clone(),
@@ -681,6 +728,7 @@ impl PermissionManager {
         };
         let transaction_guard = self.state_write_lock.lock().await;
         let mut rules = self.rules.write().await;
+        authorize()?;
         if rules.iter().any(|existing| {
             permission_tenant_matches(&existing.tenant_context, tenant_context)
                 && existing.session_id == rule.session_id
@@ -688,7 +736,7 @@ impl PermissionManager {
                 && existing.pattern == rule.pattern
                 && std::mem::discriminant(&existing.action) == std::mem::discriminant(&rule.action)
         }) {
-            return rule;
+            return Ok(rule);
         }
         rules.push(rule.clone());
         drop(rules);
@@ -700,7 +748,7 @@ impl PermissionManager {
             tracing::warn!(?error, "failed to persist permission rule");
         }
         drop(transaction_guard);
-        rule
+        Ok(rule)
     }
 
     pub async fn reply(&self, id: &str, reply: &str) -> bool {

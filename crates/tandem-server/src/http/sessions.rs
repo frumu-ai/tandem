@@ -285,13 +285,7 @@ pub(super) async fn create_session(
             tracing::error!(error = %error, session_id = %session.id, "failed to save created session");
             persistence_error(format!("Failed to save session: {error}"))
         })?;
-    apply_session_permission_rules(
-        &state,
-        &tenant_context,
-        &session.id,
-        requested_permission_rules,
-    )
-    .await;
+    apply_created_session_permission_rules(&state, &session, requested_permission_rules).await?;
     publish_tenant_event(
         &state,
         &session.tenant_context,
@@ -301,25 +295,7 @@ pub(super) async fn create_session(
     Ok(Json(session.into()))
 }
 
-pub(super) async fn apply_session_permission_rules(
-    state: &AppState,
-    tenant_context: &TenantContext,
-    session_id: &str,
-    rules: Option<Vec<serde_json::Value>>,
-) {
-    let Some(rules) = rules else {
-        return;
-    };
-    for raw in rules {
-        let Some((permission, pattern, action)) = parse_permission_rule_input(&raw) else {
-            continue;
-        };
-        let _ = state
-            .permissions
-            .add_rule_for_session(tenant_context, session_id, permission, pattern, action)
-            .await;
-    }
-}
+include!("session_permission_rules.rs");
 
 pub(super) fn parse_permission_rule_input(
     raw: &serde_json::Value,
@@ -1812,7 +1788,14 @@ pub(super) async fn update_session(
     if let Some(title) = input.title {
         session.title = title;
     }
-    apply_session_permission_rules(&state, &tenant_context, &id, input.permission).await;
+    apply_session_permission_rules_checked(
+        &state,
+        &tenant_context,
+        &id,
+        verified_tenant_context.as_deref(),
+        input.permission,
+    )
+    .await?;
     session.time.updated = chrono::Utc::now();
     state
         .storage
