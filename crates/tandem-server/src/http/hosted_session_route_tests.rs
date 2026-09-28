@@ -42,6 +42,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hosted_planner_sessions_require_operation_grants() {
+        for path in [
+            "/workflow-plans/sessions",
+            "/workflow-plans/sessions/{session_id}",
+        ] {
+            for method in ["GET", "HEAD"] {
+                check(method, path, Some(AccessPermission::HostedAutomationRead)).await;
+            }
+        }
+        check(
+            "POST",
+            "/workflow-plans/sessions",
+            Some(AccessPermission::HostedAutomationWrite),
+        )
+        .await;
+        for method in ["PATCH", "DELETE"] {
+            check(
+                method,
+                "/workflow-plans/sessions/{session_id}",
+                Some(AccessPermission::HostedAutomationWrite),
+            )
+            .await;
+        }
+        for suffix in [
+            "duplicate",
+            "start",
+            "start-async",
+            "message",
+            "message-async",
+            "reset",
+        ] {
+            check(
+                "POST",
+                &format!("/workflow-plans/sessions/{{session_id}}/{suffix}"),
+                Some(AccessPermission::HostedAutomationWrite),
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
     async fn hosted_session_mutations_require_use_on_both_aliases() {
         for prefix in ["/session", "/api/session"] {
             for (method, suffix) in [

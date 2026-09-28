@@ -819,14 +819,18 @@ impl AppState {
         Ok(record)
     }
 
-    pub async fn retire_automation_v2(
+    pub async fn retire_automation_v2<F>(
         &self,
         automation_id: &str,
         actor: GovernanceActorRef,
         reason: Option<String>,
         approval_id: Option<String>,
         tenant_context: &tandem_types::TenantContext,
-    ) -> anyhow::Result<Option<crate::AutomationV2Spec>> {
+        authorize: F,
+    ) -> anyhow::Result<Option<crate::AutomationV2Spec>>
+    where
+        F: Fn() -> anyhow::Result<()> + Send + Sync,
+    {
         let mut automation = self
             .require_active_automation_governance_tenant(automation_id, tenant_context)
             .await?;
@@ -849,9 +853,12 @@ impl AppState {
             .require_active_automation_governance_tenant(automation_id, tenant_context)
             .await?;
         automation.status = crate::AutomationV2Status::Paused;
-        let stored = self.put_automation_v2(automation).await?;
+        let stored = self
+            .put_automation_v2_checked(automation, |_| authorize())
+            .await?;
         {
             let mut guard = self.automation_governance.write().await;
+            authorize()?;
             let current_record = guard.records.get(automation_id).cloned();
             let mut record = self
                 .governance_engine
@@ -888,7 +895,7 @@ impl AppState {
         Ok(Some(stored))
     }
 
-    pub async fn extend_automation_v2_retirement(
+    pub async fn extend_automation_v2_retirement<F>(
         &self,
         automation_id: &str,
         actor: GovernanceActorRef,
@@ -896,7 +903,11 @@ impl AppState {
         reason: Option<String>,
         approval_id: Option<String>,
         tenant_context: &tandem_types::TenantContext,
-    ) -> anyhow::Result<Option<crate::AutomationV2Spec>> {
+        authorize: F,
+    ) -> anyhow::Result<Option<crate::AutomationV2Spec>>
+    where
+        F: Fn() -> anyhow::Result<()> + Send + Sync,
+    {
         let mut automation = self
             .require_active_automation_governance_tenant(automation_id, tenant_context)
             .await?;
@@ -927,7 +938,9 @@ impl AppState {
             .require_active_automation_governance_tenant(automation_id, tenant_context)
             .await?;
         automation.status = crate::AutomationV2Status::Active;
-        let stored = self.put_automation_v2(automation).await?;
+        let stored = self
+            .put_automation_v2_checked(automation, |_| authorize())
+            .await?;
         let current_record = self.get_automation_governance(automation_id).await;
         let mut record = self
             .governance_engine
@@ -948,6 +961,7 @@ impl AppState {
         bind_governance_record_to_tenant(&mut record, tenant_context)?;
         {
             let mut guard = self.automation_governance.write().await;
+            authorize()?;
             guard.records.insert(automation_id.to_string(), record);
             guard.updated_at_ms = now;
         }

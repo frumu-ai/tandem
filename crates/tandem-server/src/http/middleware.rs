@@ -316,7 +316,7 @@ pub(super) async fn enrich_verified_context_with_org_unit_grants(
     );
 }
 
-fn local_hosted_data_grant(grant: &OrganizationUnitAccessGrant) -> bool {
+pub(super) fn local_hosted_data_grant(grant: &OrganizationUnitAccessGrant) -> bool {
     // Deployment operations remain exclusively control-plane authored. Reject
     // mixed grants rather than silently changing their permission semantics.
     grant.resource.resource_kind != tandem_types::ResourceKind::HostedDeployment
@@ -333,7 +333,7 @@ fn local_hosted_data_grant(grant: &OrganizationUnitAccessGrant) -> bool {
         })
 }
 
-fn project_org_unit_grants_into_verified_context<'a>(
+pub(super) fn project_org_unit_grants_into_verified_context<'a>(
     verified: &mut VerifiedTenantContext,
     memberships: impl Iterator<Item = &'a OrganizationUnitMembership>,
     access_grants: impl Iterator<Item = &'a OrganizationUnitAccessGrant>,
@@ -1886,7 +1886,9 @@ mod hosted_policy_tests;
 #[cfg(test)]
 #[path = "tests/middleware_hosted_signed_tests.rs"]
 mod hosted_signed_tests;
-
+#[cfg(test)]
+#[path = "tests/middleware_hosted_workflow_hook_tests.rs"]
+mod hosted_workflow_hook_tests;
 #[cfg(test)]
 mod slack_events_bypass_tests {
     use super::is_public_slack_events_path;

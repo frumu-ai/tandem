@@ -44,6 +44,26 @@ impl AppState {
         ),
         String,
     > {
+        self.apply_optimization_winner_checked(optimization_id, experiment_id, |_| Ok(()))
+            .await
+    }
+
+    pub async fn apply_optimization_winner_checked<F>(
+        &self,
+        optimization_id: &str,
+        experiment_id: &str,
+        authorize: F,
+    ) -> Result<
+        (
+            OptimizationCampaignRecord,
+            OptimizationExperimentRecord,
+            crate::AutomationV2Spec,
+        ),
+        String,
+    >
+    where
+        F: Fn(&crate::AutomationV2Spec) -> Result<(), String> + Send + Sync,
+    {
         let campaign = self
             .get_optimization_campaign(optimization_id)
             .await
@@ -91,6 +111,8 @@ impl AppState {
             .get_automation_v2(&campaign.source_workflow_id)
             .await
             .ok_or_else(|| "source workflow not found".to_string())?;
+        authorize(&live)?;
+        let live_before_hash = optimization_snapshot_hash(&live);
         let current_value = {
             let live_node = live
                 .flow
@@ -127,7 +149,14 @@ impl AppState {
         live.metadata =
             Self::append_optimization_apply_metadata(live.metadata.clone(), apply_record)?;
         let stored_live = self
-            .put_automation_v2(live)
+            .put_automation_v2_checked(live, |current| {
+                let current =
+                    current.ok_or_else(|| anyhow::anyhow!("source workflow not found"))?;
+                if optimization_snapshot_hash(current) != live_before_hash {
+                    anyhow::bail!("live workflow changed before optimization apply");
+                }
+                authorize(current).map_err(anyhow::Error::msg)
+            })
             .await
             .map_err(|error| error.to_string())?;
         let mut metadata = match experiment.metadata.take() {
@@ -796,6 +825,21 @@ impl AppState {
         self.maybe_queue_phase1_baseline_replay(campaign).await
     }
 
+    async fn check_optimization_source_authority<F>(
+        &self,
+        source_workflow_id: &str,
+        authorize: &F,
+    ) -> Result<(), String>
+    where
+        F: Fn(&crate::AutomationV2Spec) -> Result<(), String> + Send + Sync,
+    {
+        let source = self
+            .get_automation_v2(source_workflow_id)
+            .await
+            .ok_or_else(|| "source workflow not found".to_string())?;
+        authorize(&source)
+    }
+
     pub async fn apply_optimization_action(
         &self,
         optimization_id: &str,
@@ -804,14 +848,42 @@ impl AppState {
         run_id: Option<&str>,
         reason: Option<&str>,
     ) -> Result<OptimizationCampaignRecord, String> {
+        self.apply_optimization_action_checked(
+            optimization_id,
+            action,
+            experiment_id,
+            run_id,
+            reason,
+            |_| Ok(()),
+        )
+        .await
+    }
+
+    pub async fn apply_optimization_action_checked<F>(
+        &self,
+        optimization_id: &str,
+        action: &str,
+        experiment_id: Option<&str>,
+        run_id: Option<&str>,
+        reason: Option<&str>,
+        authorize: F,
+    ) -> Result<OptimizationCampaignRecord, String>
+    where
+        F: Fn(&crate::AutomationV2Spec) -> Result<(), String> + Send + Sync,
+    {
         let normalized = action.trim().to_ascii_lowercase();
         let mut campaign = self
             .get_optimization_campaign(optimization_id)
             .await
             .ok_or_else(|| "optimization not found".to_string())?;
+        let source_workflow_id = campaign.source_workflow_id.clone();
+        self.check_optimization_source_authority(&source_workflow_id, &authorize)
+            .await?;
         match normalized.as_str() {
             "start" => {
                 if campaign.phase1.is_some() {
+                    self.check_optimization_source_authority(&source_workflow_id, &authorize)
+                        .await?;
                     if self
                         .maybe_queue_initial_phase1_baseline_replay(&mut campaign)
                         .await?
@@ -848,6 +920,8 @@ impl AppState {
                     .map(str::to_string);
             }
             "resume" => {
+                self.check_optimization_source_authority(&source_workflow_id, &authorize)
+                    .await?;
                 if self
                     .maybe_queue_initial_phase1_baseline_replay(&mut campaign)
                     .await?
@@ -859,6 +933,8 @@ impl AppState {
                 }
             }
             "queue_baseline_replay" => {
+                self.check_optimization_source_authority(&source_workflow_id, &authorize)
+                    .await?;
                 let replay_run = self
                     .create_automation_v2_run(
                         &campaign.baseline_snapshot,
@@ -992,6 +1068,11 @@ impl AppState {
                         );
                         experiment.promotion_decision = Some(decision.clone());
                         if decision.decision != OptimizationPromotionDecisionKind::Promote {
+                            self.check_optimization_source_authority(
+                                &source_workflow_id,
+                                &authorize,
+                            )
+                            .await?;
                             let _ = self
                                 .put_optimization_experiment(experiment)
                                 .await
@@ -1009,6 +1090,8 @@ impl AppState {
                 campaign.status = OptimizationCampaignStatus::Draft;
                 campaign.last_pause_reason = None;
                 experiment.status = OptimizationExperimentStatus::PromotionApproved;
+                self.check_optimization_source_authority(&source_workflow_id, &authorize)
+                    .await?;
                 let _ = self
                     .put_optimization_experiment(experiment)
                     .await
@@ -1030,6 +1113,8 @@ impl AppState {
                     .filter(|value| !value.is_empty())
                     .map(str::to_string);
                 experiment.status = OptimizationExperimentStatus::PromotionRejected;
+                self.check_optimization_source_authority(&source_workflow_id, &authorize)
+                    .await?;
                 let _ = self
                     .put_optimization_experiment(experiment)
                     .await
@@ -1037,6 +1122,8 @@ impl AppState {
             }
             _ => return Err("unsupported optimization action".to_string()),
         }
+        self.check_optimization_source_authority(&source_workflow_id, &authorize)
+            .await?;
         self.put_optimization_campaign(campaign)
             .await
             .map_err(|e| e.to_string())

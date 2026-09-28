@@ -3,7 +3,7 @@
 
 //! Feature-gated persistent runner for the five-profile ACME Slack demo.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -32,8 +32,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::harness::DEMO_SLACK_CHANNEL_ID;
 use super::{
-    acme_demo_dataset, AcmeDemoDataset, DemoMemoryRow, DEMO_ORG_ID, DEMO_PROMPT, DEMO_SLACK_APP_ID,
-    DEMO_SLACK_TEAM_ID, DEMO_WORKSPACE_ID,
+    acme_demo_dataset, AcmeDemoDataset, DemoMemoryRow, DemoProfile, DEMO_ORG_ID, DEMO_PROMPT,
+    DEMO_SLACK_APP_ID, DEMO_SLACK_TEAM_ID, DEMO_WORKSPACE_ID,
 };
 use crate::governance_store::{for_state, GovernanceStoreFile};
 use crate::{build_router_with_extensions, AppState};
@@ -66,6 +66,11 @@ pub struct AcmeResetReport {
 #[derive(Clone, Default)]
 struct SlackMock {
     posts: Arc<Mutex<Vec<Value>>>,
+}
+
+struct OwnedReceipt {
+    run_id: String,
+    actor_id: String,
 }
 
 async fn slack_auth() -> Json<Value> {
@@ -377,14 +382,10 @@ async fn run_profiles_and_read_receipts(
     wait_for_posts(slack, 5).await?;
     let approval_decision_ids = wait_for_approval_evidence(state, started_at_ms).await?;
     std::env::remove_var("TANDEM_RUNTIME_AUTH_MODE");
-    let runs = wait_for_receipts(&client, server_url).await?;
-    let mut ids = runs
+    let receipts = wait_for_receipts(&client, server_url, dataset).await?;
+    let mut ids = receipts
         .iter()
-        .filter_map(|run| {
-            run.get("run_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
+        .map(|receipt| receipt.run_id.clone())
         .collect::<Vec<_>>();
     ids.sort();
     if ids.len() != 5 {
@@ -394,7 +395,8 @@ async fn run_profiles_and_read_receipts(
         );
     }
     let evidence_run_ids =
-        verify_receipt_approval_evidence(&client, server_url, &ids, &approval_decision_ids).await?;
+        verify_receipt_approval_evidence(&client, server_url, &receipts, &approval_decision_ids)
+            .await?;
     Ok((
         ids,
         slack.posts.lock().await.len(),
@@ -406,25 +408,27 @@ async fn run_profiles_and_read_receipts(
 async fn verify_receipt_approval_evidence(
     client: &reqwest::Client,
     server_url: &str,
-    receipt_ids: &[String],
+    receipts: &[OwnedReceipt],
     decision_ids: &[String],
 ) -> anyhow::Result<Vec<String>> {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let mut matching_runs = Vec::new();
-            for run_id in receipt_ids {
+            for receipt in receipts {
                 let response = client
                     .get(format!(
-                        "{server_url}/context/runs/{run_id}/governance-evidence"
+                        "{server_url}/context/runs/{}/governance-evidence",
+                        receipt.run_id
                     ))
                     .header("x-tandem-org-id", DEMO_ORG_ID)
                     .header("x-tandem-workspace-id", DEMO_WORKSPACE_ID)
-                    .header("x-tandem-actor-id", "acme-demo-receipt-reader")
+                    .header("x-tandem-actor-id", &receipt.actor_id)
                     .send()
                     .await?;
                 if !response.status().is_success() {
                     bail!(
-                        "governance evidence for {run_id} returned {}",
+                        "governance evidence for {} returned {}",
+                        receipt.run_id,
                         response.status()
                     );
                 }
@@ -453,7 +457,7 @@ async fn verify_receipt_approval_evidence(
                         })
                     });
                 if has_decision && has_audit {
-                    matching_runs.push(run_id.clone());
+                    matching_runs.push(receipt.run_id.clone());
                 }
             }
             if !matching_runs.is_empty() {
@@ -517,35 +521,56 @@ async fn wait_for_posts(slack: &SlackMock, expected: usize) -> anyhow::Result<()
 async fn wait_for_receipts(
     client: &reqwest::Client,
     server_url: &str,
-) -> anyhow::Result<Vec<Value>> {
+    dataset: &AcmeDemoDataset,
+) -> anyhow::Result<Vec<OwnedReceipt>> {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            let response = client
-                .get(format!(
-                    "{server_url}/context/runs?run_type=session&source=channel:slack&limit=50"
-                ))
-                .header("x-tandem-org-id", DEMO_ORG_ID)
-                .header("x-tandem-workspace-id", DEMO_WORKSPACE_ID)
-                .header("x-tandem-actor-id", "acme-demo-receipt-reader")
-                .send()
-                .await?;
-            let payload: Value = response.json().await?;
-            let runs = payload
-                .get("runs")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(is_acme_context_run)
-                .collect::<Vec<_>>();
-            if runs.len() >= 5 {
-                return Ok(runs);
+            let mut receipts = Vec::with_capacity(dataset.profiles.len());
+            for profile in &dataset.profiles {
+                let response = client
+                    .get(format!(
+                        "{server_url}/context/runs?run_type=session&source=channel:slack&limit=50"
+                    ))
+                    .header("x-tandem-org-id", DEMO_ORG_ID)
+                    .header("x-tandem-workspace-id", DEMO_WORKSPACE_ID)
+                    .header("x-tandem-actor-id", &profile.actor_id)
+                    .send()
+                    .await?;
+                let payload: Value = response.error_for_status()?.json().await?;
+                if let Some(receipt) = receipt_for_profile(profile, &payload) {
+                    receipts.push(receipt);
+                }
+            }
+            let distinct_ids = receipts
+                .iter()
+                .map(|receipt| receipt.run_id.as_str())
+                .collect::<HashSet<_>>();
+            if receipts.len() == dataset.profiles.len() && distinct_ids.len() == receipts.len() {
+                return Ok(receipts);
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
     .await
     .context("context-run receipts did not persist")?
+}
+
+fn receipt_for_profile(profile: &DemoProfile, payload: &Value) -> Option<OwnedReceipt> {
+    let run = payload.get("runs")?.as_array()?.iter().find(|run| {
+        is_acme_context_run(run)
+            && run
+                .pointer("/tenant_context/actor_id")
+                .and_then(Value::as_str)
+                == Some(profile.actor_id.as_str())
+            && run
+                .pointer("/source_metadata/user_id")
+                .and_then(Value::as_str)
+                == Some(profile.slack_user_id)
+    })?;
+    Some(OwnedReceipt {
+        run_id: run.get("run_id")?.as_str()?.to_owned(),
+        actor_id: profile.actor_id.clone(),
+    })
 }
 
 fn sign_slack(timestamp: i64, body: &[u8]) -> String {
@@ -844,6 +869,60 @@ fn demo_tenant() -> TenantContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receipt_selection_preserves_slack_actor_ownership() {
+        let dataset = acme_demo_dataset();
+        let sales = dataset
+            .profiles
+            .iter()
+            .find(|profile| profile.unit_id == "sales")
+            .expect("sales profile");
+        let finance = dataset
+            .profiles
+            .iter()
+            .find(|profile| profile.unit_id == "finance")
+            .expect("finance profile");
+        let engineering = dataset
+            .profiles
+            .iter()
+            .find(|profile| profile.unit_id == "engineering")
+            .expect("engineering profile");
+        let payload = json!({ "runs": [
+            {
+                "run_id": "session-finance",
+                "tenant_context": {
+                    "org_id": DEMO_ORG_ID,
+                    "workspace_id": DEMO_WORKSPACE_ID,
+                    "actor_id": finance.actor_id
+                },
+                "source_client": "channel:slack",
+                "source_metadata": {
+                    "slack_team_id": DEMO_SLACK_TEAM_ID,
+                    "slack_channel_id": DEMO_SLACK_CHANNEL_ID,
+                    "user_id": finance.slack_user_id
+                }
+            },
+            {
+                "run_id": "session-sales",
+                "tenant_context": {
+                    "org_id": DEMO_ORG_ID,
+                    "workspace_id": DEMO_WORKSPACE_ID,
+                    "actor_id": sales.actor_id
+                },
+                "source_client": "channel:slack",
+                "source_metadata": {
+                    "slack_team_id": DEMO_SLACK_TEAM_ID,
+                    "slack_channel_id": DEMO_SLACK_CHANNEL_ID,
+                    "user_id": sales.slack_user_id
+                }
+            }
+        ]});
+        let receipt = receipt_for_profile(sales, &payload).expect("sales receipt");
+        assert_eq!(receipt.run_id, "session-sales");
+        assert_eq!(receipt.actor_id, sales.actor_id);
+        assert!(receipt_for_profile(engineering, &payload).is_none());
+    }
 
     #[test]
     fn reset_matcher_requires_all_acme_dimensions() {

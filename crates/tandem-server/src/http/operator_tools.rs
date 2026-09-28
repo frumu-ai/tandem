@@ -328,7 +328,7 @@ impl Tool for OperatorTool {
                 workflow_materialize(&self.state, &args, &tenant, &chat_session).await?
             }
             OperatorToolKind::AutomationInspect => {
-                automation_inspect(&self.state, &args, &tenant).await?
+                automation_inspect(&self.state, &args, &tenant, &chat_session).await?
             }
             OperatorToolKind::AutomationDraft => {
                 automation_draft(&self.state, &args, &tenant, &chat_session).await?
@@ -625,18 +625,23 @@ async fn reserve_idempotent(
         .await?
     {
         IdempotencyReservation::Reserved(_) => Ok(None),
-        IdempotencyReservation::Duplicate(record) => Ok(Some(
-            record
-                .outcome
-                .map(|outcome| outcome.details)
-                .unwrap_or_else(|| {
-                    json!({
-                        "ok": true,
-                        "status": "in_progress",
-                        "idempotency_key": key,
-                    })
-                }),
-        )),
+        IdempotencyReservation::Duplicate(record) => {
+            if record.owner != owner {
+                bail!("idempotency key is already bound to a different request");
+            }
+            Ok(Some(
+                record
+                    .outcome
+                    .map(|outcome| outcome.details)
+                    .unwrap_or_else(|| {
+                        json!({
+                            "ok": true,
+                            "status": "in_progress",
+                            "idempotency_key": key,
+                        })
+                    }),
+            ))
+        }
         IdempotencyReservation::Conflict(_) => {
             bail!("idempotency key is already bound to a different request")
         }
@@ -648,12 +653,13 @@ async fn replay_idempotent(
     tenant: &TenantContext,
     operation: &str,
     key: &str,
+    owner: &str,
     fingerprint: &str,
 ) -> anyhow::Result<Option<Value>> {
     let Some(record) = state.get_idempotency_key(tenant, operation, key).await else {
         return Ok(None);
     };
-    if record.request_fingerprint != fingerprint {
+    if record.owner != owner || record.request_fingerprint != fingerprint {
         bail!("idempotency key is already bound to a different request");
     }
     Ok(record.outcome.map(|outcome| outcome.details))
@@ -937,34 +943,68 @@ async fn workflow_materialize(
     Ok(details)
 }
 
+#[derive(Clone, Copy)]
+enum AutomationObjectAccess {
+    Read,
+    Write,
+}
+
 fn scoped_automation(
+    state: &AppState,
     automation: crate::AutomationV2Spec,
     tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    access: AutomationObjectAccess,
 ) -> anyhow::Result<crate::AutomationV2Spec> {
-    if !tenant_matches(&automation.tenant_context(), tenant) {
+    let allowed = match access {
+        AutomationObjectAccess::Read => {
+            super::automation_object_authority::can_read(state, tenant, verified, &automation)
+        }
+        AutomationObjectAccess::Write => {
+            super::automation_object_authority::can_write(state, tenant, verified, &automation)
+        }
+    };
+    if !allowed {
         bail!("automation not found");
     }
     Ok(automation)
+}
+
+async fn current_scoped_automation(
+    state: &AppState,
+    automation_id: &str,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    access: AutomationObjectAccess,
+) -> anyhow::Result<crate::AutomationV2Spec> {
+    let automation = state
+        .get_automation_v2(automation_id)
+        .await
+        .context("automation not found")?;
+    scoped_automation(state, automation, tenant, verified, access)
 }
 
 async fn automation_inspect(
     state: &AppState,
     args: &Value,
     tenant: &TenantContext,
+    chat_session: &Session,
 ) -> anyhow::Result<Value> {
+    let verified = verified_context(args).or_else(|| chat_session.verified_tenant_context.clone());
     let limit = args
         .get("limit")
         .and_then(Value::as_u64)
         .unwrap_or(25)
         .clamp(1, 100) as usize;
     if let Some(automation_id) = optional_str(args, "automation_id") {
-        let automation = scoped_automation(
-            state
-                .get_automation_v2(automation_id)
-                .await
-                .context("automation not found")?,
+        let _automation = current_scoped_automation(
+            state,
+            automation_id,
             tenant,
-        )?;
+            verified.as_ref(),
+            AutomationObjectAccess::Read,
+        )
+        .await?;
         let runs = if args
             .get("include_runs")
             .and_then(Value::as_bool)
@@ -975,15 +1015,46 @@ async fn automation_inspect(
                     Some(automation_id),
                     Some(&tenant.org_id),
                     Some(&tenant.workspace_id),
-                    limit,
+                    500,
                 )
                 .await
                 .into_iter()
-                .filter(|run| run.tenant_context.deployment_id == tenant.deployment_id)
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
+        let automation = current_scoped_automation(
+            state,
+            automation_id,
+            tenant,
+            verified.as_ref(),
+            AutomationObjectAccess::Read,
+        )
+        .await?;
+        // A deleted id can still have retained run history. Only surface
+        // snapshots from this definition incarnation, with their own current
+        // object read authority. Legacy hosted runs without a snapshot have
+        // no provable ownership and remain hidden.
+        let runs = runs
+            .into_iter()
+            .filter(|run| run.tenant_context.deployment_id == tenant.deployment_id)
+            .filter(|run| {
+                if tenant.is_local_implicit() {
+                    return true;
+                }
+                run.automation_snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.automation_id == automation.automation_id
+                        && snapshot.created_at_ms == automation.created_at_ms
+                        && super::automation_object_authority::can_read(
+                            state,
+                            tenant,
+                            verified.as_ref(),
+                            snapshot,
+                        )
+                })
+            })
+            .take(limit)
+            .collect::<Vec<_>>();
         return Ok(json!({
             "ok": true,
             "action": "inspect",
@@ -999,6 +1070,14 @@ async fn automation_inspect(
         .await
         .into_iter()
         .filter(|automation| tenant_matches(&automation.tenant_context(), tenant))
+        .filter(|automation| {
+            super::automation_object_authority::can_read(
+                state,
+                tenant,
+                verified.as_ref(),
+                automation,
+            )
+        })
         .filter(|automation| {
             query.as_ref().is_none_or(|query| {
                 automation
@@ -1051,6 +1130,71 @@ fn automation_blockers(automation: &crate::AutomationV2Spec) -> Vec<Value> {
     blockers
 }
 
+fn make_operator_copy_private(automation: &mut crate::AutomationV2Spec, actor: &str) {
+    let mut metadata = automation
+        .metadata
+        .take()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    for key in [
+        "resource_access",
+        "enterprise_scope",
+        "automation_webhook",
+        "archived_at_ms",
+        "archived_by",
+        "archive_reason",
+        "published_at_ms",
+    ] {
+        metadata.remove(key);
+    }
+    metadata.insert(
+        "resource_access".to_string(),
+        json!({
+            "owner_principal": { "kind": "human_user", "id": actor },
+            "visibility": "private",
+            "audience_principals": [],
+            "created_by": actor,
+            "updated_by": actor,
+        }),
+    );
+    automation.metadata = Some(Value::Object(metadata));
+}
+
+fn preserve_operator_access_metadata(
+    candidate: &mut crate::AutomationV2Spec,
+    existing: &crate::AutomationV2Spec,
+) {
+    let protected = ["resource_access", "enterprise_scope", "automation_webhook"];
+    let values = protected.map(|key| {
+        existing
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get(key))
+            .cloned()
+    });
+    if values.iter().all(Option::is_none)
+        && candidate
+            .metadata
+            .as_ref()
+            .is_none_or(|value| !value.is_object())
+    {
+        return;
+    }
+    let mut metadata = candidate
+        .metadata
+        .take()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    for (key, value) in protected.into_iter().zip(values) {
+        if let Some(value) = value {
+            metadata.insert(key.to_string(), value);
+        } else {
+            metadata.remove(key);
+        }
+    }
+    candidate.metadata = Some(Value::Object(metadata));
+}
+
 async fn automation_draft(
     state: &AppState,
     args: &Value,
@@ -1079,38 +1223,44 @@ async fn automation_draft(
     }
     let key = required_str(args, "idempotency_key")?;
     let fingerprint = operator_args_fingerprint(args, action);
-    if let Some(replay) = replay_idempotent(
+    // Reject another actor's key before resolving the target. Cached details
+    // still require live object authority before they can be returned.
+    let prior_replay = replay_idempotent(
         state,
         tenant,
         "operator.automation_draft",
         key,
+        &actor,
         &fingerprint,
     )
-    .await?
-    {
-        return Ok(replay);
-    }
+    .await?;
+    let mut source_before_write = None;
+    let mut existing_before_write = None;
+    let mut replay_object = None;
     let mut automation = match action {
         "duplicate" => {
             let automation_id = required_str(args, "automation_id")?;
-            let mut source = scoped_automation(
-                state
-                    .get_automation_v2(automation_id)
-                    .await
-                    .context("automation not found")?,
+            let mut source = current_scoped_automation(
+                state,
+                automation_id,
                 tenant,
-            )?;
+                verified.as_ref(),
+                AutomationObjectAccess::Read,
+            )
+            .await?;
+            replay_object = Some((source.automation_id.clone(), AutomationObjectAccess::Read));
+            source_before_write = Some(source.clone());
             let destination_id = optional_str(args, "new_automation_id")
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("automation-{}", Uuid::new_v4()));
-            if state.get_automation_v2(&destination_id).await.is_some() {
-                bail!("destination automation already exists; choose a new automation_id");
-            }
             source.automation_id = destination_id;
             source.name = optional_str(args, "name")
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("Copy of {}", source.name));
             source.created_at_ms = crate::now_ms();
+            if !tenant.is_local_implicit() {
+                make_operator_copy_private(&mut source, &actor);
+            }
             source
         }
         "revise" => {
@@ -1126,14 +1276,19 @@ async fn automation_draft(
                         .map(|candidate| candidate.automation_id.as_str())
                 })
                 .context("automation_id is required for revise")?;
-            let existing = scoped_automation(
-                state
-                    .get_automation_v2(automation_id)
-                    .await
-                    .context("automation not found")?,
+            let existing = current_scoped_automation(
+                state,
+                automation_id,
                 tenant,
-            )?;
-            ensure_expected_automation_update(args, &existing)?;
+                verified.as_ref(),
+                AutomationObjectAccess::Write,
+            )
+            .await?;
+            replay_object = Some((
+                existing.automation_id.clone(),
+                AutomationObjectAccess::Write,
+            ));
+            existing_before_write = Some(existing.clone());
             if existing
                 .metadata
                 .as_ref()
@@ -1150,6 +1305,7 @@ async fn automation_draft(
                 }
                 candidate.created_at_ms = existing.created_at_ms;
                 candidate.last_fired_at_ms = existing.last_fired_at_ms;
+                preserve_operator_access_metadata(&mut candidate, &existing);
                 candidate
             } else {
                 existing
@@ -1159,7 +1315,15 @@ async fn automation_draft(
             if let Some(value) = args.get("automation") {
                 let candidate = serde_json::from_value::<crate::AutomationV2Spec>(value.clone())?;
                 if let Some(existing) = state.get_automation_v2(&candidate.automation_id).await {
-                    let existing = scoped_automation(existing, tenant)?;
+                    let existing = scoped_automation(
+                        state,
+                        existing,
+                        tenant,
+                        verified.as_ref(),
+                        AutomationObjectAccess::Read,
+                    )?;
+                    replay_object =
+                        Some((existing.automation_id.clone(), AutomationObjectAccess::Read));
                     ensure_expected_automation_update(args, &existing)?;
                 } else if args.get("expected_updated_at_ms").is_some() {
                     bail!("automation update conflict: the expected automation no longer exists");
@@ -1167,19 +1331,32 @@ async fn automation_draft(
                 candidate
             } else {
                 let automation_id = required_str(args, "automation_id")?;
-                let existing = scoped_automation(
-                    state
-                        .get_automation_v2(automation_id)
-                        .await
-                        .context("automation not found")?,
+                let existing = current_scoped_automation(
+                    state,
+                    automation_id,
                     tenant,
-                )?;
+                    verified.as_ref(),
+                    AutomationObjectAccess::Read,
+                )
+                .await?;
+                replay_object =
+                    Some((existing.automation_id.clone(), AutomationObjectAccess::Read));
                 ensure_expected_automation_update(args, &existing)?;
                 existing
             }
         }
         _ => bail!("unsupported draft action"),
     };
+    if let Some(replay) = prior_replay {
+        if let Some((automation_id, access)) = replay_object.as_ref() {
+            current_scoped_automation(state, automation_id, tenant, verified.as_ref(), *access)
+                .await?;
+        }
+        return Ok(replay);
+    }
+    if let Some(existing) = existing_before_write.as_ref() {
+        ensure_expected_automation_update(args, existing)?;
+    }
     if let Some(replay) = reserve_idempotent(
         state,
         tenant,
@@ -1190,12 +1367,23 @@ async fn automation_draft(
     )
     .await?
     {
+        if let Some((automation_id, access)) = replay_object.as_ref() {
+            current_scoped_automation(state, automation_id, tenant, verified.as_ref(), *access)
+                .await?;
+        }
         return Ok(replay);
     }
-    automation.set_tenant_context(tenant);
+    if let Some(existing) = existing_before_write.as_ref() {
+        // Revising a legacy automation must not turn the editor into its
+        // fallback owner by replacing the original tenant actor or creator.
+        automation.set_tenant_context(&existing.tenant_context());
+        automation.creator_id = existing.creator_id.clone();
+    } else {
+        automation.set_tenant_context(tenant);
+        automation.creator_id = actor;
+    }
     automation.status = crate::AutomationV2Status::Draft;
     automation.next_fire_at_ms = None;
-    automation.creator_id = actor;
     let blockers = automation_blockers(&automation);
     if action == "validate" || !blockers.is_empty() {
         let details = json!({
@@ -1237,7 +1425,57 @@ async fn automation_draft(
         .await?;
         bail!("hosted automation write authority is required: {code}");
     }
-    let stored = match state.put_automation_v2(automation).await {
+    let store_result = if let Some(source) = source_before_write.as_ref() {
+        let source_id = source.automation_id.clone();
+        let destination_id = automation.automation_id.clone();
+        let source_snapshot = serde_json::to_value(source)?;
+        state
+            .put_automation_v2_checked_with_map(automation, |automations| {
+                let current_source = automations
+                    .get(&source_id)
+                    .context("automation not found")?;
+                if !super::automation_object_authority::can_read(
+                    state,
+                    tenant,
+                    verified.as_ref(),
+                    current_source,
+                ) {
+                    bail!("automation not found");
+                }
+                if serde_json::to_value(current_source)? != source_snapshot {
+                    bail!("automation update conflict: source changed; inspect the latest automation before retrying");
+                }
+                if automations.contains_key(&destination_id) {
+                    bail!("destination automation already exists; choose a new automation_id");
+                }
+                Ok(())
+            })
+            .await
+    } else {
+        let existing = existing_before_write
+            .as_ref()
+            .context("automation not found")?;
+        let original_snapshot = serde_json::to_value(existing)?;
+        state
+            .put_automation_v2_checked(automation, |current| {
+                let current = current.context("automation not found")?;
+                if !super::automation_object_authority::can_write(
+                    state,
+                    tenant,
+                    verified.as_ref(),
+                    current,
+                ) {
+                    bail!("automation not found");
+                }
+                ensure_expected_automation_update(args, current)?;
+                if serde_json::to_value(current)? != original_snapshot {
+                    bail!("automation update conflict: automation changed; inspect the latest automation before retrying");
+                }
+                Ok(())
+            })
+            .await
+    };
+    let stored = match store_result {
         Ok(stored) => stored,
         Err(error) => {
             let _ = release_idempotent(
@@ -1288,24 +1526,34 @@ async fn automation_control(
     let key = required_str(args, "idempotency_key")?;
     let reason = optional_str(args, "reason").unwrap_or("requested from authenticated chat");
     let fingerprint = operator_args_fingerprint(args, "operator.automation_control");
-    if let Some(replay) = replay_idempotent(
+    let prior_replay = replay_idempotent(
         state,
         tenant,
         "operator.automation_control",
         key,
+        &actor,
         &fingerprint,
     )
-    .await?
-    {
+    .await?;
+    let mut automation = current_scoped_automation(
+        state,
+        automation_id,
+        tenant,
+        verified.as_ref(),
+        AutomationObjectAccess::Write,
+    )
+    .await?;
+    if let Some(replay) = prior_replay {
+        current_scoped_automation(
+            state,
+            automation_id,
+            tenant,
+            verified.as_ref(),
+            AutomationObjectAccess::Write,
+        )
+        .await?;
         return Ok(replay);
     }
-    let mut automation = scoped_automation(
-        state
-            .get_automation_v2(automation_id)
-            .await
-            .context("automation not found")?,
-        tenant,
-    )?;
     ensure_expected_automation_update(args, &automation)?;
     if !matches!(action, "disable" | "archive") {
         bail!("unsupported automation control action");
@@ -1320,8 +1568,17 @@ async fn automation_control(
     )
     .await?
     {
+        current_scoped_automation(
+            state,
+            automation_id,
+            tenant,
+            verified.as_ref(),
+            AutomationObjectAccess::Write,
+        )
+        .await?;
         return Ok(replay);
     }
+    let original_snapshot = serde_json::to_value(&automation)?;
     let now = crate::now_ms();
     match action {
         "disable" => automation.status = crate::AutomationV2Status::Paused,
@@ -1340,7 +1597,25 @@ async fn automation_control(
         _ => bail!("unsupported automation control action"),
     }
     automation.next_fire_at_ms = None;
-    let stored = match state.put_automation_v2(automation).await {
+    let stored = match state
+        .put_automation_v2_checked(automation, |current| {
+            let current = current.context("automation not found")?;
+            if !super::automation_object_authority::can_write(
+                state,
+                tenant,
+                verified.as_ref(),
+                current,
+            ) {
+                bail!("automation not found");
+            }
+            ensure_expected_automation_update(args, current)?;
+            if serde_json::to_value(current)? != original_snapshot {
+                bail!("automation update conflict: automation changed; inspect the latest automation before retrying");
+            }
+            Ok(())
+        })
+        .await
+    {
         Ok(stored) => stored,
         Err(error) => {
             let _ = release_idempotent(

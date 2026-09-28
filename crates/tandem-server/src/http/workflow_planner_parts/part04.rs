@@ -5,11 +5,21 @@ fn require_hosted_plan_write(
     state: &AppState,
     verified: Option<&tandem_types::VerifiedTenantContext>,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    state.enterprise.hosted_policy.authorize_permission(
-        verified, tandem_types::AccessPermission::HostedAutomationWrite,
-    ).map_err(|code| (StatusCode::FORBIDDEN, Json(json!({
-        "error": "hosted automation write authority is required", "code": code,
-    }))))
+    state
+        .enterprise
+        .hosted_policy
+        .authorize_permission(
+            verified,
+            tandem_types::AccessPermission::HostedAutomationWrite,
+        )
+        .map_err(|code| {
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "hosted automation write authority is required", "code": code,
+                })),
+            )
+        })
 }
 
 pub(super) async fn workflow_plan_apply(
@@ -20,7 +30,10 @@ pub(super) async fn workflow_plan_apply(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // The operator materialization tool calls this handler directly, without
     // HTTP route classification. Draft creation is still automation authoring.
-    require_hosted_plan_write(&state, verified_tenant_context.as_ref().map(|value| &value.0))?;
+    require_hosted_plan_write(
+        &state,
+        verified_tenant_context.as_ref().map(|value| &value.0),
+    )?;
     let requested_creator_id = input.creator_id.clone();
     let apply_idempotency_key = input
         .idempotency_key
@@ -52,18 +65,54 @@ pub(super) async fn workflow_plan_apply(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    if let Some(plan_id) = plan_id.as_deref() {
+        ensure_workflow_plan_id_access(
+            &state,
+            &tenant_context,
+            verified_tenant_context.as_ref().map(|value| &value.0),
+            plan_id,
+            true,
+        )
+        .await?;
+    }
+    let draft_context = if let Some(plan_id) = plan_id.as_deref() {
+        state
+            .get_workflow_plan_draft_scoped(
+                plan_id,
+                &tenant_context,
+                verified_tenant_context.as_ref().map(|value| &value.0),
+            )
+            .await
+    } else {
+        None
+    };
     let plan = match (input.plan, plan_id.as_deref()) {
         (Some(plan), _) => plan,
-        (None, Some(plan_id)) => state.get_workflow_plan(plan_id).await.ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({
-                    "error": "workflow plan not found",
-                    "code": "WORKFLOW_PLAN_NOT_FOUND",
-                    "plan_id": plan_id,
-                })),
-            )
-        })?,
+        (None, Some(plan_id)) => match draft_context.as_ref() {
+            Some(draft) => draft.current_plan.clone(),
+            None if tenant_context.is_local_implicit() => {
+                state.get_workflow_plan(plan_id).await.ok_or_else(|| {
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({
+                            "error": "workflow plan not found",
+                            "code": "WORKFLOW_PLAN_NOT_FOUND",
+                            "plan_id": plan_id,
+                        })),
+                    )
+                })?
+            }
+            None => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": "workflow plan not found",
+                        "code": "WORKFLOW_PLAN_NOT_FOUND",
+                        "plan_id": plan_id,
+                    })),
+                ))
+            }
+        },
         (None, None) => {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -86,11 +135,6 @@ pub(super) async fn workflow_plan_apply(
             })),
         )
     })?;
-    let draft_context = if let Some(plan_id) = plan_id.as_deref() {
-        state.get_workflow_plan_draft(plan_id).await
-    } else {
-        None
-    };
     let apply_revision = draft_context
         .as_ref()
         .map(|draft| draft.plan_revision)
@@ -144,8 +188,8 @@ pub(super) async fn workflow_plan_apply(
         )
     })?;
     let apply_revision_text = apply_revision.to_string();
-    let pack_builder_export_text = serde_json::to_string(&input.pack_builder_export)
-        .unwrap_or_else(|_| "null".to_string());
+    let pack_builder_export_text =
+        serde_json::to_string(&input.pack_builder_export).unwrap_or_else(|_| "null".to_string());
     let materialization_mode = if input.materialize_as_draft {
         "draft"
     } else {
@@ -180,7 +224,7 @@ pub(super) async fn workflow_plan_apply(
             .get_idempotency_key(&tenant_context, "workflow_plan.apply", key)
             .await
         {
-            if record.request_fingerprint != fingerprint {
+            if record.owner != creator_id || record.request_fingerprint != fingerprint {
                 return Err((
                     StatusCode::CONFLICT,
                     Json(json!({
@@ -202,7 +246,13 @@ pub(super) async fn workflow_plan_apply(
             ));
         }
     }
-    let mut overlap_analysis = compile_preview_plan_overlap(&state, &plan_package).await;
+    let mut overlap_analysis = compile_preview_plan_overlap(
+        &state,
+        &plan_package,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await;
     if overlap_analysis.requires_user_confirmation && requested_overlap_decision.is_none() {
         return Err((
             StatusCode::CONFLICT,
@@ -292,8 +342,7 @@ pub(super) async fn workflow_plan_apply(
         }
     }
 
-    let mut automation =
-        compile_plan_to_automation_v2(&plan, Some(&plan_package), &creator_id);
+    let mut automation = compile_plan_to_automation_v2(&plan, Some(&plan_package), &creator_id);
     if input.materialize_as_draft {
         automation.status = crate::AutomationV2Status::Draft;
         automation.next_fire_at_ms = None;
@@ -331,13 +380,13 @@ pub(super) async fn workflow_plan_apply(
             "planner_diagnostics".to_string(),
             planner_diagnostics.clone().unwrap_or(Value::Null),
         );
-        metadata.insert(
-            "authoring_actor_id".to_string(),
-            json!(creator_id.clone()),
-        );
+        metadata.insert("authoring_actor_id".to_string(), json!(creator_id.clone()));
         metadata.insert(
             "requested_creator_id".to_string(),
-            requested_creator_id.clone().map(Value::String).unwrap_or(Value::Null),
+            requested_creator_id
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
         );
     } else {
         automation.metadata = Some(json!({
@@ -373,20 +422,13 @@ pub(super) async fn workflow_plan_apply(
             );
         }
         if let Some(existing) = state.get_automation_v2(&automation.automation_id).await {
-            let same_tenant = super::ensure_same_tenant(
-                &tenant_context,
-                &existing.tenant_context(),
-            )
-            .is_ok();
-            let same_request = existing
-                .metadata
-                .as_ref()
-                .and_then(|metadata| {
-                    metadata
-                        .get("workflow_plan_apply_idempotency_fingerprint")
-                        .and_then(Value::as_str)
-                })
-                == Some(fingerprint);
+            let same_tenant =
+                super::ensure_same_tenant(&tenant_context, &existing.tenant_context()).is_ok();
+            let same_request = existing.metadata.as_ref().and_then(|metadata| {
+                metadata
+                    .get("workflow_plan_apply_idempotency_fingerprint")
+                    .and_then(Value::as_str)
+            }) == Some(fingerprint);
             if !same_tenant || !same_request {
                 return Err((
                     StatusCode::CONFLICT,
@@ -399,9 +441,28 @@ pub(super) async fn workflow_plan_apply(
             recovered_automation = Some(existing);
         }
     }
-    if let Err(error) = require_hosted_plan_write(&state, verified_tenant_context.as_ref().map(|value| &value.0)) {
+    let final_authority: Result<(), (StatusCode, Json<Value>)> = async {
+        require_hosted_plan_write(
+            &state,
+            verified_tenant_context.as_ref().map(|value| &value.0),
+        )?;
+        if let Some(plan_id) = plan_id.as_deref() {
+            ensure_workflow_plan_id_access(
+                &state,
+                &tenant_context,
+                verified_tenant_context.as_ref().map(|value| &value.0),
+                plan_id,
+                true,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = final_authority {
         if let (Some(key), Some(fingerprint)) = (
-            apply_idempotency_key.as_deref(), apply_idempotency_fingerprint.as_deref(),
+            apply_idempotency_key.as_deref(),
+            apply_idempotency_fingerprint.as_deref(),
         ) {
             state.release_reserved_idempotency_key(
                 &tenant_context, "workflow_plan.apply", key, fingerprint,
@@ -526,10 +587,22 @@ pub(super) async fn workflow_plan_apply(
             })),
         ));
     }
-    if let Some(plan_id) = plan_id.as_deref() {
-        if let Some(mut draft) = state.get_workflow_plan_draft(plan_id).await {
-            draft.last_success_materialization = Some(approved_plan_success_memory);
-            state.put_workflow_plan_draft(draft).await;
+    if let Some(mut draft) = draft_context {
+        draft.last_success_materialization = Some(approved_plan_success_memory);
+        if let Err(error) = state
+            .put_workflow_plan_draft_scoped(
+                draft,
+                &tenant_context,
+                verified_tenant_context.as_ref().map(|value| &value.0),
+                None,
+                false,
+            )
+            .await
+        {
+            // Materialization already succeeded. Do not turn an optional
+            // success-memory update into a retryable response or overwrite a
+            // plan whose authority changed while apply was running.
+            tracing::warn!(error = ?error, "skipped workflow plan success-memory update");
         }
     }
     let pack_builder_export = match input.pack_builder_export {

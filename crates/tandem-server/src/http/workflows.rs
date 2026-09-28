@@ -127,13 +127,29 @@ pub(super) async fn workflow_hooks_list(
 
 pub(super) async fn workflow_hooks_patch(
     State(state): State<AppState>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(WorkflowHookPath { id }): Path<WorkflowHookPath>,
     Json(input): Json<WorkflowHookPatchInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    let verified = verified_tenant_context.as_deref();
+    state
+        .enterprise
+        .hosted_policy
+        .authorize_permission(verified, AccessPermission::HostedAdmin)
+        .map_err(|_| StatusCode::FORBIDDEN)?;
     let hook = state
-        .set_workflow_hook_enabled(&id, input.enabled)
+        .set_workflow_hook_enabled(&id, input.enabled, verified)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|error| {
+            if error
+                .downcast_ref::<crate::app::state::WorkflowHookAdminDenied>()
+                .is_some()
+            {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(json!({ "hook": hook })))
 }
@@ -368,12 +384,14 @@ pub(super) async fn workflow_run_gate_decide(
         ));
     };
 
-    if !workflow_reviewer_is_eligible(
-        &tenant_context,
-        verified_tenant_context
-            .as_ref()
-            .map(|Extension(verified)| verified),
-    ) {
+    let verified = verified_tenant_context.as_deref();
+    if !workflow_reviewer_is_eligible(&tenant_context, verified)
+        || state
+            .enterprise
+            .hosted_policy
+            .authorize_permission(verified, AccessPermission::HostedAdmin)
+            .is_err()
+    {
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -492,6 +510,8 @@ pub(super) async fn workflow_run_gate_decide(
     let record_for_update = record.clone();
     let expired_at_persist = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let expired_at_persist_for_update = expired_at_persist.clone();
+    let revoked_at_persist = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let revoked_at_persist_for_update = revoked_at_persist.clone();
     let result = state
         .update_workflow_run_persisted(&id, |row| {
             let Some(current_gate) = row.awaiting_gate.as_ref() else {
@@ -504,6 +524,18 @@ pub(super) async fn workflow_run_gate_decide(
             }
             if current_gate.expires_at_ms > 0 && crate::now_ms() >= current_gate.expires_at_ms {
                 expired_at_persist_for_update.store(true, std::sync::atomic::Ordering::Relaxed);
+                return false;
+            }
+            // Ingress authority may have been revoked while digest validation
+            // or protected audit was pending. Reproject at the durable commit.
+            if !workflow_reviewer_is_eligible(&tenant_context, verified)
+                || state
+                    .enterprise
+                    .hosted_policy
+                    .authorize_permission(verified, AccessPermission::HostedAdmin)
+                    .is_err()
+            {
+                revoked_at_persist_for_update.store(true, std::sync::atomic::Ordering::Relaxed);
                 return false;
             }
             row.awaiting_gate = None;
@@ -572,6 +604,15 @@ pub(super) async fn workflow_run_gate_decide(
         ));
     };
     if !applied {
+        if revoked_at_persist.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "workflow approval requires an eligible tenant reviewer",
+                    "code": "WORKFLOW_GATE_REVIEWER_FORBIDDEN",
+                })),
+            ));
+        }
         if expired_at_persist.load(std::sync::atomic::Ordering::Relaxed) {
             return Err((
                 StatusCode::CONFLICT,

@@ -508,6 +508,7 @@ impl AppState {
     }
 
     pub async fn bootstrap_automation_governance(&self) -> anyhow::Result<usize> {
+        self.reconcile_tombstoned_automation_definitions().await?;
         let automations = self.list_automations_v2().await;
         let now = now_ms();
         let mut changed = 0usize;
@@ -921,14 +922,18 @@ impl AppState {
         Ok(stored)
     }
 
-    pub async fn grant_automation_modify_access(
+    pub async fn grant_automation_modify_access<F>(
         &self,
         automation_id: &str,
         granted_to: GovernanceActorRef,
         granted_by: GovernanceActorRef,
         reason: Option<String>,
         tenant_context: &tandem_types::TenantContext,
-    ) -> anyhow::Result<AutomationGrantRecord> {
+        authorize: F,
+    ) -> anyhow::Result<AutomationGrantRecord>
+    where
+        F: Fn() -> anyhow::Result<()> + Send + Sync,
+    {
         self.require_active_automation_governance_tenant(automation_id, tenant_context)
             .await?;
         let grant = AutomationGrantRecord {
@@ -962,6 +967,7 @@ impl AppState {
             .await?;
         let previous = {
             let mut guard = self.automation_governance.write().await;
+            authorize()?;
             let previous = guard.clone();
             let Some(record) = guard.records.get_mut(automation_id) else {
                 anyhow::bail!("automation governance record not found");
@@ -981,14 +987,18 @@ impl AppState {
         Ok(grant)
     }
 
-    pub async fn revoke_automation_modify_access(
+    pub async fn revoke_automation_modify_access<F>(
         &self,
         automation_id: &str,
         grant_id: &str,
         revoked_by: GovernanceActorRef,
         reason: Option<String>,
         tenant_context: &tandem_types::TenantContext,
-    ) -> anyhow::Result<Option<AutomationGrantRecord>> {
+        authorize: F,
+    ) -> anyhow::Result<Option<AutomationGrantRecord>>
+    where
+        F: Fn() -> anyhow::Result<()> + Send + Sync,
+    {
         self.require_active_automation_governance_tenant(automation_id, tenant_context)
             .await?;
         let Some(mut stored) = self
@@ -1035,6 +1045,7 @@ impl AppState {
             .await?;
         let previous = {
             let mut guard = self.automation_governance.write().await;
+            authorize()?;
             let previous = guard.clone();
             let Some(record) = guard.records.get_mut(automation_id) else {
                 anyhow::bail!("automation governance record not found");
@@ -1199,13 +1210,17 @@ impl AppState {
             .map(|deleted| deleted.automation.clone())
     }
 
-    pub async fn restore_deleted_automation_v2(
+    pub async fn restore_deleted_automation_v2<F>(
         &self,
         automation_id: &str,
         restored_by: GovernanceActorRef,
         approval_id: Option<String>,
         tenant_context: &tandem_types::TenantContext,
-    ) -> anyhow::Result<Option<crate::AutomationV2Spec>> {
+        authorize: F,
+    ) -> anyhow::Result<Option<crate::AutomationV2Spec>>
+    where
+        F: Fn() -> anyhow::Result<()> + Send + Sync,
+    {
         let Some(candidate) = self
             .automation_governance
             .read()
@@ -1225,21 +1240,9 @@ impl AppState {
         if !governance_record_owned_by(&record, tenant_context) {
             return Ok(None);
         }
-        append_protected_audit_event(
-            self,
-            format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.restored"),
-            tenant_context,
-            restored_by
-                .actor_id
-                .clone()
-                .or_else(|| restored_by.source.clone()),
-            json!({
-                "automationID": automation_id,
-                "restoredBy": restored_by,
-                "approvalID": approval_id,
-            }),
-        )
-        .await?;
+        // Serialize tombstone removal and live-definition insertion with
+        // checked creation, or another actor could claim this id in between.
+        let _guard = self.automations_v2_persistence.lock().await;
         let current = self
             .automation_governance
             .read()
@@ -1252,8 +1255,13 @@ impl AppState {
         }) {
             return Ok(None);
         }
+        if self.automations_v2.read().await.contains_key(automation_id) {
+            anyhow::bail!("automation id already exists");
+        }
+        authorize()?;
         let (restored, previous_governance) = {
             let mut governance = self.automation_governance.write().await;
+            authorize()?;
             let previous = governance.clone();
             let Some(record) = governance.records.get(automation_id) else {
                 return Ok(None);
@@ -1277,16 +1285,42 @@ impl AppState {
             *self.automation_governance.write().await = previous_governance;
             return Err(error);
         }
-        self.automations_v2
-            .write()
-            .await
-            .insert(automation_id.to_string(), restored.clone());
-        if let Err(error) = self.persist_automations_v2().await {
+        let insertion = {
+            let mut automations = self.automations_v2.write().await;
+            authorize().and_then(|_| {
+                if automations.contains_key(automation_id) {
+                    anyhow::bail!("automation id already exists");
+                }
+                automations.insert(automation_id.to_string(), restored.clone());
+                Ok(())
+            })
+        };
+        if let Err(error) = insertion {
+            *self.automation_governance.write().await = previous_governance;
+            self.persist_automation_governance().await?;
+            return Err(error);
+        }
+        if let Err(error) = self.persist_automations_v2_locked().await {
             self.automations_v2.write().await.remove(automation_id);
             *self.automation_governance.write().await = previous_governance;
             let _ = self.persist_automation_governance().await;
             return Err(error);
         }
+        append_protected_audit_event(
+            self,
+            format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.restored"),
+            tenant_context,
+            restored_by
+                .actor_id
+                .clone()
+                .or_else(|| restored_by.source.clone()),
+            json!({
+                "automationID": automation_id,
+                "restoredBy": restored_by,
+                "approvalID": approval_id,
+            }),
+        )
+        .await?;
         debug_assert_eq!(candidate.automation_id, restored.automation_id);
         Ok(Some(restored))
     }

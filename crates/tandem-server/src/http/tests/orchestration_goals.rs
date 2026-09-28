@@ -343,3 +343,4 @@ async fn publish_orchestration(app: &Router, state: &AppState) -> u64 {
 
 include!("orchestration_goals_parts/part01.rs");
 include!("orchestration_goals_parts/part02.rs");
+include!("orchestration_goals_parts/part03.rs");

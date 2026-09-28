@@ -81,7 +81,11 @@ fn resolve_incident_monitor_state_read_path(
 /// (by mtime), walking the project/source subdirectories. Best-effort: I/O
 /// errors on individual entries are skipped so one unreadable file can't stall
 /// retention pruning (TAN-556).
-async fn prune_incident_monitor_evidence_dir(state: &AppState, dir: &std::path::Path, cutoff_ms: u64) -> usize {
+async fn prune_incident_monitor_evidence_dir(
+    state: &AppState,
+    dir: &std::path::Path,
+    cutoff_ms: u64,
+) -> usize {
     let mut removed = 0usize;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
@@ -352,6 +356,15 @@ fn runtime_policy_rule_for_decision(decision: &PolicyDecisionRecord) -> Enterpri
 
 impl AppState {
     async fn recover_automation_definitions_from_run_snapshots(&self) -> anyhow::Result<usize> {
+        let _persistence_guard = self.automations_v2_persistence.lock().await;
+        let tombstoned = self
+            .automation_governance
+            .read()
+            .await
+            .deleted_automations
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
         let runs = self
             .automation_v2_runs
             .read()
@@ -370,9 +383,15 @@ impl AppState {
             let Some(snapshot) = run.automation_snapshot.clone() else {
                 continue;
             };
+            if snapshot.automation_id != run.automation_id
+                || tombstoned.contains(&run.automation_id)
+            {
+                continue;
+            }
             let snapshot_is_context_recovered =
                 automation_v2_definition_is_context_recovered(&snapshot);
             let should_replace = match guard.get(&run.automation_id) {
+                Some(existing) if existing.created_at_ms != snapshot.created_at_ms => false,
                 Some(existing)
                     if snapshot_is_context_recovered
                         && !automation_v2_definition_is_context_recovered(existing) =>
@@ -397,7 +416,7 @@ impl AppState {
                 active_path,
                 "recovered automation v2 definitions from run snapshots"
             );
-            self.persist_automations_v2().await?;
+            self.persist_automations_v2_locked().await?;
         }
         Ok(recovered)
     }
@@ -853,9 +872,12 @@ impl AppState {
             self.persist_incident_monitor_incidents().await?;
         }
 
-        let removed_artifacts =
-            prune_incident_monitor_evidence_dir(self, &self.incident_monitor_log_evidence_dir, cutoff)
-                .await;
+        let removed_artifacts = prune_incident_monitor_evidence_dir(
+            self,
+            &self.incident_monitor_log_evidence_dir,
+            cutoff,
+        )
+        .await;
 
         Ok((removed_posts, removed_incidents, removed_artifacts))
     }

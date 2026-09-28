@@ -4,8 +4,7 @@
 use async_trait::async_trait;
 use axum::response::IntoResponse;
 use tandem_memory::types::{DistilledFact, MemoryResult};
-use tandem_plan_compiler::api as compiler_api;
-use tandem_plan_compiler::api::schedule_from_value;
+use tandem_plan_compiler::api::{self as compiler_api, schedule_from_value};
 use tandem_skills::SkillContent;
 
 #[derive(Debug, Deserialize)]
@@ -1305,6 +1304,7 @@ impl GovernedDistillationWriter {
             workflow_id,
             project_id: self.partition.project_id.clone(),
             source_run_id: self.run_id.clone(),
+            source_binding: Some(self.source_binding(session_id).await?),
             kind: WorkflowLearningCandidateKind::MemoryFact,
             status: WorkflowLearningCandidateStatus::Proposed,
             confidence: fact.importance_score,

@@ -3,6 +3,11 @@
 
 use super::*;
 
+#[path = "workflow_learning/session_exports_security.rs"]
+mod session_exports_security;
+#[path = "workflow_learning/session_security.rs"]
+mod session_security;
+
 fn current_test_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -22,6 +27,7 @@ fn sample_candidate(
         workflow_id: workflow_id.to_string(),
         project_id: "proj-1".to_string(),
         source_run_id: format!("run-{candidate_id}"),
+        source_binding: None,
         kind,
         status,
         confidence: 0.9,
@@ -46,6 +52,25 @@ fn sample_candidate(
         created_at_ms: now,
         updated_at_ms: now,
     }
+}
+
+fn candidate_with_source_binding(
+    candidate: crate::WorkflowLearningCandidate,
+    source_binding: Value,
+) -> crate::WorkflowLearningCandidate {
+    let mut value = serde_json::to_value(candidate).expect("candidate JSON");
+    value["source_binding"] = source_binding;
+    serde_json::from_value(value).expect("bound candidate JSON")
+}
+
+fn candidate_for_workflow(
+    mut candidate: crate::WorkflowLearningCandidate,
+    source: &crate::AutomationV2Spec,
+) -> crate::WorkflowLearningCandidate {
+    candidate.source_binding = Some(crate::WorkflowLearningCandidateSourceBinding::workflow(
+        source,
+    ));
+    candidate
 }
 
 fn sample_automation(workspace_root: &str, automation_id: &str) -> crate::AutomationV2Spec {
@@ -155,6 +180,693 @@ fn sample_plan_package_bundle() -> tandem_plan_compiler::api::PlanPackageImportB
         plan: exported.plan,
         scope_snapshot: Some(exported.scope_snapshot),
     }
+}
+
+fn hosted_learning_tenant(actor: &str) -> TenantContext {
+    TenantContext::explicit_user_workspace(
+        "org-learning",
+        "dep-learning",
+        Some("dep-learning".to_string()),
+        actor,
+    )
+}
+
+fn hosted_learning_verified(state: &AppState, actor: &str) -> tandem_types::VerifiedTenantContext {
+    use tandem_types::{AuthorityChain, HumanActor, TenantContextAssertionClaims};
+
+    let now = crate::now_ms();
+    let tenant = hosted_learning_tenant(actor);
+    let mut claims = TenantContextAssertionClaims::new_v1(
+        "tandem-web",
+        "tandem-runtime",
+        now,
+        now + 300_000,
+        format!("learning-{actor}"),
+        tenant.clone(),
+        HumanActor::tandem_user(actor),
+        AuthorityChain::from_request(RequestPrincipal::authenticated_user(actor, "tandem-web")),
+        vec!["hosted:role:member".into()],
+    );
+    claims.policy_version = Some(1);
+    claims.capabilities = ["automation.read", "automation.execute"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let verified = tandem_types::VerifiedTenantContext::from(claims);
+    let mut current = verified.clone();
+    state
+        .enterprise
+        .hosted_policy
+        .project(&mut current)
+        .expect("hosted learning identity projects under current policy")
+        .expect("hosted learning policy is installed");
+    for permission in [
+        tandem_types::AccessPermission::HostedAutomationRead,
+        tandem_types::AccessPermission::HostedAutomationWrite,
+    ] {
+        state
+            .enterprise
+            .hosted_policy
+            .authorize_permission(Some(&current), permission)
+            .expect("hosted learning actor has current operation grant");
+    }
+    verified
+}
+
+fn hosted_learning_router(state: AppState, actor: &str) -> axum::Router {
+    let tenant = hosted_learning_tenant(actor);
+    let verified = hosted_learning_verified(&state, actor);
+    axum::Router::<AppState>::new()
+        .route(
+            "/workflow-learning/candidates",
+            axum::routing::get(skills_memory::workflow_learning_candidates_list),
+        )
+        .route(
+            "/workflow-learning/candidates/{candidate_id}/review",
+            axum::routing::post(skills_memory::workflow_learning_candidate_review),
+        )
+        .route(
+            "/workflow-learning/candidates/{candidate_id}/promote",
+            axum::routing::post(skills_memory::workflow_learning_candidate_promote),
+        )
+        .route(
+            "/workflow-learning/candidates/{candidate_id}/spawn-revision",
+            axum::routing::post(skills_memory::workflow_learning_candidate_spawn_revision),
+        )
+        .route(
+            "/memory/context/distill",
+            axum::routing::post(skills_memory::context_distill),
+        )
+        .layer(axum::Extension(tenant))
+        .layer(axum::Extension(verified))
+        .with_state(state)
+}
+
+async fn hosted_learning_state() -> (AppState, tempfile::TempDir) {
+    let state = test_state().await;
+    let temp = tempfile::tempdir().expect("policy directory");
+    let path = temp.path().join("policy.json");
+    let now = crate::now_ms();
+    let users = ["alice", "bob"]
+        .into_iter()
+        .map(|actor| {
+            json!({
+                "id": actor,
+                "email": null,
+                "username": null,
+                "role": "member",
+                "capabilities": ["automation.read", "automation.execute"],
+                "is_active": true,
+                "email_verified": true
+            })
+        })
+        .collect::<Vec<_>>();
+    let write_grants = ["alice", "bob"]
+        .into_iter()
+        .map(|actor| {
+            json!({
+                "id": format!("write-{actor}"),
+                "deployment_id": "dep-learning",
+                "principal_kind": "member",
+                "principal_id": actor,
+                "resource_kind": "deployment",
+                "resource_id": "dep-learning",
+                "permissions": ["automation.write"]
+            })
+        })
+        .collect::<Vec<_>>();
+    let policy = json!({
+        "schema_version": 1,
+        "policy_version": 1,
+        "organization_id": "org-learning",
+        "deployment_id": "dep-learning",
+        "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+        "users": users,
+        "org_units": [],
+        "org_unit_memberships": [],
+        "deployment_grants": write_grants
+    });
+    std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).expect("write hosted policy");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("private hosted policy");
+    }
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-learning", "dep-learning", path);
+    state
+        .reload_hosted_policy()
+        .await
+        .expect("load hosted policy");
+    (state, temp)
+}
+
+fn hosted_learning_automation(
+    workspace_root: &str,
+    automation_id: &str,
+    owner: &str,
+) -> crate::AutomationV2Spec {
+    let mut automation = sample_automation(workspace_root, automation_id);
+    automation.creator_id = owner.to_owned();
+    automation.metadata = Some(json!({
+        "resource_access": {
+            "visibility": "private",
+            "owner_principal": {"kind": "human_user", "id": owner},
+            "audience_principals": []
+        }
+    }));
+    automation.set_tenant_context(&hosted_learning_tenant(owner));
+    automation
+}
+
+async fn hosted_learning_request(
+    app: axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
+        .expect("hosted learning request");
+    let response = app
+        .oneshot(request)
+        .await
+        .expect("hosted learning response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("hosted learning body");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn hosted_learning_candidate_stays_with_its_original_workflow_instance() {
+    let (state, _policy) = hosted_learning_state().await;
+    let root = state.workspace_index.snapshot().await.root;
+    let alice_source = state
+        .put_automation_v2(hosted_learning_automation(
+            &root,
+            "reused-learning-id",
+            "alice",
+        ))
+        .await
+        .expect("Alice source");
+    let candidate = candidate_for_workflow(
+        sample_candidate(
+            "alice-old-learning",
+            &alice_source.automation_id,
+            crate::WorkflowLearningCandidateKind::PromptPatch,
+            crate::WorkflowLearningCandidateStatus::Approved,
+        ),
+        &alice_source,
+    );
+    state
+        .put_workflow_learning_candidate(candidate)
+        .await
+        .expect("Alice candidate");
+    let alice = hosted_learning_router(state.clone(), "alice");
+    let (status, payload) =
+        hosted_learning_request(alice, "GET", "/workflow-learning/candidates", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["count"], 1);
+    state
+        .delete_automation_v2(&alice_source.automation_id)
+        .await
+        .expect("delete Alice source");
+    let mut bob_source = hosted_learning_automation(&root, "reused-learning-id", "bob");
+    bob_source.created_at_ms = alice_source.created_at_ms.saturating_add(1);
+    bob_source.updated_at_ms = bob_source.created_at_ms;
+    state
+        .put_automation_v2(bob_source.clone())
+        .await
+        .expect_err("a deleted id cannot be reclaimed through the checked creation path");
+    // Older deployments could reuse an id. Preserve the evidence-isolation
+    // regression by simulating that historical state without weakening the
+    // new tombstone invariant for normal writes.
+    state
+        .automations_v2
+        .write()
+        .await
+        .insert(bob_source.automation_id.clone(), bob_source.clone());
+
+    let bob = hosted_learning_router(state.clone(), "bob");
+    let (status, payload) =
+        hosted_learning_request(bob.clone(), "GET", "/workflow-learning/candidates", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["count"], 0);
+    let (status, _) = hosted_learning_request(
+        bob,
+        "POST",
+        "/workflow-learning/candidates/alice-old-learning/review",
+        Some(json!({"action": "approve"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (injected_ids, injected) = state
+        .workflow_learning_context_for_automation_node(&bob_source, &bob_source.flow.nodes[0])
+        .await;
+    assert!(injected_ids.is_empty(), "old source evidence was injected");
+    assert!(injected.is_none());
+}
+
+#[tokio::test]
+async fn hosted_project_learning_does_not_enter_another_actors_prompt() {
+    let (state, _policy) = hosted_learning_state().await;
+    let root = state.workspace_index.snapshot().await.root;
+    let alice = state
+        .put_automation_v2(hosted_learning_automation(
+            &root,
+            "alice-project-workflow",
+            "alice",
+        ))
+        .await
+        .expect("Alice source");
+    let bob = state
+        .put_automation_v2(hosted_learning_automation(
+            &root,
+            "bob-project-workflow",
+            "bob",
+        ))
+        .await
+        .expect("Bob source");
+    let candidate = candidate_for_workflow(
+        sample_candidate(
+            "alice-private-project-learning",
+            &alice.automation_id,
+            crate::WorkflowLearningCandidateKind::MemoryFact,
+            crate::WorkflowLearningCandidateStatus::Approved,
+        ),
+        &alice,
+    );
+    state
+        .put_workflow_learning_candidate(candidate)
+        .await
+        .expect("Alice learning");
+    let (ids, context) = state
+        .workflow_learning_context_for_automation_node(&bob, &bob.flow.nodes[0])
+        .await;
+    assert!(
+        ids.is_empty(),
+        "private project learning entered Bob's prompt"
+    );
+    assert!(context.is_none());
+    let local_legacy = sample_automation(&root, "local-legacy-workflow");
+    let (ids, context) = state
+        .workflow_learning_context_for_automation_node(&local_legacy, &local_legacy.flow.nodes[0])
+        .await;
+    assert!(
+        ids.is_empty(),
+        "hosted learning entered a local legacy prompt"
+    );
+    assert!(context.is_none());
+}
+
+#[tokio::test]
+async fn hosted_session_distillation_candidate_is_visible_only_to_its_verified_subject() {
+    let (state, _policy) = hosted_learning_state().await;
+    let session_id = "alice-session-only";
+    let candidate = candidate_with_source_binding(
+        sample_candidate(
+            "alice-session-fact",
+            &format!("session:{session_id}"),
+            crate::WorkflowLearningCandidateKind::MemoryFact,
+            crate::WorkflowLearningCandidateStatus::Proposed,
+        ),
+        json!({
+            "kind": "session",
+            "tenant_context": hosted_learning_tenant("alice"),
+            "actor_id": "alice",
+            "subject": "alice",
+            "session_id": session_id,
+        }),
+    );
+    state
+        .put_workflow_learning_candidate(candidate)
+        .await
+        .expect("session candidate");
+
+    let alice = hosted_learning_router(state.clone(), "alice");
+    let (status, payload) =
+        hosted_learning_request(alice.clone(), "GET", "/workflow-learning/candidates", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["count"], 1);
+    let (status, payload) = hosted_learning_request(
+        alice,
+        "POST",
+        "/workflow-learning/candidates/alice-session-fact/review",
+        Some(json!({"action": "approve"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["candidate"]["status"], "approved");
+
+    let bob = hosted_learning_router(state, "bob");
+    let (status, payload) =
+        hosted_learning_request(bob, "GET", "/workflow-learning/candidates", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["count"], 0);
+}
+
+#[tokio::test]
+async fn hosted_distillation_cannot_attach_learning_to_another_actors_workflow() {
+    let (state, _policy) = hosted_learning_state().await;
+    let root = state.workspace_index.snapshot().await.root;
+    let source = state
+        .put_automation_v2(hosted_learning_automation(
+            &root,
+            "alice-distill-source",
+            "alice",
+        ))
+        .await
+        .expect("Alice source");
+    let bob_tenant = hosted_learning_tenant("bob");
+    let bob_verified = hosted_learning_verified(&state, "bob");
+    let denied = skills_memory::workflow_learning_distillation_source_binding(
+        &state,
+        &bob_tenant,
+        Some(&bob_verified),
+        Some(&source.automation_id),
+        "bob-session",
+        "bob",
+    )
+    .await;
+    assert!(matches!(denied, Err(StatusCode::NOT_FOUND)));
+
+    let alice_tenant = hosted_learning_tenant("alice");
+    let alice_verified = hosted_learning_verified(&state, "alice");
+    let owned = skills_memory::workflow_learning_distillation_source_binding(
+        &state,
+        &alice_tenant,
+        Some(&alice_verified),
+        Some(&source.automation_id),
+        "alice-session",
+        "alice",
+    )
+    .await
+    .expect("owned workflow binding");
+    assert_eq!(
+        owned,
+        crate::WorkflowLearningCandidateSourceBinding::workflow(&source)
+    );
+    let session = skills_memory::workflow_learning_distillation_source_binding(
+        &state,
+        &alice_tenant,
+        Some(&alice_verified),
+        None,
+        "  alice-session  ",
+        "alice",
+    )
+    .await
+    .expect("verified session binding");
+    assert!(matches!(
+        session,
+        crate::WorkflowLearningCandidateSourceBinding::Session {
+            actor_id,
+            subject,
+            session_id,
+            ..
+        } if actor_id == "alice" && subject == "alice" && session_id == "alice-session"
+    ));
+}
+
+#[tokio::test]
+async fn hosted_distillation_denies_foreign_source_before_memory_write() {
+    let (state, _policy) = hosted_learning_state().await;
+    let root = state.workspace_index.snapshot().await.root;
+    let source = state
+        .put_automation_v2(hosted_learning_automation(
+            &root,
+            "alice-distill-guard",
+            "alice",
+        ))
+        .await
+        .expect("Alice source");
+    install_fixed_completion_provider(
+        &state,
+        r#"[{"category":"fact","content":"Bob prefers guarded release notes without foreign workflow sources.","importance":0.9,"follow_up_needed":false}]"#,
+    )
+    .await;
+
+    let bob = hosted_learning_router(state.clone(), "bob");
+    let (status, _) = hosted_learning_request(
+        bob,
+        "POST",
+        "/memory/context/distill",
+        Some(json!({
+            "session_id": "bob-forged-distill-session",
+            "conversation": [
+                "We have been reviewing release notes, workflow ownership, and candidate evidence throughout this planning session.",
+                "Please remember Bob's preference for guarded release notes without foreign workflow sources during future runs."
+            ],
+            "workflow_id": source.automation_id,
+            "project_id": "bob-forged-distill-project",
+            "subject": "bob"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let db = tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
+        .await
+        .expect("memory db");
+    let rows = db
+        .search_global_memory_for_tenant(
+            "org-learning",
+            "dep-learning",
+            None,
+            "bob",
+            "guarded release notes",
+            10,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("Bob memory search");
+    assert!(rows.is_empty(), "denial must not write Bob's memory fact");
+}
+
+#[tokio::test]
+async fn workflow_learning_hosted_list_only_exposes_owned_source_workflows() {
+    let (state, _policy) = hosted_learning_state().await;
+    let root = state.workspace_index.snapshot().await.root;
+    for owner in ["alice", "bob"] {
+        let workflow_id = format!("workflow-{owner}");
+        let source = state
+            .put_automation_v2(hosted_learning_automation(&root, &workflow_id, owner))
+            .await
+            .expect("hosted source workflow");
+        state
+            .put_workflow_learning_candidate(candidate_for_workflow(
+                sample_candidate(
+                    &format!("candidate-{owner}"),
+                    &workflow_id,
+                    crate::WorkflowLearningCandidateKind::MemoryFact,
+                    crate::WorkflowLearningCandidateStatus::Proposed,
+                ),
+                &source,
+            ))
+            .await
+            .expect("hosted candidate");
+    }
+    let mut shared = hosted_learning_automation(&root, "workflow-shared", "bob");
+    shared.metadata.as_mut().unwrap()["resource_access"]["visibility"] = json!("org");
+    let shared = state
+        .put_automation_v2(shared)
+        .await
+        .expect("org-visible source workflow");
+    state
+        .put_workflow_learning_candidate(candidate_for_workflow(
+            sample_candidate(
+                "candidate-shared",
+                "workflow-shared",
+                crate::WorkflowLearningCandidateKind::MemoryFact,
+                crate::WorkflowLearningCandidateStatus::Proposed,
+            ),
+            &shared,
+        ))
+        .await
+        .expect("shared candidate");
+    state
+        .put_workflow_learning_candidate(sample_candidate(
+            "candidate-orphan",
+            "workflow-deleted",
+            crate::WorkflowLearningCandidateKind::MemoryFact,
+            crate::WorkflowLearningCandidateStatus::Proposed,
+        ))
+        .await
+        .expect("orphan candidate");
+
+    let alice = hosted_learning_router(state.clone(), "alice");
+    let (status, payload) =
+        hosted_learning_request(alice.clone(), "GET", "/workflow-learning/candidates", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = payload["candidates"].as_array().expect("candidate list");
+    let ids = rows
+        .iter()
+        .filter_map(|row| row["candidate_id"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        ids,
+        std::collections::HashSet::from(["candidate-alice", "candidate-shared"])
+    );
+    let (status, payload) = hosted_learning_request(
+        alice,
+        "GET",
+        "/workflow-learning/candidates?workflow_id=workflow-bob",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["count"], 0);
+}
+
+#[tokio::test]
+async fn workflow_learning_hosted_mutations_require_source_owner() {
+    let (state, _policy) = hosted_learning_state().await;
+    let root = state.workspace_index.snapshot().await.root;
+    for owner in ["alice", "bob"] {
+        let workflow_id = format!("workflow-{owner}");
+        state
+            .put_automation_v2(hosted_learning_automation(&root, &workflow_id, owner))
+            .await
+            .expect("hosted source workflow");
+    }
+    for (id, workflow, kind) in [
+        (
+            "review-bob",
+            "workflow-bob",
+            crate::WorkflowLearningCandidateKind::PromptPatch,
+        ),
+        (
+            "review-alice",
+            "workflow-alice",
+            crate::WorkflowLearningCandidateKind::PromptPatch,
+        ),
+        (
+            "promote-bob",
+            "workflow-bob",
+            crate::WorkflowLearningCandidateKind::MemoryFact,
+        ),
+        (
+            "revision-bob",
+            "workflow-bob",
+            crate::WorkflowLearningCandidateKind::PromptPatch,
+        ),
+        (
+            "revision-orphan",
+            "workflow-deleted",
+            crate::WorkflowLearningCandidateKind::PromptPatch,
+        ),
+    ] {
+        let candidate = sample_candidate(
+            id,
+            workflow,
+            kind,
+            crate::WorkflowLearningCandidateStatus::Approved,
+        );
+        let candidate = match state.get_automation_v2(workflow).await {
+            Some(source) => candidate_for_workflow(candidate, &source),
+            None => candidate,
+        };
+        state
+            .put_workflow_learning_candidate(candidate)
+            .await
+            .expect("hosted candidate");
+    }
+    let alice = hosted_learning_router(state.clone(), "alice");
+    let (status, _) = hosted_learning_request(
+        alice.clone(),
+        "POST",
+        "/workflow-learning/candidates/review-bob/review",
+        Some(json!({"action": "applied", "reviewer_id": "bob"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        state
+            .get_workflow_learning_candidate("review-bob")
+            .await
+            .unwrap()
+            .status,
+        crate::WorkflowLearningCandidateStatus::Approved
+    );
+
+    let (status, _) = hosted_learning_request(
+        alice.clone(),
+        "POST",
+        "/workflow-learning/candidates/promote-bob/promote",
+        Some(json!({"reviewer_id": "bob"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(state
+        .get_workflow_learning_candidate("promote-bob")
+        .await
+        .unwrap()
+        .promoted_memory_id
+        .is_none());
+
+    for candidate_id in ["revision-bob", "revision-orphan"] {
+        let (status, _) = hosted_learning_request(
+            alice.clone(),
+            "POST",
+            &format!("/workflow-learning/candidates/{candidate_id}/spawn-revision"),
+            Some(json!({"reviewer_id": "alice"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{candidate_id}");
+        assert!(
+            !state
+                .get_workflow_learning_candidate(candidate_id)
+                .await
+                .unwrap()
+                .needs_plan_bundle
+        );
+    }
+
+    let (status, _) = hosted_learning_request(
+        alice.clone(),
+        "POST",
+        "/workflow-learning/candidates/review-alice/review",
+        Some(json!({"action": "applied", "reviewer_id": "alice"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        state
+            .get_workflow_learning_candidate("review-alice")
+            .await
+            .unwrap()
+            .status,
+        crate::WorkflowLearningCandidateStatus::Applied
+    );
+    let bob = hosted_learning_router(state.clone(), "bob");
+    let (status, _) = hosted_learning_request(
+        bob,
+        "POST",
+        "/workflow-learning/candidates/revision-bob/spawn-revision",
+        Some(json!({"reviewer_id": "bob"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        state
+            .get_workflow_learning_candidate("revision-bob")
+            .await
+            .unwrap()
+            .needs_plan_bundle
+    );
 }
 
 #[tokio::test]

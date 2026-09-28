@@ -4,6 +4,43 @@
 use super::*;
 use std::collections::HashMap;
 
+#[derive(Debug)]
+struct CapabilityBindingsDenied(&'static str);
+
+impl std::fmt::Display for CapabilityBindingsDenied {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for CapabilityBindingsDenied {}
+
+fn capability_bindings_authorizer(
+    state: &AppState,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> impl Fn() -> anyhow::Result<()> + Send + Sync + 'static {
+    let state = state.clone();
+    let verified = verified.map(|context| context.0);
+    move || {
+        state
+            .enterprise
+            .hosted_policy
+            .authorize_permission(
+                verified.as_ref(),
+                tandem_types::AccessPermission::HostedAdmin,
+            )
+            .map_err(|reason| anyhow::Error::new(CapabilityBindingsDenied(reason)))
+    }
+}
+
+fn capability_bindings_error_status(error: &anyhow::Error, ordinary: StatusCode) -> StatusCode {
+    if error.is::<CapabilityBindingsDenied>() {
+        StatusCode::FORBIDDEN
+    } else {
+        ordinary
+    }
+}
+
 pub(super) async fn evaluate_capability_readiness(
     state: &AppState,
     input: &CapabilityReadinessInput,
@@ -347,43 +384,49 @@ pub(super) async fn capabilities_bindings_get(
 
 pub(super) async fn capabilities_bindings_put(
     State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(file): Json<CapabilityBindingsFile>,
 ) -> Result<Json<Value>, StatusCode> {
+    let authorize = capability_bindings_authorizer(&state, verified);
     state
         .capability_resolver
-        .set_bindings(file)
+        .set_bindings_checked(file, authorize)
         .await
         .map_err(|err| {
             tracing::warn!("capability bindings put failed: {}", err);
-            StatusCode::BAD_REQUEST
+            capability_bindings_error_status(&err, StatusCode::BAD_REQUEST)
         })?;
     Ok(Json(json!({ "ok": true })))
 }
 
 pub(super) async fn capabilities_bindings_refresh_builtins(
     State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
 ) -> Result<Json<Value>, StatusCode> {
+    let authorize = capability_bindings_authorizer(&state, verified);
     let summary = state
         .capability_resolver
-        .refresh_builtin_bindings()
+        .refresh_builtin_bindings_checked(authorize)
         .await
         .map_err(|err| {
             tracing::warn!("capability bindings refresh failed: {}", err);
-            StatusCode::INTERNAL_SERVER_ERROR
+            capability_bindings_error_status(&err, StatusCode::INTERNAL_SERVER_ERROR)
         })?;
     Ok(Json(json!({ "ok": true, "summary": summary })))
 }
 
 pub(super) async fn capabilities_bindings_reset_to_builtins(
     State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
 ) -> Result<Json<Value>, StatusCode> {
+    let authorize = capability_bindings_authorizer(&state, verified);
     let summary = state
         .capability_resolver
-        .reset_to_builtin_bindings()
+        .reset_to_builtin_bindings_checked(authorize)
         .await
         .map_err(|err| {
             tracing::warn!("capability bindings reset failed: {}", err);
-            StatusCode::INTERNAL_SERVER_ERROR
+            capability_bindings_error_status(&err, StatusCode::INTERNAL_SERVER_ERROR)
         })?;
     Ok(Json(json!({ "ok": true, "summary": summary })))
 }

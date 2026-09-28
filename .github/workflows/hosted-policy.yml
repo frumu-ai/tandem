@@ -5,7 +5,7 @@ on:
       - 'crates/**'
       - '.github/workflows/hosted-policy.yml'
   push:
-    branches: ['codex/tan-834-hosted-policy']
+    branches: [main, 'release/**']
   workflow_dispatch:
 permissions:
   contents: read

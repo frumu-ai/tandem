@@ -46,9 +46,14 @@ async fn workflow_plan_apply_can_materialize_a_disabled_draft_with_planner_metad
         .to_string(),
     );
 
-    let preview_resp = app
-        .clone()
-        .oneshot(preview_request(json!({
+    let mut preview_req = Request::builder()
+        .method("POST")
+        .uri("/workflow-plans/preview")
+        .header("x-tandem-org-id", "org-a")
+        .header("x-tandem-workspace-id", "workspace-a")
+        .header("x-tandem-actor-id", "user-a")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({
             "prompt": "Compare two competitor summaries and generate a report",
             "plan_source": "automations_page",
             "allowed_mcp_servers": ["slack", "github", "github"],
@@ -65,7 +70,15 @@ async fn workflow_plan_apply_can_materialize_a_disabled_draft_with_planner_metad
                     }
                 }
             }
-        })))
+        }).to_string()))
+        .expect("preview request");
+    preview_req.extensions_mut().insert(verified_workflow_plan_context(
+        tandem_types::TenantContext::explicit("org-a", "workspace-a", None),
+        "user-a",
+    ));
+    let preview_resp = app
+        .clone()
+        .oneshot(preview_req)
         .await
         .expect("preview response");
     assert_eq!(preview_resp.status(), StatusCode::OK);

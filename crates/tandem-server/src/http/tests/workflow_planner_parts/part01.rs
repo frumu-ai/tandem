@@ -1149,6 +1149,7 @@ async fn workflow_plan_preview_returns_overlap_analysis_from_prior_automation() 
     );
 
     let resp = app
+        .clone()
         .oneshot(preview_request(json!({
             "prompt": "Compare two competitor summaries and generate a report",
             "workspace_root": "/tmp/custom-workspace",
@@ -1182,6 +1183,8 @@ async fn workflow_plan_preview_returns_overlap_analysis_from_prior_automation() 
             .and_then(Value::as_str),
         Some("semantic")
     );
+
+    assert_overlap_hidden_after_tenant_change(&state, app).await;
 }
 
 #[tokio::test]

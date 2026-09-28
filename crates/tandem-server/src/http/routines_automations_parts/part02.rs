@@ -107,12 +107,10 @@ fn hosted_context_admin(verified: Option<&VerifiedTenantContext>) -> bool {
                 | "workspace:admin"
                 | "organization:admin"
         )
-    }) || verified.capabilities.iter().any(|capability| {
-        matches!(
-            capability.as_str(),
-            "hosted.owner" | "hosted.admin" | "automation.write" | "automation.share"
-        )
-    })
+    }) || verified
+        .capabilities
+        .iter()
+        .any(|capability| matches!(capability.as_str(), "hosted.owner" | "hosted.admin"))
 }
 
 fn hosted_context_actor_id(verified: Option<&VerifiedTenantContext>) -> Option<&str> {
@@ -141,8 +139,21 @@ fn automation_v2_access_owner(automation: &AutomationV2Spec) -> Option<&str> {
     automation_v2_access_metadata(automation)
         .and_then(|metadata| metadata.get("owner_principal"))
         .and_then(Value::as_object)
+        .filter(|owner| {
+            owner
+                .get("kind")
+                .is_none_or(|kind| kind.as_str() == Some("human_user"))
+        })
         .and_then(|owner| owner.get("id"))
         .and_then(Value::as_str)
+}
+
+fn automation_v2_object_owner(automation: &AutomationV2Spec) -> Option<String> {
+    if automation_v2_access_metadata(automation).is_some() {
+        automation_v2_access_owner(automation).map(ToOwned::to_owned)
+    } else {
+        automation.tenant_context().actor_id
+    }
 }
 
 fn automation_v2_access_audiences(automation: &AutomationV2Spec) -> Vec<String> {
@@ -162,7 +173,7 @@ pub(super) fn automation_v2_visible_to_context(
     automation: &AutomationV2Spec,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
-    if verified.is_none() || automation_v2_access_metadata(automation).is_none() {
+    if verified.is_none() {
         return true;
     }
     if hosted_context_admin(verified) {
@@ -171,8 +182,11 @@ pub(super) fn automation_v2_visible_to_context(
     let Some(actor_id) = hosted_context_actor_id(verified) else {
         return false;
     };
-    if automation_v2_access_owner(automation) == Some(actor_id) {
+    if automation_v2_object_owner(automation).as_deref() == Some(actor_id) {
         return true;
+    }
+    if automation_v2_access_metadata(automation).is_none() {
+        return false;
     }
     match automation_v2_access_visibility(automation).unwrap_or("private") {
         "org" => true,
@@ -204,11 +218,12 @@ fn ensure_automation_v2_owner_or_admin(
     automation: &AutomationV2Spec,
     verified: Option<&VerifiedTenantContext>,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    if verified.is_none() || automation_v2_access_metadata(automation).is_none() {
+    if verified.is_none() {
         return Ok(());
     }
     let actor_id = hosted_context_actor_id(verified);
-    if hosted_context_admin(verified) || actor_id == automation_v2_access_owner(automation) {
+    let owner = automation_v2_object_owner(automation);
+    if hosted_context_admin(verified) || actor_id == owner.as_deref() {
         Ok(())
     } else {
         Err((
@@ -305,10 +320,8 @@ fn apply_automation_v2_share_metadata(
         .or_else(|| automation_v2_access_owner(automation))
         .unwrap_or("unknown")
         .to_string();
-    let owner_id = automation_v2_access_owner(automation)
-        .or_else(|| hosted_context_actor_id(verified))
-        .unwrap_or(&automation.creator_id)
-        .to_string();
+    let owner_id =
+        automation_v2_object_owner(automation).unwrap_or_else(|| automation.creator_id.clone());
     let audience = input.audience_principals.unwrap_or_default();
     let mut obj = automation
         .metadata
@@ -1212,15 +1225,28 @@ pub(super) async fn automations_v2_create(
         automation.metadata.as_ref(),
     )
     .await?;
-    let stored = state.put_automation_v2(automation).await.map_err(|error| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": error.to_string(),
-                "code": "AUTOMATION_V2_CREATE_FAILED",
-            })),
-        )
-    })?;
+    let stored = state
+        .put_automation_v2_checked(automation, |existing| {
+            if existing.is_some() {
+                anyhow::bail!("automation id already exists");
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| {
+            let conflict = error.to_string() == "automation id already exists";
+            (
+                if conflict {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": if conflict { "AUTOMATION_V2_ID_CONFLICT" } else { "AUTOMATION_V2_CREATE_FAILED" },
+                })),
+            )
+        })?;
     let _ = state
         .set_automation_governance_provenance(&stored.automation_id, provenance.clone())
         .await;
@@ -1322,7 +1348,9 @@ pub(super) async fn automations_v2_patch(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
+        state
+            .can_mutate_automation(&id, &actor, false, &tenant_context)
+            .await,
     )
     .await?;
     let previous_declared_capabilities = governance.declared_capabilities.clone();
@@ -1373,7 +1401,16 @@ pub(super) async fn automations_v2_patch(
         input.metadata.or_else(|| current_metadata),
         input.capabilities,
     )?;
-    automation.set_tenant_context(&tenant_context);
+    automation.set_tenant_context(&before.tenant_context());
+    if automation_v2_object_owner(&automation) != automation_v2_object_owner(&before) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Automation owner cannot be changed by patch",
+                "code": "AUTOMATION_V2_OWNER_IMMUTABLE",
+            })),
+        ));
+    }
     automation.stamp_enterprise_scope_metadata();
     if let Some(scope_policy) = input.scope_policy {
         automation.scope_policy = Some(scope_policy);
@@ -1496,7 +1533,9 @@ pub(super) async fn automations_v2_share(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
+        state
+            .can_mutate_automation(&id, &actor, false, &tenant_context)
+            .await,
     )
     .await?;
     apply_automation_v2_share_metadata(&mut automation, input, verified)?;
@@ -1556,7 +1595,9 @@ pub(super) async fn automations_v2_delete(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, true, &tenant_context).await,
+        state
+            .can_mutate_automation(&id, &actor, true, &tenant_context)
+            .await,
     )
     .await?;
     let deleted = state
@@ -1621,7 +1662,9 @@ pub(super) async fn automations_v2_run_now(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
+        state
+            .can_mutate_automation(&id, &actor, false, &tenant_context)
+            .await,
     )
     .await?;
     let dry_run = input.dry_run;

@@ -58,6 +58,7 @@ use crate::{
 
 pub(crate) mod approvals;
 mod audit_stream;
+mod automation_object_authority;
 mod automation_projection_runtime;
 mod capabilities;
 pub(crate) mod channel_automation_drafts;
@@ -80,6 +81,7 @@ mod external_actions;
 mod global;
 mod goal_capability_learning;
 mod goals_api;
+mod goals_authority;
 mod goals_projection;
 pub(crate) mod governance;
 pub(crate) mod host_authority;

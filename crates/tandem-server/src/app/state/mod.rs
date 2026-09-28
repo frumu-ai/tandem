@@ -244,6 +244,14 @@ pub struct AppState {
     pub workflow_plans: Arc<RwLock<std::collections::HashMap<String, WorkflowPlan>>>,
     pub workflow_plan_drafts:
         Arc<RwLock<std::collections::HashMap<String, WorkflowPlanDraftRecord>>>,
+    pub(crate) workflow_plan_draft_authority: Arc<
+        RwLock<
+            std::collections::HashMap<
+                String,
+                crate::http::workflow_planner::WorkflowPlanDraftAuthority,
+            >,
+        >,
+    >,
     pub workflow_planner_sessions: Arc<
         RwLock<
             std::collections::HashMap<
@@ -552,6 +560,17 @@ pub struct StatusIndexUpdate {
     pub value: Value,
 }
 
+#[derive(Debug)]
+pub(crate) struct WorkflowHookAdminDenied;
+
+impl std::fmt::Display for WorkflowHookAdminDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("workflow hook hosted admin required")
+    }
+}
+
+impl std::error::Error for WorkflowHookAdminDenied {}
+
 include!("app_state_impl_parts/part01.rs");
 include!("app_state_impl_parts/part17.rs");
 include!("app_state_impl_parts/part11.rs");
@@ -561,9 +580,11 @@ include!("app_state_impl_parts/part13.rs");
 include!("app_state_impl_parts/part15.rs");
 include!("app_state_impl_parts/part16.rs");
 include!("app_state_impl_parts/part02.rs");
+include!("app_state_impl_parts/part21.rs");
 include!("app_state_impl_parts/part19.rs");
 include!("app_state_impl_parts/part10.rs");
 include!("app_state_impl_parts/part03.rs");
+include!("app_state_impl_parts/part20.rs");
 include!("app_state_impl_parts/part05.rs");
 include!("app_state_impl_parts/part04.rs");
 pub(crate) mod governance;

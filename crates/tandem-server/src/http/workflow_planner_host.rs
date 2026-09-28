@@ -20,6 +20,8 @@ pub(crate) struct WorkflowPlannerHost<'a> {
     pub(crate) state: &'a AppState,
     pub(crate) tenant_context: tandem_types::TenantContext,
     pub(crate) verified_tenant_context: Option<tandem_types::VerifiedTenantContext>,
+    pub(crate) draft_binding: Option<super::workflow_planner::WorkflowPlanDraftAccessBinding>,
+    pub(crate) new_draft_only: bool,
 }
 
 impl<'a> WorkflowPlannerHost<'a> {
@@ -32,7 +34,31 @@ impl<'a> WorkflowPlannerHost<'a> {
             state,
             tenant_context: tenant_context.clone(),
             verified_tenant_context: verified_tenant_context.cloned(),
+            draft_binding: None,
+            new_draft_only: false,
         }
+    }
+
+    pub(crate) fn new_draft(
+        state: &'a AppState,
+        tenant_context: &tandem_types::TenantContext,
+        verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
+    ) -> Self {
+        let mut host = Self::new(state, tenant_context, verified_tenant_context);
+        host.new_draft_only = true;
+        host
+    }
+
+    pub(crate) fn for_session(
+        state: &'a AppState,
+        tenant_context: &tandem_types::TenantContext,
+        verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
+        draft_binding: super::workflow_planner::WorkflowPlanDraftAccessBinding,
+    ) -> Self {
+        let mut host = Self::new(state, tenant_context, verified_tenant_context);
+        host.draft_binding = Some(draft_binding);
+        host.new_draft_only = true;
+        host
     }
 
     pub(crate) fn local(state: &'a AppState) -> Self {
@@ -40,6 +66,8 @@ impl<'a> WorkflowPlannerHost<'a> {
             state,
             tenant_context: tandem_types::TenantContext::local_implicit(),
             verified_tenant_context: None,
+            draft_binding: None,
+            new_draft_only: false,
         }
     }
 }
@@ -464,18 +492,33 @@ impl<'a> PlannerModelRegistry for WorkflowPlannerHost<'a> {
 impl<'a> PlanStore for WorkflowPlannerHost<'a> {
     async fn get_draft(&self, plan_id: &str) -> Result<Option<Value>, String> {
         self.state
-            .get_workflow_plan_draft(plan_id)
+            .get_workflow_plan_draft_scoped(
+                plan_id,
+                &self.tenant_context,
+                self.verified_tenant_context.as_ref(),
+            )
             .await
             .map(serde_json::to_value)
             .transpose()
             .map_err(|error| truncate_text(&error.to_string(), 500))
     }
 
-    async fn put_draft(&self, _plan_id: &str, draft: Value) -> Result<(), String> {
+    async fn put_draft(&self, plan_id: &str, draft: Value) -> Result<(), String> {
         let draft: crate::WorkflowPlanDraftRecord = serde_json::from_value(draft)
             .map_err(|error| truncate_text(&error.to_string(), 500))?;
-        self.state.put_workflow_plan_draft(draft).await;
-        Ok(())
+        if draft.current_plan.plan_id != plan_id {
+            return Err("workflow plan draft ID changed".to_string());
+        }
+        self.state
+            .put_workflow_plan_draft_scoped(
+                draft,
+                &self.tenant_context,
+                self.verified_tenant_context.as_ref(),
+                self.draft_binding.as_ref(),
+                self.new_draft_only,
+            )
+            .await
+            .map_err(|error| truncate_text(&error.to_string(), 500))
     }
 }
 

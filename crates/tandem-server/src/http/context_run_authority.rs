@@ -45,7 +45,10 @@ pub(super) fn valid_context_run_id(run_id: &str) -> bool {
 }
 
 pub(super) fn managed_projection_type(kind: &str) -> bool {
-    matches!(kind, "session" | "automation_v2" | "workflow" | "routine")
+    matches!(
+        kind,
+        "session" | "automation_v2" | "incident_monitor_triage" | "workflow" | "routine"
+    )
 }
 
 pub(super) async fn resolve_run_stream_resource(
@@ -114,7 +117,9 @@ pub(super) async fn context_run_visible(
                     &session.tenant_context,
                 )
         }
-        "automation_v2" => {
+        // Incident Monitor triage relabels its automation-v2 projection for
+        // clients, but the native automation run and spec still own its ACL.
+        "automation_v2" | "incident_monitor_triage" => {
             let Some(native_id) = run.run_id.strip_prefix("automation-v2-") else {
                 return false;
             };
@@ -211,7 +216,9 @@ pub(super) async fn context_run_visible(
     // A resource reader (including a shared automation audience or workflow
     // reviewer) is not thereby allowed to mutate tasks, checkpoints or files.
     let permission = match run.run_type.as_str() {
-        "automation_v2" | "routine" => AccessPermission::HostedAutomationExecute,
+        "automation_v2" | "incident_monitor_triage" | "routine" => {
+            AccessPermission::HostedAutomationExecute
+        }
         _ => AccessPermission::HostedUse,
     };
     owner() && current_context(state, tenant, verified, Some(permission)).is_ok()
@@ -269,4 +276,62 @@ pub(super) async fn guard_context_route(
         return StatusCode::NOT_FOUND.into_response();
     }
     next.run(request).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::state::tests::{test_automation_node, AutomationSpecBuilder};
+
+    #[tokio::test]
+    async fn triage_projection_uses_native_automation_scope() {
+        let state = crate::test_support::test_state().await;
+        let alice = TenantContext::explicit("triage-org", "triage-workspace", Some("alice".into()));
+        let bob = TenantContext::explicit("triage-org", "triage-workspace", Some("bob".into()));
+        let other_tenant =
+            TenantContext::explicit("other-org", "triage-workspace", Some("alice".into()));
+        let mut spec = AutomationSpecBuilder::new("incident-monitor-triage-authority")
+            .nodes(vec![test_automation_node("inspect", vec![], "triage", 0)])
+            .build();
+        spec.set_tenant_context(&alice);
+        let spec = state.put_automation_v2(spec).await.unwrap();
+        let native = state
+            .create_automation_v2_run(&spec, "incident_monitor_triage")
+            .await
+            .unwrap();
+        let projection_id =
+            super::super::context_runs::automation_v2_context_run_id(&native.run_id);
+        let mut projection =
+            super::super::context_runs::load_context_run_state(&state, &projection_id)
+                .await
+                .unwrap();
+        projection.run_type = "incident_monitor_triage".to_string();
+
+        assert!(managed_projection_type(&projection.run_type));
+        assert!(context_run_visible(&state, &projection, &alice, None, false).await);
+        assert!(context_run_visible(&state, &projection, &alice, None, true).await);
+        assert!(!context_run_visible(&state, &projection, &bob, None, false).await);
+        assert!(!context_run_visible(&state, &projection, &other_tenant, None, false).await);
+
+        let mut wrong_projection_scope = projection.clone();
+        wrong_projection_scope.tenant_context.actor_id = Some("bob".to_string());
+        assert!(!context_run_visible(&state, &wrong_projection_scope, &bob, None, false).await);
+
+        let mut orphaned = projection.clone();
+        orphaned.run_id = "automation-v2-missing-native-run".to_string();
+        assert!(!context_run_visible(&state, &orphaned, &alice, None, false).await);
+
+        let mut relabelled = projection.clone();
+        relabelled.run_type = "interactive".to_string();
+        assert!(!context_run_visible(&state, &relabelled, &alice, None, false).await);
+
+        let mut wrong_spec_scope = spec.clone();
+        wrong_spec_scope.set_tenant_context(&other_tenant);
+        state
+            .automations_v2
+            .write()
+            .await
+            .insert(spec.automation_id.clone(), wrong_spec_scope);
+        assert!(!context_run_visible(&state, &projection, &alice, None, false).await);
+    }
 }

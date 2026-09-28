@@ -26,37 +26,6 @@ fn planner_session_operation_error(
         .unwrap_or_else(|| format!("{fallback} ({status})"))
 }
 
-fn workflow_plan_task_budget_exceeded_error(
-    plan: &crate::WorkflowPlan,
-) -> (StatusCode, Json<Value>) {
-    let task_budget = compiler_api::workflow_task_budget_report_for_plan(
-        plan,
-        Some("rejected"),
-        Some(plan.steps.len()),
-        Some("rejected"),
-    );
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({
-            "error": format!(
-                "Generated workflow plans may include at most {} steps. Regenerate or compact this plan before applying.",
-                compiler_api::GENERATED_WORKFLOW_MAX_STEPS
-            ),
-            "code": "WORKFLOW_PLAN_TASK_BUDGET_EXCEEDED",
-            "task_budget": task_budget,
-            "planner_diagnostics": {
-                "fallback_reason": "task_budget_rejected",
-                "detail": format!(
-                    "Generated plan contained {} steps, above the {} step limit.",
-                    plan.steps.len(),
-                    compiler_api::GENERATED_WORKFLOW_MAX_STEPS
-                ),
-                "task_budget": task_budget,
-            },
-        })),
-    )
-}
-
 fn planner_session_operation_running(session: &WorkflowPlannerSessionRecord) -> bool {
     session
         .operation
@@ -267,6 +236,8 @@ async fn workflow_planner_session_store_operation_result(
 async fn workflow_planner_session_response(
     state: &AppState,
     session: &WorkflowPlannerSessionRecord,
+    tenant: &tandem_types::TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
     response: Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let mut payload = response.0;
@@ -288,7 +259,11 @@ async fn workflow_planner_session_response(
     let plan_package_value = payload.get("plan_package").cloned();
     let plan_package_validation_value = payload.get("plan_package_validation").cloned();
     let draft = state
-        .get_workflow_plan_draft(session.current_plan_id.as_deref().unwrap_or_default())
+        .get_workflow_plan_draft_scoped(
+            session.current_plan_id.as_deref().unwrap_or_default(),
+            tenant,
+            verified,
+        )
         .await;
     let draft_was_present = session.draft.is_some() || draft.is_some();
     let mut next_session = session.clone();
@@ -376,6 +351,13 @@ async fn workflow_planner_session_response(
             planning.missing_requirements = blocked_capabilities.clone();
             planning.docs_mcp_enabled = Some(docs_mcp_used);
             let preview_payload = payload.clone();
+            ensure_current_workflow_planner_session_write(
+                state,
+                &session.session_id,
+                tenant,
+                verified,
+            )
+            .await?;
             let approval_status = workflow_planner_request_capability_approval(
                 state,
                 &next_session,
@@ -415,12 +397,12 @@ async fn workflow_planner_session_response(
         }
     }
     next_session.updated_at_ms = crate::now_ms();
-    let _ = state
+    ensure_current_workflow_planner_session_write(state, &session.session_id, tenant, verified)
+        .await?;
+    state
         .put_workflow_planner_session(next_session.clone())
-        .await;
-    if let Some(draft) = next_session.draft.clone() {
-        let _ = state.put_workflow_plan_draft(draft).await;
-    }
+        .await
+        .map_err(|_| workflow_planner_session_scope_error(&session.session_id))?;
     if let Some(planning) = next_session.planning.as_ref() {
         let review = next_session
             .draft
@@ -448,398 +430,6 @@ async fn workflow_planner_session_response(
     Ok(Json(payload))
 }
 
-pub(super) async fn workflow_planner_session_list(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<tandem_types::TenantContext>,
-    Query(query): Query<WorkflowPlannerSessionListQuery>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let linked_chat_session_id = query
-        .linked_chat_session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let sessions = state
-        .list_workflow_planner_sessions(query.project_slug.as_deref())
-        .await
-        .into_iter()
-        .filter(|session| {
-            ensure_workflow_planner_session_tenant(session, &tenant_context).is_ok()
-        })
-        .filter(|session| {
-            linked_chat_session_id.is_none_or(|chat_session_id| {
-                session.linked_chat_session_id.as_deref() == Some(chat_session_id)
-            })
-        })
-        .collect::<Vec<_>>();
-    let items = sessions
-        .iter()
-        .map(workflow_planner_session_list_item)
-        .collect::<Vec<_>>();
-    Ok(Json(json!({
-        "sessions": items,
-        "count": items.len(),
-    })))
-}
-
-pub(super) async fn workflow_planner_session_create(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<tandem_types::TenantContext>,
-    Json(input): Json<WorkflowPlannerSessionCreateRequest>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let project_slug = input.project_slug.trim();
-    if project_slug.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "project_slug is required",
-                "code": "WORKFLOW_PLAN_INVALID",
-            })),
-        ));
-    }
-    if let Some(workspace_root) = input.workspace_root.as_deref() {
-        crate::normalize_absolute_workspace_root(workspace_root).map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error,
-                    "code": "WORKFLOW_PLAN_INVALID",
-                })),
-            )
-        })?;
-    }
-    let now = crate::now_ms();
-    let session = WorkflowPlannerSessionRecord {
-        session_id: format!("wfplan-session-{}", Uuid::new_v4()),
-        tenant_context,
-        linked_chat_session_id: None,
-        linked_chat_run_id: None,
-        last_referenced_at_ms: None,
-        artifact_links: Vec::new(),
-        project_slug: project_slug.to_string(),
-        title: input
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                planner_session_default_title(input.goal.as_deref().unwrap_or(""), now)
-            }),
-        workspace_root: input
-            .workspace_root
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or("")
-            .to_string(),
-        source_kind: default_workflow_planner_source_kind(),
-        source_bundle_digest: None,
-        source_pack_id: None,
-        source_pack_version: None,
-        current_plan_id: None,
-        draft: None,
-        goal: input.goal.unwrap_or_default(),
-        notes: input.notes.unwrap_or_default(),
-        planner_provider: input.planner_provider.unwrap_or_default(),
-        planner_model: input.planner_model.unwrap_or_default(),
-        plan_source: input
-            .plan_source
-            .unwrap_or_else(|| "coding_task_planning".to_string()),
-        allowed_mcp_servers: input.allowed_mcp_servers,
-        operator_preferences: input.operator_preferences,
-        import_validation: None,
-        import_transform_log: Vec::new(),
-        import_scope_snapshot: None,
-        planning: input.planning,
-        operation: None,
-        published_at_ms: None,
-        published_tasks: Vec::new(),
-        created_at_ms: now,
-        updated_at_ms: now,
-    };
-    let mut session = session;
-    if let Some(plan) = input.plan {
-        if compiler_api::workflow_plan_generated_task_budget_exceeded(&plan) {
-            return Err(workflow_plan_task_budget_exceeded_error(&plan));
-        }
-        let conversation = input
-            .conversation
-            .unwrap_or_else(|| crate::WorkflowPlanConversation {
-                conversation_id: format!("wfchat-{}", Uuid::new_v4()),
-                plan_id: plan.plan_id.clone(),
-                created_at_ms: now,
-                updated_at_ms: now,
-                messages: Vec::new(),
-            });
-        let draft = crate::WorkflowPlanDraftRecord {
-            initial_plan: plan.clone(),
-            current_plan: plan,
-            plan_revision: input.plan_revision.unwrap_or(1),
-            conversation,
-            planner_diagnostics: input.planner_diagnostics,
-            last_success_materialization: input.last_success_materialization,
-            review: None,
-        };
-        session.current_plan_id = Some(draft.current_plan.plan_id.clone());
-        session.draft = Some(draft);
-    }
-    if session.planning.is_none() && session.draft.is_some() {
-        session.planning = Some(WorkflowPlannerSessionPlanningRecord::default());
-    }
-    if let Some(planning) = session.planning.as_mut() {
-        normalize_workflow_planning_record(planning, session.current_plan_id.as_deref(), now);
-    }
-    let stored = state
-        .put_workflow_planner_session(session.clone())
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "WORKFLOW_PLAN_INVALID",
-                })),
-            )
-        })?;
-    if let Some(planning) = stored.planning.as_ref() {
-        let review = stored
-            .draft
-            .as_ref()
-            .and_then(|draft| draft.review.as_ref());
-        workflow_planner_publish_event(
-            &state,
-            "workflow_planner.session.started",
-            workflow_planner_event_payload(&stored, planning, review),
-        );
-    }
-    Ok(Json(json!({
-        "session": stored,
-    })))
-}
-
-pub(super) async fn workflow_planner_session_get(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<tandem_types::TenantContext>,
-    Path(session_id): Path<String>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let Some(session) = state.get_workflow_planner_session(&session_id).await else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "planner session not found",
-                "code": "WORKFLOW_PLAN_SESSION_NOT_FOUND",
-                "session_id": session_id,
-            })),
-        ));
-    };
-    ensure_workflow_planner_session_tenant(&session, &tenant_context)?;
-    Ok(Json(json!({
-        "session": session,
-    })))
-}
-
-pub(super) async fn workflow_planner_session_patch(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<tandem_types::TenantContext>,
-    Path(session_id): Path<String>,
-    Json(input): Json<WorkflowPlannerSessionPatchRequest>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let Some(mut session) = state.get_workflow_planner_session(&session_id).await else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "planner session not found",
-                "code": "WORKFLOW_PLAN_SESSION_NOT_FOUND",
-                "session_id": session_id,
-            })),
-        ));
-    };
-    ensure_workflow_planner_session_tenant(&session, &tenant_context)?;
-    if let Some(title) = input.title.as_deref() {
-        let title = title.trim();
-        if title.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": "title cannot be empty",
-                    "code": "WORKFLOW_PLAN_INVALID",
-                })),
-            ));
-        }
-        session.title = title.to_string();
-    }
-    if let Some(workspace_root) = input.workspace_root.as_deref() {
-        crate::normalize_absolute_workspace_root(workspace_root).map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error,
-                    "code": "WORKFLOW_PLAN_INVALID",
-                })),
-            )
-        })?;
-        session.workspace_root = workspace_root.trim().to_string();
-    }
-    if let Some(goal) = input.goal {
-        session.goal = goal;
-    }
-    if let Some(notes) = input.notes {
-        session.notes = notes;
-    }
-    if let Some(provider) = input.planner_provider {
-        session.planner_provider = provider;
-    }
-    if let Some(model) = input.planner_model {
-        session.planner_model = model;
-    }
-    if let Some(plan_source) = input.plan_source {
-        session.plan_source = plan_source;
-    }
-    if let Some(allowed) = input.allowed_mcp_servers {
-        session.allowed_mcp_servers = allowed;
-    }
-    if let Some(preferences) = input.operator_preferences {
-        session.operator_preferences = Some(preferences);
-    }
-    if let Some(current_plan_id) = input.current_plan_id {
-        let current_plan_id = current_plan_id.trim();
-        session.current_plan_id = if current_plan_id.is_empty() {
-            None
-        } else {
-            Some(current_plan_id.to_string())
-        };
-    }
-    if let Some(draft) = input.draft {
-        session.current_plan_id = Some(draft.current_plan.plan_id.clone());
-        session.draft = Some(draft);
-    }
-    if let Some(planning) = input.planning {
-        session.planning = Some(planning);
-    }
-    if let Some(published_at_ms) = input.published_at_ms {
-        session.published_at_ms = Some(published_at_ms);
-    }
-    if let Some(published_tasks) = input.published_tasks {
-        session.published_tasks = published_tasks;
-    }
-    let now = crate::now_ms();
-    if let Some(planning) = session.planning.as_mut() {
-        normalize_workflow_planning_record(planning, session.current_plan_id.as_deref(), now);
-    }
-    let stored = state
-        .put_workflow_planner_session(session)
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "WORKFLOW_PLAN_INVALID",
-                })),
-            )
-        })?;
-    Ok(Json(json!({
-        "session": stored,
-    })))
-}
-
-pub(super) async fn workflow_planner_session_delete(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<tandem_types::TenantContext>,
-    Path(session_id): Path<String>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let session = state
-        .get_workflow_planner_session(&session_id)
-        .await
-        .ok_or_else(|| workflow_planner_session_scope_error(&session_id))?;
-    ensure_workflow_planner_session_tenant(&session, &tenant_context)?;
-    let Some(session) = state.delete_workflow_planner_session(&session_id).await else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "planner session not found",
-                "code": "WORKFLOW_PLAN_SESSION_NOT_FOUND",
-                "session_id": session_id,
-            })),
-        ));
-    };
-    Ok(Json(json!({
-        "ok": true,
-        "session": session,
-    })))
-}
-
-pub(super) async fn workflow_planner_session_duplicate(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<tandem_types::TenantContext>,
-    Path(session_id): Path<String>,
-    Json(input): Json<WorkflowPlannerSessionDuplicateRequest>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let Some(source) = state.get_workflow_planner_session(&session_id).await else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "planner session not found",
-                "code": "WORKFLOW_PLAN_SESSION_NOT_FOUND",
-                "session_id": session_id,
-            })),
-        ));
-    };
-    ensure_workflow_planner_session_tenant(&source, &tenant_context)?;
-    let now = crate::now_ms();
-    let mut next = source.clone();
-    next.session_id = format!("wfplan-session-{}", Uuid::new_v4());
-    next.title = input
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("Copy of {}", source.title));
-    next.source_kind = workflow_planner_session_fork_source_kind(&source.source_kind);
-    next.linked_chat_session_id = None;
-    next.linked_chat_run_id = None;
-    next.last_referenced_at_ms = None;
-    next.artifact_links.clear();
-    next.operation = None;
-    next.published_at_ms = None;
-    next.published_tasks.clear();
-    next.created_at_ms = now;
-    next.updated_at_ms = now;
-    if let Some(draft) = source.draft.as_ref() {
-        let new_plan_id = format!("wfplan-{}", Uuid::new_v4());
-        let duplicated = retag_workflow_plan_draft(draft, &new_plan_id).map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error,
-                    "code": "WORKFLOW_PLAN_INVALID",
-                })),
-            )
-        })?;
-        next.current_plan_id = Some(new_plan_id);
-        next.draft = Some(duplicated);
-    }
-    if let Some(planning) = next.planning.as_mut() {
-        planning.linked_channel_session_id = None;
-        normalize_workflow_planning_record(planning, next.current_plan_id.as_deref(), now);
-    }
-    let stored = state
-        .put_workflow_planner_session(next)
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "WORKFLOW_PLAN_INVALID",
-                })),
-            )
-        })?;
-    Ok(Json(json!({
-        "session": stored,
-    })))
-}
-
 pub(super) async fn workflow_planner_session_start(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
@@ -857,7 +447,14 @@ pub(super) async fn workflow_planner_session_start(
             })),
         ));
     };
-    ensure_workflow_planner_session_tenant(&session, &tenant_context)?;
+    ensure_workflow_planner_session_access(
+        &state,
+        &session,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        true,
+    )
+    .await?;
     let chat_start = WorkflowPlanChatStartRequest {
         prompt: input.prompt,
         schedule: input.schedule,
@@ -877,11 +474,23 @@ pub(super) async fn workflow_planner_session_start(
             .operator_preferences
             .or(session.operator_preferences.clone()),
     };
-    let response = workflow_plan_chat_start(
+    let draft_binding = session.source_workflow.as_ref().map_or_else(
+        || WorkflowPlanDraftAccessBinding::Actor(session.tenant_context.clone()),
+        |source| WorkflowPlanDraftAccessBinding::Workflow(source.clone()),
+    );
+    let response = workflow_plan_chat_start_bound(
         State(state.clone()),
-        Extension(tenant_context),
-        verified_tenant_context,
+        Extension(tenant_context.clone()),
+        verified_tenant_context.clone(),
         Json(chat_start),
+        Some(draft_binding),
+    )
+    .await?;
+    ensure_current_workflow_planner_session_write(
+        &state,
+        &session_id,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
     )
     .await?;
     if let Some(plan) = response.0.get("plan").cloned() {
@@ -911,15 +520,39 @@ pub(super) async fn workflow_planner_session_start(
         .and_then(|plan| plan.get("plan_id"))
         .and_then(Value::as_str)
     {
-        if let Some(draft) = state.get_workflow_plan_draft(plan_id).await {
+        if let Some(draft) = state
+            .get_workflow_plan_draft_scoped(
+                plan_id,
+                &tenant_context,
+                verified_tenant_context.as_deref(),
+            )
+            .await
+        {
             session.current_plan_id = Some(plan_id.to_string());
             session.draft = Some(draft.clone());
             session.updated_at_ms = crate::now_ms();
-            let _ = state.put_workflow_planner_session(session.clone()).await;
-            return workflow_planner_session_response(&state, &session, response).await;
+            state
+                .put_workflow_planner_session(session.clone())
+                .await
+                .map_err(|_| workflow_planner_session_scope_error(&session_id))?;
+            return workflow_planner_session_response(
+                &state,
+                &session,
+                &tenant_context,
+                verified_tenant_context.as_deref(),
+                response,
+            )
+            .await;
         }
     }
-    workflow_planner_session_response(&state, &session, response).await
+    workflow_planner_session_response(
+        &state,
+        &session,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        response,
+    )
+    .await
 }
 
 pub(super) async fn workflow_planner_session_start_async(
@@ -939,7 +572,14 @@ pub(super) async fn workflow_planner_session_start_async(
             })),
         ));
     };
-    ensure_workflow_planner_session_tenant(&session, &tenant_context)?;
+    ensure_workflow_planner_session_access(
+        &state,
+        &session,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        true,
+    )
+    .await?;
     if planner_session_operation_running(&session) {
         return Err((
             StatusCode::CONFLICT,
@@ -1003,11 +643,20 @@ pub(super) async fn workflow_planner_session_message(
             })),
         ));
     };
-    ensure_workflow_planner_session_tenant(&session, &tenant_context)?;
+    ensure_workflow_planner_session_access(
+        &state,
+        &session,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        true,
+    )
+    .await?;
     if session.current_plan_id.is_none() {
         if let Some(draft) = session.draft.clone() {
             session.current_plan_id = Some(draft.current_plan.plan_id.clone());
-            let _ = state.put_workflow_plan_draft(draft).await;
+            if tenant_context.is_local_implicit() {
+                state.put_workflow_plan_draft(draft).await;
+            }
         }
     }
     let Some(plan_id) = session.current_plan_id.clone() else {
@@ -1022,20 +671,36 @@ pub(super) async fn workflow_planner_session_message(
     };
     if state.get_workflow_plan_draft(&plan_id).await.is_none() {
         if let Some(draft) = session.draft.clone() {
-            state.put_workflow_plan_draft(draft).await;
+            if tenant_context.is_local_implicit() {
+                state.put_workflow_plan_draft(draft).await;
+            }
         }
     }
     let response = workflow_plan_chat_message(
         State(state.clone()),
-        Extension(tenant_context),
-        verified_tenant_context,
+        Extension(tenant_context.clone()),
+        verified_tenant_context.clone(),
         Json(WorkflowPlanChatMessageRequest {
             plan_id: plan_id.clone(),
             message: input.message,
         }),
     )
     .await?;
-    if let Some(draft) = state.get_workflow_plan_draft(&plan_id).await {
+    ensure_current_workflow_planner_session_write(
+        &state,
+        &session_id,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await?;
+    if let Some(draft) = state
+        .get_workflow_plan_draft_scoped(
+            &plan_id,
+            &tenant_context,
+            verified_tenant_context.as_deref(),
+        )
+        .await
+    {
         session.draft = Some(draft.clone());
         session.updated_at_ms = crate::now_ms();
         if session.title.trim().is_empty()
@@ -1044,9 +709,19 @@ pub(super) async fn workflow_planner_session_message(
         {
             session.title = draft.current_plan.title.clone();
         }
-        let _ = state.put_workflow_planner_session(session.clone()).await;
+        state
+            .put_workflow_planner_session(session.clone())
+            .await
+            .map_err(|_| workflow_planner_session_scope_error(&session_id))?;
     }
-    workflow_planner_session_response(&state, &session, response).await
+    workflow_planner_session_response(
+        &state,
+        &session,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        response,
+    )
+    .await
 }
 
 pub(super) async fn workflow_planner_session_message_async(
@@ -1066,7 +741,14 @@ pub(super) async fn workflow_planner_session_message_async(
             })),
         ));
     };
-    ensure_workflow_planner_session_tenant(&session, &tenant_context)?;
+    ensure_workflow_planner_session_access(
+        &state,
+        &session,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        true,
+    )
+    .await?;
     if planner_session_operation_running(&session) {
         return Err((
             StatusCode::CONFLICT,
@@ -1116,6 +798,7 @@ pub(super) async fn workflow_planner_session_message_async(
 pub(super) async fn workflow_planner_session_reset(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(session_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let Some(mut session) = state.get_workflow_planner_session(&session_id).await else {
@@ -1128,11 +811,20 @@ pub(super) async fn workflow_planner_session_reset(
             })),
         ));
     };
-    ensure_workflow_planner_session_tenant(&session, &tenant_context)?;
+    ensure_workflow_planner_session_access(
+        &state,
+        &session,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        true,
+    )
+    .await?;
     if session.current_plan_id.is_none() {
         if let Some(draft) = session.draft.clone() {
             session.current_plan_id = Some(draft.current_plan.plan_id.clone());
-            let _ = state.put_workflow_plan_draft(draft).await;
+            if tenant_context.is_local_implicit() {
+                state.put_workflow_plan_draft(draft).await;
+            }
         }
     }
     let Some(plan_id) = session.current_plan_id.clone() else {
@@ -1147,17 +839,35 @@ pub(super) async fn workflow_planner_session_reset(
     };
     if state.get_workflow_plan_draft(&plan_id).await.is_none() {
         if let Some(draft) = session.draft.clone() {
-            state.put_workflow_plan_draft(draft).await;
+            if tenant_context.is_local_implicit() {
+                state.put_workflow_plan_draft(draft).await;
+            }
         }
     }
     let response = workflow_plan_chat_reset(
         State(state.clone()),
+        Extension(tenant_context.clone()),
+        verified_tenant_context.clone(),
         Json(WorkflowPlanChatResetRequest {
             plan_id: plan_id.clone(),
         }),
     )
     .await?;
-    if let Some(draft) = state.get_workflow_plan_draft(&plan_id).await {
+    ensure_current_workflow_planner_session_write(
+        &state,
+        &session_id,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await?;
+    if let Some(draft) = state
+        .get_workflow_plan_draft_scoped(
+            &plan_id,
+            &tenant_context,
+            verified_tenant_context.as_deref(),
+        )
+        .await
+    {
         session.draft = Some(draft.clone());
         session.updated_at_ms = crate::now_ms();
         if session.title.trim().is_empty()
@@ -1166,13 +876,25 @@ pub(super) async fn workflow_planner_session_reset(
         {
             session.title = draft.current_plan.title.clone();
         }
-        let _ = state.put_workflow_planner_session(session.clone()).await;
+        state
+            .put_workflow_planner_session(session.clone())
+            .await
+            .map_err(|_| workflow_planner_session_scope_error(&session_id))?;
     }
-    workflow_planner_session_response(&state, &session, response).await
+    workflow_planner_session_response(
+        &state,
+        &session,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        response,
+    )
+    .await
 }
 
 async fn workflow_plan_import_inner(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanImportRequest>,
     persist: bool,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -1224,10 +946,41 @@ async fn workflow_plan_import_inner(
         .filter(|value| !value.is_empty())
         .unwrap_or("workflow-imports")
         .to_string();
-    let draft = workflow_plan_import_draft(&import_preview, &workspace_root);
+    let mut draft = workflow_plan_import_draft(&import_preview, &workspace_root);
+    if !tenant_context.is_local_implicit() {
+        let binding = WorkflowPlanDraftAccessBinding::Actor(tenant_context.clone());
+        if !workflow_plan_access_binding_allowed(
+            &state,
+            &tenant_context,
+            verified_tenant_context.as_deref(),
+            &binding,
+            true,
+        )
+        .await
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "verified planner authoring authority is required",
+                    "code": "WORKFLOW_PLAN_AUTH_REQUIRED",
+                })),
+            ));
+        }
+        draft = retag_workflow_plan_draft(&draft, &format!("wfplan-{}", Uuid::new_v4())).map_err(
+            |error| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": error,
+                        "code": "WORKFLOW_PLAN_INVALID",
+                    })),
+                )
+            },
+        )?;
+    }
     let session = WorkflowPlannerSessionRecord {
         session_id: format!("wfplan-session-{}", Uuid::new_v4()),
-        tenant_context: tandem_types::TenantContext::local_implicit(),
+        tenant_context,
         linked_chat_session_id: None,
         linked_chat_run_id: None,
         last_referenced_at_ms: None,
@@ -1242,6 +995,7 @@ async fn workflow_plan_import_inner(
             .unwrap_or_else(|| workflow_plan_import_title(&imported_goal, &source_bundle_digest)),
         workspace_root,
         source_kind: "imported_bundle".to_string(),
+        source_workflow: None,
         source_bundle_digest: Some(source_bundle_digest.clone()),
         source_pack_id: None,
         source_pack_version: None,
@@ -1538,59 +1292,16 @@ fn workflow_pack_validate_cover_file(path: &FsPath) -> anyhow::Result<&'static s
     Ok(mime)
 }
 
-async fn workflow_plan_pack_export_bundle(
-    state: &AppState,
-    input: &WorkflowPlanPackExportRequest,
-) -> Result<(crate::WorkflowPlan, u32), (StatusCode, Json<Value>)> {
-    if let Some(session_id) = input
-        .session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        let Some(session) = state.get_workflow_planner_session(session_id).await else {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "workflow planner session not found"})),
-            ));
-        };
-        if let Some(draft) = session.draft {
-            return Ok((draft.current_plan, draft.plan_revision));
-        }
-        if let Some(plan_id) = session.current_plan_id.as_deref() {
-            if let Some(plan) = state.get_workflow_plan(plan_id).await {
-                return Ok((plan, 1));
-            }
-        }
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "workflow session does not contain an exportable plan"})),
-        ));
-    }
-    if let Some(plan_id) = input
-        .plan_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        if let Some(draft) = state.get_workflow_plan_draft(plan_id).await {
-            return Ok((draft.current_plan, draft.plan_revision));
-        }
-        if let Some(plan) = state.get_workflow_plan(plan_id).await {
-            return Ok((plan, 1));
-        }
-    }
-    Err((
-        StatusCode::BAD_REQUEST,
-        Json(json!({"error": "export requires session_id or plan_id"})),
-    ))
-}
-
 pub(super) async fn workflow_plan_export_pack(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanPackExportRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let (plan, revision) = workflow_plan_pack_export_bundle(&state, &input).await?;
+    let verified = verified_tenant_context.as_ref().map(|value| &value.0);
+    let (plan, revision) =
+        workflow_plan_pack_export_bundle(&state, &tenant_context, verified, &input).await?;
+    let actor_scope = workflow_pack_export_actor_scope(&tenant_context, verified, &plan.plan_id)?;
     let plan_json = compiler_api::workflow_plan_to_json(&plan).map_err(|error| {
         (
             StatusCode::BAD_REQUEST,
@@ -1639,6 +1350,20 @@ pub(super) async fn workflow_plan_export_pack(
         .to_string();
     let workflow_id = workflow_pack_slug(&plan.plan_id, "workflow");
     let workflow_path = format!("workflows/{workflow_id}/plan-package.json");
+    if !tenant_context.is_local_implicit()
+        && input
+            .cover_image_path
+            .as_deref()
+            .is_some_and(|path| !path.trim().is_empty())
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "hosted pack exports require a managed cover image upload",
+                "code": "WORKFLOW_PACK_INVALID_COVER"
+            })),
+        ));
+    }
     let cover_source = input
         .cover_image_path
         .as_deref()
@@ -1729,16 +1454,24 @@ pub(super) async fn workflow_plan_export_pack(
             Json(json!({"error": error.to_string()})),
         )
     })?;
-    let exports_dir = crate::pack_manager::PackManager::default_root()
-        .join("exports")
-        .join("workflow-packs");
+    let exports_root = state.pack_manager.workflow_pack_exports_root();
+    let exports_dir = actor_scope
+        .as_deref()
+        .map(|scope| exports_root.join(scope))
+        .unwrap_or(exports_root);
+    ensure_workflow_plan_id_access(&state, &tenant_context, verified, &plan.plan_id, false).await?;
     fs::create_dir_all(&exports_dir).map_err(|error| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": error.to_string()})),
         )
     })?;
-    let output = exports_dir.join(format!("{}-{}.zip", name, version));
+    let output = exports_dir.join(format!(
+        "{}-{}-{}.zip",
+        name,
+        workflow_pack_slug(&version, "version"),
+        Uuid::new_v4()
+    ));
     let file = File::create(&output).map_err(|error| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1805,10 +1538,18 @@ pub(super) async fn workflow_plan_export_pack(
         },
         "exported": {
             "path": output.to_string_lossy(),
-            "download_url": format!(
-                "/workflow-plans/export/pack/download?path={}",
-                urlencoding::encode(&output.to_string_lossy())
-            ),
+            "download_url": if actor_scope.is_some() {
+                format!(
+                    "/workflow-plans/export/pack/download?path={}&plan_id={}",
+                    urlencoding::encode(&output.to_string_lossy()),
+                    urlencoding::encode(&plan.plan_id)
+                )
+            } else {
+                format!(
+                    "/workflow-plans/export/pack/download?path={}",
+                    urlencoding::encode(&output.to_string_lossy())
+                )
+            },
             "sha256": sha256,
             "bytes": bytes,
         },
@@ -1819,19 +1560,35 @@ pub(super) async fn workflow_plan_export_pack(
 }
 
 pub(super) async fn workflow_plan_export_pack_download(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Query(query): Query<WorkflowPlanPackDownloadQuery>,
 ) -> Result<Response, StatusCode> {
     let requested = PathBuf::from(query.path.trim());
-    let root = crate::pack_manager::PackManager::default_root()
-        .join("exports")
-        .join("workflow-packs");
-    let root = root.canonicalize().map_err(|_| StatusCode::NOT_FOUND)?;
-    let path = requested
-        .canonicalize()
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    if path != root && !path.starts_with(&root) {
-        return Err(StatusCode::FORBIDDEN);
-    }
+    let path = if tenant_context.is_local_implicit() {
+        let root = state
+            .pack_manager
+            .workflow_pack_exports_root()
+            .canonicalize()
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        let path = requested
+            .canonicalize()
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        if path == root || !path.starts_with(&root) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        path
+    } else {
+        workflow_pack_authorize_hosted_export_path(
+            &state,
+            &tenant_context,
+            verified_tenant_context.as_ref().map(|value| &value.0),
+            &requested,
+            query.plan_id.as_deref(),
+        )
+        .await?
+    };
     if path.extension().and_then(|value| value.to_str()) != Some("zip") {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -1858,10 +1615,39 @@ pub(super) async fn workflow_plan_export_pack_download(
 
 async fn workflow_plan_import_pack_inner(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanPackImportRequest>,
     persist: bool,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let pack_path = PathBuf::from(input.path.trim());
+    let requested = PathBuf::from(input.path.trim());
+    let pack_path = if tenant_context.is_local_implicit() {
+        requested
+    } else {
+        workflow_pack_authorize_hosted_export_path(
+            &state,
+            &tenant_context,
+            verified_tenant_context.as_ref().map(|value| &value.0),
+            &requested,
+            input.plan_id.as_deref(),
+        )
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "workflow pack not found"})),
+            )
+        })?
+    };
+    if persist && !tenant_context.is_local_implicit() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "hosted workflow pack installation requires tenant-scoped pack storage",
+                "code": "HOSTED_PACK_IMPORT_UNAVAILABLE"
+            })),
+        ));
+    }
     workflow_pack_validate_zip(&pack_path).map_err(|error| {
         (
             StatusCode::BAD_REQUEST,
@@ -1998,7 +1784,10 @@ async fn workflow_plan_import_pack_inner(
         .await
     {
         Ok(record) => record,
-        Err(error) if error.to_string().contains("pack already installed") => {
+        Err(error)
+            if tenant_context.is_local_implicit()
+                && error.to_string().contains("pack already installed") =>
+        {
             let packs = state.pack_manager.list().await.map_err(|err| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -2023,8 +1812,14 @@ async fn workflow_plan_import_pack_inner(
     };
     let mut sessions = Vec::new();
     for request in import_requests {
-        let response =
-            workflow_plan_import_inner(State(state.clone()), Json(request), true).await?;
+        let response = workflow_plan_import_inner(
+            State(state.clone()),
+            Extension(tenant_context.clone()),
+            verified_tenant_context.clone(),
+            Json(request),
+            true,
+        )
+        .await?;
         let mut payload = response.0;
         if let Some(session_value) = payload.get_mut("session") {
             if let Ok(mut session) =
@@ -2062,30 +1857,66 @@ async fn workflow_plan_import_pack_inner(
 
 pub(super) async fn workflow_plan_import_pack(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanPackImportRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    workflow_plan_import_pack_inner(State(state), Json(input), true).await
+    workflow_plan_import_pack_inner(
+        State(state),
+        Extension(tenant_context),
+        verified_tenant_context,
+        Json(input),
+        true,
+    )
+    .await
 }
 
 pub(super) async fn workflow_plan_import_pack_preview(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanPackImportRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    workflow_plan_import_pack_inner(State(state), Json(input), false).await
+    workflow_plan_import_pack_inner(
+        State(state),
+        Extension(tenant_context),
+        verified_tenant_context,
+        Json(input),
+        false,
+    )
+    .await
 }
 
 pub(super) async fn workflow_plan_import(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanImportRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    workflow_plan_import_inner(State(state), Json(input), true).await
+    workflow_plan_import_inner(
+        State(state),
+        Extension(tenant_context),
+        verified_tenant_context,
+        Json(input),
+        true,
+    )
+    .await
 }
 
 pub(super) async fn workflow_plan_import_preview(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanImportRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    workflow_plan_import_inner(State(state), Json(input), false).await
+    workflow_plan_import_inner(
+        State(state),
+        Extension(tenant_context),
+        verified_tenant_context,
+        Json(input),
+        false,
+    )
+    .await
 }
 
 async fn export_workflow_plan_to_pack_builder(

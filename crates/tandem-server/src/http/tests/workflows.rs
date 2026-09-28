@@ -476,7 +476,7 @@ async fn workflow_dispatch_executes_hooks_and_dedupes() {
                     "tenantContext": {
                         "org_id": "acme",
                         "workspace_id": "north",
-                        "user_id": "user-1"
+                        "actor_id": "user-1"
                     }
                 }),
             ),
@@ -492,7 +492,7 @@ async fn workflow_dispatch_executes_hooks_and_dedupes() {
                     "tenantContext": {
                         "org_id": "acme",
                         "workspace_id": "north",
-                        "user_id": "user-1"
+                        "actor_id": "user-1"
                     }
                 }),
             ),
@@ -508,7 +508,7 @@ async fn workflow_dispatch_executes_hooks_and_dedupes() {
                     "tenantContext": {
                         "org_id": "acme",
                         "workspace_id": "north",
-                        "user_id": "user-1"
+                        "actor_id": "user-1"
                     }
                 }),
             ),
@@ -551,6 +551,7 @@ async fn workflow_dispatch_executes_hooks_and_dedupes() {
                     .any(|action| action.action == "tool:workflow_test.slack")
             })
             .expect("slack workflow run");
+        assert_eq!(slack_run.tenant_context.actor_id.as_deref(), Some("user-1"));
         let slack_action_output = slack_run.actions[0]
             .output
             .clone()
@@ -793,6 +794,34 @@ async fn workflow_hook_patch_disables_binding() {
             .map(|rows| rows.len()),
         Some(0)
     );
+}
+
+#[tokio::test]
+async fn workflow_hook_patch_missing_binding_does_not_persist_override() {
+    let state = test_state().await;
+    let path = state.workflow_hook_overrides_path.clone();
+    let previous_file = std::fs::read(&path).ok();
+    let app = app_router(state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/workflow-hooks/missing-binding")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "enabled": false }).to_string()))
+                .expect("patch request"),
+        )
+        .await
+        .expect("patch response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(!state
+        .workflow_hook_overrides
+        .read()
+        .await
+        .contains_key("missing-binding"));
+    assert_eq!(std::fs::read(&path).ok(), previous_file);
 }
 
 // ── TAN-73: workflow dispatcher pause/resume for approval gates ─────────────
@@ -1362,6 +1391,135 @@ async fn workflow_gate_expiring_after_audit_cannot_consume_nonce() {
     assert_eq!(
         run.awaiting_gate.as_ref().map(|gate| gate.nonce.as_str()),
         Some(original_nonce.as_str())
+    );
+    assert!(crm_calls.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn workflow_gate_reviewer_revoked_after_audit_cannot_consume_nonce() {
+    use axum::{routing::post, Extension};
+
+    let (state, crm_calls) = gated_workflow_state().await;
+    let local_app = app_router(state.clone());
+    let (run_id, _) = start_gated_run_as(&local_app, "org-a", "dep-a", "alice").await;
+    state
+        .update_workflow_run(&run_id, |run| {
+            run.tenant_context.deployment_id = Some("dep-a".into());
+        })
+        .await
+        .expect("scope pending workflow run to hosted deployment");
+    let before = std::fs::read(&state.workflow_runs_path).expect("workflow run store");
+    let original_nonce = state
+        .get_workflow_run(&run_id)
+        .await
+        .expect("pending workflow run")
+        .awaiting_gate
+        .expect("pending workflow gate")
+        .nonce;
+
+    let now = crate::now_ms();
+    let policy = |role: &str, version| {
+        serde_json::from_value::<tandem_enterprise_contract::hosted_policy::HostedPolicyBundle>(
+            json!({
+                "schema_version": 1, "policy_version": version,
+                "organization_id": "org-a", "deployment_id": "dep-a",
+                "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+                "users": [{
+                    "id": "bob", "email": null, "username": null, "role": role,
+                    "capabilities": tandem_enterprise_contract::hosted_policy::role_capabilities(role),
+                    "is_active": true, "email_verified": true
+                }],
+                "org_units": [], "org_unit_memberships": [], "deployment_grants": []
+            }),
+        )
+        .expect("hosted policy bundle")
+    };
+    state
+        .enterprise
+        .hosted_policy
+        .install_test_bundle(policy("admin", 1))
+        .expect("install initial policy");
+    let tenant =
+        TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".into()), "bob");
+    let principal = tandem_types::RequestPrincipal::authenticated_user("bob", "tandem-test");
+    let mut verified = tandem_types::VerifiedTenantContext {
+        tenant_context: tenant.clone(),
+        human_actor: tandem_types::HumanActor::tandem_user("bob"),
+        authority_chain: tandem_types::AuthorityChain::from_request(principal.clone()),
+        roles: vec!["hosted:role:admin".into()],
+        org_units: Vec::new(),
+        capabilities: tandem_enterprise_contract::hosted_policy::role_capabilities("admin")
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        policy_version: Some(1),
+        strict_projection: None,
+        issuer: "tandem-test".into(),
+        audience: "tandem-runtime".into(),
+        issued_at_ms: now,
+        expires_at_ms: now + 60_000,
+        assertion_id: "workflow-gate-revoked-bob".into(),
+        assertion_key_id: None,
+    };
+    state
+        .enterprise
+        .hosted_policy
+        .project(&mut verified)
+        .expect("project initial reviewer");
+    let reviewer_app = axum::Router::new()
+        .route(
+            "/workflows/runs/{id}/gate",
+            post(super::super::workflows::workflow_run_gate_decide),
+        )
+        .layer(Extension(verified))
+        .layer(Extension(principal))
+        .layer(Extension(tenant))
+        .with_state(state.clone());
+
+    let persistence_guard = state.workflow_runs_persistence.lock().await;
+    let decision_run_id = run_id.clone();
+    let decision = tokio::spawn(async move {
+        decide_workflow_gate(&reviewer_app, &decision_run_id, "approve", "control_panel").await
+    });
+    let audit_committed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+                .await
+                .unwrap_or_default();
+            if audit.contains("workflow.governance.gate_decided") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        audit_committed.is_ok(),
+        "gate decision did not reach audit barrier"
+    );
+    state
+        .enterprise
+        .hosted_policy
+        .install_test_bundle(policy("member", 2))
+        .expect("revoke reviewer");
+    drop(persistence_guard);
+
+    let (status, body) = tokio::time::timeout(std::time::Duration::from_secs(5), decision)
+        .await
+        .expect("gate decision unblocked")
+        .expect("gate decision task");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "WORKFLOW_GATE_REVIEWER_FORBIDDEN");
+    let run = state.get_workflow_run(&run_id).await.expect("pending run");
+    assert_eq!(run.status, crate::WorkflowRunStatus::AwaitingApproval);
+    assert!(run.gate_history.is_empty());
+    assert_eq!(
+        run.awaiting_gate.as_ref().map(|gate| gate.nonce.as_str()),
+        Some(original_nonce.as_str())
+    );
+    assert_eq!(
+        std::fs::read(&state.workflow_runs_path).expect("workflow run store"),
+        before
     );
     assert!(crm_calls.lock().await.is_empty());
 }

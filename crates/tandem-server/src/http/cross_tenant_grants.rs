@@ -4,7 +4,7 @@
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::collections::BTreeMap;
-use tandem_types::VerifiedTenantContext;
+use tandem_types::{CrossTenantGrantRecord, VerifiedTenantContext};
 
 use crate::AppState;
 
@@ -25,6 +25,28 @@ pub(crate) async fn enrich_verified_context_with_inbound_cross_tenant_grants(
         .values()
         .cloned()
         .collect::<Vec<_>>();
+    project_inbound_cross_tenant_grants(verified, records.iter(), now);
+}
+
+pub(super) fn try_enrich_verified_context_with_inbound_cross_tenant_grants(
+    state: &AppState,
+    verified: &mut VerifiedTenantContext,
+) -> bool {
+    if verified.strict_projection.is_none() || verified.tenant_context.is_local_implicit() {
+        return true;
+    }
+    let Ok(records) = state.enterprise.cross_tenant_grants.try_read() else {
+        return false;
+    };
+    project_inbound_cross_tenant_grants(verified, records.values(), crate::now_ms());
+    true
+}
+
+fn project_inbound_cross_tenant_grants<'a>(
+    verified: &mut VerifiedTenantContext,
+    records: impl IntoIterator<Item = &'a CrossTenantGrantRecord>,
+    now: u64,
+) {
     let Some(strict_projection) = verified.strict_projection.as_mut() else {
         return;
     };

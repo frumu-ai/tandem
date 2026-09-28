@@ -183,6 +183,10 @@ impl PackManager {
             })
     }
 
+    pub(crate) fn workflow_pack_exports_root(&self) -> PathBuf {
+        self.root.join("exports").join("workflow-packs")
+    }
+
     pub async fn list(&self) -> anyhow::Result<Vec<PackInstallRecord>> {
         let index = self.read_index().await?;
         Ok(index.packs)

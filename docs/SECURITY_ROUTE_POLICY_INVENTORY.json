@@ -1463,7 +1463,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:377"
+        "crates/tandem-server/src/http/routes_governance.rs:438"
       ]
     },
     {
@@ -1476,7 +1476,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:357"
+        "crates/tandem-server/src/http/routes_governance.rs:418"
       ]
     },
     {
@@ -1489,7 +1489,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:357"
+        "crates/tandem-server/src/http/routes_governance.rs:418"
       ]
     },
     {
@@ -1502,7 +1502,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:361"
+        "crates/tandem-server/src/http/routes_governance.rs:422"
       ]
     },
     {
@@ -1515,7 +1515,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:361"
+        "crates/tandem-server/src/http/routes_governance.rs:422"
       ]
     },
     {
@@ -1528,7 +1528,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:361"
+        "crates/tandem-server/src/http/routes_governance.rs:422"
       ]
     },
     {
@@ -1541,7 +1541,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:365"
+        "crates/tandem-server/src/http/routes_governance.rs:426"
       ]
     },
     {
@@ -1593,7 +1593,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:369"
+        "crates/tandem-server/src/http/routes_governance.rs:430"
       ]
     },
     {
@@ -1619,7 +1619,7 @@
       "resolver": "tenant_resource_from_state",
       "policy_origin": "tenant.resource",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:373"
+        "crates/tandem-server/src/http/routes_governance.rs:434"
       ]
     },
     {
@@ -5961,7 +5961,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:349"
+        "crates/tandem-server/src/http/routes_governance.rs:410"
       ]
     },
     {
@@ -5974,7 +5974,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:349"
+        "crates/tandem-server/src/http/routes_governance.rs:410"
       ]
     },
     {
@@ -5987,7 +5987,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:329"
+        "crates/tandem-server/src/http/routes_governance.rs:390"
       ]
     },
     {
@@ -6000,7 +6000,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:329"
+        "crates/tandem-server/src/http/routes_governance.rs:390"
       ]
     },
     {
@@ -6013,7 +6013,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:333"
+        "crates/tandem-server/src/http/routes_governance.rs:394"
       ]
     },
     {
@@ -6026,7 +6026,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:337"
+        "crates/tandem-server/src/http/routes_governance.rs:398"
       ]
     },
     {
@@ -6039,7 +6039,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:341"
+        "crates/tandem-server/src/http/routes_governance.rs:402"
       ]
     },
     {
@@ -6052,7 +6052,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:325"
+        "crates/tandem-server/src/http/routes_governance.rs:386"
       ]
     },
     {
@@ -6065,7 +6065,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:325"
+        "crates/tandem-server/src/http/routes_governance.rs:386"
       ]
     },
     {
@@ -6078,7 +6078,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:353"
+        "crates/tandem-server/src/http/routes_governance.rs:414"
       ]
     },
     {
@@ -6091,7 +6091,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:353"
+        "crates/tandem-server/src/http/routes_governance.rs:414"
       ]
     },
     {
@@ -6104,7 +6104,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:345"
+        "crates/tandem-server/src/http/routes_governance.rs:406"
       ]
     },
     {
@@ -6117,7 +6117,7 @@
       "resolver": "tenant_request_or_governance_record",
       "policy_origin": "governance.review",
       "sources": [
-        "crates/tandem-server/src/http/routes_governance.rs:345"
+        "crates/tandem-server/src/http/routes_governance.rs:406"
       ]
     },
     {
@@ -10584,10 +10584,10 @@
       "method": "GET",
       "path": "/workflow-plans/sessions",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
-      "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "authorization_policy": "tenant_resource_owner_or_scoped_grant",
+      "capability": "resource.owner_or_grant",
+      "resolver": "tenant_resource_from_state",
+      "policy_origin": "tenant.resource",
       "sources": [
         "crates/tandem-server/src/http/routes_workflow_planner.rs:12"
       ]
@@ -10597,10 +10597,10 @@
       "method": "HEAD",
       "path": "/workflow-plans/sessions",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
-      "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "authorization_policy": "tenant_resource_owner_or_scoped_grant",
+      "capability": "resource.owner_or_grant",
+      "resolver": "tenant_resource_from_state",
+      "policy_origin": "tenant.resource",
       "sources": [
         "crates/tandem-server/src/http/routes_workflow_planner.rs:12"
       ]
@@ -10610,10 +10610,10 @@
       "method": "POST",
       "path": "/workflow-plans/sessions",
       "ingress_policy": "runtime_auth_gate",
-      "authorization_policy": "verified_tenant_context",
-      "capability": null,
-      "resolver": "verified_tenant_context",
-      "policy_origin": "tenant.authenticated",
+      "authorization_policy": "tenant_resource_owner_or_scoped_grant",
+      "capability": "resource.owner_or_grant",
+      "resolver": "tenant_resource_from_state",
+      "policy_origin": "tenant.resource",
       "sources": [
         "crates/tandem-server/src/http/routes_workflow_planner.rs:16"
       ]

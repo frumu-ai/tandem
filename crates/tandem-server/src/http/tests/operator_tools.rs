@@ -112,10 +112,11 @@ fn planner_record(
         title: format!("Plan {planner_session_id}"),
         workspace_root: "/tmp/operator-tests".to_string(),
         source_kind: "agentic_chat".to_string(),
+        source_workflow: None,
         source_bundle_digest: None,
         source_pack_id: None,
         source_pack_version: None,
-        current_plan_id: Some(format!("plan-{planner_session_id}")),
+        current_plan_id: None,
         draft: None,
         goal: "Build a workflow".to_string(),
         notes: String::new(),
@@ -205,8 +206,8 @@ async fn operator_tool_catalog_separates_reads_drafts_and_consequential_controls
 #[tokio::test]
 async fn operator_artifact_context_is_tenant_scoped_and_refuses_ambiguous_followups() {
     let state = test_state().await;
-    let tenant_a = TenantContext::explicit("org-a", "workspace-a", None);
-    let tenant_b = TenantContext::explicit("org-b", "workspace-b", None);
+    let tenant_a = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "actor-a");
+    let tenant_b = TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "actor-b");
     state
         .put_workflow_planner_session(planner_record(tenant_a.clone(), "planner-a1", "chat-1", 10))
         .await
@@ -331,7 +332,7 @@ async fn prompt_submission_idempotency_replays_the_original_durable_run() {
 }
 
 #[tokio::test]
-async fn workflow_planner_session_http_reads_are_tenant_scoped() {
+async fn workflow_planner_session_http_reads_require_verified_owner() {
     let state = test_state().await;
     let tenant_a = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "actor-a");
     state
@@ -360,7 +361,8 @@ async fn workflow_planner_session_http_reads_are_tenant_scoped() {
         .unwrap();
     assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
 
-    let owner = app
+    let unsigned_owner = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/workflow-plans/sessions/planner-private")
@@ -372,6 +374,24 @@ async fn workflow_planner_session_http_reads_are_tenant_scoped() {
         )
         .await
         .unwrap();
+    assert_eq!(unsigned_owner.status(), StatusCode::NOT_FOUND);
+
+    let mut verified_owner_request = Request::builder()
+        .uri("/workflow-plans/sessions/planner-private")
+        .header("x-tandem-org-id", "org-a")
+        .header("x-tandem-workspace-id", "workspace-a")
+        .header("x-tandem-actor-id", "actor-a")
+        .body(Body::empty())
+        .unwrap();
+    verified_owner_request
+        .extensions_mut()
+        .insert(verified_context(
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "actor-a"),
+            "actor-a",
+            Vec::new(),
+            Vec::new(),
+        ));
+    let owner = app.oneshot(verified_owner_request).await.unwrap();
     assert_eq!(owner.status(), StatusCode::OK);
 }
 
@@ -626,6 +646,167 @@ async fn duplicate_workflow_start_keeps_the_original_reservation_in_progress() {
         .expect("reservation remains owned by original call");
     assert_eq!(record.request_fingerprint, fingerprint);
     assert!(record.outcome.is_none());
+}
+
+#[tokio::test]
+async fn operator_idempotent_replay_is_scoped_to_the_original_actor() {
+    let state = test_state().await;
+    let alice_tenant =
+        TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    let bob_tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
+    let alice_verified = verified_context(
+        alice_tenant.clone(),
+        "alice",
+        vec!["operator".to_string()],
+        Vec::new(),
+    );
+    let bob_verified = verified_context(
+        bob_tenant.clone(),
+        "bob",
+        vec!["operator".to_string()],
+        Vec::new(),
+    );
+    let alice_chat = chat_session(&state, alice_tenant.clone(), Some(alice_verified)).await;
+    let bob_chat = chat_session(&state, bob_tenant.clone(), Some(bob_verified)).await;
+    assert_ne!(alice_chat.id, bob_chat.id);
+
+    for (tool_name, operation, public_args) in [
+        (
+            "workflow_plan_start",
+            "operator.workflow_plan_start",
+            json!({ "prompt": "Create a private report", "idempotency_key": "shared-start" }),
+        ),
+        (
+            "automation_manage_draft",
+            "operator.automation_draft",
+            json!({ "action": "validate", "automation_id": "alice-private", "idempotency_key": "shared-draft" }),
+        ),
+        (
+            "automation_control",
+            "operator.automation_control",
+            json!({ "action": "archive", "automation_id": "alice-private", "idempotency_key": "shared-control" }),
+        ),
+    ] {
+        let key = public_args["idempotency_key"].as_str().unwrap().to_string();
+        let fingerprint_operation = if tool_name == "automation_manage_draft" {
+            "validate"
+        } else {
+            operation
+        };
+        let fingerprint = crate::sha256_hex(&[fingerprint_operation, &public_args.to_string()]);
+        state
+            .reserve_idempotency_key(crate::app::state::IdempotencyReservationInput {
+                tenant_context: alice_tenant.clone(),
+                operation: operation.to_string(),
+                key: key.clone(),
+                owner: "alice".to_string(),
+                request_fingerprint: fingerprint,
+                first_seen_event_id: None,
+                now_ms: crate::now_ms(),
+                expires_at_ms: None,
+            })
+            .await
+            .unwrap();
+        state
+            .complete_idempotency_key(
+                &alice_tenant,
+                operation,
+                &key,
+                crate::app::state::IdempotencyKeyOutcome {
+                    outcome_kind: "completed".to_string(),
+                    completed_at_ms: crate::now_ms(),
+                    primary_ref_kind: None,
+                    primary_ref_id: None,
+                    secondary_ref_kind: None,
+                    secondary_ref_id: None,
+                    details: json!({ "secret": "alice-private" }),
+                },
+                crate::now_ms(),
+            )
+            .await
+            .unwrap();
+        let mut args = public_args;
+        args["__dispatch_session_id"] = json!(bob_chat.id);
+        let error = operator_tool(state.clone(), tool_name)
+            .execute_for_tenant(args, bob_tenant.clone())
+            .await
+            .expect_err("another actor cannot replay a cached result");
+        assert!(error.to_string().contains("different request"));
+        let record = state
+            .get_idempotency_key(&alice_tenant, operation, &key)
+            .await
+            .unwrap();
+        assert_eq!(record.owner, "alice");
+        assert_eq!(record.outcome.unwrap().details["secret"], "alice-private");
+    }
+}
+
+#[tokio::test]
+async fn revoked_hosted_operator_cannot_leave_an_orphan_planner_session() {
+    let state = test_state().await;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("policy.json");
+    let now = crate::now_ms();
+    let mut policy = json!({
+        "schema_version": 1, "policy_version": 1,
+        "organization_id": "org-a", "deployment_id": "dep-a",
+        "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+        "users": [{
+            "id": "alice", "email": null, "username": null, "role": "admin",
+            "capabilities": tandem_enterprise_contract::hosted_policy::role_capabilities("admin"),
+            "is_active": true, "email_verified": true
+        }],
+        "org_units": [], "org_unit_memberships": [], "deployment_grants": []
+    });
+    std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", path.clone());
+    state.reload_hosted_policy().await.unwrap();
+    let tenant =
+        TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".into()), "alice");
+    let mut verified = verified_context(
+        tenant.clone(),
+        "alice",
+        vec!["hosted:role:admin".to_string()],
+        tandem_enterprise_contract::hosted_policy::role_capabilities("admin")
+            .iter()
+            .map(|capability| capability.to_string())
+            .collect(),
+    );
+    verified.policy_version = Some(1);
+    let chat = chat_session(&state, tenant.clone(), Some(verified)).await;
+
+    policy["policy_version"] = json!(2);
+    policy["users"][0]["is_active"] = json!(false);
+    std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    state.reload_hosted_policy().await.unwrap();
+
+    let error = operator_tool(state.clone(), "workflow_plan_start")
+        .execute_for_tenant(
+            json!({
+                "__dispatch_session_id": chat.id,
+                "prompt": "Create a private workflow",
+                "idempotency_key": "revoked-start"
+            }),
+            tenant.clone(),
+        )
+        .await
+        .expect_err("revoked actor must not start a planner session");
+    assert!(error
+        .to_string()
+        .contains("hosted automation write authority"));
+    assert!(state.list_workflow_planner_sessions(None).await.is_empty());
+    assert!(state
+        .get_idempotency_key(&tenant, "operator.workflow_plan_start", "revoked-start")
+        .await
+        .is_none());
 }
 
 #[tokio::test]

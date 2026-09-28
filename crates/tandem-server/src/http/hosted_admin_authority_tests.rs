@@ -125,3 +125,78 @@ fn hosted_admin_guards_require_matching_live_deployment_grant() {
     ];
     assert_guards(&missing, false);
 }
+
+#[tokio::test]
+async fn governance_admin_commit_rejects_a_revoked_ingress_projection() {
+    let state = crate::test_support::test_state().await;
+    let temp = tempfile::tempdir().expect("hosted policy directory");
+    let policy_path = temp.path().join("policy.json");
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", policy_path.clone());
+    let now = crate::now_ms();
+    let write_policy = |version: u64, role: &str| {
+        let capabilities = role_capabilities(role);
+        std::fs::write(
+            &policy_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "policy_version": version,
+                "organization_id": "org-a",
+                "deployment_id": "dep-a",
+                "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+                "users": [{
+                    "id": "alice", "email": null, "username": null,
+                    "role": role, "capabilities": capabilities,
+                    "is_active": true, "email_verified": true
+                }],
+                "org_units": [], "org_unit_memberships": [], "deployment_grants": []
+            }))
+            .unwrap(),
+        )
+        .expect("write hosted policy");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&policy_path, std::fs::Permissions::from_mode(0o600))
+                .expect("private hosted policy");
+        }
+    };
+    write_policy(1, "admin");
+    state
+        .reload_hosted_policy()
+        .await
+        .expect("load admin policy");
+    let ingress_admin = context("admin");
+    let tenant = &ingress_admin.tenant_context;
+    assert!(
+        super::super::routes_governance::require_current_governance_admin(
+            &state,
+            tenant,
+            Some(&ingress_admin)
+        )
+        .is_ok()
+    );
+
+    write_policy(2, "viewer");
+    state
+        .reload_hosted_policy()
+        .await
+        .expect("publish revoked policy");
+    assert!(
+        super::super::routes_governance::governance_mutation_admin_allowed(
+            tenant,
+            Some(&ingress_admin)
+        ),
+        "the request-local projection must remain stale for this regression"
+    );
+    assert!(
+        super::super::routes_governance::require_current_governance_admin(
+            &state,
+            tenant,
+            Some(&ingress_admin)
+        )
+        .is_err()
+    );
+}

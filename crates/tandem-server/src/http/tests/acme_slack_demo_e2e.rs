@@ -581,21 +581,21 @@ async fn acme_slack_demo_e2e_five_profiles_run_the_production_path() {
     world.mock_task.abort();
 }
 
-fn demo_tenant_get(uri: &str) -> Request<Body> {
+fn demo_tenant_get(uri: &str, actor_id: &str) -> Request<Body> {
     Request::builder()
         .method("GET")
         .uri(uri)
         .header("x-tandem-org-id", DEMO_ORG_ID)
         .header("x-tandem-workspace-id", DEMO_WORKSPACE_ID)
-        .header("x-tandem-actor-id", "acme-receipt-reader")
+        .header("x-tandem-actor-id", actor_id)
         .body(Body::empty())
         .expect("tenant request")
 }
 
-async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
+async fn get_json(app: &axum::Router, uri: &str, actor_id: &str) -> (StatusCode, Value) {
     let response = app
         .clone()
-        .oneshot(demo_tenant_get(uri))
+        .oneshot(demo_tenant_get(uri, actor_id))
         .await
         .expect("response");
     let status = response.status();
@@ -606,14 +606,15 @@ async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, payload)
 }
 
-/// Poll `GET /context/runs` (production list API, tenant-scoped) until the
-/// expected number of Slack-originated session receipts is visible.
-async fn wait_for_slack_receipts(app: &axum::Router, expected: usize) -> Vec<Value> {
+/// Poll the production list API as the Slack session's owning actor. Session
+/// receipts must not be visible to an unrelated actor in the same tenant.
+async fn wait_for_slack_receipt(app: &axum::Router, profile: &DemoProfile) -> Value {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let (status, payload) = get_json(
                 app,
                 "/context/runs?run_type=session&source=channel:slack&limit=50",
+                &profile.actor_id,
             )
             .await;
             if status == StatusCode::OK {
@@ -622,8 +623,17 @@ async fn wait_for_slack_receipts(app: &axum::Router, expected: usize) -> Vec<Val
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                if runs.len() >= expected {
-                    return runs;
+                if let Some(run) = runs.iter().find(|run| {
+                    run.pointer("/source_metadata/user_id")
+                        .and_then(Value::as_str)
+                        == Some(profile.slack_user_id)
+                }) {
+                    assert_eq!(
+                        runs.len(),
+                        1,
+                        "an actor must see only their own Slack receipt"
+                    );
+                    return run.clone();
                 }
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -658,18 +668,9 @@ async fn acme_slack_demo_e2e_persists_selectable_slack_receipts() {
     wait_for_posts(&world.slack_mock, world.dataset.profiles.len()).await;
     wait_for_slack_tasks(&world.state).await;
 
-    let runs = wait_for_slack_receipts(&app, world.dataset.profiles.len()).await;
-    assert_eq!(runs.len(), 5, "five selectable Slack receipts");
-
+    let mut run_ids = std::collections::HashSet::new();
     for profile in &world.dataset.profiles {
-        let run = runs
-            .iter()
-            .find(|run| {
-                run.pointer("/source_metadata/user_id")
-                    .and_then(Value::as_str)
-                    == Some(profile.slack_user_id)
-            })
-            .unwrap_or_else(|| panic!("no persisted receipt for {}", profile.slack_user_id));
+        let run = wait_for_slack_receipt(&app, profile).await;
         assert_eq!(
             run.get("source_client").and_then(Value::as_str),
             Some("channel:slack")
@@ -694,15 +695,46 @@ async fn acme_slack_demo_e2e_persists_selectable_slack_receipts() {
             .and_then(Value::as_str)
             .expect("receipt run id");
         assert!(run_id.starts_with("session-"), "session-scoped receipt id");
+        assert!(
+            run_ids.insert(run_id.to_string()),
+            "distinct Slack receipts"
+        );
 
         // The single-run and ledger production endpoints serve the receipt.
-        let (status, _) = get_json(&app, &format!("/context/runs/{run_id}")).await;
+        let (status, _) =
+            get_json(&app, &format!("/context/runs/{run_id}"), &profile.actor_id).await;
         assert_eq!(status, StatusCode::OK, "context run readable");
-        let (status, ledger) =
-            get_json(&app, &format!("/context/runs/{run_id}/ledger?tail=200")).await;
+        let (status, ledger) = get_json(
+            &app,
+            &format!("/context/runs/{run_id}/ledger?tail=200"),
+            &profile.actor_id,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "ledger readable");
         assert!(ledger.get("tool_manifest").is_some());
     }
+    assert_eq!(run_ids.len(), 5, "five distinct selectable Slack receipts");
+
+    let (status, payload) = get_json(
+        &app,
+        "/context/runs?run_type=session&source=channel:slack&limit=50",
+        "acme-receipt-reader",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["runs"].as_array().map(Vec::len), Some(0));
+    let first_run_id = run_ids.iter().next().expect("at least one Slack receipt");
+    let (status, _) = get_json(
+        &app,
+        &format!("/context/runs/{first_run_id}"),
+        "acme-receipt-reader",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "cross-actor receipt read denied"
+    );
 
     // Tenant isolation: another tenant sees none of these receipts.
     let response = app
@@ -895,14 +927,18 @@ async fn acme_slack_demo_e2e_finance_sensitive_tool_enters_the_real_approval_gat
     // decision id, so the governance-evidence export links it end to end.
     #[cfg(feature = "premium-governance")]
     {
-        let receipts = wait_for_slack_receipts(&app, 1).await;
-        let run_id = receipts[0]
+        let receipt = wait_for_slack_receipt(&app, finance).await;
+        let run_id = receipt
             .get("run_id")
             .and_then(Value::as_str)
             .expect("finance receipt run id")
             .to_string();
-        let (status, evidence) =
-            get_json(&app, &format!("/context/runs/{run_id}/governance-evidence")).await;
+        let (status, evidence) = get_json(
+            &app,
+            &format!("/context/runs/{run_id}/governance-evidence"),
+            &finance.actor_id,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "evidence export readable");
         let package = evidence
             .get("evidence_package")

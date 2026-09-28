@@ -4,6 +4,37 @@
 use tandem_types::EngineEvent;
 use tandem_workflows::plan_package::WorkflowPlanDraftReviewRecord;
 
+fn workflow_plan_task_budget_exceeded_error(
+    plan: &crate::WorkflowPlan,
+) -> (StatusCode, Json<Value>) {
+    let task_budget = compiler_api::workflow_task_budget_report_for_plan(
+        plan,
+        Some("rejected"),
+        Some(plan.steps.len()),
+        Some("rejected"),
+    );
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": format!(
+                "Generated workflow plans may include at most {} steps. Regenerate or compact this plan before applying.",
+                compiler_api::GENERATED_WORKFLOW_MAX_STEPS
+            ),
+            "code": "WORKFLOW_PLAN_TASK_BUDGET_EXCEEDED",
+            "task_budget": task_budget,
+            "planner_diagnostics": {
+                "fallback_reason": "task_budget_rejected",
+                "detail": format!(
+                    "Generated plan contained {} steps, above the {} step limit.",
+                    plan.steps.len(),
+                    compiler_api::GENERATED_WORKFLOW_MAX_STEPS
+                ),
+                "task_budget": task_budget,
+            },
+        })),
+    )
+}
+
 fn workflow_planner_session_scope_error(session_id: &str) -> (StatusCode, Json<Value>) {
     (
         StatusCode::NOT_FOUND,
@@ -15,12 +46,172 @@ fn workflow_planner_session_scope_error(session_id: &str) -> (StatusCode, Json<V
     )
 }
 
-fn ensure_workflow_planner_session_tenant(
+pub(super) async fn ensure_workflow_planner_session_access(
+    state: &AppState,
     session: &WorkflowPlannerSessionRecord,
     tenant_context: &tandem_types::TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    mutation: bool,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    super::ensure_same_tenant(tenant_context, &session.tenant_context)
-        .map_err(|_| workflow_planner_session_scope_error(&session.session_id))
+    if tenant_context.is_local_implicit() {
+        super::ensure_same_tenant(tenant_context, &session.tenant_context)
+            .map_err(|_| workflow_planner_session_scope_error(&session.session_id))?;
+        return Ok(());
+    }
+    let denied = || workflow_planner_session_scope_error(&session.session_id);
+    let binding = if let Some(source) = session.source_workflow.as_ref() {
+        WorkflowPlanDraftAccessBinding::Workflow(source.clone())
+    } else if session.source_kind.trim_start_matches("forked_") == "workflow_learning_revision" {
+        // Legacy revision rows have no immutable source identity.
+        return Err(denied());
+    } else {
+        super::ensure_same_tenant(tenant_context, &session.tenant_context).map_err(|_| denied())?;
+        WorkflowPlanDraftAccessBinding::Actor(session.tenant_context.clone())
+    };
+    if !workflow_plan_access_binding_allowed(state, tenant_context, verified, &binding, mutation)
+        .await
+    {
+        return Err(denied());
+    }
+    if let Some(plan_id) = session.current_plan_id.as_deref() {
+        let valid_draft = session.draft.as_ref().is_some_and(|draft| {
+            draft.current_plan.plan_id == plan_id
+                && draft.initial_plan.plan_id == plan_id
+                && draft.conversation.plan_id == plan_id
+        });
+        if !valid_draft
+            || state.workflow_plan_draft_authority(plan_id).await
+                != Some(WorkflowPlanDraftAuthority::Bound {
+                    binding,
+                    session_id: Some(session.session_id.clone()),
+                })
+        {
+            return Err(denied());
+        }
+    } else if session.draft.is_some() {
+        return Err(denied());
+    }
+    Ok(())
+}
+
+pub(super) async fn ensure_current_workflow_planner_session_write(
+    state: &AppState,
+    session_id: &str,
+    tenant: &tandem_types::TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let current = state
+        .get_workflow_planner_session(session_id)
+        .await
+        .ok_or_else(|| workflow_planner_session_scope_error(session_id))?;
+    ensure_workflow_planner_session_access(state, &current, tenant, verified, true).await
+}
+
+pub(crate) async fn workflow_plan_access_binding_allowed(
+    state: &AppState,
+    tenant: &tandem_types::TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    binding: &WorkflowPlanDraftAccessBinding,
+    mutation: bool,
+) -> bool {
+    if tenant.is_local_implicit() {
+        return true;
+    }
+    let Some(verified) = verified else {
+        return false;
+    };
+    let actor_id = verified.human_actor.actor_id.trim();
+    if actor_id.is_empty()
+        || verified.is_expired_at(crate::now_ms())
+        || !super::tenant_matches(tenant, &verified.tenant_context)
+        || tenant.actor_id.as_deref() != Some(actor_id)
+    {
+        return false;
+    }
+    match binding {
+        WorkflowPlanDraftAccessBinding::Workflow(source) => {
+            let Some(automation) = state.get_automation_v2(&source.workflow_id).await else {
+                return false;
+            };
+            automation.created_at_ms > 0
+                && source.binding
+                    == crate::WorkflowLearningCandidateSourceBinding::workflow(&automation)
+                && if mutation {
+                    super::automation_object_authority::can_write(
+                        state,
+                        tenant,
+                        Some(verified),
+                        &automation,
+                    )
+                } else {
+                    super::automation_object_authority::can_read(
+                        state,
+                        tenant,
+                        Some(verified),
+                        &automation,
+                    )
+                }
+        }
+        WorkflowPlanDraftAccessBinding::Actor(owner) => {
+            if !super::tenant_matches(tenant, owner) || owner.actor_id.as_deref() != Some(actor_id)
+            {
+                return false;
+            }
+            let mut current = verified.clone();
+            if state
+                .enterprise
+                .hosted_policy
+                .project(&mut current)
+                .is_err()
+            {
+                return false;
+            }
+            state
+                .enterprise
+                .hosted_policy
+                .authorize_permission(
+                    Some(&current),
+                    if mutation {
+                        tandem_types::AccessPermission::HostedAutomationWrite
+                    } else {
+                        tandem_types::AccessPermission::HostedAutomationRead
+                    },
+                )
+                .is_ok()
+        }
+    }
+}
+
+pub(super) async fn ensure_workflow_plan_id_access(
+    state: &AppState,
+    tenant: &tandem_types::TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    plan_id: &str,
+    mutation: bool,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if tenant.is_local_implicit() {
+        return Ok(());
+    }
+    let denied = || {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "workflow plan not found",
+                "code": "WORKFLOW_PLAN_NOT_FOUND",
+                "plan_id": plan_id,
+            })),
+        )
+    };
+    let Some(WorkflowPlanDraftAuthority::Bound { binding, .. }) =
+        state.workflow_plan_draft_authority(plan_id).await
+    else {
+        return Err(denied());
+    };
+    if workflow_plan_access_binding_allowed(state, tenant, verified, &binding, mutation).await {
+        Ok(())
+    } else {
+        Err(denied())
+    }
 }
 
 pub(super) fn workflow_plan_mutation_actor_id(

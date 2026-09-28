@@ -18,6 +18,8 @@ use tandem_automation::{
 };
 use tandem_types::{PrincipalKind, PrincipalRef, RequestPrincipal, VerifiedTenantContext};
 
+pub(super) use super::goals_authority::{require_goal_authority, require_goal_owner};
+
 use crate::stateful_runtime::{
     list_stateful_waits, GoalPauseOutcome, GoalResumeOutcome, GovernedTransitionRequest,
     GovernedTransitionResult, OrchestrationStateStore, OrchestrationTransitionAuthority,
@@ -207,84 +209,6 @@ pub(super) fn verified_has_admin_authority(verified: Option<&VerifiedTenantConte
     })
 }
 
-/// Enterprise authority gate for goal mutations. In hosted and enterprise
-/// auth modes the ingress middleware already rejects explicit tenants without
-/// a verified assertion, so a present `VerifiedTenantContext` is the signal
-/// that enterprise enforcement applies: capability-gated surfaces (approval,
-/// wait resolution) then require the named capability or an administrative
-/// role. Local single-tenant mode (no assertion) keeps its operator UX. Deny
-/// wins: nothing in the request body or tenant headers can satisfy this
-/// check.
-pub(super) fn require_goal_authority(
-    _tenant: &TenantContext,
-    verified: Option<&VerifiedTenantContext>,
-    required_capability: Option<&str>,
-) -> Result<(), Response> {
-    let Some(verified) = verified else {
-        // Local single-tenant mode: hosted ingress never reaches here
-        // unverified because unsigned tenant headers are denied upstream.
-        return Ok(());
-    };
-    if let Some(capability) = required_capability {
-        let authorized = verified
-            .capabilities
-            .iter()
-            .any(|value| value == capability)
-            || verified.roles.iter().any(|role| {
-                matches!(
-                    role.as_str(),
-                    "owner" | "admin" | "hosted:owner" | "hosted:admin" | "enterprise:admin"
-                )
-            });
-        if !authorized {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(json!({
-                    "error": "goal_forbidden",
-                    "detail": format!("authenticated principal lacks {capability} authority"),
-                })),
-            )
-                .into_response());
-        }
-    }
-    Ok(())
-}
-
-/// Goal mutations belong to the goal's initiating actor unless the caller
-/// carries administrative authority. Enforced for verified (hosted) callers;
-/// the local single-operator is always the owner.
-pub(super) fn require_goal_owner(
-    _tenant: &TenantContext,
-    verified: Option<&VerifiedTenantContext>,
-    goal: &LongRunningGoal,
-    actor: &PrincipalRef,
-) -> Result<(), Response> {
-    if verified.is_none() || verified_has_admin_authority(verified) {
-        return Ok(());
-    }
-    let started_by = goal
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("started_by"))
-        .and_then(|value| {
-            value
-                .get("id")
-                .and_then(Value::as_str)
-                .or_else(|| value.as_str())
-        });
-    if started_by != Some(actor.id.as_str()) {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "goal_forbidden",
-                "detail": "goal mutation requires its initiating actor or an authorized administrator",
-            })),
-        )
-            .into_response());
-    }
-    Ok(())
-}
-
 /// Authority for emit/approve surfaces, derived from the verified principal.
 fn transition_authority(
     principal: &RequestPrincipal,
@@ -314,6 +238,27 @@ pub(super) fn load_tenant_goal(
             .into_response()),
         Err(error) => Err(goal_error_response(&error)),
     }
+}
+
+pub(super) async fn load_visible_goal(
+    state: &AppState,
+    store: &OrchestrationStateStore,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    goal_id: &str,
+) -> Result<LongRunningGoal, Response> {
+    let current = super::goals_authority::current_goal_context(
+        state,
+        tenant,
+        verified,
+        tandem_types::AccessPermission::HostedAutomationRead,
+    )
+    .await?;
+    let goal = load_tenant_goal(store, tenant, goal_id)?;
+    if !super::goals_authority::can_inspect_goal(state, tenant, current.as_ref(), &goal) {
+        return Err(super::goals_authority::not_found());
+    }
+    Ok(goal)
 }
 
 fn goal_response(goal: &LongRunningGoal) -> Value {
@@ -374,7 +319,7 @@ pub(super) async fn start_goal(
     Json(payload): Json<StartGoalPayload>,
 ) -> Response {
     let verified = verified.as_deref();
-    if let Err(response) = require_goal_authority(&tenant, verified, None) {
+    if let Err(response) = require_goal_authority(&state, &tenant, verified, None) {
         return response;
     }
     let actor = effective_actor(&principal, verified);
@@ -410,12 +355,28 @@ pub(super) async fn start_goal(
             })),
         )
             .into_response(),
-        Ok(StartGoalOutcome::AlreadyStarted { goal, root_run }) => Json(json!({
-            "goal": goal,
-            "root_run_id": root_run.run_id,
-            "replayed": true,
-        }))
-        .into_response(),
+        Ok(StartGoalOutcome::AlreadyStarted { goal, root_run }) => {
+            let current = match super::goals_authority::current_goal_context(
+                &state,
+                &tenant,
+                verified,
+                tandem_types::AccessPermission::HostedUse,
+            )
+            .await
+            {
+                Ok(current) => current,
+                Err(response) => return response,
+            };
+            if !super::goals_authority::can_inspect_goal(&state, &tenant, current.as_ref(), &goal) {
+                return super::goals_authority::not_found();
+            }
+            Json(json!({
+                "goal": goal,
+                "root_run_id": root_run.run_id,
+                "replayed": true,
+            }))
+            .into_response()
+        }
         Err(error) => goal_error_response(&error),
     }
 }
@@ -430,8 +391,20 @@ pub(super) struct GoalListQuery {
 pub(super) async fn list_goals(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<GoalListQuery>,
 ) -> Response {
+    let current = match super::goals_authority::current_goal_context(
+        &state,
+        &tenant,
+        verified.as_deref(),
+        tandem_types::AccessPermission::HostedAutomationRead,
+    )
+    .await
+    {
+        Ok(current) => current,
+        Err(response) => return response,
+    };
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
@@ -440,11 +413,12 @@ pub(super) async fn list_goals(
         .limit
         .unwrap_or(DEFAULT_GOAL_LIST_LIMIT)
         .clamp(1, MAX_GOAL_LIST_LIMIT);
-    match store.list_goals(
+    match store.list_goals_filtered(
         &tenant,
         query.status.as_deref(),
         query.orchestration_id.as_deref(),
         limit,
+        |goal| super::goals_authority::can_inspect_goal(&state, &tenant, current.as_ref(), goal),
     ) {
         Ok(goals) => Json(json!({"goals": goals, "count": goals.len()})).into_response(),
         Err(error) => goal_error_response(&error),
@@ -454,13 +428,14 @@ pub(super) async fn list_goals(
 pub(super) async fn get_goal(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
 ) -> Response {
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
-    match load_tenant_goal(&store, &tenant, &goal_id) {
+    match load_visible_goal(&state, &store, &tenant, verified.as_deref(), &goal_id).await {
         Ok(goal) => Json(goal_response(&goal)).into_response(),
         Err(response) => response,
     }
@@ -482,6 +457,9 @@ pub(super) async fn pause_goal(
 ) -> Response {
     let verified = verified.as_deref();
     let reason = payload.reason.as_deref().unwrap_or("operator pause");
+    if let Err(response) = require_goal_authority(&state, &tenant, verified, None) {
+        return response;
+    }
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
@@ -491,10 +469,7 @@ pub(super) async fn pause_goal(
         Err(response) => return response,
     };
     let actor = effective_actor(&principal, verified);
-    if let Err(response) = require_goal_authority(&tenant, verified, None) {
-        return response;
-    }
-    if let Err(response) = require_goal_owner(&tenant, verified, &stored, &actor) {
+    if let Err(response) = require_goal_owner(&state, &tenant, verified, &stored, &actor) {
         return response;
     }
     match state
@@ -534,6 +509,9 @@ pub(super) async fn resume_goal(
 ) -> Response {
     let verified = verified.as_deref();
     let reason = payload.reason.as_deref().unwrap_or("operator resume");
+    if let Err(response) = require_goal_authority(&state, &tenant, verified, None) {
+        return response;
+    }
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
@@ -543,10 +521,7 @@ pub(super) async fn resume_goal(
         Err(response) => return response,
     };
     let actor = effective_actor(&principal, verified);
-    if let Err(response) = require_goal_authority(&tenant, verified, None) {
-        return response;
-    }
-    if let Err(response) = require_goal_owner(&tenant, verified, &stored, &actor) {
+    if let Err(response) = require_goal_owner(&state, &tenant, verified, &stored, &actor) {
         return response;
     }
     match state
@@ -586,6 +561,9 @@ pub(super) async fn cancel_goal(
 ) -> Response {
     let verified = verified.as_deref();
     let reason = payload.reason.as_deref().unwrap_or("operator cancel");
+    if let Err(response) = require_goal_authority(&state, &tenant, verified, None) {
+        return response;
+    }
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
@@ -595,10 +573,7 @@ pub(super) async fn cancel_goal(
         Err(response) => return response,
     };
     let actor = effective_actor(&principal, verified);
-    if let Err(response) = require_goal_authority(&tenant, verified, None) {
-        return response;
-    }
-    if let Err(response) = require_goal_owner(&tenant, verified, &stored, &actor) {
+    if let Err(response) = require_goal_owner(&state, &tenant, verified, &stored, &actor) {
         return response;
     }
     match state
@@ -639,13 +614,15 @@ pub(super) async fn cancel_goal(
 pub(super) async fn get_goal_graph(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
 ) -> Response {
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
-    let goal = match load_tenant_goal(&store, &tenant, &goal_id) {
+    let goal = match load_visible_goal(&state, &store, &tenant, verified.as_deref(), &goal_id).await
+    {
         Ok(goal) => goal,
         Err(response) => return response,
     };
@@ -739,13 +716,15 @@ pub(super) async fn get_goal_graph(
 pub(super) async fn list_goal_runs(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
 ) -> Response {
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
-    let goal = match load_tenant_goal(&store, &tenant, &goal_id) {
+    let goal = match load_visible_goal(&state, &store, &tenant, verified.as_deref(), &goal_id).await
+    {
         Ok(goal) => goal,
         Err(response) => return response,
     };
@@ -779,6 +758,7 @@ pub(super) struct GoalEventsQuery {
 pub(super) async fn list_goal_events(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
     Query(query): Query<GoalEventsQuery>,
 ) -> Response {
@@ -786,7 +766,9 @@ pub(super) async fn list_goal_events(
         Ok(store) => store,
         Err(response) => return response,
     };
-    if let Err(response) = load_tenant_goal(&store, &tenant, &goal_id) {
+    if let Err(response) =
+        load_visible_goal(&state, &store, &tenant, verified.as_deref(), &goal_id).await
+    {
         return response;
     }
     let limit = query
@@ -823,12 +805,13 @@ pub(super) struct GoalStreamQuery {
 pub(super) async fn stream_goal_events(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
     Query(query): Query<GoalStreamQuery>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, Response> {
     let store = goal_store(&state)?;
-    load_tenant_goal(&store, &tenant, &goal_id)?;
+    let goal = load_visible_goal(&state, &store, &tenant, verified.as_deref(), &goal_id).await?;
     let last_event_id = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
@@ -838,6 +821,8 @@ pub(super) async fn stream_goal_events(
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(256);
     let mut bus = state.event_bus.subscribe();
     let scope_tenant = tenant.clone();
+    let stream_state = state.clone();
+    let stream_verified = verified.map(|extension| extension.0);
     tokio::spawn(async move {
         let ready = Event::default().event("ready").data(
             json!({
@@ -854,6 +839,27 @@ pub(super) async fn stream_goal_events(
             // Drain everything the durable log has after the cursor. Rowid
             // order plus the id header gives exact-once reconnect semantics.
             loop {
+                // A stream can outlive its ingress assertion or a scoped
+                // grant. Rebuild current grants before every replay/tail page.
+                let current = match super::goals_authority::current_goal_context(
+                    &stream_state,
+                    &scope_tenant,
+                    stream_verified.as_ref(),
+                    tandem_types::AccessPermission::HostedAutomationRead,
+                )
+                .await
+                {
+                    Ok(current) => current,
+                    Err(_) => return,
+                };
+                if !super::goals_authority::can_inspect_goal(
+                    &stream_state,
+                    &scope_tenant,
+                    current.as_ref(),
+                    &goal,
+                ) {
+                    return;
+                }
                 let rows = match store.query_goal_events_for_tenant(
                     &scope_tenant,
                     &goal_id,
@@ -862,18 +868,60 @@ pub(super) async fn stream_goal_events(
                 ) {
                     Ok(rows) => rows,
                     Err(error) => {
-                        let _ = tx
-                            .send(Event::default().event("error").data(
-                                json!({"error": "goal_event_read_failed", "detail": error.to_string()})
-                                    .to_string(),
-                            ))
-                            .await;
+                        if let Ok(permit) = tx.reserve().await {
+                            let still_visible = super::goals_authority::current_goal_context(
+                                &stream_state,
+                                &scope_tenant,
+                                stream_verified.as_ref(),
+                                tandem_types::AccessPermission::HostedAutomationRead,
+                            )
+                            .await
+                            .is_ok_and(|current| {
+                                super::goals_authority::can_inspect_goal(
+                                    &stream_state,
+                                    &scope_tenant,
+                                    current.as_ref(),
+                                    &goal,
+                                )
+                            });
+                            if still_visible {
+                                permit.send(Event::default().event("error").data(
+                                    json!({"error": "goal_event_read_failed", "detail": error.to_string()})
+                                        .to_string(),
+                                ));
+                            }
+                        }
                         return;
                     }
                 };
                 let drained = rows.len() < SSE_REPLAY_PAGE;
                 for row in rows {
-                    cursor = row.cursor;
+                    // Reserving may wait behind a slow client. Reproject live
+                    // policy and scoped grants after that wait, immediately
+                    // before sending each event in this page.
+                    let permit = match tx.reserve().await {
+                        Ok(permit) => permit,
+                        Err(_) => return,
+                    };
+                    let current = match super::goals_authority::current_goal_context(
+                        &stream_state,
+                        &scope_tenant,
+                        stream_verified.as_ref(),
+                        tandem_types::AccessPermission::HostedAutomationRead,
+                    )
+                    .await
+                    {
+                        Ok(current) => current,
+                        Err(_) => return,
+                    };
+                    if !super::goals_authority::can_inspect_goal(
+                        &stream_state,
+                        &scope_tenant,
+                        current.as_ref(),
+                        &goal,
+                    ) {
+                        return;
+                    }
                     let event = Event::default()
                         .id(row.cursor.to_string())
                         .event(row.event.event_type.clone())
@@ -884,9 +932,8 @@ pub(super) async fn stream_goal_events(
                             }))
                             .unwrap_or_default(),
                         );
-                    if tx.send(event).await.is_err() {
-                        return;
-                    }
+                    cursor = row.cursor;
+                    permit.send(event);
                 }
                 if drained {
                     break;
@@ -941,13 +988,15 @@ pub(super) fn goal_event_wire(
 pub(super) async fn list_goal_artifacts(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
 ) -> Response {
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
-    let goal = match load_tenant_goal(&store, &tenant, &goal_id) {
+    let goal = match load_visible_goal(&state, &store, &tenant, verified.as_deref(), &goal_id).await
+    {
         Ok(goal) => goal,
         Err(response) => return response,
     };
@@ -979,13 +1028,14 @@ pub(super) async fn list_goal_artifacts(
 pub(super) async fn get_goal_budgets(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
 ) -> Response {
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
-    match load_tenant_goal(&store, &tenant, &goal_id) {
+    match load_visible_goal(&state, &store, &tenant, verified.as_deref(), &goal_id).await {
         Ok(goal) => Json(json!({
             "goal_id": goal_id,
             "status": goal.status,
@@ -1003,13 +1053,16 @@ pub(super) async fn get_goal_budgets(
 pub(super) async fn list_goal_handoffs(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
 ) -> Response {
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
-    if let Err(response) = load_tenant_goal(&store, &tenant, &goal_id) {
+    if let Err(response) =
+        load_visible_goal(&state, &store, &tenant, verified.as_deref(), &goal_id).await
+    {
         return response;
     }
     match store.list_goal_handoffs_for_tenant(&tenant, &goal_id) {
@@ -1037,33 +1090,32 @@ pub(super) async fn emit_goal_transition(
     Json(payload): Json<EmitTransitionPayload>,
 ) -> Response {
     let verified = verified.as_deref();
+    if let Err(response) = require_goal_authority(&state, &tenant, verified, None) {
+        return response;
+    }
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
     let stored = match load_tenant_goal(&store, &tenant, &goal_id) {
-        // Terminal goals reject transition emissions with a stable contract
-        // (only governed recovery operations may touch them).
-        Ok(goal) if goal.status.is_terminal() => {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "goal_terminal",
-                    "detail": "terminal goals cannot emit transitions",
-                    "status": goal.status,
-                })),
-            )
-                .into_response()
-        }
         Ok(goal) => goal,
         Err(response) => return response,
     };
     let actor = effective_actor(&principal, verified);
-    if let Err(response) = require_goal_authority(&tenant, verified, None) {
+    if let Err(response) = require_goal_owner(&state, &tenant, verified, &stored, &actor) {
         return response;
     }
-    if let Err(response) = require_goal_owner(&tenant, verified, &stored, &actor) {
-        return response;
+    // Terminal status is disclosed only after the object owner check.
+    if stored.status.is_terminal() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "goal_terminal",
+                "detail": "terminal goals cannot emit transitions",
+                "status": stored.status,
+            })),
+        )
+            .into_response();
     }
     let workspace_root = state.workspace_index.snapshot().await.root;
     if let Err(error) = enforce_artifact_content_policy(&workspace_root, &payload.artifact) {
@@ -1127,7 +1179,8 @@ pub(super) async fn decide_goal_handoff(
     let verified = verified.as_deref();
     // Approvals move authority between workflows: they require the approval
     // capability (or an administrative role) on explicit tenants.
-    if let Err(response) = require_goal_authority(&tenant, verified, Some("orchestration.approve"))
+    if let Err(response) =
+        require_goal_authority(&state, &tenant, verified, Some("orchestration.approve"))
     {
         return response;
     }
@@ -1212,7 +1265,7 @@ pub(super) async fn settle_goal_completion(
     Json(payload): Json<CompletionPayload>,
 ) -> Response {
     let verified = verified.as_deref();
-    if let Err(response) = require_goal_authority(&tenant, verified, None) {
+    if let Err(response) = require_goal_authority(&state, &tenant, verified, None) {
         return response;
     }
     let store = match goal_store(&state) {
@@ -1220,23 +1273,23 @@ pub(super) async fn settle_goal_completion(
         Err(response) => return response,
     };
     let goal = match load_tenant_goal(&store, &tenant, &goal_id) {
-        Ok(goal) if goal.status.is_terminal() => {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "goal_terminal",
-                    "detail": "terminal goals cannot settle workflow completion",
-                    "status": goal.status,
-                })),
-            )
-                .into_response()
-        }
         Ok(goal) => goal,
         Err(response) => return response,
     };
     let actor = effective_actor(&principal, verified);
-    if let Err(response) = require_goal_owner(&tenant, verified, &goal, &actor) {
+    if let Err(response) = require_goal_owner(&state, &tenant, verified, &goal, &actor) {
         return response;
+    }
+    if goal.status.is_terminal() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "goal_terminal",
+                "detail": "terminal goals cannot settle workflow completion",
+                "status": goal.status,
+            })),
+        )
+            .into_response();
     }
     if let Some(final_artifact) = payload.final_artifact.as_ref() {
         let workspace_root = state.workspace_index.snapshot().await.root;
@@ -1306,16 +1359,18 @@ pub(super) fn goal_waits(
 pub(super) async fn list_goal_waits(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
 ) -> Response {
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
-    let stored = match load_tenant_goal(&store, &tenant, &goal_id) {
-        Ok(goal) => goal,
-        Err(response) => return response,
-    };
+    let stored =
+        match load_visible_goal(&state, &store, &tenant, verified.as_deref(), &goal_id).await {
+            Ok(goal) => goal,
+            Err(response) => return response,
+        };
     let waits = goal_waits(&state, &stored.tenant_context, &store, &goal_id);
     Json(json!({"goal_id": goal_id, "waits": waits, "count": waits.len()})).into_response()
 }
@@ -1323,16 +1378,18 @@ pub(super) async fn list_goal_waits(
 pub(super) async fn get_goal_wait(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path((goal_id, wait_id)): Path<(String, String)>,
 ) -> Response {
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
-    let stored = match load_tenant_goal(&store, &tenant, &goal_id) {
-        Ok(goal) => goal,
-        Err(response) => return response,
-    };
+    let stored =
+        match load_visible_goal(&state, &store, &tenant, verified.as_deref(), &goal_id).await {
+            Ok(goal) => goal,
+            Err(response) => return response,
+        };
     match goal_waits(&state, &stored.tenant_context, &store, &goal_id)
         .into_iter()
         .find(|wait| wait.wait_id == wait_id)
@@ -1364,9 +1421,12 @@ pub(super) async fn resolve_goal_wait(
     let verified = verified.as_deref();
     // Wait resolution injects external state into a paused run: it requires
     // the resolve capability (or an administrative role) on explicit tenants.
-    if let Err(response) =
-        require_goal_authority(&tenant, verified, Some("orchestration.resolve_wait"))
-    {
+    if let Err(response) = require_goal_authority(
+        &state,
+        &tenant,
+        verified,
+        Some("orchestration.resolve_wait"),
+    ) {
         return response;
     }
     let store = match goal_store(&state) {

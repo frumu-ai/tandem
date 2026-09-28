@@ -82,26 +82,33 @@ impl TelemetrySinkIndex {
     }
 }
 
-fn telemetry_sink_index(
+#[derive(Default)]
+struct TelemetrySinkShared {
+    admission: std::sync::Arc<tokio::sync::Mutex<()>>,
+    index: std::sync::Mutex<TelemetrySinkIndex>,
+}
+
+fn telemetry_sink_shared(
     path: &std::path::Path,
-) -> anyhow::Result<std::sync::Arc<std::sync::Mutex<TelemetrySinkIndex>>> {
+) -> anyhow::Result<std::sync::Arc<TelemetrySinkShared>> {
     use std::sync::{Arc, Mutex, OnceLock};
 
-    static INDEXES: OnceLock<
-        Mutex<std::collections::HashMap<std::path::PathBuf, Arc<Mutex<TelemetrySinkIndex>>>>,
+    static SINKS: OnceLock<
+        Mutex<std::collections::HashMap<std::path::PathBuf, Arc<TelemetrySinkShared>>>,
     > = OnceLock::new();
-    let mut indexes = INDEXES
+    let mut sinks = SINKS
         .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
         .lock()
-        .map_err(|_| anyhow::anyhow!("telemetry sink index registry lock poisoned"))?;
-    if !indexes.contains_key(path) && indexes.len() >= 128 {
-        // This is a performance cache, not the source of truth. Eviction only
-        // forces a fresh disk scan for the next use of an old sink.
-        indexes.clear();
+        .map_err(|_| anyhow::anyhow!("telemetry sink registry lock poisoned"))?;
+    if !sinks.contains_key(path) && sinks.len() >= 128 {
+        // Keep in-flight admission gates registered. Evicting one would let
+        // another caller for that path occupy a blocking worker while the
+        // original caller is still queued or publishing.
+        sinks.retain(|_, sink| Arc::strong_count(sink) > 1);
     }
-    Ok(indexes
+    Ok(sinks
         .entry(path.to_path_buf())
-        .or_insert_with(|| Arc::new(Mutex::new(TelemetrySinkIndex::default())))
+        .or_insert_with(|| Arc::new(TelemetrySinkShared::default()))
         .clone())
 }
 
@@ -257,26 +264,120 @@ fn scan_telemetry_sink(
     Ok(unterminated_tail)
 }
 
-fn sync_telemetry_sink_directories(path: &std::path::Path) -> anyhow::Result<()> {
+fn telemetry_sink_parent(path: &std::path::Path) -> &std::path::Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."))
+}
+
+#[cfg(unix)]
+fn visit_telemetry_sink_ancestors(
+    path: &std::path::Path,
+    mut visit: impl FnMut(&std::path::Path) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let mut directory = telemetry_sink_parent(path);
+    loop {
+        visit(directory)?;
+        if directory == std::path::Path::new(".") {
+            break;
+        }
+        directory = match directory.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            Some(_) => std::path::Path::new("."),
+            None => break,
+        };
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn visit_telemetry_sink_durable_ancestors(
+    path: &std::path::Path,
+    mut visit: impl FnMut(&std::path::Path) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    // The lexical path can include symlink entries that must be synced, while
+    // the resolved path can have different parent directories whose entries
+    // must also survive a crash. Sync both chains before acknowledging.
+    let resolved = std::fs::canonicalize(path)
+        .with_context(|| format!("resolve telemetry sink {} for sync", path.display()))?;
+    visit_telemetry_sink_ancestors(&resolved, &mut visit)?;
+    if resolved != path {
+        visit_telemetry_sink_ancestors(path, &mut visit)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn sync_unreadable_telemetry_directory(
+    directory: &std::path::Path,
+    sink_file: &std::fs::File,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use std::os::{fd::AsRawFd, unix::fs::MetadataExt, unix::fs::OpenOptionsExt};
+
+    // A directory can be searchable but not readable. syncfs is broader and
+    // costlier than fsync, so use it only when opening that ancestor fails.
+    // If a mount boundary separates it from the sink, obtain an O_PATH handle
+    // to sync the ancestor's filesystem rather than the sink's filesystem.
+    let directory_dev = std::fs::metadata(directory)?.dev();
+    let sink_dev = sink_file.metadata()?.dev();
+    let directory_handle = if directory_dev == sink_dev {
+        None
+    } else {
+        Some(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+                .open(directory)
+                .with_context(|| {
+                    format!(
+                        "open telemetry directory {} for syncfs",
+                        directory.display()
+                    )
+                })?,
+        )
+    };
+    let fd = directory_handle
+        .as_ref()
+        .map(|handle| handle.as_raw_fd())
+        .unwrap_or_else(|| sink_file.as_raw_fd());
+    // SAFETY: fd belongs to a live File and syncfs only borrows it.
+    if unsafe { libc::syncfs(fd) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("sync telemetry filesystem for {}", directory.display()));
+    }
+    Ok(())
+}
+
+fn sync_telemetry_sink_directories(
+    path: &std::path::Path,
+    sink_file: &std::fs::File,
+) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use anyhow::Context;
-        // The post ledger may be fsynced in a different directory. Make the
-        // sink filename and any newly created ancestor directory names durable
-        // before allowing that ledger to say `posted`.
-        if let Some(parent) = path.parent() {
-            for directory in parent.ancestors() {
-                if directory.as_os_str().is_empty() {
-                    continue;
+        #[cfg(not(target_os = "linux"))]
+        let _ = sink_file;
+        // Existence does not imply durability: another process may have
+        // created an ancestor and not yet synced its parent (or crashed).
+        // Walk through the root on every acknowledgement so this publisher
+        // independently makes all directory entries on its path durable.
+        visit_telemetry_sink_durable_ancestors(path, |directory| {
+            match std::fs::File::open(directory).and_then(|file| file.sync_all()) {
+                Ok(()) => Ok(()),
+                #[cfg(target_os = "linux")]
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    sync_unreadable_telemetry_directory(directory, sink_file)
                 }
-                std::fs::File::open(directory)
-                    .and_then(|file| file.sync_all())
-                    .with_context(|| format!("sync telemetry directory {}", directory.display()))?;
+                Err(error) => Err(error)
+                    .with_context(|| format!("sync telemetry directory {}", directory.display())),
             }
-        }
+        })?;
     }
     #[cfg(not(unix))]
-    let _ = path;
+    let _ = (path, sink_file);
     Ok(())
 }
 
@@ -313,13 +414,11 @@ pub(super) async fn persist_incident_monitor_telemetry(
 ) -> anyhow::Result<Value> {
     use anyhow::Context;
     crate::incident_monitor::require_current_policy(state)?;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .with_context(|| format!("create telemetry sink directory {}", parent.display()))?;
-        }
-    }
+    let shared = telemetry_sink_shared(path)?;
+    // Admit one caller per sink before it consumes a blocking worker. Move the
+    // owned guard into that worker so cancellation of this future cannot let
+    // a second worker queue behind its still-running predecessor.
+    let admission = shared.admission.clone().lock_owned().await;
     crate::incident_monitor::require_current_policy(state)?;
     let state = state.clone();
     let path = path.to_path_buf();
@@ -327,6 +426,14 @@ pub(super) async fn persist_incident_monitor_telemetry(
     tokio::task::spawn_blocking(move || {
         use std::io::{Read, Seek, SeekFrom, Write};
 
+        let _admission = admission;
+        crate::incident_monitor::require_current_policy(&state)?;
+        std::fs::create_dir_all(telemetry_sink_parent(&path)).with_context(|| {
+            format!(
+                "create telemetry sink directory {}",
+                telemetry_sink_parent(&path).display()
+            )
+        })?;
         crate::incident_monitor::require_current_policy(&state)?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -341,8 +448,8 @@ pub(super) async fn persist_incident_monitor_telemetry(
             .with_context(|| format!("lock telemetry sink {}", path.display()))?;
         ensure_telemetry_sink_path_matches_file(&path, &file)?;
         crate::incident_monitor::require_current_policy(&state)?;
-        let index_handle = telemetry_sink_index(&path)?;
-        let mut index = index_handle
+        let mut index = shared
+            .index
             .lock()
             .map_err(|_| anyhow::anyhow!("telemetry sink index lock poisoned"))?;
         index.prepare_file(&file.metadata()?);
@@ -373,7 +480,7 @@ pub(super) async fn persist_incident_monitor_telemetry(
             // before syncing it. Make delivery durable before the post ledger
             // is allowed to say `posted`.
             file.sync_data()?;
-            sync_telemetry_sink_directories(&path)?;
+            sync_telemetry_sink_directories(&path, &file)?;
             ensure_telemetry_sink_path_matches_file(&path, &file)?;
             index.mark_synced(&file.metadata()?);
             return Ok(existing);
@@ -397,7 +504,7 @@ pub(super) async fn persist_incident_monitor_telemetry(
             .with_context(|| format!("flush telemetry record to {}", path.display()))?;
         file.sync_data()
             .with_context(|| format!("sync telemetry record to {}", path.display()))?;
-        sync_telemetry_sink_directories(&path)?;
+        sync_telemetry_sink_directories(&path, &file)?;
         ensure_telemetry_sink_path_matches_file(&path, &file)?;
         if let Some(key) = lookup_key {
             index
@@ -488,3 +595,7 @@ mod tests {
         assert_eq!(index.scanned_len, 0);
     }
 }
+
+#[cfg(test)]
+#[path = "telemetry_sink_review_tests.rs"]
+mod review_tests;

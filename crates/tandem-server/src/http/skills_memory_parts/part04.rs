@@ -1768,8 +1768,6 @@ pub(super) async fn context_distill(
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<ContextDistillRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    let runtime_state = state.runtime.wait();
-    let providers = runtime_state.providers.clone();
     let run_id = input
         .run_id
         .clone()
@@ -1790,6 +1788,13 @@ pub(super) async fn context_distill(
     )
     .map_err(|_| StatusCode::FORBIDDEN)?
     .subject;
+    workflow_learning_distillation_source_binding(
+        &state, &tenant_context, verified_tenant_context.as_deref(),
+        input.workflow_id.as_deref(), &input.session_id, &subject,
+    )
+    .await?;
+    let runtime_state = state.runtime.wait();
+    let providers = runtime_state.providers.clone();
     let partition = tandem_memory::MemoryPartition {
         org_id: tenant_context.org_id.clone(),
         workspace_id: tenant_context.workspace_id.clone(),
@@ -1865,6 +1870,8 @@ pub(super) async fn context_distill(
 
 pub(super) async fn workflow_learning_candidates_list(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<WorkflowLearningCandidateListQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let status = match query.status.as_deref() {
@@ -1883,21 +1890,48 @@ pub(super) async fn workflow_learning_candidates_list(
     if let Some(project_id) = query.project_id.as_deref() {
         candidates.retain(|candidate| candidate.project_id == project_id);
     }
-    let count = candidates.len();
+    let mut visible = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if workflow_learning_candidate_access(
+            &state,
+            &tenant_context,
+            verified_tenant_context.as_deref(),
+            &candidate,
+            false,
+        )
+        .await
+        {
+            visible.push(candidate);
+        }
+    }
+    let count = visible.len();
     Ok(Json(json!({
-        "candidates": candidates,
+        "candidates": visible,
         "count": count,
     })))
 }
 
 pub(super) async fn workflow_learning_candidate_review(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(candidate_id): Path<String>,
     Json(input): Json<WorkflowLearningCandidateReviewRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let Some(candidate) = state.get_workflow_learning_candidate(&candidate_id).await else {
         return Err(StatusCode::NOT_FOUND);
     };
+    if !workflow_learning_candidate_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &candidate,
+        true,
+    )
+    .await
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let action = input
         .action
         .as_deref()
@@ -1926,6 +1960,13 @@ pub(super) async fn workflow_learning_candidate_review(
         None
     };
     let reviewed_at_ms = crate::now_ms();
+    if !workflow_learning_candidate_access(
+        &state, &tenant_context, verified_tenant_context.as_deref(), &candidate, true,
+    )
+    .await
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let updated = state
         .update_workflow_learning_candidate(&candidate_id, |candidate| {
             candidate.status = next_status;

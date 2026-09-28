@@ -25,7 +25,16 @@ impl AppState {
             crate::app::state::automation::workflow_learning_metrics_snapshot(&recent_runs);
         let existing_candidates = self
             .list_workflow_learning_candidates(Some(&run.automation_id), None, None)
-            .await;
+            .await
+            .into_iter()
+            .filter(|candidate| {
+                crate::app::state::automation::workflow_learning_candidate_usable_by_automation(
+                    self,
+                    candidate,
+                    &automation,
+                )
+            })
+            .collect::<Vec<_>>();
         let generated =
             crate::app::state::automation::workflow_learning_candidates_for_terminal_run(
                 &automation,
@@ -71,7 +80,11 @@ impl AppState {
             .await
             .into_iter()
             .filter(|candidate| {
-                matches!(
+                crate::app::state::automation::workflow_learning_candidate_usable_by_automation(
+                    self,
+                    candidate,
+                    &automation,
+                ) && matches!(
                     candidate.status,
                     WorkflowLearningCandidateStatus::Approved
                         | WorkflowLearningCandidateStatus::Applied

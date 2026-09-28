@@ -8,7 +8,8 @@ impl AppState {
     ) -> anyhow::Result<IncidentMonitorDraftRecord> {
         crate::incident_monitor::require_current_policy(self)?;
         submission.repo = normalize_incident_monitor_submission_optional(submission.repo);
-        submission.project_id = normalize_incident_monitor_submission_optional(submission.project_id);
+        submission.project_id =
+            normalize_incident_monitor_submission_optional(submission.project_id);
         submission.workspace_root =
             normalize_incident_monitor_submission_optional(submission.workspace_root);
         submission.log_source_id =
@@ -26,7 +27,8 @@ impl AppState {
         submission.detail = normalize_incident_monitor_submission_optional(submission.detail);
         submission.source = normalize_incident_monitor_submission_optional(submission.source);
         submission.run_id = normalize_incident_monitor_submission_optional(submission.run_id);
-        submission.session_id = normalize_incident_monitor_submission_optional(submission.session_id);
+        submission.session_id =
+            normalize_incident_monitor_submission_optional(submission.session_id);
         submission.correlation_id =
             normalize_incident_monitor_submission_optional(submission.correlation_id);
         submission.file_name = normalize_incident_monitor_submission_optional(submission.file_name);
@@ -34,13 +36,19 @@ impl AppState {
         submission.component = normalize_incident_monitor_submission_optional(submission.component);
         submission.event = normalize_incident_monitor_submission_optional(submission.event);
         submission.level = normalize_incident_monitor_submission_optional(submission.level);
-        submission.fingerprint = normalize_incident_monitor_submission_optional(submission.fingerprint);
-        submission.confidence = normalize_incident_monitor_submission_optional(submission.confidence);
-        submission.risk_level = normalize_incident_monitor_submission_optional(submission.risk_level);
-        crate::incident_monitor::safety_context::normalize_submission_safety_context(&mut submission);
+        submission.fingerprint =
+            normalize_incident_monitor_submission_optional(submission.fingerprint);
+        submission.confidence =
+            normalize_incident_monitor_submission_optional(submission.confidence);
+        submission.risk_level =
+            normalize_incident_monitor_submission_optional(submission.risk_level);
+        crate::incident_monitor::safety_context::normalize_submission_safety_context(
+            &mut submission,
+        );
         submission.expected_destination =
             normalize_incident_monitor_submission_optional(submission.expected_destination);
-        submission.route_tags = normalize_incident_monitor_submission_vec(submission.route_tags, 50);
+        submission.route_tags =
+            normalize_incident_monitor_submission_vec(submission.route_tags, 50);
         submission.allowed_destination_ids =
             normalize_incident_monitor_submission_vec(submission.allowed_destination_ids, 50);
         submission.default_destination_ids =
@@ -106,7 +114,9 @@ impl AppState {
         });
         submission.fingerprint = Some(fingerprint.clone());
         let quality_gate =
-            crate::incident_monitor::service::evaluate_incident_monitor_submission_quality(&submission);
+            crate::incident_monitor::service::evaluate_incident_monitor_submission_quality(
+                &submission,
+            );
         if !quality_gate.passed {
             anyhow::bail!(
                 "Incident Monitor signal quality gate blocked draft creation: {}",
@@ -217,7 +227,8 @@ impl AppState {
             return Ok(existing);
         }
 
-        let high_risk = crate::incident_monitor::router::is_high_risk(submission.risk_level.as_deref());
+        let high_risk =
+            crate::incident_monitor::router::is_high_risk(submission.risk_level.as_deref());
         let approval_required = match submission
             .source_approval_policy
             .as_ref()
@@ -383,7 +394,11 @@ impl AppState {
         let mut status = IncidentMonitorStatus {
             config: config.clone(),
             runtime,
-            log_watcher: self.incident_monitor_log_watcher_status.read().await.clone(),
+            log_watcher: self
+                .incident_monitor_log_watcher_status
+                .read()
+                .await
+                .clone(),
             pending_drafts,
             pending_posts,
             last_activity_at_ms,
@@ -569,8 +584,12 @@ impl AppState {
             && status.required_capabilities.github_get_issue;
         let github_write_ready = status.required_capabilities.github_create_issue
             && status.required_capabilities.github_comment_on_issue;
-        let monitor_publish_ready =
-            config.enabled && !config.paused && repo_valid && mcp_connected && github_read_ready && github_write_ready;
+        let monitor_publish_ready = config.enabled
+            && !config.paused
+            && repo_valid
+            && mcp_connected
+            && github_read_ready
+            && github_write_ready;
         status.readiness = IncidentMonitorReadiness {
             config_valid: repo_valid
                 && selected_server.is_some()
@@ -639,7 +658,8 @@ impl AppState {
 
     pub async fn incident_monitor_status(&self) -> IncidentMonitorStatus {
         if let Ok(recovered) =
-            crate::incident_monitor::service::recover_overdue_incident_monitor_triage_runs(self).await
+            crate::incident_monitor::service::recover_overdue_incident_monitor_triage_runs(self)
+                .await
         {
             for (draft_id, incident_id) in recovered {
                 let _ = crate::incident_monitor::router::publish_draft(
@@ -799,27 +819,107 @@ impl AppState {
         &self,
         binding_id: &str,
         enabled: bool,
+        verified: Option<&tandem_types::VerifiedTenantContext>,
     ) -> anyhow::Result<Option<WorkflowHookBinding>> {
-        self.workflow_hook_overrides
-            .write()
-            .await
-            .insert(binding_id.to_string(), enabled);
-        self.persist_workflow_hook_overrides().await?;
-        let _ = self.reload_workflows().await?;
-        Ok(self
-            .workflows
-            .read()
-            .await
+        self.enterprise
+            .hosted_policy
+            .authorize_permission(verified, tandem_types::AccessPermission::HostedAdmin)
+            .map_err(|_| anyhow::Error::new(WorkflowHookAdminDenied))?;
+        let mut overrides = self.workflow_hook_overrides.write().await;
+        let registry = self.workflows.read().await;
+        let Some(mut hook) = registry
             .hooks
             .iter()
             .find(|hook| hook.binding_id == binding_id)
-            .cloned())
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let mut updated = overrides.clone();
+        updated.insert(binding_id.to_string(), enabled);
+        let payload = serde_json::to_string_pretty(&updated)?;
+        let policy = self.enterprise.hosted_policy.clone();
+        let verified = verified.cloned();
+        let path = self.workflow_hook_overrides_path.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            policy
+                .authorize_permission(
+                    verified.as_ref(),
+                    tandem_types::AccessPermission::HostedAdmin,
+                )
+                .map_err(|_| anyhow::Error::new(WorkflowHookAdminDenied))?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, payload)?;
+            Ok(())
+        })
+        .await??;
+        *overrides = updated;
+        drop(registry);
+        drop(overrides);
+        let _ = self.reload_workflows().await?;
+        hook.enabled = enabled;
+        Ok(Some(hook))
     }
 
     pub async fn put_automation_v2(
         &self,
-        mut automation: AutomationV2Spec,
+        automation: AutomationV2Spec,
     ) -> anyhow::Result<AutomationV2Spec> {
+        self.put_automation_v2_checked(automation, |_| Ok(())).await
+    }
+
+    pub(crate) async fn reconcile_tombstoned_automation_definitions(&self) -> anyhow::Result<()> {
+        // A crash after the tombstone write but before shard cleanup can leave
+        // an old active definition on disk. The tombstone remains authoritative.
+        let _persistence_guard = self.automations_v2_persistence.lock().await;
+        let tombstoned = self
+            .automation_governance
+            .read()
+            .await
+            .deleted_automations
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let removed = {
+            let mut automations = self.automations_v2.write().await;
+            let before = automations.len();
+            automations.retain(|id, _| !tombstoned.contains(id));
+            before.saturating_sub(automations.len())
+        };
+        if removed > 0 {
+            tracing::warn!(removed, "removed stale tombstoned automation definitions");
+            self.persist_automations_v2_locked().await?;
+        }
+        Ok(())
+    }
+
+    pub async fn put_automation_v2_checked<F>(
+        &self,
+        automation: AutomationV2Spec,
+        authorize: F,
+    ) -> anyhow::Result<AutomationV2Spec>
+    where
+        F: Fn(Option<&AutomationV2Spec>) -> anyhow::Result<()> + Send + Sync,
+    {
+        let automation_id = automation.automation_id.clone();
+        self.put_automation_v2_checked_with_map(automation, move |automations| {
+            authorize(automations.get(&automation_id))
+        })
+        .await
+    }
+
+    pub(crate) async fn put_automation_v2_checked_with_map<F>(
+        &self,
+        mut automation: AutomationV2Spec,
+        authorize: F,
+    ) -> anyhow::Result<AutomationV2Spec>
+    where
+        F: Fn(&std::collections::HashMap<String, AutomationV2Spec>) -> anyhow::Result<()>
+            + Send
+            + Sync,
+    {
         if automation.automation_id.trim().is_empty() {
             anyhow::bail!("automation_id is required");
         }
@@ -873,10 +973,24 @@ impl AppState {
         self.validate_automation_enterprise_delegation_grants(&automation)
             .await?;
         let _guard = self.automations_v2_persistence.lock().await;
-        self.automations_v2
-            .write()
+        // A soft-deleted id still names retained governance and run history.
+        // No checked write may reopen it while the tombstone exists.
+        let tombstoned = self
+            .automation_governance
+            .read()
             .await
-            .insert(automation.automation_id.clone(), automation.clone());
+            .deleted_automations
+            .contains_key(&automation.automation_id);
+        {
+            let mut automations = self.automations_v2.write().await;
+            if tombstoned {
+                anyhow::bail!("automation id already exists");
+            }
+            // Revalidate against the record currently protected by the write
+            // lock, immediately before the shared automation is replaced.
+            authorize(&automations)?;
+            automations.insert(automation.automation_id.clone(), automation.clone());
+        }
         self.persist_automations_v2_locked().await?;
         let _ = self
             .sync_automation_governance_from_spec(&automation, None)
@@ -1049,188 +1163,6 @@ impl AppState {
             .and_then(AutomationV2Spec::approved_plan_materialization)
     }
 
-    pub async fn put_workflow_plan(&self, plan: WorkflowPlan) {
-        self.workflow_plans
-            .write()
-            .await
-            .insert(plan.plan_id.clone(), plan);
-    }
-
-    pub async fn get_workflow_plan(&self, plan_id: &str) -> Option<WorkflowPlan> {
-        self.workflow_plans.read().await.get(plan_id).cloned()
-    }
-
-    pub async fn put_workflow_plan_draft(&self, draft: WorkflowPlanDraftRecord) {
-        self.workflow_plan_drafts
-            .write()
-            .await
-            .insert(draft.current_plan.plan_id.clone(), draft.clone());
-        self.put_workflow_plan(draft.current_plan).await;
-    }
-
-    pub async fn get_workflow_plan_draft(&self, plan_id: &str) -> Option<WorkflowPlanDraftRecord> {
-        self.workflow_plan_drafts.read().await.get(plan_id).cloned()
-    }
-
-    pub async fn load_workflow_planner_sessions(&self) -> anyhow::Result<()> {
-        let Some(raw) = read_state_file_with_legacy(
-            &self.workflow_planner_sessions_path,
-            "workflow_planner_sessions.json",
-        )
-        .await?
-        else {
-            return Ok(());
-        };
-        let parsed = serde_json::from_str::<
-            std::collections::HashMap<
-                String,
-                crate::http::workflow_planner::WorkflowPlannerSessionRecord,
-            >,
-        >(&raw)
-        .unwrap_or_default();
-        self.replace_workflow_planner_sessions(parsed).await?;
-        Ok(())
-    }
-
-    pub async fn persist_workflow_planner_sessions(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.workflow_planner_sessions_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        let payload = {
-            let guard = self.workflow_planner_sessions.read().await;
-            serde_json::to_string_pretty(&*guard)?
-        };
-        fs::write(&self.workflow_planner_sessions_path, payload).await?;
-        Ok(())
-    }
-
-    async fn replace_workflow_planner_sessions(
-        &self,
-        sessions: std::collections::HashMap<
-            String,
-            crate::http::workflow_planner::WorkflowPlannerSessionRecord,
-        >,
-    ) -> anyhow::Result<()> {
-        {
-            let mut sessions_guard = self.workflow_planner_sessions.write().await;
-            *sessions_guard = sessions.clone();
-        }
-        {
-            let mut plans = self.workflow_plans.write().await;
-            let mut drafts = self.workflow_plan_drafts.write().await;
-            plans.clear();
-            drafts.clear();
-            for session in sessions.values() {
-                if let Some(draft) = session.draft.as_ref() {
-                    plans.insert(
-                        draft.current_plan.plan_id.clone(),
-                        draft.current_plan.clone(),
-                    );
-                    drafts.insert(draft.current_plan.plan_id.clone(), draft.clone());
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn sync_workflow_planner_session_cache(
-        &self,
-        session: &crate::http::workflow_planner::WorkflowPlannerSessionRecord,
-    ) {
-        if let Some(draft) = session.draft.as_ref() {
-            self.workflow_plans.write().await.insert(
-                draft.current_plan.plan_id.clone(),
-                draft.current_plan.clone(),
-            );
-            self.workflow_plan_drafts
-                .write()
-                .await
-                .insert(draft.current_plan.plan_id.clone(), draft.clone());
-        }
-    }
-
-    pub async fn put_workflow_planner_session(
-        &self,
-        mut session: crate::http::workflow_planner::WorkflowPlannerSessionRecord,
-    ) -> anyhow::Result<crate::http::workflow_planner::WorkflowPlannerSessionRecord> {
-        if session.session_id.trim().is_empty() {
-            anyhow::bail!("session_id is required");
-        }
-        if session.project_slug.trim().is_empty() {
-            anyhow::bail!("project_slug is required");
-        }
-        let now = now_ms();
-        if session.created_at_ms == 0 {
-            session.created_at_ms = now;
-        }
-        session.updated_at_ms = now;
-        {
-            self.workflow_planner_sessions
-                .write()
-                .await
-                .insert(session.session_id.clone(), session.clone());
-        }
-        self.sync_workflow_planner_session_cache(&session).await;
-        self.persist_workflow_planner_sessions().await?;
-        Ok(session)
-    }
-
-    pub async fn get_workflow_planner_session(
-        &self,
-        session_id: &str,
-    ) -> Option<crate::http::workflow_planner::WorkflowPlannerSessionRecord> {
-        self.workflow_planner_sessions
-            .read()
-            .await
-            .get(session_id)
-            .cloned()
-    }
-
-    pub async fn list_workflow_planner_sessions(
-        &self,
-        project_slug: Option<&str>,
-    ) -> Vec<crate::http::workflow_planner::WorkflowPlannerSessionRecord> {
-        let mut rows = self
-            .workflow_planner_sessions
-            .read()
-            .await
-            .values()
-            .filter(|session| {
-                project_slug
-                    .map(|slug| session.project_slug == slug)
-                    .unwrap_or(true)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
-        rows
-    }
-
-    pub async fn delete_workflow_planner_session(
-        &self,
-        session_id: &str,
-    ) -> Option<crate::http::workflow_planner::WorkflowPlannerSessionRecord> {
-        let removed = self
-            .workflow_planner_sessions
-            .write()
-            .await
-            .remove(session_id);
-        if let Some(session) = removed.as_ref() {
-            if let Some(draft) = session.draft.as_ref() {
-                self.workflow_plan_drafts
-                    .write()
-                    .await
-                    .remove(&draft.current_plan.plan_id);
-                self.workflow_plans
-                    .write()
-                    .await
-                    .remove(&draft.current_plan.plan_id);
-            }
-        }
-        let _ = self.persist_workflow_planner_sessions().await;
-        removed
-    }
-
     pub async fn load_workflow_learning_candidates(&self) -> anyhow::Result<()> {
         if !self.workflow_learning_candidates_path.exists() {
             return Ok(());
@@ -1332,6 +1264,7 @@ impl AppState {
                 row.workflow_id == candidate.workflow_id
                     && row.kind == candidate.kind
                     && row.fingerprint == candidate.fingerprint
+                    && row.source_binding == candidate.source_binding
             }) {
                 existing.summary = candidate.summary.clone();
                 existing.confidence = existing.confidence.max(candidate.confidence);
@@ -1445,6 +1378,8 @@ impl AppState {
                     candidate.status,
                     WorkflowLearningCandidateStatus::Approved
                         | WorkflowLearningCandidateStatus::Applied
+                ) && crate::app::state::automation::workflow_learning_candidate_usable_by_automation(
+                    self, candidate, automation,
                 )
             })
             .cloned()

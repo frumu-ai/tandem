@@ -8,6 +8,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 include!("workflow_planner_parts/part01.rs");
 include!("workflow_planner_parts/part03.rs");
+include!("workflow_planner_parts/overlap_security.rs");
 
 use crate::workflow_planner::{WorkflowPlannerSessionPlanningRecord, WorkflowPlannerSessionRecord};
 use tandem_types::EngineEvent;

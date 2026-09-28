@@ -42,7 +42,45 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
     ) {
         return Some(HostedUse);
     }
+    // Long-running goals expose objectives, lineage, events and artifacts;
+    // their mutations can create or control persistent root runs. Object
+    // visibility and reviewer authority remain handler-level checks.
     match (method, path) {
+        (
+            _,
+            "/goals"
+            | "/goals/{goal_id}"
+            | "/goals/{goal_id}/projection"
+            | "/goals/{goal_id}/graph"
+            | "/goals/{goal_id}/runs"
+            | "/goals/{goal_id}/events"
+            | "/goals/{goal_id}/events/stream"
+            | "/goals/{goal_id}/artifacts"
+            | "/goals/{goal_id}/budgets"
+            | "/goals/{goal_id}/handoffs"
+            | "/goals/{goal_id}/waits"
+            | "/goals/{goal_id}/waits/{wait_id}",
+        ) if read => return Some(HostedAutomationRead),
+        (
+            "POST",
+            "/goals"
+            | "/goals/{goal_id}/actions/{action_id}"
+            | "/goals/{goal_id}/pause"
+            | "/goals/{goal_id}/resume"
+            | "/goals/{goal_id}/cancel"
+            | "/goals/{goal_id}/transitions"
+            | "/goals/{goal_id}/completion"
+            | "/goals/{goal_id}/handoffs/{handoff_id}/decision"
+            | "/goals/{goal_id}/waits/{wait_id}/resolve",
+        ) => return Some(HostedUse),
+        _ => {}
+    }
+    match (method, path) {
+        ("PUT", "/capabilities/bindings")
+        | (
+            "POST",
+            "/capabilities/bindings/refresh-builtins" | "/capabilities/bindings/reset-to-builtins",
+        ) => return Some(HostedAdmin),
         ("PUT", "/channels/{name}/tool-preferences") => return Some(HostedAdmin),
         ("GET" | "HEAD" | "POST", "/incident-monitor/intake/keys")
         | ("POST", "/incident-monitor/intake/keys/{id}/disable") => return Some(HostedAdmin),
@@ -174,6 +212,40 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
         ) => Some(HostedAutomationExecute),
         (
             _,
+            "/optimizations"
+            | "/optimizations/{id}"
+            | "/optimizations/{id}/experiments"
+            | "/optimizations/{id}/experiments/{experiment_id}",
+        ) if read => Some(HostedAutomationRead),
+        (
+            "POST",
+            "/optimizations"
+            | "/optimizations/{id}/actions"
+            | "/optimizations/{id}/experiments/{experiment_id}",
+        ) => Some(HostedAutomationWrite),
+        (_, "/workflow-learning/candidates") if read => Some(HostedAutomationRead),
+        (
+            "POST",
+            "/workflow-learning/candidates/{candidate_id}/review"
+            | "/workflow-learning/candidates/{candidate_id}/promote"
+            | "/workflow-learning/candidates/{candidate_id}/spawn-revision",
+        ) => Some(HostedAutomationWrite),
+        (_, "/workflow-plans/sessions" | "/workflow-plans/sessions/{session_id}") if read => {
+            Some(HostedAutomationRead)
+        }
+        ("POST", "/workflow-plans/sessions")
+        | ("PATCH" | "DELETE", "/workflow-plans/sessions/{session_id}")
+        | (
+            "POST",
+            "/workflow-plans/sessions/{session_id}/duplicate"
+            | "/workflow-plans/sessions/{session_id}/start"
+            | "/workflow-plans/sessions/{session_id}/start-async"
+            | "/workflow-plans/sessions/{session_id}/message"
+            | "/workflow-plans/sessions/{session_id}/message-async"
+            | "/workflow-plans/sessions/{session_id}/reset",
+        ) => Some(HostedAutomationWrite),
+        (
+            _,
             "/workflows"
             | "/workflows/{id}"
             | "/workflows/runs"
@@ -185,7 +257,8 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
         ("POST", "/workflows/validate" | "/workflows/{id}/run" | "/workflows/runs/{id}/gate") => {
             Some(HostedUse)
         }
-        ("PATCH", "/workflow-hooks/{id}") => Some(HostedWorkflowShare),
+        // Static hook specs have no per-owner ACL; overrides change the shared registry.
+        ("PATCH", "/workflow-hooks/{id}") => Some(HostedAdmin),
         _ => None,
     }
 }

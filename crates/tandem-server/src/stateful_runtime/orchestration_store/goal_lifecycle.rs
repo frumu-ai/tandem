@@ -258,6 +258,20 @@ impl OrchestrationStateStore {
         orchestration_id: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<LongRunningGoal>> {
+        self.list_goals_filtered(tenant, status, orchestration_id, limit, |_| true)
+    }
+
+    /// Apply caller visibility before the limit so a page is not consumed by
+    /// goals that the caller cannot see. The predicate must be synchronous;
+    /// policy/grant projection happens before the store lock is acquired.
+    pub fn list_goals_filtered(
+        &self,
+        tenant: &TenantContext,
+        status: Option<&str>,
+        orchestration_id: Option<&str>,
+        limit: usize,
+        mut visible: impl FnMut(&LongRunningGoal) -> bool,
+    ) -> anyhow::Result<Vec<LongRunningGoal>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
                 "SELECT goal_id, goal_json FROM long_running_goals
@@ -281,6 +295,9 @@ impl OrchestrationStateStore {
                     }
                 }
                 if orchestration_id.is_some_and(|id| id != goal.orchestration_id) {
+                    continue;
+                }
+                if !visible(&goal) {
                     continue;
                 }
                 goals.push(goal);

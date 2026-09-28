@@ -10,6 +10,14 @@ pub(super) async fn workflow_start(
     chat_session: &Session,
 ) -> anyhow::Result<Value> {
     let (actor, verified) = mutation_actor(args, tenant, chat_session)?;
+    state
+        .enterprise
+        .hosted_policy
+        .authorize_permission(
+            verified.as_ref(),
+            tandem_types::AccessPermission::HostedAutomationWrite,
+        )
+        .map_err(|code| anyhow::anyhow!("hosted automation write authority is required: {code}"))?;
     let prompt = required_str(args, "prompt")?;
     let key = required_str(args, "idempotency_key")?;
     let planner_provider = chat_session
@@ -136,6 +144,7 @@ pub(super) async fn workflow_start(
             .unwrap_or_else(|| prompt.chars().take(72).collect()),
         workspace_root,
         source_kind: "agentic_chat".to_string(),
+        source_workflow: None,
         source_bundle_digest: None,
         source_pack_id: None,
         source_pack_version: None,

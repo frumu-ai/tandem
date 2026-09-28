@@ -308,6 +308,7 @@ impl AppState {
             idempotency_persistence: Arc::new(tokio::sync::Mutex::new(())),
             workflow_plans: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_plan_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            workflow_plan_draft_authority: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_planner_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_learning_candidates: Arc::new(RwLock::new(std::collections::HashMap::new())),
             context_packs: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -865,8 +866,8 @@ impl AppState {
         self.load_automations_v2().await?;
         let _ = self.load_channel_automation_drafts().await;
         let _ = self.load_channel_user_capabilities().await;
-        let _ = self.load_automation_governance().await;
-        let _ = self.bootstrap_automation_governance().await;
+        self.load_automation_governance().await?;
+        self.bootstrap_automation_governance().await?;
         let _ = self.load_automation_v2_runs().await;
         self.load_automation_webhook_records().await?;
         let _ = self.load_idempotency_keys().await;

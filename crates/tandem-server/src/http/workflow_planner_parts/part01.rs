@@ -94,6 +94,8 @@ pub(super) struct WorkflowPlanPackExportRequest {
 pub(super) struct WorkflowPlanPackImportRequest {
     pub path: String,
     #[serde(default)]
+    pub plan_id: Option<String>,
+    #[serde(default)]
     pub selected_workflow_ids: Vec<String>,
     #[serde(default)]
     pub creator_id: Option<String>,
@@ -106,6 +108,8 @@ pub(super) struct WorkflowPlanPackImportRequest {
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct WorkflowPlanPackDownloadQuery {
     pub path: String,
+    #[serde(default)]
+    pub plan_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -221,6 +225,27 @@ pub struct WorkflowPlannerSessionPlanningRecord {
     pub updated_at_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorkflowPlanDraftAccessBinding {
+    Actor(tandem_types::TenantContext),
+    Workflow(WorkflowPlannerSessionWorkflowSource),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorkflowPlanDraftAuthority {
+    Bound {
+        binding: WorkflowPlanDraftAccessBinding,
+        session_id: Option<String>,
+    },
+    Denied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPlannerSessionWorkflowSource {
+    pub workflow_id: String,
+    pub binding: crate::WorkflowLearningCandidateSourceBinding,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowPlannerSessionRecord {
     pub session_id: String,
@@ -239,6 +264,9 @@ pub struct WorkflowPlannerSessionRecord {
     pub workspace_root: String,
     #[serde(default = "default_workflow_planner_source_kind")]
     pub source_kind: String,
+    /// Server-set provenance for workflow-learning revisions, including forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_workflow: Option<WorkflowPlannerSessionWorkflowSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_bundle_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -762,11 +790,23 @@ pub(crate) fn workflow_plan_import_draft(
 async fn compile_preview_plan_overlap(
     state: &AppState,
     plan_package: &compiler_api::PlanPackage,
+    tenant_context: &tandem_types::TenantContext,
+    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
 ) -> compiler_api::OverlapComparison {
     let prior_plans = state
         .list_automations_v2()
         .await
         .into_iter()
+        .filter(|automation| {
+            super::tenant_matches(tenant_context, &automation.tenant_context())
+                && (tenant_context.is_local_implicit()
+                    || super::automation_object_authority::can_read(
+                        state,
+                        tenant_context,
+                        verified_tenant_context,
+                        automation,
+                    ))
+        })
         .filter_map(|automation| {
             automation
                 .metadata
@@ -881,7 +921,7 @@ fn workflow_planner_session_list_item(
     }
 }
 
-fn retag_workflow_plan_draft(
+pub(crate) fn retag_workflow_plan_draft(
     draft: &crate::WorkflowPlanDraftRecord,
     new_plan_id: &str,
 ) -> Result<crate::WorkflowPlanDraftRecord, String> {
@@ -1002,9 +1042,15 @@ pub(super) async fn workflow_plan_preview(
         1,
     );
     let plan_package_validation = compiler_api::validate_plan_package(&plan_package);
-    let overlap_analysis = compile_preview_plan_overlap(&state, &plan_package).await;
+    let overlap_analysis = compile_preview_plan_overlap(
+        &state,
+        &plan_package,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await;
     let plan_package_bundle = compiler_api::export_plan_package_bundle(&plan_package);
-    let host = workflow_planner_host::WorkflowPlannerHost::new(
+    let host = workflow_planner_host::WorkflowPlannerHost::new_draft(
         &state,
         &tenant_context,
         verified_tenant_context.as_deref(),
@@ -1046,6 +1092,23 @@ pub(super) async fn workflow_plan_chat_start(
     Extension(tenant_context): Extension<tandem_types::TenantContext>,
     verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanChatStartRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    workflow_plan_chat_start_bound(
+        State(state),
+        Extension(tenant_context),
+        verified_tenant_context,
+        Json(input),
+        None,
+    )
+    .await
+}
+
+async fn workflow_plan_chat_start_bound(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
+    Json(input): Json<WorkflowPlanChatStartRequest>,
+    draft_binding: Option<WorkflowPlanDraftAccessBinding>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let prompt = input.prompt.trim();
     if prompt.is_empty() {
@@ -1091,11 +1154,20 @@ pub(super) async fn workflow_plan_chat_start(
         )
     })?;
     let plan = build.plan;
-    let host = workflow_planner_host::WorkflowPlannerHost::new(
-        &state,
-        &tenant_context,
-        verified_tenant_context.as_deref(),
-    );
+    let host = if let Some(binding) = draft_binding {
+        workflow_planner_host::WorkflowPlannerHost::for_session(
+            &state,
+            &tenant_context,
+            verified_tenant_context.as_deref(),
+            binding,
+        )
+    } else {
+        workflow_planner_host::WorkflowPlannerHost::new_draft(
+            &state,
+            &tenant_context,
+            verified_tenant_context.as_deref(),
+        )
+    };
     let draft = compiler_api::store_chat_start_draft::<
         crate::routines::types::RoutineMisfirePolicy,
         crate::AutomationFlowInputRef,
@@ -1132,7 +1204,13 @@ pub(super) async fn workflow_plan_chat_start(
         draft.plan_revision,
     );
     let plan_package_validation = compiler_api::validate_plan_package(&plan_package);
-    let overlap_analysis = compile_preview_plan_overlap(&state, &plan_package).await;
+    let overlap_analysis = compile_preview_plan_overlap(
+        &state,
+        &plan_package,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await;
     let plan_package_bundle = compiler_api::export_plan_package_bundle(&plan_package);
     let teaching_library = teaching_library_summary();
     Ok(Json(json!({
@@ -1154,9 +1232,23 @@ pub(super) async fn workflow_plan_chat_start(
 
 pub(super) async fn workflow_plan_get(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     axum::extract::Path(plan_id): axum::extract::Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let host = workflow_planner_host::WorkflowPlannerHost::local(&state);
+    ensure_workflow_plan_id_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &plan_id,
+        false,
+    )
+    .await?;
+    let host = workflow_planner_host::WorkflowPlannerHost::new(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    );
     let draft = compiler_api::load_workflow_plan_draft::<
         crate::routines::types::RoutineMisfirePolicy,
         crate::AutomationFlowInputRef,
@@ -1194,7 +1286,13 @@ pub(super) async fn workflow_plan_get(
     );
     let plan_package_validation = compiler_api::validate_plan_package(&plan_package);
     let plan_package_bundle = compiler_api::export_plan_package_bundle(&plan_package);
-    let overlap_analysis = compile_preview_plan_overlap(&state, &plan_package).await;
+    let overlap_analysis = compile_preview_plan_overlap(
+        &state,
+        &plan_package,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await;
     let initial_plan_json =
         compiler_api::workflow_plan_to_json(&draft.initial_plan).map_err(|error| {
             (
@@ -1242,6 +1340,14 @@ pub(super) async fn workflow_plan_chat_message(
             })),
         ));
     }
+    ensure_workflow_plan_id_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        plan_id,
+        true,
+    )
+    .await?;
     let host = workflow_planner_host::WorkflowPlannerHost::new(
         &state,
         &tenant_context,
@@ -1295,7 +1401,13 @@ pub(super) async fn workflow_plan_chat_message(
         revision.draft.plan_revision,
     );
     let plan_package_validation = compiler_api::validate_plan_package(&plan_package);
-    let overlap_analysis = compile_preview_plan_overlap(&state, &plan_package).await;
+    let overlap_analysis = compile_preview_plan_overlap(
+        &state,
+        &plan_package,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await;
     let plan_package_bundle = compiler_api::export_plan_package_bundle(&plan_package);
     let initial_plan_json = compiler_api::workflow_plan_to_json(&revision.draft.initial_plan)
         .map_err(|error| {
@@ -1335,6 +1447,8 @@ pub(super) async fn workflow_plan_chat_message(
 
 pub(super) async fn workflow_plan_chat_reset(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanChatResetRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let plan_id = input.plan_id.trim();
@@ -1347,7 +1461,19 @@ pub(super) async fn workflow_plan_chat_reset(
             })),
         ));
     }
-    let host = workflow_planner_host::WorkflowPlannerHost::local(&state);
+    ensure_workflow_plan_id_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        plan_id,
+        true,
+    )
+    .await?;
+    let host = workflow_planner_host::WorkflowPlannerHost::new(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    );
     let draft = compiler_api::reset_workflow_plan_draft::<
         crate::routines::types::RoutineMisfirePolicy,
         crate::AutomationFlowInputRef,
@@ -1384,7 +1510,13 @@ pub(super) async fn workflow_plan_chat_reset(
         draft.plan_revision,
     );
     let plan_package_validation = compiler_api::validate_plan_package(&plan_package);
-    let overlap_analysis = compile_preview_plan_overlap(&state, &plan_package).await;
+    let overlap_analysis = compile_preview_plan_overlap(
+        &state,
+        &plan_package,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await;
     let plan_package_bundle = compiler_api::export_plan_package_bundle(&plan_package);
     let initial_plan_json =
         compiler_api::workflow_plan_to_json(&draft.initial_plan).map_err(|error| {

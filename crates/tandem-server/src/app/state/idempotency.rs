@@ -176,6 +176,12 @@ impl AppState {
                 *existing = record.clone();
                 IdempotencyReservation::Reserved(record)
             }
+            // The record ID is tenant-scoped, not actor-scoped. A different
+            // owner must never receive or disturb the original reservation,
+            // even when it presents the same key and request fingerprint.
+            Some(existing) if existing.owner != owner => {
+                IdempotencyReservation::Conflict(existing.clone())
+            }
             Some(existing) if existing.request_fingerprint == request_fingerprint => {
                 existing.last_seen_at_ms = input.now_ms;
                 IdempotencyReservation::Duplicate(existing.clone())
@@ -989,6 +995,50 @@ mod tests {
         assert!(matches!(first, IdempotencyReservation::Reserved(_)));
         assert!(matches!(second, IdempotencyReservation::Reserved(_)));
         assert_ne!(first.record().record_id, second.record().record_id);
+        let _ = tokio::fs::remove_file(&state.idempotency_keys_path).await;
+    }
+
+    #[tokio::test]
+    async fn another_owner_cannot_replay_or_poison_a_tenant_reservation() {
+        let state = temp_state();
+        let tenant = tenant("org-a", "workspace-a");
+        let mut alice = input(
+            tenant.clone(),
+            "operator.workflow_plan_start",
+            "shared",
+            "same",
+        );
+        alice.owner = "alice".to_string();
+        let first = state.reserve_idempotency_key(alice).await.unwrap();
+        assert!(matches!(first, IdempotencyReservation::Reserved(_)));
+        let original = first.record().clone();
+
+        for fingerprint in ["same", "different"] {
+            let mut bob = input(
+                tenant.clone(),
+                "operator.workflow_plan_start",
+                "shared",
+                fingerprint,
+            );
+            bob.owner = "bob".to_string();
+            bob.now_ms = 2_000;
+            assert!(matches!(
+                state.reserve_idempotency_key(bob).await.unwrap(),
+                IdempotencyReservation::Conflict(_)
+            ));
+        }
+
+        let stored = state
+            .get_idempotency_key(&tenant, "operator.workflow_plan_start", "shared")
+            .await
+            .unwrap();
+        assert_eq!(stored, original);
+        let mut alice_retry = input(tenant, "operator.workflow_plan_start", "shared", "same");
+        alice_retry.owner = "alice".to_string();
+        assert!(matches!(
+            state.reserve_idempotency_key(alice_retry).await.unwrap(),
+            IdempotencyReservation::Duplicate(_)
+        ));
         let _ = tokio::fs::remove_file(&state.idempotency_keys_path).await;
     }
 

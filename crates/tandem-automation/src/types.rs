@@ -1272,12 +1272,48 @@ pub struct WorkflowLearningMetricsSnapshot {
     pub computed_at_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowLearningCandidateSourceBinding {
+    Workflow {
+        tenant_context: TenantContext,
+        creator_id: String,
+        created_at_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_principal: Option<Value>,
+    },
+    Session {
+        tenant_context: TenantContext,
+        actor_id: String,
+        subject: String,
+        session_id: String,
+    },
+}
+
+impl WorkflowLearningCandidateSourceBinding {
+    pub fn workflow(automation: &AutomationV2Spec) -> Self {
+        Self::Workflow {
+            tenant_context: automation.tenant_context(),
+            creator_id: automation.creator_id.clone(),
+            created_at_ms: automation.created_at_ms,
+            owner_principal: automation
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.pointer("/resource_access/owner_principal"))
+                .cloned(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowLearningCandidate {
     pub candidate_id: String,
     pub workflow_id: String,
     pub project_id: String,
     pub source_run_id: String,
+    /// Immutable origin. Legacy rows without this field remain local-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_binding: Option<WorkflowLearningCandidateSourceBinding>,
     pub kind: WorkflowLearningCandidateKind,
     pub status: WorkflowLearningCandidateStatus,
     #[serde(default)]
