@@ -359,6 +359,17 @@ fn local_intake_key_slow_persistence_does_not_delay_disable() {
             state.incident_monitor_intake_keys.try_write().is_ok(),
             "cancelled persistence must not block key management",
         );
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while state
+                .incident_monitor_intake_keys_persistence
+                .try_lock()
+                .is_ok()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         assert!(
             state
                 .incident_monitor_intake_keys_persistence
@@ -433,4 +444,101 @@ async fn local_intake_key_queued_persistence_snapshots_after_publication_lock() 
         .unwrap();
     state.load_incident_monitor_intake_keys().await.unwrap();
     assert!(!state.incident_monitor_intake_keys.read().await["existing"].enabled);
+}
+
+#[tokio::test]
+async fn local_intake_key_publication_reports_filesystem_errors() {
+    let (mut state, temp, _key) = intake_fixture().await;
+    let blocked_parent = temp.path().join("not-a-directory");
+    std::fs::write(&blocked_parent, "fixture").unwrap();
+    state.incident_monitor_intake_keys_path = blocked_parent.join("keys.json");
+    assert!(state
+        .disable_incident_monitor_intake_key_checked("existing", || Ok(()))
+        .await
+        .is_err());
+    assert!(!state.incident_monitor_intake_keys.read().await["existing"].enabled);
+    assert!(
+        state
+            .incident_monitor_intake_keys_persistence
+            .try_lock()
+            .is_ok(),
+        "failed publications must release publication order"
+    );
+}
+
+#[test]
+fn local_intake_key_cancelled_queued_disable_survives_reload() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (state, _temp, _key) = intake_fixture().await;
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let occupied = tokio::task::spawn_blocking(move || {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv();
+        });
+        entered_rx.await.unwrap();
+        let older = state.persist_incident_monitor_intake_keys();
+        tokio::pin!(older);
+        assert!(futures::poll!(&mut older).is_pending());
+        // On this single-thread runtime, a scheduled publication runs through
+        // its uncontended snapshot to the blocked filesystem task in one poll.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while state
+                .incident_monitor_intake_keys_persistence
+                .try_lock()
+                .is_ok()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(state.incident_monitor_intake_keys.try_write().is_ok());
+        {
+            let disable = state.disable_incident_monitor_intake_key_checked("existing", || Ok(()));
+            tokio::pin!(disable);
+            assert!(futures::poll!(&mut disable).is_pending());
+            assert!(!state.incident_monitor_intake_keys.try_read().unwrap()["existing"].enabled);
+            // Drop the caller while its publication is queued behind an
+            // already captured enabled snapshot, not before that snapshot.
+        }
+        tokio::task::yield_now().await;
+        // Queue a read-only completion barrier after the cancelled caller's
+        // publication. Another persist call would mask the bug by repairing it.
+        let barrier = state.incident_monitor_intake_keys_persistence.lock();
+        tokio::pin!(barrier);
+        assert!(futures::poll!(&mut barrier).is_pending());
+        release_tx.send(()).unwrap();
+        occupied.await.unwrap();
+        let held = tokio::time::timeout(std::time::Duration::from_secs(10), barrier)
+            .await
+            .unwrap();
+        older.await.unwrap();
+        let saved: Value = serde_json::from_slice(
+            &std::fs::read(&state.incident_monitor_intake_keys_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            saved["existing"]["enabled"], false,
+            "cancelled disable was lost on disk"
+        );
+        drop(held);
+        state.load_incident_monitor_intake_keys().await.unwrap();
+        assert!(
+            state
+                .validate_incident_monitor_intake_key(
+                    "existing-raw",
+                    "payments",
+                    "incident_monitor:report",
+                )
+                .await
+                .is_none(),
+            "restart must not resurrect the disabled key"
+        );
+    });
 }

@@ -5,27 +5,31 @@ use super::*;
 
 impl AppState {
     pub async fn persist_incident_monitor_intake_keys(&self) -> anyhow::Result<()> {
-        let guard = self
-            .incident_monitor_intake_keys_persistence
-            .clone()
-            .lock_owned()
-            .await;
-        // Snapshot only after acquiring publication order, so an older queued
-        // caller cannot overwrite a newer disable. The map is unlocked before
-        // serialization or filesystem work; revocation never waits for fsync.
-        let snapshot = self.incident_monitor_intake_keys.read().await.clone();
+        let publication_order = self.incident_monitor_intake_keys_persistence.clone();
+        let keys = self.incident_monitor_intake_keys.clone();
         let path = self.incident_monitor_intake_keys_path.clone();
-        // Own the guard in the blocking task: dropping the caller must not let
-        // another snapshot race a file write that is still running.
-        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let payload = serde_json::to_string_pretty(&snapshot)?;
-            let result =
-                write_state_file_atomically_blocking(&path, &payload).map_err(anyhow::Error::from);
-            drop(guard);
-            result
+        // Own publication before its first wait. Cancellation while queued
+        // must not discard a disable behind an older enabled snapshot. Dropping
+        // this JoinHandle detaches the task; callers that wait still receive
+        // the actual persistence result, not an enqueue acknowledgement.
+        tokio::spawn(async move {
+            let guard = publication_order.lock_owned().await;
+            // Snapshot after acquiring order, then release the authorization
+            // map before serialization/fsync so in-memory revocation is prompt.
+            let snapshot = keys.read().await.clone();
+            // The blocking task retains publication order through completion,
+            // even if the async task is dropped during runtime shutdown.
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let payload = serde_json::to_string_pretty(&snapshot)?;
+                let result = write_state_file_atomically_blocking(&path, &payload)
+                    .map_err(anyhow::Error::from);
+                drop(guard);
+                result
+            })
+            .await?
         })
         .await?
     }
