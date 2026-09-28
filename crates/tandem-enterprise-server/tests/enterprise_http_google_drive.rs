@@ -530,7 +530,9 @@ async fn enterprise_google_drive_reindex_refetches_existing_binding_without_expo
         payload
             .pointer("/ingestion_job/state")
             .and_then(Value::as_str),
-        Some("completed")
+        // Financial records remain review-gated until a released quarantine
+        // is explicitly acknowledged; this request does neither.
+        Some("quarantined")
     );
     assert!(payload
         .pointer("/ingestion_job/job_id")
