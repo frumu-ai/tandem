@@ -620,6 +620,9 @@ mod tests {
     }
 
     #[tokio::test]
+    // Also exclude auth-fixture tests using the default serial lock: they
+    // dispatch through the same process-wide data-boundary environment.
+    #[serial_test::serial]
     #[serial_test::serial(data_boundary_env)]
     async fn planner_completion_fallback_evaluates_the_rebuilt_payload() {
         let previous = [
