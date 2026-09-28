@@ -6,11 +6,42 @@
 use axum::extract::{MatchedPath, Request};
 use tandem_types::AccessPermission;
 
+#[cfg(test)]
+#[path = "hosted_session_route_tests.rs"]
+mod session_route_tests;
+
 pub(super) fn required_permission(request: &Request) -> Option<AccessPermission> {
     let path = request.extensions().get::<MatchedPath>()?.as_str();
     let method = request.method().as_str();
     let read = matches!(method, "GET" | "HEAD");
     use AccessPermission::*;
+    // Session state changes require execution authority on both HTTP aliases.
+    // Reads, no-op init, separately host-authorized command/shell endpoints,
+    // and independent governance reviewer routes retain their own boundaries.
+    let session_path = path.strip_prefix("/api").unwrap_or(path);
+    if matches!(
+        (method, session_path),
+        (
+            "POST",
+            "/session"
+                | "/session/{id}/attach"
+                | "/session/{id}/workspace/override"
+                | "/session/{id}/message"
+                | "/session/{id}/prompt_async"
+                | "/session/{id}/prompt_sync"
+                | "/session/{id}/abort"
+                | "/session/{id}/cancel"
+                | "/session/{id}/run/{run_id}/cancel"
+                | "/session/{id}/fork"
+                | "/session/{id}/revert"
+                | "/session/{id}/unrevert"
+                | "/session/{id}/share"
+                | "/session/{id}/summarize"
+        ) | ("PATCH" | "DELETE", "/session/{id}")
+            | ("DELETE", "/session/{id}/share")
+    ) {
+        return Some(HostedUse);
+    }
     match (method, path) {
         ("PUT", "/channels/{name}/tool-preferences") => return Some(HostedAdmin),
         ("GET" | "HEAD" | "POST", "/incident-monitor/intake/keys")
