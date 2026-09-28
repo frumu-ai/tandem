@@ -23,6 +23,7 @@ use tandem_core::{
     AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus, PermissionManager,
     PluginRegistry, Storage,
 };
+use tandem_enterprise_contract::hosted_policy::HostedPolicyBundle;
 use tandem_providers::ProviderRegistry;
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::{GovernedToolDispatcher, ToolRegistry};
@@ -31,6 +32,15 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::{AppState, RuntimeState};
+
+/// Install a validated hosted policy snapshot for cross-crate HTTP tests.
+/// Production code cannot call this feature-gated test seam.
+pub fn install_hosted_policy_snapshot(
+    state: &AppState,
+    bundle: HostedPolicyBundle,
+) -> Result<(), &'static str> {
+    state.enterprise.hosted_policy.install_test_bundle(bundle)
+}
 
 /// Build a ready [`AppState`] backed by per-call temp directories, with the
 /// enterprise storage paths and a seeded in-memory MCP server wired up. Suitable

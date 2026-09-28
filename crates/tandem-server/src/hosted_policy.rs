@@ -40,6 +40,30 @@ pub(crate) struct HostedPolicyRuntime {
 }
 
 impl HostedPolicyRuntime {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn install_test_bundle(
+        &self,
+        bundle: HostedPolicyBundle,
+    ) -> Result<(), &'static str> {
+        let organization_id = bundle.organization_id.clone();
+        let deployment_id = bundle.deployment_id.clone();
+        let policy = bundle.validate(&organization_id, &deployment_id, crate::now_ms(), None)?;
+        *self
+            .source
+            .write()
+            .map_err(|_| "hosted_policy_lock_failed")? = Some(PolicySource {
+            organization_id,
+            deployment_id,
+            path: PathBuf::from("test-policy-snapshot"),
+            started_at_ms: 0,
+        });
+        *self
+            .snapshot
+            .write()
+            .map_err(|_| "hosted_policy_lock_failed")? = Some(Arc::new(policy));
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn configure_test_source(
         &self,
@@ -167,6 +191,37 @@ impl HostedPolicyRuntime {
 }
 
 impl AppState {
+    /// Reproject a versioned hosted identity against the currently published
+    /// policy, rather than trusting the projection attached at request ingress.
+    pub fn authorize_current_hosted_admin(
+        &self,
+        verified: &VerifiedTenantContext,
+    ) -> Result<(), &'static str> {
+        if verified.policy_version.is_none() {
+            return Err("hosted_policy_version_required");
+        }
+        let policy = self
+            .enterprise
+            .hosted_policy
+            .current()?
+            .ok_or("hosted_policy_not_synchronized")?;
+        let now = crate::now_ms();
+        let projection = policy.project_identity(verified, now)?;
+        if projection
+            .evaluate_access(
+                &policy.deployment_resource(),
+                AccessPermission::HostedAdmin,
+                DataClass::Internal,
+                now,
+            )
+            .decision
+            != AccessDecision::Allow
+        {
+            return Err("hosted_operation_permission_required");
+        }
+        Ok(())
+    }
+
     pub(crate) fn start_hosted_policy_sync(&self, mode: RuntimeAuthMode) -> anyhow::Result<()> {
         let input_path = std::env::var("TANDEM_HOSTED_POLICY_FILE").ok();
         if mode != RuntimeAuthMode::HostedSingleTenant

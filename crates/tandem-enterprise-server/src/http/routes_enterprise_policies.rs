@@ -19,7 +19,8 @@ use tandem_enterprise_contract::{
 use tandem_server::{now_ms, AppState};
 
 use super::routes_enterprise::{
-    enterprise_global_admin_allowed_for_mutation, require_enterprise_admin, EnterpriseResult,
+    enterprise_global_admin_allowed_for_mutation, require_current_enterprise_admin,
+    require_enterprise_admin, EnterpriseResult,
 };
 
 #[derive(Debug, Serialize)]
@@ -188,6 +189,7 @@ async fn create_policy_rule(
     let previous = state.enterprise.policy_rules.read().await.clone();
     {
         let mut rules = state.enterprise.policy_rules.write().await;
+        require_current_enterprise_admin(&state, &request_principal, verified.as_deref())?;
         if rules.contains_key(&rule.rule_id) {
             return Err(conflict("ENTERPRISE_POLICY_RULE_EXISTS"));
         }
@@ -253,12 +255,11 @@ async fn update_policy_rule(
     if !validation.errors.is_empty() {
         return validation_error(validation);
     }
-    state
-        .enterprise
-        .policy_rules
-        .write()
-        .await
-        .insert(rule_id.clone(), replacement.clone());
+    {
+        let mut rules = state.enterprise.policy_rules.write().await;
+        require_current_enterprise_admin(&state, &request_principal, verified.as_deref())?;
+        rules.insert(rule_id.clone(), replacement.clone());
+    }
     commit_and_audit(
         &state,
         previous,
@@ -329,6 +330,7 @@ async fn publish_policy(
         &state,
         &tenant_context,
         &request_principal,
+        verified.as_deref(),
         &policy_id,
         may_manage_global,
         PolicyStateTransition {
@@ -356,6 +358,7 @@ async fn disable_policy(
         &state,
         &tenant_context,
         &request_principal,
+        verified.as_deref(),
         &policy_id,
         may_manage_global,
         PolicyStateTransition {
@@ -423,6 +426,7 @@ async fn supersede_policy(
     let previous;
     {
         let mut registry = state.enterprise.policy_rules.write().await;
+        require_current_enterprise_admin(&state, &request_principal, verified.as_deref())?;
         if replacements
             .iter()
             .any(|rule| registry.contains_key(&rule.rule_id))
@@ -491,6 +495,7 @@ async fn instantiate_policy_template(
     let previous;
     {
         let mut registry = state.enterprise.policy_rules.write().await;
+        require_current_enterprise_admin(&state, &request_principal, verified.as_deref())?;
         if registry.values().any(|rule| {
             rule.policy_id == request.instance_id && tenant_matches(rule, &tenant_context)
         }) || instantiation
@@ -541,6 +546,7 @@ async fn rollback_policy_template(
         &state,
         &tenant_context,
         &request_principal,
+        verified.as_deref(),
         &template_id,
         request,
         TemplateTransition::Rollback,
@@ -562,6 +568,7 @@ async fn upgrade_policy_template(
         &state,
         &tenant_context,
         &request_principal,
+        verified.as_deref(),
         &template_id,
         request,
         TemplateTransition::Upgrade,
@@ -579,6 +586,7 @@ async fn transition_policy_template(
     state: &AppState,
     tenant_context: &TenantContext,
     request_principal: &RequestPrincipal,
+    verified: Option<&VerifiedTenantContext>,
     template_id: &str,
     request: InstantiateTemplateRequest,
     transition: TemplateTransition,
@@ -609,6 +617,7 @@ async fn transition_policy_template(
     let previous;
     {
         let mut registry = state.enterprise.policy_rules.write().await;
+        require_current_enterprise_admin(state, request_principal, verified)?;
         current_version = registry
             .values()
             .filter(|rule| {
@@ -686,6 +695,7 @@ async fn mutate_policy_state(
     state: &AppState,
     tenant_context: &TenantContext,
     request_principal: &RequestPrincipal,
+    verified: Option<&VerifiedTenantContext>,
     policy_id: &str,
     may_manage_global: bool,
     transition: PolicyStateTransition,
@@ -694,6 +704,7 @@ async fn mutate_policy_state(
     let mut changed = Vec::new();
     {
         let mut registry = state.enterprise.policy_rules.write().await;
+        require_current_enterprise_admin(state, request_principal, verified)?;
         let candidates = registry
             .values()
             .filter(|rule| {

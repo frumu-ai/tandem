@@ -21,9 +21,9 @@ use super::routes_enterprise::{
     invalidate_response_cache_for_source_binding, memory_tenant_scope, not_found,
     open_enterprise_memory_db_for_state, persist_enterprise_ingestion_jobs,
     persist_enterprise_ingestion_quarantines, purge_source_object_indexed_content,
-    require_enterprise_admin, serialize_data_class, source_binding_for_tenant, storage_base,
-    validate_enterprise_id, validate_resource_ref_matches_tenant, EnterpriseAdminResponseBase,
-    EnterpriseResult,
+    require_current_enterprise_admin, require_enterprise_admin, serialize_data_class,
+    source_binding_for_tenant, storage_base, validate_enterprise_id,
+    validate_resource_ref_matches_tenant, EnterpriseAdminResponseBase, EnterpriseResult,
 };
 
 #[derive(Debug, Serialize)]
@@ -202,8 +202,16 @@ pub(super) async fn review_ingestion_quarantine(
         .clone()
         .unwrap_or_else(|| request_principal.source.clone());
     let reviewed = {
-        let mut registry = state.enterprise.ingestion_quarantines.write().await;
-        let Some(quarantine) = registry.values_mut().find(|quarantine| {
+        // Acquire both registries before the live check so revocation while
+        // waiting for either lock cannot leave only one half of the review.
+        let mut quarantines = state.enterprise.ingestion_quarantines.write().await;
+        let mut jobs = state.enterprise.ingestion_jobs.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
+        let Some(quarantine) = quarantines.values_mut().find(|quarantine| {
             quarantine.quarantine_id == quarantine_id
                 && ingestion_quarantine_tenant_matches(quarantine, &tenant_context)
         }) else {
@@ -215,13 +223,24 @@ pub(super) async fn review_ingestion_quarantine(
         let reviewed = quarantine.clone();
         persist_enterprise_ingestion_quarantines(
             &state.enterprise.ingestion_quarantines_path,
-            &registry,
+            &quarantines,
         )
         .await?;
+        if let Some(job) = jobs.values_mut().find(|job| {
+            ingestion_job_tenant_matches(job, &tenant_context)
+                && job.quarantine_id.as_deref() == Some(reviewed.quarantine_id.as_str())
+        }) {
+            job.state = match reviewed.disposition {
+                Some(QuarantineDisposition::Release) => IngestionJobState::Completed,
+                Some(QuarantineDisposition::Delete) => IngestionJobState::Skipped,
+                Some(QuarantineDisposition::Reindex) => IngestionJobState::Queued,
+                None => job.state,
+            };
+            job.finished_at_ms = Some(now_ms());
+            persist_enterprise_ingestion_jobs(&state.enterprise.ingestion_jobs_path, &jobs).await?;
+        }
         reviewed
     };
-
-    update_ingestion_job_after_quarantine_review(&state, &tenant_context, &reviewed).await?;
     emit_source_binding_cache_invalidation_required(
         &state,
         &tenant_context,
@@ -285,6 +304,11 @@ pub(super) async fn reindex_source_object(
     let db = open_enterprise_memory_db_for_state(&state).await?;
     let tenant_scope = memory_tenant_scope(&tenant_context);
     let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
     let (chunks_deleted, bytes_estimated) =
         purge_source_object_indexed_content(&db, &record).await?;
     db.mark_source_object_lifecycle_state_for_tenant(
@@ -332,6 +356,11 @@ pub(super) async fn delete_source_object(
     let db = open_enterprise_memory_db_for_state(&state).await?;
     let tenant_scope = memory_tenant_scope(&tenant_context);
     let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
     let (chunks_deleted, bytes_estimated) =
         purge_source_object_indexed_content(&db, &record).await?;
     db.delete_source_object_lifecycle_for_tenant(&tenant_scope, &binding_id, &source_object_id)
@@ -372,6 +401,11 @@ pub(super) async fn rescope_source_object(
     let db = open_enterprise_memory_db_for_state(&state).await?;
     let tenant_scope = memory_tenant_scope(&tenant_context);
     let record = source_object_by_id(&db, &tenant_scope, &binding_id, &source_object_id).await?;
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
     let (chunks_deleted, bytes_estimated) =
         purge_source_object_indexed_content(&db, &record).await?;
     let resource_ref = serde_json::to_value(input.resource_ref)
@@ -423,26 +457,4 @@ async fn source_object_by_id(
         .await
         .map_err(|_| internal_error("ENTERPRISE_SOURCE_OBJECT_READ_FAILED"))?
         .ok_or_else(|| not_found("ENTERPRISE_SOURCE_OBJECT_NOT_FOUND"))
-}
-
-async fn update_ingestion_job_after_quarantine_review(
-    state: &AppState,
-    tenant_context: &TenantContext,
-    quarantine: &IngestionQuarantine,
-) -> Result<(), (StatusCode, Json<Value>)> {
-    let mut registry = state.enterprise.ingestion_jobs.write().await;
-    if let Some(job) = registry.values_mut().find(|job| {
-        ingestion_job_tenant_matches(job, tenant_context)
-            && job.quarantine_id.as_deref() == Some(quarantine.quarantine_id.as_str())
-    }) {
-        job.state = match quarantine.disposition {
-            Some(QuarantineDisposition::Release) => IngestionJobState::Completed,
-            Some(QuarantineDisposition::Delete) => IngestionJobState::Skipped,
-            Some(QuarantineDisposition::Reindex) => IngestionJobState::Queued,
-            None => job.state,
-        };
-        job.finished_at_ms = Some(now_ms());
-        persist_enterprise_ingestion_jobs(&state.enterprise.ingestion_jobs_path, &registry).await?;
-    }
-    Ok(())
 }

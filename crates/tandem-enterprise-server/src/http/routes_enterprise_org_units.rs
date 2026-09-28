@@ -20,8 +20,9 @@ use tandem_enterprise_contract::{
 use tandem_server::{now_ms, AppState};
 
 use super::routes_enterprise::{
-    bad_request, internal_error, require_enterprise_admin, storage_base, validate_enterprise_id,
-    validate_external_id, EnterpriseAdminResponseBase, EnterpriseResult,
+    bad_request, internal_error, require_current_enterprise_admin, require_enterprise_admin,
+    storage_base, validate_enterprise_id, validate_external_id, EnterpriseAdminResponseBase,
+    EnterpriseResult,
 };
 
 #[derive(Debug, Serialize)]
@@ -383,6 +384,11 @@ pub(super) async fn create_org_unit(
 
     {
         let mut registry = state.enterprise.org_units.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         registry.insert(enterprise_org_unit_key(&unit), unit);
         persist_enterprise_org_units(&state.enterprise.org_units_path, &registry).await?;
     }
@@ -437,6 +443,11 @@ pub(super) async fn create_org_unit_membership(
 
     {
         let mut registry = state.enterprise.org_unit_memberships.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         registry.insert(
             enterprise_org_unit_membership_key(&membership),
             membership.clone(),
@@ -517,6 +528,11 @@ pub(super) async fn create_org_unit_access_grant(
 
     {
         let mut registry = state.enterprise.org_unit_access_grants.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         registry.insert(enterprise_org_unit_access_grant_key(&grant), grant.clone());
         persist_enterprise_org_unit_access_grants(
             &state.enterprise.org_unit_access_grants_path,
@@ -544,6 +560,11 @@ pub(super) async fn update_org_unit_membership(
     let membership_id = validate_enterprise_id("membership_id", &membership_id)?;
     let updated = {
         let mut registry = state.enterprise.org_unit_memberships.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         let Some(membership) = registry.values_mut().find(|membership| {
             membership.membership_id == membership_id
                 && org_unit_membership_tenant_matches(membership, &tenant_context)
@@ -582,6 +603,11 @@ pub(super) async fn update_org_unit_access_grant(
     let grant_id = validate_enterprise_id("grant_id", &grant_id)?;
     let updated = {
         let mut registry = state.enterprise.org_unit_access_grants.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         let Some(grant) = registry.values_mut().find(|grant| {
             grant.grant_id == grant_id
                 && org_unit_access_grant_tenant_matches(grant, &tenant_context)

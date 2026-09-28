@@ -331,6 +331,11 @@ async fn create_source_binding(
 
     {
         let mut registry = state.enterprise.source_bindings.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         registry.insert(enterprise_source_binding_key(&binding), binding);
         persist_enterprise_source_bindings(&state.enterprise.source_bindings_path, &registry)
             .await?;
@@ -427,6 +432,11 @@ async fn create_connector(
 
     {
         let mut registry = state.enterprise.connectors.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         registry.insert(enterprise_connector_key(&connector), connector);
         persist_enterprise_connectors(&state.enterprise.connectors_path, &registry).await?;
     }
@@ -456,6 +466,11 @@ async fn update_connector(
 
     let updated_connector = {
         let mut registry = state.enterprise.connectors.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         let Some(connector) = registry.values_mut().find(|connector| {
             connector.connector_id == connector_id && connector.tenant_matches(&tenant_context)
         }) else {
@@ -511,6 +526,11 @@ async fn create_connector_credential_ref(
 
     let updated_connector = {
         let mut registry = state.enterprise.connectors.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         let Some(connector) = registry.values_mut().find(|connector| {
             connector.connector_id == connector_id && connector.tenant_matches(&tenant_context)
         }) else {
@@ -589,6 +609,11 @@ async fn rotate_connector_credential_ref(
 
     let updated_connector = {
         let mut registry = state.enterprise.connectors.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         let Some(connector) = registry.values_mut().find(|connector| {
             connector.connector_id == connector_id && connector.tenant_matches(&tenant_context)
         }) else {
@@ -646,6 +671,11 @@ async fn update_source_binding(
 
     let updated_binding = {
         let mut registry = state.enterprise.source_bindings.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         let Some(binding) = registry.values_mut().find(|binding| {
             binding.binding_id == binding_id && binding.tenant_matches(&tenant_context)
         }) else {
@@ -1147,6 +1177,28 @@ pub(super) fn require_enterprise_admin(
             "message": "enterprise admin access is required for this mutation"
         })),
     ))
+}
+
+/// Recheck versioned hosted authority after the final await before a write.
+/// Legacy/local authority retains its existing request-principal semantics.
+pub(super) fn require_current_enterprise_admin(
+    state: &AppState,
+    request_principal: &RequestPrincipal,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    require_enterprise_admin(request_principal, verified_tenant_context)?;
+    if let Some(verified) = verified_tenant_context.filter(|value| value.policy_version.is_some()) {
+        if state.authorize_current_hosted_admin(verified).is_err() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "code": "ENTERPRISE_ADMIN_REQUIRED",
+                    "message": "enterprise admin access is required for this mutation"
+                })),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn enterprise_admin_allowed_for_mutation(

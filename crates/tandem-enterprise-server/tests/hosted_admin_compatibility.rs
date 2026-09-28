@@ -9,16 +9,23 @@ use axum::{
 use serde_json::{json, Value};
 use tandem_enterprise_contract::{
     hosted_policy::{role_capabilities, HostedPolicyBundle},
-    AccessEffect, AuthorityChain, HumanActor, RequestPrincipal, TenantContext,
-    VerifiedTenantContext,
+    AccessEffect, AuthorityChain, HumanActor, IngestionJob, IngestionJobState, IngestionQuarantine,
+    RequestPrincipal, TenantContext, VerifiedTenantContext,
 };
 use tandem_enterprise_server::apply_routes;
-use tandem_server::{now_ms, test_support::test_state, AppState};
+use tandem_server::{
+    now_ms,
+    test_support::{install_hosted_policy_snapshot, test_state},
+    AppState,
+};
 use tower::ServiceExt;
 
 // Exercise the enterprise handler boundary with the actual hosted projection.
 // Signature verification is owned and tested by the upstream ingress module.
-fn projected_context(role: &str, delegated_admin: bool) -> VerifiedTenantContext {
+fn projected_context(
+    role: &str,
+    delegated_admin: bool,
+) -> (VerifiedTenantContext, HostedPolicyBundle) {
     let now = now_ms();
     let capabilities: Vec<String> = role_capabilities(role)
         .into_iter()
@@ -63,12 +70,24 @@ fn projected_context(role: &str, delegated_admin: bool) -> VerifiedTenantContext
     })).unwrap();
     verified.strict_projection = Some(
         bundle
+            .clone()
             .validate("org-a", "dep-a", now, None)
             .unwrap()
             .project_identity(&verified, now)
             .unwrap(),
     );
-    verified
+    (verified, bundle)
+}
+
+fn revoked_admin_bundle(mut bundle: HostedPolicyBundle) -> HostedPolicyBundle {
+    bundle.policy_version += 1;
+    bundle.generated_at = chrono::DateTime::from_timestamp_millis(now_ms() as i64).unwrap();
+    bundle.users[0].role = "member".into();
+    bundle.users[0].capabilities = role_capabilities("member")
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    bundle
 }
 
 fn app(state: AppState, verified: VerifiedTenantContext) -> Router {
@@ -105,7 +124,9 @@ async fn hosted_admin_projection_admits_enterprise_management_but_not_global_aut
         ("viewer", true, true),
     ] {
         let state = test_state().await;
-        let app = app(state.clone(), projected_context(role, delegated));
+        let (verified, bundle) = projected_context(role, delegated);
+        install_hosted_policy_snapshot(&state, bundle).unwrap();
+        let app = app(state.clone(), verified);
         for (method, path, body) in [
             ("GET", "/enterprise/readiness", json!({})),
             ("POST", "/enterprise/onboarding-plans/preview", json!({})),
@@ -175,7 +196,8 @@ async fn hosted_admin_projection_admits_enterprise_management_but_not_global_aut
 async fn hosted_admin_projection_denials_do_not_fall_back_to_roles() {
     for fault in ["missing", "expired", "wrong-deployment", "deny"] {
         let state = test_state().await;
-        let mut verified = projected_context("admin", false);
+        let (mut verified, bundle) = projected_context("admin", false);
+        install_hosted_policy_snapshot(&state, bundle).unwrap();
         verified.roles.push("hosted:admin".into());
         match fault {
             "missing" => verified.strict_projection = None,
@@ -217,9 +239,126 @@ async fn hosted_admin_projection_denials_do_not_fall_back_to_roles() {
 }
 
 #[tokio::test]
+async fn hosted_admin_revoked_while_connector_lock_is_held_cannot_create() {
+    let state = test_state().await;
+    let (verified, bundle) = projected_context("admin", false);
+    install_hosted_policy_snapshot(&state, bundle.clone()).unwrap();
+    let app = app(state.clone(), verified);
+
+    let allowed = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/enterprise/connectors",
+            json!({"connector_id": "before-revocation", "provider": "google_drive"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), StatusCode::OK);
+    let persisted_before = tokio::fs::read(&state.enterprise.connectors_path)
+        .await
+        .unwrap();
+
+    let held = state.enterprise.connectors.read().await;
+    let request_task = tokio::spawn(async move {
+        app.oneshot(request(
+            "POST",
+            "/enterprise/connectors",
+            json!({"connector_id": "after-revocation", "provider": "google_drive"}),
+        ))
+        .await
+        .unwrap()
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !request_task.is_finished(),
+        "request should wait for connector lock"
+    );
+
+    install_hosted_policy_snapshot(&state, revoked_admin_bundle(bundle)).unwrap();
+    drop(held);
+
+    let response = request_task.await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let connectors = state.enterprise.connectors.read().await;
+    assert_eq!(connectors.len(), 1);
+    assert!(connectors
+        .values()
+        .all(|connector| connector.connector_id != "after-revocation"));
+    assert_eq!(
+        tokio::fs::read(&state.enterprise.connectors_path)
+            .await
+            .unwrap(),
+        persisted_before
+    );
+}
+
+#[tokio::test]
+async fn hosted_admin_revoked_while_quarantine_job_lock_is_held_changes_neither_registry() {
+    let state = test_state().await;
+    let (verified, bundle) = projected_context("admin", false);
+    install_hosted_policy_snapshot(&state, bundle.clone()).unwrap();
+    let tenant = verified.tenant_context.clone();
+    state.enterprise.ingestion_jobs.write().await.insert(
+        "job-review".into(),
+        IngestionJob {
+            job_id: "job-review".into(),
+            tenant_context: tenant.clone(),
+            connector_id: "manual_upload".into(),
+            binding_id: "review-binding".into(),
+            state: IngestionJobState::Quarantined,
+            source_object_ids: vec![],
+            started_at_ms: Some(1_000),
+            finished_at_ms: None,
+            quarantine_id: Some("quarantine-review".into()),
+        },
+    );
+    state.enterprise.ingestion_quarantines.write().await.insert(
+        "quarantine-review".into(),
+        IngestionQuarantine {
+            quarantine_id: "quarantine-review".into(),
+            tenant_context: tenant,
+            connector_id: "manual_upload".into(),
+            binding_id: "review-binding".into(),
+            source_object_ids: vec![],
+            reason: "review required".into(),
+            created_at_ms: 1_000,
+            reviewed_by: None,
+            reviewed_at_ms: None,
+            disposition: None,
+        },
+    );
+    let held = state.enterprise.ingestion_jobs.read().await;
+    let app = app(state.clone(), verified);
+    let request_task = tokio::spawn(async move {
+        app.oneshot(request(
+            "PATCH",
+            "/enterprise/ingestion-quarantines/quarantine-review/review",
+            json!({"disposition": "delete"}),
+        ))
+        .await
+        .unwrap()
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !request_task.is_finished(),
+        "request should wait for job lock"
+    );
+    install_hosted_policy_snapshot(&state, revoked_admin_bundle(bundle)).unwrap();
+    drop(held);
+
+    assert_eq!(request_task.await.unwrap().status(), StatusCode::FORBIDDEN);
+    let quarantines = state.enterprise.ingestion_quarantines.read().await;
+    assert_eq!(quarantines["quarantine-review"].disposition, None);
+    assert_eq!(quarantines["quarantine-review"].reviewed_at_ms, None);
+    let jobs = state.enterprise.ingestion_jobs.read().await;
+    assert_eq!(jobs["job-review"].state, IngestionJobState::Quarantined);
+}
+
+#[tokio::test]
 async fn legacy_enterprise_admin_read_and_mutation_remain_available() {
     let state = test_state().await;
-    let mut verified = projected_context("admin", false);
+    let (mut verified, _) = projected_context("admin", false);
     verified.policy_version = None;
     verified.strict_projection = None;
     verified.roles = vec!["workspace:admin".into()];

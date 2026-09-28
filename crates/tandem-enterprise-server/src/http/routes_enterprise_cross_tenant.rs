@@ -19,8 +19,9 @@ use tandem_enterprise_contract::{
 use tandem_server::{now_ms, AppState};
 
 use super::routes_enterprise::{
-    bad_request, internal_error, require_enterprise_admin, storage_base, validate_enterprise_id,
-    validate_external_id, EnterpriseAdminResponseBase, EnterpriseResult,
+    bad_request, internal_error, require_current_enterprise_admin, require_enterprise_admin,
+    storage_base, validate_enterprise_id, validate_external_id, EnterpriseAdminResponseBase,
+    EnterpriseResult,
 };
 
 #[derive(Debug, Serialize)]
@@ -205,6 +206,11 @@ async fn issue_cross_tenant_grant(
     let storage_key = cross_tenant_grant_key(&record);
     {
         let mut registry = state.enterprise.cross_tenant_grants.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         if registry.contains_key(&storage_key) {
             return Err(bad_request("ENTERPRISE_CROSS_TENANT_GRANT_ALREADY_EXISTS"));
         }
@@ -239,6 +245,11 @@ async fn revoke_cross_tenant_grant(
     let grant_id = validate_enterprise_id("cross_tenant_grant_id", &grant_id)?;
     let updated = {
         let mut registry = state.enterprise.cross_tenant_grants.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         let Some(record) = registry.values_mut().find(|record| {
             record.grant.claims.grant_id == grant_id
                 && record
