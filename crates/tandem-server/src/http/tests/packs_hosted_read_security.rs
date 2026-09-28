@@ -81,19 +81,22 @@ async fn seeded_private_pack_state(root: &std::path::Path) -> AppState {
     .expect("installed pack manifest");
     std::fs::write(&bundle_path, b"alice-private-plan-bundle")
         .expect("installed private workflow bundle");
+    let record: crate::pack_manager::PackInstallRecord = serde_json::from_value(json!({
+        "pack_id": "private-workflow",
+        "name": "private-workflow",
+        "version": "0.1.0",
+        "pack_type": "workflow",
+        "install_path": install_path.to_string_lossy(),
+        "sha256": "private-test-digest",
+        "solution_content_sha256": null,
+        "installed_at_ms": 1,
+        "source": {"kind": "workflow_pack_import", "path": "/private/alice.zip"},
+        "marker_detected": true,
+        "routines_enabled": false,
+    }))
+    .expect("deserialize private test pack");
     let index = crate::pack_manager::PackIndex {
-        packs: vec![crate::pack_manager::PackInstallRecord {
-            pack_id: "private-workflow".to_string(),
-            name: "private-workflow".to_string(),
-            version: "0.1.0".to_string(),
-            pack_type: "workflow".to_string(),
-            install_path: install_path.to_string_lossy().to_string(),
-            sha256: "private-test-digest".to_string(),
-            installed_at_ms: 1,
-            source: json!({"kind": "workflow_pack_import", "path": "/private/alice.zip"}),
-            marker_detected: true,
-            routines_enabled: false,
-        }],
+        packs: vec![record],
     };
     std::fs::write(
         pack_root.join("index.json"),
