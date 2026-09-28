@@ -112,6 +112,8 @@ pub struct McpConnection {
     pub secret_headers: HashMap<String, McpSecretRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<McpOAuthConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_publication_pending: Option<McpOAuthPendingPublication>,
     #[serde(default)]
     pub connected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,6 +165,7 @@ impl McpConnection {
             credential_ref,
             secret_headers: server.secret_headers.clone(),
             oauth: server.oauth.clone(),
+            oauth_publication_pending: None,
             connected: server.connected,
             last_error: server.last_error.clone(),
             last_auth_challenge: server.last_auth_challenge.clone(),
@@ -196,6 +199,7 @@ impl McpConnection {
             credential_ref,
             secret_headers: server.secret_headers.clone(),
             oauth: server.oauth.clone(),
+            oauth_publication_pending: None,
             connected: is_local && server.connected,
             last_error: is_local.then(|| server.last_error.clone()).flatten(),
             last_auth_challenge: is_local
@@ -428,6 +432,7 @@ impl McpRegistry {
                 credential_ref: Some(header_credential_ref),
                 secret_headers,
                 oauth: None,
+                oauth_publication_pending: None,
                 connected: false,
                 last_error: None,
                 last_auth_challenge: None,
@@ -482,6 +487,7 @@ impl McpRegistry {
                 credential_ref: Some(credential_ref),
                 secret_headers: HashMap::new(),
                 oauth: Some(oauth),
+                oauth_publication_pending: None,
                 connected: false,
                 last_error: None,
                 last_auth_challenge: None,
@@ -517,20 +523,20 @@ impl McpRegistry {
         current_tenant: &TenantContext,
     ) {
         let now = now_ms();
+        let key = McpOAuthCredentialKey::new(current_tenant, provider_id);
         for connection in self
             .connections
             .write()
             .await
             .values_mut()
             .filter(|connection| {
-                connection.tenant_context == *current_tenant
-                    && connection
-                        .oauth
-                        .as_ref()
-                        .is_some_and(|oauth| oauth.provider_id == provider_id)
+                connection.oauth.as_ref().is_some_and(|oauth| {
+                    McpOAuthCredentialKey::new(&connection.tenant_context, &oauth.provider_id) == key
+                })
             })
         {
             connection.connection_generation = new_mcp_connection_generation();
+            connection.oauth_publication_pending = None;
             connection.updated_at_ms = now;
         }
     }

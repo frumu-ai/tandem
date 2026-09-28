@@ -192,6 +192,11 @@ impl McpRegistry {
             .into_iter()
             .map(|(connection_id, mut connection)| {
                 connection.reset_transient_runtime_state();
+                if let Some(oauth) = connection.oauth.as_mut() {
+                    oauth.client_secret_value = oauth.client_secret_ref.as_ref().and_then(|secret_ref| {
+                        resolve_secret_ref_value(secret_ref, &connection.tenant_context)
+                    });
+                }
                 (connection_id, connection)
             })
             .collect::<HashMap<_, _>>();
@@ -854,12 +859,16 @@ impl McpRegistry {
                 connection.credential_ref = None;
                 connection.secret_headers.clear();
                 connection.oauth = None;
+                connection.oauth_publication_pending = None;
                 connection.upstream_account = None;
                 connection.reset_transient_runtime_state();
                 connection.updated_at_ms = now_ms();
                 self.invalidate_oauth_refresh_connection(&connection_id);
                 (secret_headers, oauth)
             };
+            if let Some(oauth) = &oauth {
+                self.rotate_connection_generations_for_oauth_provider(&oauth.provider_id, current_tenant).await;
+            }
             delete_secret_header_refs(&secret_headers, current_tenant);
             delete_oauth_secret_ref(oauth.as_ref(), current_tenant);
             delete_oauth_credential(
@@ -881,6 +890,7 @@ impl McpRegistry {
         let Some(server) = servers.get_mut(name) else {
             return false;
         };
+        let cleared_provider = server.oauth.as_ref().map(|oauth| oauth.provider_id.clone());
         delete_secret_header_refs(&server.secret_headers, current_tenant);
         delete_oauth_secret_ref(server.oauth.as_ref(), current_tenant);
         delete_oauth_credential(
@@ -902,6 +912,9 @@ impl McpRegistry {
         server.pending_auth_by_tool.clear();
         self.invalidate_oauth_refresh_connection(&self.connection_id_for_tenant(name, current_tenant));
         drop(servers);
+        if let Some(provider) = cleared_provider {
+            self.rotate_connection_generations_for_oauth_provider(&provider, current_tenant).await;
+        }
         self.upsert_compatibility_connection_for_server(name, current_tenant)
             .await;
         self.persist_state().await;

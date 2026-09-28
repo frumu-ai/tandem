@@ -13,6 +13,16 @@ async fn oauth_dispatch_case(
     force_401: bool,
     mutation: Option<&str>,
 ) {
+    oauth_dispatch_case_with_peer(explicit, connected, force_401, mutation, None).await;
+}
+
+async fn oauth_dispatch_case_with_peer(
+    explicit: bool,
+    connected: bool,
+    force_401: bool,
+    mutation: Option<&str>,
+    shared_peer: Option<&str>,
+) {
     // Bearer credentials use the process-wide provider store. Cooperate with
     // the existing fixtures that temporarily redirect TANDEM_HOME.
     let _provider_auth_guard = super::tests::provider_auth_test_guard().await;
@@ -119,7 +129,16 @@ async fn oauth_dispatch_case(
     let registry = McpRegistry::new_with_state_file(directory.join("state.json"));
     registry.allow_private_endpoints_for_tests();
     let name = format!("oauth-{}", uuid::Uuid::new_v4());
-    let tenant = if explicit {
+    let tenant = if shared_peer == Some("actors") {
+        TenantContext::explicit_user_workspace(
+            "oauth-test-org",
+            "oauth-test-workspace",
+            Some(name.clone()),
+            "alice",
+        )
+    } else if shared_peer == Some("deployment") {
+        TenantContext::explicit("oauth-test-org", "oauth-test-workspace", None)
+    } else if explicit {
         TenantContext::explicit("oauth-test-org", "oauth-test-workspace", Some(name.clone()))
     } else {
         TenantContext::local_implicit()
@@ -177,6 +196,65 @@ async fn oauth_dispatch_case(
             )
             .await;
     }
+    let peer = if let Some(kind) = shared_peer {
+        let peer_name = if kind == "actors" {
+            name.clone()
+        } else {
+            format!("{name}-peer")
+        };
+        let peer_tenant = match kind {
+            "actors" => TenantContext::explicit_user_workspace(
+                "oauth-test-org",
+                "oauth-test-workspace",
+                Some(name.clone()),
+                "bob",
+            ),
+            "deployment" => TenantContext::explicit(
+                "oauth-test-org",
+                "oauth-test-workspace",
+                Some(String::new()),
+            ),
+            "flat-local" => TenantContext::local_implicit(),
+            _ => tenant.clone(),
+        };
+        let peer_provider = match kind {
+            "normalized" => format!(" {} ", name.to_uppercase()),
+            "flat-local" => tandem_core::provider_credential_storage_key(&tenant, &name),
+            _ => name.clone(),
+        };
+        if peer_name != name {
+            registry
+                .add_or_update(
+                    peer_name.clone(),
+                    format!("{origin}/mcp"),
+                    HashMap::new(),
+                    true,
+                )
+                .await;
+            assert!(registry.set_auth_kind(&peer_name, "oauth".into()).await);
+        }
+        registry
+            .set_oauth_refresh_config_for_tenant(
+                &peer_name,
+                peer_provider,
+                format!("{origin}/token"),
+                "test-client".into(),
+                None,
+                &peer_tenant,
+            )
+            .await
+            .unwrap();
+        registry
+            .set_runtime_state_for_current_tenant(
+                &peer_name,
+                &peer_tenant,
+                McpRuntimeState::connected(None, Vec::new(), now_ms()),
+            )
+            .await;
+        Some((peer_name, peer_tenant))
+    } else {
+        None
+    };
     let revoked = Arc::new(AtomicBool::new(false));
     let request_revoked = revoked.clone();
     let request_registry = registry.clone();
@@ -211,9 +289,13 @@ async fn oauth_dispatch_case(
             .unwrap();
         // The first call already sent the old credential but has not received
         // its 401. Let a second complete its refresh and successful retry first.
+        let (second_name, second_tenant) = peer
+            .as_ref()
+            .map(|(name, tenant)| (name.as_str(), tenant))
+            .unwrap_or((&name, &tenant));
         let second = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            registry.call_tool_for_tenant(&name, "get_me", json!({}), &tenant),
+            registry.call_tool_for_tenant(second_name, "get_me", json!({}), second_tenant),
         )
         .await
         .unwrap();
@@ -270,6 +352,19 @@ async fn oauth_dispatch_case(
             &tenant,
         ))
         .cloned();
+    if let Some((peer_name, peer_tenant)) = &peer {
+        let peer_server = registry.servers.read().await[peer_name].clone();
+        let headers = registry
+            .effective_headers_for_current_tenant(peer_name, &peer_server, peer_tenant)
+            .await;
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer renewed-test-token")
+        );
+        registry
+            .clear_auth_material_for_tenant(peer_name, peer_tenant)
+            .await;
+    }
     registry
         .clear_auth_material_for_tenant(&name, &tenant)
         .await;
@@ -312,6 +407,21 @@ async fn oauth_dispatch_case(
 async fn oauth_dispatch_delayed_401_adopts_completed_refresh() {
     for explicit in [false, true] {
         oauth_dispatch_case(explicit, true, true, Some("delayed-401")).await;
+    }
+}
+
+#[tokio::test]
+async fn oauth_dispatch_shared_connections_coalesce_delayed_401() {
+    for explicit in [false, true] {
+        oauth_dispatch_case_with_peer(explicit, true, true, Some("delayed-401"), Some("servers"))
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn oauth_dispatch_shared_credential_aliases_coalesce_delayed_401() {
+    for alias in ["actors", "normalized", "deployment", "flat-local"] {
+        oauth_dispatch_case_with_peer(true, true, true, Some("delayed-401"), Some(alias)).await;
     }
 }
 
