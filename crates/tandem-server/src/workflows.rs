@@ -1677,6 +1677,7 @@ async fn record_workflow_external_action(
             ])
         });
     let action = crate::ExternalActionRecord {
+        provenance: None,
         action_id: workflow_external_action_id(&idempotency_key),
         operation: binding.capability_id.clone(),
         status: "posted".to_string(),

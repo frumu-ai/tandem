@@ -420,6 +420,12 @@ pub(crate) async fn build_workflow_plan(
     >,
     String,
 > {
+    super::workflow_planner_policy::require_live_planner_write(
+        state,
+        tenant_context,
+        verified_tenant_context,
+    )
+    .map_err(str::to_string)?;
     let plan_id = format!("wfplan-{}", uuid::Uuid::new_v4());
     let planner_version = "v1".to_string();
 
@@ -577,6 +583,12 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
         title: &str,
         workspace_root: &str,
     ) -> Result<String, String> {
+        super::workflow_planner_policy::require_live_planner_write(
+            self.state,
+            &self.tenant_context,
+            self.verified_tenant_context.as_ref(),
+        )
+        .map_err(str::to_string)?;
         let mut session = Session::new(Some(title.to_string()), Some(workspace_root.to_string()));
         let session_id = session.id.clone();
         session.workspace_root = Some(workspace_root.to_string());

@@ -343,7 +343,7 @@ pub(super) async fn start_goal(
         now_ms: crate::now_ms(),
     };
     match state
-        .start_long_running_goal(&tenant, &request, &actor)
+        .start_long_running_goal(&tenant, &request, &actor, verified)
         .await
     {
         Ok(StartGoalOutcome::Created { goal, root_run }) => (

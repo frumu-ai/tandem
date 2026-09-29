@@ -82,6 +82,7 @@ pub(crate) fn collect_automation_external_action_receipts(
         let source_id = format!("{run_id}:{}:{attempt}:{call_index}", node.node_id);
         let created_at_ms = now_ms();
         out.push(ExternalActionRecord {
+            provenance: None,
             action_id: automation_external_action_id(&idempotency_key),
             operation: binding.capability_id.clone(),
             status: "posted".to_string(),

@@ -219,7 +219,7 @@ fn allowed(
 /// Checked optimization mutations call this synchronously. Read current
 /// stores without blocking an async executor, and deny only grant-dependent
 /// access if a writer currently holds either store.
-fn try_enrich_current_org_unit_grants(
+pub(super) fn try_enrich_current_org_unit_grants(
     state: &AppState,
     verified: &mut VerifiedTenantContext,
     hosted_memberships: Option<Vec<tandem_types::OrganizationUnitMembership>>,

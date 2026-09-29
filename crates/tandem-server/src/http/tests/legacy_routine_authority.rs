@@ -9,7 +9,7 @@ use tandem_types::{
     VerifiedTenantContext,
 };
 
-fn tenant(actor: &str) -> TenantContext {
+pub(super) fn tenant(actor: &str) -> TenantContext {
     TenantContext::explicit_user_workspace(
         "org-routine",
         "dep-routine",
@@ -18,7 +18,7 @@ fn tenant(actor: &str) -> TenantContext {
     )
 }
 
-fn verified(actor: &str, role: &str) -> VerifiedTenantContext {
+pub(super) fn verified(actor: &str, role: &str) -> VerifiedTenantContext {
     let now = crate::now_ms();
     let mut claims = TenantContextAssertionClaims::new_v1(
         "tandem-web",
@@ -39,7 +39,7 @@ fn verified(actor: &str, role: &str) -> VerifiedTenantContext {
     claims.into()
 }
 
-async fn hosted_state() -> (AppState, tempfile::TempDir) {
+pub(super) async fn hosted_state() -> (AppState, tempfile::TempDir) {
     let state = test_state().await;
     let temp = tempfile::tempdir().expect("policy directory");
     let path = temp.path().join("policy.json");

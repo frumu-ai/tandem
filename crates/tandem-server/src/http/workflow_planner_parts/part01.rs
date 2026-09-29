@@ -981,6 +981,17 @@ pub(super) async fn workflow_plan_preview(
     verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanPreviewRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    super::workflow_planner_policy::require_live_planner_write(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .map_err(|code| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "hosted automation write authority is required", "code": code})),
+        )
+    })?;
     let prompt = input.prompt.trim();
     if prompt.is_empty() {
         return Err((
@@ -1110,6 +1121,17 @@ async fn workflow_plan_chat_start_bound(
     Json(input): Json<WorkflowPlanChatStartRequest>,
     draft_binding: Option<WorkflowPlanDraftAccessBinding>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    super::workflow_planner_policy::require_live_planner_write(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .map_err(|code| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "hosted automation write authority is required", "code": code})),
+        )
+    })?;
     let prompt = input.prompt.trim();
     if prompt.is_empty() {
         return Err((

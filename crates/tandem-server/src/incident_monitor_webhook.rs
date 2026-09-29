@@ -1562,6 +1562,7 @@ async fn mirror_webhook_post_as_external_action(
     post: &IncidentMonitorPostRecord,
 ) {
     let action = ExternalActionRecord {
+        provenance: None,
         action_id: post.post_id.clone(),
         operation: post.operation.clone(),
         status: post.status.clone(),

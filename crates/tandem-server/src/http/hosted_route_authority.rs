@@ -46,6 +46,23 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
     // their mutations can create or control persistent root runs. Object
     // visibility and reviewer authority remain handler-level checks.
     match (method, path) {
+        (_, "/provider/auth" | "/provider/{id}/oauth/status") if read => {
+            return Some(HostedUse);
+        }
+        (_, "/global/storage/files") if read => return Some(HostedAdmin),
+        (_, "/external-actions" | "/external-actions/{id}") if read => {
+            return Some(HostedAutomationRead);
+        }
+        // Project discovery is a projection of session directories, so it
+        // requires the same hosted use grant as session creation. The handler
+        // independently filters each session to the requesting actor.
+        (_, "/project") if read => return Some(HostedUse),
+        (
+            _,
+            "/goal-capability-learning/decisions"
+            | "/goal-capability-learning/decisions/{decision_id}",
+        ) if read => return Some(HostedAutomationRead),
+        ("POST", "/goal-capability-learning/discover") => return Some(HostedUse),
         (
             _,
             "/goals"
@@ -183,7 +200,14 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
             | "/automations/v2/runs/{run_id}/backlog/tasks/{task_id}/claim"
             | "/automations/v2/runs/{run_id}/backlog/tasks/{task_id}/requeue",
         ) => Some(HostedAutomationExecute),
-        ("POST", "/automations/v2" | "/workflow-plans/apply" | "/mission-builder/apply")
+        (
+            "POST",
+            "/automations/v2"
+                | "/workflow-plans/preview"
+                | "/workflow-plans/chat/start"
+                | "/workflow-plans/apply"
+                | "/mission-builder/apply",
+        )
         | ("POST", "/automations/v2/{id}/webhook-triggers")
         | ("PATCH" | "DELETE", "/automations/v2/{id}/webhook-triggers/{trigger_id}")
         | (

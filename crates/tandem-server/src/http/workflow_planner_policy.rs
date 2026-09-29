@@ -3,6 +3,34 @@
 
 use serde_json::Value;
 
+/// Planner generation can persist a session and dispatch a provider before a
+/// draft is written. Keep its write grant live at each of those boundaries.
+pub(super) fn require_live_planner_write(
+    state: &crate::AppState,
+    tenant: &tandem_types::TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+) -> Result<(), &'static str> {
+    // Standalone/local planning keeps its existing behavior. A configured but
+    // unsynchronized hosted policy is an error, not a local-mode fallback.
+    if state.enterprise.hosted_policy.current()?.is_none() {
+        if verified.is_some_and(|verified| verified.policy_version.is_some()) {
+            return Err("hosted_policy_source_unavailable");
+        }
+        return Ok(());
+    }
+    let verified = verified.ok_or("hosted_policy_identity_required")?;
+    if verified.is_expired_at(crate::now_ms())
+        || !super::tenant_matches(tenant, &verified.tenant_context)
+        || tenant.actor_id.as_deref() != Some(verified.human_actor.actor_id.as_str())
+    {
+        return Err("hosted_planner_identity_mismatch");
+    }
+    state.enterprise.hosted_policy.authorize_permission(
+        Some(verified),
+        tandem_types::AccessPermission::HostedAutomationWrite,
+    )
+}
+
 pub(super) fn planner_test_override_payload(
     primary_env: &str,
     include_legacy: bool,

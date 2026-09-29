@@ -13,7 +13,7 @@ use serde_json::json;
 use tandem_automation::{
     GoalRunLink, LongRunningGoal, LongRunningGoalStatus, OrchestrationNodeKind, OrchestrationStatus,
 };
-use tandem_types::{PrincipalRef, TenantContext};
+use tandem_types::{PrincipalRef, TenantContext, VerifiedTenantContext};
 
 /// Operator-supplied goal metadata is bounded so it can never smuggle bulk
 /// content (or secrets disguised as context) into prompts and graph records.
@@ -84,6 +84,7 @@ impl AppState {
         tenant: &TenantContext,
         request: &StartGoalRequest,
         actor: &PrincipalRef,
+        verified: Option<&VerifiedTenantContext>,
     ) -> anyhow::Result<StartGoalOutcome> {
         if request.idempotency_key.trim().is_empty() || request.idempotency_key.len() > 256 {
             bail!("goal start requires a bounded idempotency key");
@@ -105,21 +106,37 @@ impl AppState {
             Some(version) => version,
             None => store
                 .latest_published_orchestration_version(tenant, &request.orchestration_id)?
-                .context("orchestration has no published version")?,
+                .context("goal not found")?,
         };
         let orchestration = store
             .get_orchestration_for_tenant(tenant, &request.orchestration_id, version)?
-            .context("published orchestration version not found")?;
+            .context("goal not found")?;
         if orchestration.status != OrchestrationStatus::Published {
-            bail!("goals can only start from a published orchestration version");
+            bail!("goal not found");
         }
         let same_scope = orchestration.tenant_context.org_id == tenant.org_id
             && orchestration.tenant_context.workspace_id == tenant.workspace_id
             && orchestration.tenant_context.deployment_id == tenant.deployment_id;
         if !same_scope {
-            // Cross-tenant references fail closed with the same message as a
-            // missing orchestration so nothing leaks across the boundary.
-            bail!("published orchestration version not found");
+            // Missing, unpublished, cross-tenant, and private sources are
+            // indistinguishable to a caller without object authority.
+            bail!("goal not found");
+        }
+        let goal_id = request.goal_id(tenant);
+        let root_run_id = request.root_run_id(tenant);
+        let current = self.current_goal_start_context(tenant, verified).await?;
+        if !self.can_start_goal_from_orchestration(tenant, current.as_ref(), &orchestration) {
+            let Some(existing) = store.get_goal_for_tenant(tenant, &goal_id)? else {
+                bail!("goal not found");
+            };
+            if existing.orchestration_id != orchestration.orchestration_id
+                || existing.orchestration_version != orchestration.version
+            {
+                bail!("goal not found");
+            }
+            if !self.can_inspect_goal_start_replay(tenant, current.as_ref(), &existing) {
+                bail!("goal not found");
+            }
         }
         let root_node = orchestration
             .nodes
@@ -145,8 +162,6 @@ impl AppState {
             bail!("root workflow definition changed after orchestration publication");
         }
 
-        let goal_id = request.goal_id(tenant);
-        let root_run_id = request.root_run_id(tenant);
         let goal = LongRunningGoal {
             schema_version: 1,
             goal_id: goal_id.clone(),
@@ -194,7 +209,56 @@ impl AppState {
             triggering_handoff_id: None,
             created_at_ms: request.now_ms,
         };
-        let outcome = store.start_goal(&goal, &root_run, &link, actor)?;
+        // Workflow lookup and run preparation await. Rebuild the hosted
+        // operation/object projection now, directly before the durable write.
+        let current = self.current_goal_start_context_before_commit(tenant, verified)?;
+        let outcome =
+            if self.can_start_goal_from_orchestration(tenant, current.as_ref(), &orchestration) {
+                let outcome = store.start_goal(&goal, &root_run, &link, actor)?;
+                if let StartGoalOutcome::AlreadyStarted { goal, .. } = &outcome {
+                    if !self.can_inspect_goal_start_replay(tenant, current.as_ref(), goal) {
+                        bail!("goal not found");
+                    }
+                }
+                outcome
+            } else {
+                // Source access may have been revoked after the original start.
+                // An authorized replay reads existing records only; it must not
+                // call the creating store path when object Execute is absent.
+                let existing = store
+                    .get_goal_for_tenant(tenant, &goal_id)?
+                    .context("goal not found")?;
+                if existing.orchestration_id != orchestration.orchestration_id
+                    || existing.orchestration_version != orchestration.version
+                {
+                    bail!("goal not found");
+                }
+                if !self.can_inspect_goal_start_replay(tenant, current.as_ref(), &existing) {
+                    bail!("goal not found");
+                }
+                let stored_root_run = store
+                    .get_automation_run(&root_run_id)?
+                    .context("started goal is missing its root run")?;
+                let root_link = store
+                    .list_goal_run_links_for_tenant(tenant, &goal_id)?
+                    .into_iter()
+                    .find(|link| link.hop_index == 0 && link.run_id == root_run_id)
+                    .context("started goal is missing its root lineage")?;
+                if stored_root_run.run_id != root_run_id
+                    || stored_root_run.tenant_context != existing.tenant_context
+                    || root_link.goal_id != goal_id
+                    || root_link.orchestration_node_id != orchestration.root_node_id
+                    || root_link.orchestration_version != orchestration.version
+                    || root_link.parent_run_id.is_some()
+                    || root_link.triggering_handoff_id.is_some()
+                {
+                    bail!("started goal root run is outside its lineage or tenant scope");
+                }
+                StartGoalOutcome::AlreadyStarted {
+                    goal: existing,
+                    root_run: stored_root_run,
+                }
+            };
         if let StartGoalOutcome::Created { root_run, goal } = &outcome {
             self.automation_v2_runs
                 .write()

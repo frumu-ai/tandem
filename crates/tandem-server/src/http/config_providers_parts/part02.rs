@@ -215,6 +215,20 @@ pub(crate) async fn load_openai_codex_oauth_into_runtime(
     state: &AppState,
     tenant_context: &TenantContext,
 ) -> anyhow::Result<bool> {
+    load_openai_codex_oauth_into_runtime_for_caller(
+        state,
+        tenant_context,
+        OAuthRefreshCaller::Internal,
+    )
+    .await
+}
+
+async fn load_openai_codex_oauth_into_runtime_for_caller(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    caller: OAuthRefreshCaller<'_>,
+) -> anyhow::Result<bool> {
+    caller.require_current_use(state, tenant_context)?;
     let Some(credential) = openai_codex_oauth_credential(state, tenant_context) else {
         state
             .providers
@@ -235,10 +249,18 @@ pub(crate) async fn load_openai_codex_oauth_into_runtime(
     };
 
     ensure_openai_codex_runtime_provider_loaded(state).await;
+    caller.require_current_use(state, tenant_context)?;
     state
         .providers
         .set_tenant_provider_bearer_token(tenant_context, OPENAI_CODEX_PROVIDER_ID, runtime_token)
         .await;
+    if let Err(error) = caller.require_current_use(state, tenant_context) {
+        state
+            .providers
+            .clear_tenant_provider_bearer_token(tenant_context, OPENAI_CODEX_PROVIDER_ID)
+            .await;
+        return Err(error);
+    }
     Ok(true)
 }
 
@@ -384,6 +406,42 @@ async fn compare_and_set_openai_codex_oauth_credential(
         OPENAI_CODEX_PROVIDER_ID,
         expected,
         replacement,
+    )
+    .await
+}
+
+async fn compare_and_set_openai_codex_oauth_credential_for_caller(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    expected: Option<&tandem_core::OAuthProviderCredential>,
+    replacement: Option<tandem_core::OAuthProviderCredential>,
+    caller: OAuthRefreshCaller<'_>,
+) -> anyhow::Result<bool> {
+    if matches!(caller, OAuthRefreshCaller::Internal) {
+        return compare_and_set_openai_codex_oauth_credential(
+            state,
+            tenant_context,
+            expected,
+            replacement,
+        )
+        .await;
+    }
+    tandem_core::compare_and_set_optional_provider_oauth_credential_for_tenant_in_dir_serialized_guarded(
+        &provider_auth_security_dir_for_state(state),
+        tenant_context,
+        OPENAI_CODEX_PROVIDER_ID,
+        expected,
+        replacement,
+        |commit| {
+            state
+                .enterprise
+                .hosted_policy
+                .with_current_policy(|policy| {
+                    caller.require_use_under_policy(tenant_context, policy)?;
+                    commit()
+                })
+                .map_err(anyhow::Error::msg)?
+        },
     )
     .await
 }
@@ -575,6 +633,105 @@ pub(crate) async fn refresh_openai_codex_oauth_if_needed(
     refresh_openai_codex_oauth(state, tenant_context, false).await
 }
 
+/// Request-triggered refresh carries the authenticated identity through each
+/// network and credential-commit boundary. Background refreshes use the
+/// separate internal entrypoint above.
+pub(crate) async fn refresh_openai_codex_oauth_if_needed_for_request(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+) -> anyhow::Result<()> {
+    let caller = OAuthRefreshCaller::Http(verified);
+    refresh_openai_codex_oauth_with_caller(state, tenant_context, false, caller, |credential| {
+        refresh_openai_codex_oauth_credential_guarded(credential, || {
+            caller.require_current_use(state, tenant_context)
+        })
+    })
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn refresh_openai_codex_oauth_for_request_with<Refresh, RefreshFuture>(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified: &tandem_types::VerifiedTenantContext,
+    refresh: Refresh,
+) -> anyhow::Result<()>
+where
+    Refresh: FnOnce(tandem_core::OAuthProviderCredential) -> RefreshFuture,
+    RefreshFuture:
+        std::future::Future<Output = anyhow::Result<tandem_core::OAuthProviderCredential>>,
+{
+    refresh_openai_codex_oauth_with_caller(
+        state,
+        tenant_context,
+        true,
+        OAuthRefreshCaller::Http(Some(verified)),
+        refresh,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum OAuthRefreshCaller<'a> {
+    Internal,
+    Http(Option<&'a tandem_types::VerifiedTenantContext>),
+}
+
+impl OAuthRefreshCaller<'_> {
+    fn require_current_use(self, state: &AppState, tenant: &TenantContext) -> anyhow::Result<()> {
+        state
+            .enterprise
+            .hosted_policy
+            .with_current_policy(|policy| self.require_use_under_policy(tenant, policy))
+            .map_err(anyhow::Error::msg)?
+    }
+
+    fn require_use_under_policy(
+        self,
+        tenant: &TenantContext,
+        policy: Option<&tandem_enterprise_contract::hosted_policy::ValidatedHostedPolicy>,
+    ) -> anyhow::Result<()> {
+        let Self::Http(verified) = self else {
+            return Ok(());
+        };
+        match policy {
+            None => {
+                if verified.is_some_and(|context| context.policy_version.is_some()) {
+                    anyhow::bail!("hosted OAuth refresh authority is unavailable");
+                }
+                Ok(())
+            }
+            Some(policy) => {
+                let verified = verified.context("verified hosted OAuth refresh required")?;
+                let actor = verified.human_actor.actor_id.trim();
+                let now = crate::now_ms();
+                if actor.is_empty()
+                    || verified.policy_version.is_none()
+                    || verified.is_expired_at(now)
+                    || !super::tenant_matches(tenant, &verified.tenant_context)
+                    || tenant.actor_id.as_deref() != Some(actor)
+                {
+                    anyhow::bail!("hosted OAuth refresh identity mismatch");
+                }
+                let projection = policy
+                    .project_identity(verified, now)
+                    .map_err(anyhow::Error::msg)?;
+                let access = projection.evaluate_access(
+                    &policy.deployment_resource(),
+                    tandem_types::AccessPermission::HostedUse,
+                    tandem_enterprise_contract::DataClass::Internal,
+                    now,
+                );
+                if access.decision != tandem_enterprise_contract::AccessDecision::Allow {
+                    anyhow::bail!("hosted OAuth refresh use permission required");
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 pub(crate) async fn refresh_openai_codex_oauth_now(
     state: &AppState,
     tenant_context: &TenantContext,
@@ -607,11 +764,35 @@ where
     RefreshFuture:
         std::future::Future<Output = anyhow::Result<tandem_core::OAuthProviderCredential>>,
 {
+    refresh_openai_codex_oauth_with_caller(
+        state,
+        tenant_context,
+        force,
+        OAuthRefreshCaller::Internal,
+        refresh,
+    )
+    .await
+}
+
+async fn refresh_openai_codex_oauth_with_caller<Refresh, RefreshFuture>(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    force: bool,
+    caller: OAuthRefreshCaller<'_>,
+    refresh: Refresh,
+) -> anyhow::Result<()>
+where
+    Refresh: FnOnce(tandem_core::OAuthProviderCredential) -> RefreshFuture,
+    RefreshFuture:
+        std::future::Future<Output = anyhow::Result<tandem_core::OAuthProviderCredential>>,
+{
+    caller.require_current_use(state, tenant_context)?;
     let initial_credential = openai_codex_oauth_credential(state, tenant_context);
     let mut credential_guard = state
         .oauth
         .provider_credential_guard(tenant_context, OPENAI_CODEX_PROVIDER_ID)
         .await;
+    caller.require_current_use(state, tenant_context)?;
     if initial_credential
         .as_ref()
         .is_some_and(|credential| credential.managed_by == "codex-cli")
@@ -629,7 +810,8 @@ where
         return Ok(());
     };
     if initial_credential.as_ref() != Some(&credential) {
-        load_openai_codex_oauth_into_runtime(state, tenant_context).await?;
+        caller.require_current_use(state, tenant_context)?;
+        load_openai_codex_oauth_into_runtime_for_caller(state, tenant_context, caller).await?;
         publish_openai_codex_refresh_event(
             state,
             tenant_context,
@@ -639,7 +821,8 @@ where
         );
         return Ok(());
     }
-    load_openai_codex_oauth_into_runtime(state, tenant_context).await?;
+    caller.require_current_use(state, tenant_context)?;
+    load_openai_codex_oauth_into_runtime_for_caller(state, tenant_context, caller).await?;
     let now = crate::now_ms();
     if !openai_codex_oauth_refreshable_in_process(&credential)
         || (!force
@@ -649,20 +832,24 @@ where
     }
 
     let managed_by = credential.managed_by.clone();
+    caller.require_current_use(state, tenant_context)?;
     let refreshed = match refresh(credential.clone()).await {
         Ok(refreshed) => refreshed,
         Err(error) => {
-            publish_openai_codex_reauth_required(
-                state,
-                tenant_context,
-                &managed_by,
-                refresh_mode(force),
-                &error,
-            )
-            .await;
+            if caller.require_current_use(state, tenant_context).is_ok() {
+                publish_openai_codex_reauth_required(
+                    state,
+                    tenant_context,
+                    &managed_by,
+                    refresh_mode(force),
+                    &error,
+                )
+                .await;
+            }
             return Err(error);
         }
     };
+    caller.require_current_use(state, tenant_context)?;
     debug_assert_eq!(credential_guard.generation(), expected_generation);
     credential_guard.advance_generation();
     if let Err(error) = persist_refreshed_openai_codex_oauth(
@@ -671,6 +858,7 @@ where
         &credential,
         refreshed,
         refresh_mode(force),
+        caller,
     )
     .await
     {
@@ -701,8 +889,19 @@ pub(crate) fn openai_codex_oauth_refreshable_in_process(
 }
 
 async fn refresh_openai_codex_oauth_credential(
-    mut credential: tandem_core::OAuthProviderCredential,
+    credential: tandem_core::OAuthProviderCredential,
 ) -> anyhow::Result<tandem_core::OAuthProviderCredential> {
+    refresh_openai_codex_oauth_credential_guarded(credential, || Ok(())).await
+}
+
+async fn refresh_openai_codex_oauth_credential_guarded<Guard>(
+    mut credential: tandem_core::OAuthProviderCredential,
+    before_exchange: Guard,
+) -> anyhow::Result<tandem_core::OAuthProviderCredential>
+where
+    Guard: Fn() -> anyhow::Result<()> + Send,
+{
+    before_exchange()?;
     let response = reqwest::Client::new()
         .post(format!("{OPENAI_CODEX_OAUTH_ISSUER}/oauth/token"))
         .header("content-type", "application/json")
@@ -735,11 +934,27 @@ async fn refresh_openai_codex_oauth_credential(
     credential.display_name = display_name.or(credential.display_name);
     credential.expires_at_ms = expires_at_ms;
     if let Some(id_token) = id_token {
-        if let Ok(api_key) = exchange_openai_codex_api_key(id_token).await {
+        // A refresh may require two separate outbound calls. Revocation while
+        // the token response was in flight must stop the API-key exchange.
+        if let Some(api_key) =
+            exchange_openai_codex_api_key_if_authorized(id_token, &before_exchange).await?
+        {
             credential.api_key = Some(api_key);
         }
     }
     Ok(credential)
+}
+
+async fn exchange_openai_codex_api_key_if_authorized<Guard>(
+    id_token: &str,
+    before_exchange: &Guard,
+) -> anyhow::Result<Option<String>>
+where
+    Guard: Fn() -> anyhow::Result<()> + Send,
+{
+    before_exchange()?;
+    // API-key exchange failure is best-effort; authority failure above is not.
+    Ok(exchange_openai_codex_api_key(id_token).await.ok())
 }
 
 async fn persist_refreshed_openai_codex_oauth(
@@ -748,36 +963,55 @@ async fn persist_refreshed_openai_codex_oauth(
     previous: &tandem_core::OAuthProviderCredential,
     credential: tandem_core::OAuthProviderCredential,
     mode: &str,
+    caller: OAuthRefreshCaller<'_>,
 ) -> anyhow::Result<()> {
     let mut snapshot = snapshot_openai_codex_oauth_mutation(state, tenant_context).await;
     snapshot.persisted = Some(previous.clone());
+    caller.require_current_use(state, tenant_context)?;
     let runtime_token = tandem_core::ProviderCredential::OAuth(credential.clone())
         .runtime_bearer_token()
         .filter(|token| !token.trim().is_empty())
         .map(str::to_string);
     let api_key = credential.api_key.clone();
     let managed_by = credential.managed_by.clone();
-    if !compare_and_set_openai_codex_oauth_credential(
+    if !compare_and_set_openai_codex_oauth_credential_for_caller(
         state,
         tenant_context,
         Some(previous),
         Some(credential.clone()),
+        caller,
     )
     .await?
     {
         reconcile_openai_codex_oauth_runtime_from_disk(state, tenant_context).await;
         anyhow::bail!("OAuth credential changed while refresh was in flight");
     }
-    ensure_openai_codex_runtime_provider_loaded(state).await;
-    if let Some(runtime_token) = runtime_token {
-        state
-            .providers
-            .set_tenant_provider_bearer_token(
-                tenant_context,
-                OPENAI_CODEX_PROVIDER_ID,
-                runtime_token,
-            )
-            .await;
+    // The credential write was authorized while the live policy read guard
+    // was held. A later revocation does not undo that completed write, but it
+    // must not install a bearer token into the requester's runtime scope.
+    if caller.require_current_use(state, tenant_context).is_ok() {
+        ensure_openai_codex_runtime_provider_loaded(state).await;
+        if caller.require_current_use(state, tenant_context).is_ok() {
+            if let Some(runtime_token) = runtime_token {
+                state
+                    .providers
+                    .set_tenant_provider_bearer_token(
+                        tenant_context,
+                        OPENAI_CODEX_PROVIDER_ID,
+                        runtime_token,
+                    )
+                    .await;
+                if caller.require_current_use(state, tenant_context).is_err() {
+                    state
+                        .providers
+                        .clear_tenant_provider_bearer_token(
+                            tenant_context,
+                            OPENAI_CODEX_PROVIDER_ID,
+                        )
+                        .await;
+                }
+            }
+        }
     }
     if tenant_context.is_local_implicit() {
         if let Some(api_key) = api_key {
@@ -1278,9 +1512,9 @@ fn redacted(mut value: Value) -> Value {
 
 fn contains_secret_config_fields(value: &Value) -> bool {
     match value {
-        Value::Object(map) => map
-            .iter()
-            .any(|(key, field)| secret_config_field_name(key) || contains_secret_config_fields(field)),
+        Value::Object(map) => map.iter().any(|(key, field)| {
+            secret_config_field_name(key) || contains_secret_config_fields(field)
+        }),
         Value::Array(items) => items.iter().any(contains_secret_config_fields),
         _ => false,
     }

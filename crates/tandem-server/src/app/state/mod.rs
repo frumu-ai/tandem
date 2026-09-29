@@ -116,6 +116,7 @@ mod automation_webhook_store_files;
 mod automation_webhook_verification;
 pub mod channel_user_capabilities;
 pub mod enterprise_state;
+mod external_action_provenance;
 mod idempotency;
 mod incident_monitor_intake_keys;
 mod oauth_state;

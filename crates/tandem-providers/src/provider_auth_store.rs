@@ -1737,6 +1737,42 @@ pub async fn compare_and_set_optional_provider_oauth_credential_for_tenant_in_di
     )
 }
 
+/// Run an authorization-and-commit continuation only after both credential
+/// mutation locks are held. The continuation may hold its own synchronous
+/// policy read guard while invoking `commit`, so a policy replacement cannot
+/// interleave between authorization and the durable credential write.
+/// Neither the continuation nor `commit` may await.
+pub async fn compare_and_set_optional_provider_oauth_credential_for_tenant_in_dir_serialized_guarded<
+    G,
+>(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    expected: Option<&OAuthProviderCredential>,
+    replacement: Option<OAuthProviderCredential>,
+    authorize_and_commit: G,
+) -> anyhow::Result<bool>
+where
+    G: FnOnce(&mut dyn FnMut() -> anyhow::Result<bool>) -> anyhow::Result<bool> + Send,
+{
+    let _guard = provider_credential_mutation_lock().lock().await;
+    let _file_guard = ProviderCredentialMutationFileLock::acquire(security_dir).await?;
+    let mut replacement = Some(replacement);
+    let mut commit = || {
+        let replacement = replacement
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("OAuth credential commit already attempted"))?;
+        compare_and_set_provider_oauth_credential_for_tenant_in_dir_unlocked(
+            security_dir,
+            tenant_context,
+            provider_id,
+            expected,
+            replacement,
+        )
+    };
+    authorize_and_commit(&mut commit)
+}
+
 fn delete_provider_credential_unlocked(provider_id: &str) -> anyhow::Result<bool> {
     let id = normalize_provider_id(provider_id);
     if id.is_empty() {

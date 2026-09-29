@@ -21,11 +21,8 @@ pub(super) async fn get_incident_monitor_authority_inventory(
     headers: HeaderMap,
 ) -> Response {
     let verified = verified_tenant_context.as_ref().map(|context| &context.0);
-    let actor = super::governance::resolve_governance_actor(
-        &headers,
-        &tenant_context,
-        &request_principal,
-    );
+    let actor =
+        super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     Json(
         incident_monitor_authority_inventory_payload(
             &state,
@@ -64,8 +61,7 @@ pub(in crate::http) async fn incident_monitor_authority_inventory_payload(
         .await;
     if let IncidentMonitorApprovalInventoryAccess::Caller(actor) = approval_access {
         let standalone_local_owner = tenant_context.is_local_implicit()
-            && actor.kind
-                == crate::automation_v2::governance::GovernanceActorKind::System;
+            && actor.kind == crate::automation_v2::governance::GovernanceActorKind::System;
         let reviewer_wide = (actor.kind
             == crate::automation_v2::governance::GovernanceActorKind::Human
             || standalone_local_owner)
@@ -104,19 +100,28 @@ pub(in crate::http) async fn incident_monitor_authority_inventory_payload(
     let policy_decisions = state
         .list_policy_decisions(&tenant_context, INCIDENT_MONITOR_AUTHORITY_INVENTORY_LIMIT)
         .await;
-    let external_actions = state
-        .list_external_actions(INCIDENT_MONITOR_AUTHORITY_INVENTORY_LIMIT)
-        .await;
+    let external_actions = super::external_actions::external_actions_for_authority_inventory(
+        state,
+        &tenant_context,
+        verified,
+        INCIDENT_MONITOR_AUTHORITY_INVENTORY_LIMIT,
+    )
+    .await;
     let mcp_snapshot = crate::http::mcp_inventory::mcp_inventory_snapshot(&state).await;
     let mcp_inventory = authority_mcp_inventory(mcp_snapshot);
 
-    let log_watcher = state.incident_monitor_log_watcher_status.read().await.clone();
+    let log_watcher = state
+        .incident_monitor_log_watcher_status
+        .read()
+        .await
+        .clone();
     let source_readiness = crate::incident_monitor::source_readiness::evaluate_source_readiness(
         &config,
         &log_watcher,
         crate::now_ms(),
     );
-    let monitored_sources = incident_monitor_monitored_sources_inventory(&config, &source_readiness);
+    let monitored_sources =
+        incident_monitor_monitored_sources_inventory(&config, &source_readiness);
 
     // TAN-547: when the caller is tenant-scoped, drop config topology that
     // belongs to a *different* tenant so this inventory (and the assessment
@@ -140,16 +145,15 @@ pub(in crate::http) async fn incident_monitor_authority_inventory_payload(
             .collect::<Vec<_>>();
         let monitored_sources = monitored_sources
             .into_iter()
-            .filter(|source| incident_monitor_inventory_value_visible_to_tenant(source, &tenant_context))
+            .filter(|source| {
+                incident_monitor_inventory_value_visible_to_tenant(source, &tenant_context)
+            })
             .collect::<Vec<_>>();
         // Keep only destinations reachable from tenant-visible routes/projects
         // (plus the global defaults) so another tenant's destination targets
         // don't surface.
-        let referenced = incident_monitor_tenant_referenced_destination_ids(
-            &config,
-            &routes,
-            &tenant_context,
-        );
+        let referenced =
+            incident_monitor_tenant_referenced_destination_ids(&config, &routes, &tenant_context);
         let destinations = destinations
             .into_iter()
             .filter(|destination| referenced.contains(&destination.destination_id))
@@ -805,7 +809,9 @@ fn incident_monitor_governance_approval_inventory(
     })
 }
 
-fn incident_monitor_policy_decision_inventory(decision: &tandem_types::PolicyDecisionRecord) -> Value {
+fn incident_monitor_policy_decision_inventory(
+    decision: &tandem_types::PolicyDecisionRecord,
+) -> Value {
     json!({
         "decision_id": decision.decision_id,
         "tenant_context": decision.tenant_context,
@@ -828,7 +834,9 @@ fn incident_monitor_policy_decision_inventory(decision: &tandem_types::PolicyDec
     })
 }
 
-fn incident_monitor_external_publish_surface(destination: &IncidentMonitorDestinationConfig) -> Value {
+fn incident_monitor_external_publish_surface(
+    destination: &IncidentMonitorDestinationConfig,
+) -> Value {
     json!({
         "source": "incident_monitor_destination",
         "surface_id": destination.destination_id,

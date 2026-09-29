@@ -545,9 +545,49 @@ pub(crate) fn sanitize_relative_subpath(raw: Option<&str>) -> Result<PathBuf, St
     Ok(candidate)
 }
 
+fn authorize_storage_inventory_read(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    locality: super::host_authority::RequestLocality,
+) -> Result<(), StatusCode> {
+    match state
+        .enterprise
+        .hosted_policy
+        .current()
+        .map_err(|_| StatusCode::FORBIDDEN)?
+    {
+        Some(_) => {
+            let verified = verified.ok_or(StatusCode::FORBIDDEN)?;
+            let actor = verified.human_actor.actor_id.trim();
+            if actor.is_empty()
+                || verified.is_expired_at(crate::now_ms())
+                || !tenant_matches(tenant, &verified.tenant_context)
+                || tenant.actor_id.as_deref() != Some(actor)
+            {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            state
+                .authorize_current_hosted_admin(verified)
+                .map_err(|_| StatusCode::FORBIDDEN)
+        }
+        None => {
+            if !locality.is_direct_loopback() || verified.is_some() || !tenant.is_local_implicit() {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            super::host_authority::require_loopback_local_operator(state, tenant, None)
+        }
+    }
+}
+
 pub(super) async fn global_storage_files(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Query(query): Query<StorageFilesQuery>,
 ) -> Result<Json<Value>, StatusCode> {
+    authorize_storage_inventory_read(&state, &tenant, verified.as_deref(), locality)?;
     let root = resolve_storage_list_root();
     let rel = sanitize_relative_subpath(query.path.as_deref())?;
     let base = if rel.as_os_str().is_empty() {
@@ -599,6 +639,9 @@ pub(super) async fn global_storage_files(
         }
     }
 
+    // A policy replacement can occur on another thread during the filesystem
+    // walk. Do not return the inventory under a revoked hosted admin grant.
+    authorize_storage_inventory_read(&state, &tenant, verified.as_deref(), locality)?;
     Ok(Json(json!({
         "root": root.to_string_lossy(),
         "base": base.to_string_lossy(),
@@ -1007,19 +1050,37 @@ pub(super) async fn run_events(
 pub(super) async fn list_projects(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
-) -> Json<Value> {
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Result<Json<Value>, StatusCode> {
+    super::require_current_hosted_permission(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        tandem_types::AccessPermission::HostedUse,
+    )?;
     let sessions = state
         .storage
         .list_sessions_scoped(tandem_core::SessionListScope::Global)
         .await;
     let mut directories = sessions
         .iter()
-        .filter(|s| tenant_matches(&tenant_context, &s.tenant_context))
+        .filter(|s| {
+            super::sessions_actor_scope::session_visible_to_actor(
+                &tenant_context,
+                &s.tenant_context,
+            )
+        })
         .map(|s| s.directory.clone())
         .collect::<Vec<_>>();
     directories.sort();
     directories.dedup();
-    Json(json!(directories))
+    super::require_current_hosted_permission(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        tandem_types::AccessPermission::HostedUse,
+    )?;
+    Ok(Json(json!(directories)))
 }
 
 pub(super) async fn push_log(

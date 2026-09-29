@@ -54,11 +54,9 @@ async fn incident_monitor_authority_inventory_filters_governance_approvals_by_ac
         "inventory-workspace",
         Some("alice".to_string()),
     );
-    let target = |id: &str| {
-        crate::automation_v2::governance::GovernanceResourceRef {
-            resource_type: "agent".to_string(),
-            id: id.to_string(),
-        }
+    let target = |id: &str| crate::automation_v2::governance::GovernanceResourceRef {
+        resource_type: "agent".to_string(),
+        id: id.to_string(),
     };
     let alice = state
         .request_approval(
@@ -111,8 +109,7 @@ async fn incident_monitor_authority_inventory_filters_governance_approvals_by_ac
         "inventory-workspace",
         Some("reviewer-a".to_string()),
     );
-    let principal =
-        tandem_types::RequestPrincipal::authenticated_user("reviewer-a", "tandem-test");
+    let principal = tandem_types::RequestPrincipal::authenticated_user("reviewer-a", "tandem-test");
     let verified = tandem_types::VerifiedTenantContext {
         tenant_context: reviewer_tenant,
         human_actor: tandem_types::HumanActor::tandem_user("reviewer-a"),
@@ -159,7 +156,10 @@ async fn incident_monitor_authority_inventory_filters_governance_approvals_by_ac
             .expect("alice inventory response"),
     )
     .await;
-    assert_eq!(approval_ids(&alice_payload), vec![alice.approval_id.clone()]);
+    assert_eq!(
+        approval_ids(&alice_payload),
+        vec![alice.approval_id.clone()]
+    );
 
     let reviewer_payload = incident_monitor_response_json(
         reviewer_app
@@ -182,7 +182,10 @@ async fn incident_monitor_authority_inventory_filters_governance_approvals_by_ac
             .expect("agent inventory response"),
     )
     .await;
-    assert_eq!(approval_ids(&agent_payload), vec![agent.approval_id.clone()]);
+    assert_eq!(
+        approval_ids(&agent_payload),
+        vec![agent.approval_id.clone()]
+    );
 
     let assessment_payload = incident_monitor_response_json(
         reviewer_app
@@ -216,17 +219,18 @@ async fn incident_monitor_authority_inventory_filters_governance_approvals_by_ac
         "assessment callers must retain authoritative agent requester scope",
     );
 
-    let background_payload = crate::http::incident_monitor::incident_monitor_authority_inventory_payload(
-        &state,
-        TenantContext::explicit(
-            "inventory-org",
-            "inventory-workspace",
-            Some("scheduler".to_string()),
-        ),
-        None,
-        crate::http::incident_monitor::IncidentMonitorApprovalInventoryAccess::Omit,
-    )
-    .await;
+    let background_payload =
+        crate::http::incident_monitor::incident_monitor_authority_inventory_payload(
+            &state,
+            TenantContext::explicit(
+                "inventory-org",
+                "inventory-workspace",
+                Some("scheduler".to_string()),
+            ),
+            None,
+            crate::http::incident_monitor::IncidentMonitorApprovalInventoryAccess::Omit,
+        )
+        .await;
     assert!(approval_ids(&background_payload).is_empty());
     assert_eq!(
         background_payload["counts"]["governance_approval_requests"],
@@ -350,6 +354,7 @@ async fn incident_monitor_authority_inventory_summarizes_authority_and_redacts_s
         .expect("automation");
     state
         .record_external_action(crate::ExternalActionRecord {
+            provenance: None,
             action_id: "action-authority-1".to_string(),
             operation: "create_linear_issue".to_string(),
             status: "posted".to_string(),
@@ -535,8 +540,10 @@ fn incident_monitor_authority_inventory_dedupes_registry_and_embedded_workflow_h
         hooks: vec![hook.clone()],
         source: None,
     };
-    let inventory =
-        crate::http::incident_monitor::incident_monitor_workflow_inventory(&workflow, &[hook.clone()]);
+    let inventory = crate::http::incident_monitor::incident_monitor_workflow_inventory(
+        &workflow,
+        &[hook.clone()],
+    );
     let hooks = inventory["hooks"].as_array().expect("workflow hooks");
     assert_eq!(hooks.len(), 1);
     assert_eq!(hooks[0]["binding_id"], json!("binding-authority"));

@@ -1045,6 +1045,64 @@ fn tenant_matches(a: &TenantContext, b: &TenantContext) -> bool {
     a.org_id == b.org_id && a.workspace_id == b.workspace_id && a.deployment_id == b.deployment_id
 }
 
+/// Re-evaluate a hosted operation against the live policy after handler awaits.
+/// Standalone local/test callers keep their existing ingress behavior.
+fn require_current_hosted_permission(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    permission: tandem_types::AccessPermission,
+) -> Result<(), StatusCode> {
+    match state
+        .enterprise
+        .hosted_policy
+        .current()
+        .map_err(|_| StatusCode::FORBIDDEN)?
+    {
+        None => {
+            if verified.is_some_and(|context| context.policy_version.is_some()) {
+                Err(StatusCode::FORBIDDEN)
+            } else {
+                Ok(())
+            }
+        }
+        Some(_) => {
+            let verified = verified.ok_or(StatusCode::FORBIDDEN)?;
+            let actor = verified.human_actor.actor_id.trim();
+            if actor.is_empty()
+                || verified.policy_version.is_none()
+                || verified.is_expired_at(crate::now_ms())
+                || !tenant_matches(tenant, &verified.tenant_context)
+                || tenant.actor_id.as_deref() != Some(actor)
+            {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            state
+                .enterprise
+                .hosted_policy
+                .authorize_permission(Some(verified), permission)
+                .map_err(|_| StatusCode::FORBIDDEN)
+        }
+    }
+}
+
+pub(crate) async fn external_action_context_run_tenant(
+    state: &AppState,
+    coder_run_id: &str,
+    run_id: &str,
+) -> Option<TenantContext> {
+    let coder = coder::load_coder_run_record(state, coder_run_id)
+        .await
+        .ok()?;
+    if coder.linked_context_run_id != run_id {
+        return None;
+    }
+    context_runs::load_context_run_state(state, run_id)
+        .await
+        .ok()
+        .map(|run| run.tenant_context)
+}
+
 fn ensure_same_tenant(
     request_tenant: &TenantContext,
     resource_tenant: &TenantContext,

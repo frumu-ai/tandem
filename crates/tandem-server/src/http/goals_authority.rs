@@ -8,10 +8,10 @@ use std::sync::atomic::Ordering;
 
 use axum::{http::StatusCode, response::IntoResponse, response::Response, Json};
 use serde_json::json;
-use tandem_automation::LongRunningGoal;
+use tandem_automation::{LongRunningGoal, OrchestrationSpec};
 use tandem_types::{
-    AccessDecision, AccessPermission, DataClass, PrincipalRef, ResourceKind, ResourceRef,
-    TenantContext, VerifiedTenantContext,
+    AccessDecision, AccessPermission, DataClass, GrantSource, PrincipalRef, ResourceKind,
+    ResourceRef, TenantContext, VerifiedTenantContext,
 };
 
 use crate::AppState;
@@ -222,9 +222,12 @@ pub(super) fn can_inspect_goal(
         return false;
     }
     let actor = verified.human_actor.actor_id.trim();
-    if initiating_actor_id(goal) == Some(actor)
-        || super::goals_api::verified_has_admin_authority(Some(verified))
-    {
+    let current_admin = if verified.policy_version.is_some() {
+        state.authorize_current_hosted_admin(verified).is_ok()
+    } else {
+        super::goals_api::verified_has_admin_authority(Some(verified))
+    };
+    if initiating_actor_id(goal) == Some(actor) || current_admin {
         return true;
     }
     let Some(strict) = verified.strict_projection.as_ref() else {
@@ -241,6 +244,19 @@ pub(super) fn can_inspect_goal(
         ResourceKind::Run,
         &goal.goal_id,
     );
+    // A same-ID project, department, or automation is not a goal. Keep only
+    // exact Run grants and real organization/workspace parent scopes.
+    let mut scoped = strict.clone();
+    scoped
+        .grants
+        .retain(|grant| match grant.resource.resource_kind {
+            ResourceKind::Run | ResourceKind::Organization => true,
+            ResourceKind::Workspace => {
+                grant.resource.resource_id == tenant.workspace_id
+                    || grant.resource.resource_id == "*"
+            }
+            _ => false,
+        });
     let now = crate::now_ms();
     [
         AccessPermission::Read,
@@ -250,9 +266,176 @@ pub(super) fn can_inspect_goal(
     ]
     .into_iter()
     .any(|permission| {
-        strict
+        scoped
             .evaluate_access(&resource, permission, DataClass::Internal, now)
             .decision
             == AccessDecision::Allow
     })
+}
+
+impl AppState {
+    /// A goal start uses the current hosted operation and object grants, not
+    /// the assertion's ingress-time projection. Call again immediately before
+    /// the durable start after workflow/run preparation has awaited.
+    pub(crate) async fn current_goal_start_context(
+        &self,
+        tenant: &TenantContext,
+        verified: Option<&VerifiedTenantContext>,
+    ) -> anyhow::Result<Option<VerifiedTenantContext>> {
+        current_goal_context(self, tenant, verified, AccessPermission::HostedUse)
+            .await
+            .map_err(|_| anyhow::anyhow!("goal start not authorized"))
+    }
+
+    /// The final goal-start check has no awaits. Rebuild data grants from the
+    /// live stores once more so a revocation during the async projection above
+    /// cannot survive into the synchronous durable start.
+    pub(crate) fn current_goal_start_context_before_commit(
+        &self,
+        tenant: &TenantContext,
+        verified: Option<&VerifiedTenantContext>,
+    ) -> anyhow::Result<Option<VerifiedTenantContext>> {
+        let denied = || anyhow::anyhow!("goal start not authorized");
+        require_operation(self, tenant, verified, AccessPermission::HostedUse)
+            .map_err(|_| denied())?;
+        let Some(verified) = verified else {
+            return Ok(None);
+        };
+        let before = self
+            .enterprise
+            .hosted_policy
+            .revision()
+            .map_err(|_| denied())?;
+        let mut current = verified.clone();
+        let memberships = self
+            .enterprise
+            .hosted_policy
+            .project(&mut current)
+            .map_err(|_| denied())?;
+        if memberships.is_none() {
+            // A no-policy signed projection may contain data grants appended
+            // at ingress. Retain direct grants, but rebuild revocable ones.
+            if let Some(strict) = current.strict_projection.as_mut() {
+                strict.grants.retain(|grant| {
+                    !matches!(
+                        grant.grant_source,
+                        GrantSource::OrganizationUnitMembership | GrantSource::CrossTenantGrant
+                    )
+                });
+            }
+        }
+        if !super::automation_object_authority::try_enrich_current_org_unit_grants(
+            self,
+            &mut current,
+            memberships,
+        ) || !super::cross_tenant_grants::try_enrich_verified_context_with_inbound_cross_tenant_grants(
+            self,
+            &mut current,
+        ) {
+            return Err(denied());
+        }
+        if self
+            .enterprise
+            .hosted_policy
+            .revision()
+            .map_err(|_| denied())?
+            != before
+        {
+            return Err(denied());
+        }
+        require_operation(self, tenant, Some(&current), AccessPermission::HostedUse)
+            .map_err(|_| denied())?;
+        Ok(Some(current))
+    }
+
+    pub(crate) fn can_start_goal_from_orchestration(
+        &self,
+        tenant: &TenantContext,
+        current: Option<&VerifiedTenantContext>,
+        orchestration: &OrchestrationSpec,
+    ) -> bool {
+        if !super::tenant_matches(tenant, &orchestration.tenant_context) {
+            return false;
+        }
+        // A standalone local operator may carry a verified human identity
+        // without converting the implicit single-tenant workspace into a
+        // private hosted resource. A configured (even unsynced) hosted source
+        // disables this compatibility path.
+        if tenant.is_local_implicit() && unverified_local_access(self, tenant) {
+            return true;
+        }
+        let Some(current) = current else {
+            return unverified_local_access(self, tenant);
+        };
+        if !request_identity_matches(tenant, current) {
+            return false;
+        }
+        let actor = current.human_actor.actor_id.trim();
+        let creator = orchestration
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("created_by"))
+            .and_then(|value| {
+                value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| value.as_str())
+            });
+        if creator == Some(actor) {
+            return true;
+        }
+        let current_admin = if current.policy_version.is_some() {
+            self.authorize_current_hosted_admin(current).is_ok()
+        } else {
+            super::goals_api::verified_has_admin_authority(Some(current))
+        };
+        if current_admin {
+            return true;
+        }
+
+        let Some(strict) = current.strict_projection.as_ref() else {
+            return false;
+        };
+        if strict.tenant_context != current.tenant_context
+            || strict.principal != PrincipalRef::human_user(actor)
+        {
+            return false;
+        }
+        let resource = ResourceRef::new(
+            &tenant.org_id,
+            &tenant.workspace_id,
+            ResourceKind::Orchestration,
+            &orchestration.orchestration_id,
+        );
+        // ResourceRef permits generic ID matching for some kinds. A project,
+        // department, or workflow sharing this ID is not this orchestration.
+        let mut scoped = strict.clone();
+        scoped
+            .grants
+            .retain(|grant| match grant.resource.resource_kind {
+                ResourceKind::Orchestration | ResourceKind::Organization => true,
+                ResourceKind::Workspace => {
+                    grant.resource.resource_id == tenant.workspace_id
+                        || grant.resource.resource_id == "*"
+                }
+                _ => false,
+            });
+        [AccessPermission::Execute, AccessPermission::Admin]
+            .into_iter()
+            .any(|permission| {
+                scoped
+                    .evaluate_access(&resource, permission, DataClass::Internal, crate::now_ms())
+                    .decision
+                    == AccessDecision::Allow
+            })
+    }
+
+    pub(crate) fn can_inspect_goal_start_replay(
+        &self,
+        tenant: &TenantContext,
+        current: Option<&VerifiedTenantContext>,
+        goal: &LongRunningGoal,
+    ) -> bool {
+        can_inspect_goal(self, tenant, current, goal)
+    }
 }

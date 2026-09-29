@@ -148,7 +148,7 @@ fn automation_v2_access_owner(automation: &AutomationV2Spec) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-fn automation_v2_object_owner(automation: &AutomationV2Spec) -> Option<String> {
+pub(crate) fn automation_v2_object_owner(automation: &AutomationV2Spec) -> Option<String> {
     if automation_v2_access_metadata(automation).is_some() {
         automation_v2_access_owner(automation).map(ToOwned::to_owned)
     } else {
@@ -398,9 +398,7 @@ pub(super) async fn automations_patch(
         .update_routine_for_tenant_checked(
             &id,
             &tenant_context,
-            |routine| {
-                state.legacy_routine_write_allowed(&tenant_context, verified, Some(routine))
-            },
+            |routine| state.legacy_routine_write_allowed(&tenant_context, verified, Some(routine)),
             move |routine| {
                 if let Some(name) = input.name {
                     routine.name = name;

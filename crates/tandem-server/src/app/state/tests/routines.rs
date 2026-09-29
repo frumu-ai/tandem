@@ -369,6 +369,7 @@ async fn record_external_action_appends_routine_receipt_artifact() {
 
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-1".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -392,6 +393,7 @@ async fn record_external_action_appends_routine_receipt_artifact() {
 
     let duplicate = state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-2".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -479,6 +481,7 @@ async fn record_external_action_without_idempotency_key_keeps_current_behavior()
 
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-a".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -501,6 +504,7 @@ async fn record_external_action_without_idempotency_key_keeps_current_behavior()
         .expect("record first external action");
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-b".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -567,6 +571,7 @@ async fn record_external_action_dedupes_by_idempotency_key() {
 
     let first = state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-1".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -589,6 +594,7 @@ async fn record_external_action_dedupes_by_idempotency_key() {
         .expect("record first external action");
     let second = state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-2".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -636,6 +642,7 @@ async fn record_external_action_reliability_scope_prefers_authoritative_run() {
 
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-authoritative".to_string(),
             operation: "send_email".to_string(),
             status: "posted".to_string(),
@@ -669,6 +676,7 @@ async fn record_external_action_reliability_scope_does_not_trust_unresolved_meta
 
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-unresolved".to_string(),
             operation: "send_email".to_string(),
             status: "failed".to_string(),
@@ -793,6 +801,7 @@ async fn record_external_action_without_idempotency_key_preserves_existing_behav
 
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-1".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -815,6 +824,7 @@ async fn record_external_action_without_idempotency_key_preserves_existing_behav
         .expect("record first external action");
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-2".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -880,6 +890,7 @@ async fn record_external_action_dedupes_under_concurrent_retries() {
         .insert(run.run_id.clone(), run);
 
     let action_a = ExternalActionRecord {
+        provenance: None,
         action_id: "action-a".to_string(),
         operation: "create_issue".to_string(),
         status: "posted".to_string(),
@@ -899,6 +910,7 @@ async fn record_external_action_dedupes_under_concurrent_retries() {
         updated_at_ms: 10,
     };
     let action_b = ExternalActionRecord {
+        provenance: None,
         action_id: "action-b".to_string(),
         receipt: Some(json!({"issue_number": 102})),
         created_at_ms: 20,
@@ -959,6 +971,7 @@ async fn record_external_action_dedupes_under_retry_storm() {
         .insert(run.run_id.clone(), run);
 
     let make_action = |action_id: &str, created_at_ms: u64| ExternalActionRecord {
+        provenance: None,
         action_id: action_id.to_string(),
         operation: "create_issue".to_string(),
         status: "posted".to_string(),

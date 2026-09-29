@@ -1714,8 +1714,9 @@ impl AppState {
 
     pub async fn record_external_action(
         &self,
-        action: ExternalActionRecord,
+        mut action: ExternalActionRecord,
     ) -> anyhow::Result<ExternalActionRecord> {
+        action.provenance = self.external_action_provenance(&action).await;
         let action = {
             let mut guard = self.external_actions.write().await;
             if let Some(idempotency_key) = action
@@ -1733,11 +1734,18 @@ impl AppState {
                             .map(str::trim)
                             .filter(|value| !value.is_empty())
                             == Some(idempotency_key)
+                            && existing.provenance == action.provenance
                     })
                     .cloned()
                 {
                     return Ok(existing);
                 }
+            }
+            if guard
+                .get(&action.action_id)
+                .is_some_and(|existing| existing.provenance != action.provenance)
+            {
+                anyhow::bail!("external action ID belongs to a different provenance");
             }
             guard.insert(action.action_id.clone(), action.clone());
             action

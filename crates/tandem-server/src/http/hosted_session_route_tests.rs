@@ -27,6 +27,7 @@ mod tests {
             .replace("{run_id}", "run-a")
             .replace("{session_id}", "session-a")
             .replace("{orchestration_id}", "orchestration-a")
+            .replace("{decision_id}", "decision-a")
             .replace("{version}", "1")
             .replace("{tool_call_id}", "tool-a")
             .replace("{question_id}", "question-a");
@@ -41,6 +42,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn hosted_external_action_receipts_require_read_grants() {
+        for path in ["/external-actions", "/external-actions/{id}"] {
+            for method in ["GET", "HEAD"] {
+                check(method, path, Some(AccessPermission::HostedAutomationRead)).await;
+            }
+        }
     }
 
     #[tokio::test]
@@ -78,6 +88,18 @@ mod tests {
             check(
                 "POST",
                 &format!("/workflow-plans/sessions/{{session_id}}/{suffix}"),
+                Some(AccessPermission::HostedAutomationWrite),
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_planner_generation_requires_automation_write() {
+        for path in ["/workflow-plans/preview", "/workflow-plans/chat/start"] {
+            check(
+                "POST",
+                path,
                 Some(AccessPermission::HostedAutomationWrite),
             )
             .await;
@@ -156,6 +178,53 @@ mod tests {
         ] {
             check("POST", path, None).await;
         }
+    }
+
+    #[tokio::test]
+    async fn hosted_project_discovery_requires_use() {
+        check("GET", "/project", Some(AccessPermission::HostedUse)).await;
+        check("HEAD", "/project", Some(AccessPermission::HostedUse)).await;
+    }
+
+    #[tokio::test]
+    async fn hosted_storage_inventory_requires_admin() {
+        check(
+            "GET",
+            "/global/storage/files",
+            Some(AccessPermission::HostedAdmin),
+        )
+        .await;
+        check(
+            "HEAD",
+            "/global/storage/files",
+            Some(AccessPermission::HostedAdmin),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn hosted_provider_status_refresh_routes_require_use() {
+        for path in ["/provider/auth", "/provider/{id}/oauth/status"] {
+            check("GET", path, Some(AccessPermission::HostedUse)).await;
+            check("HEAD", path, Some(AccessPermission::HostedUse)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_capability_discovery_classifies_actor_scoped_reads() {
+        for path in [
+            "/goal-capability-learning/decisions",
+            "/goal-capability-learning/decisions/{decision_id}",
+        ] {
+            check("GET", path, Some(AccessPermission::HostedAutomationRead)).await;
+            check("HEAD", path, Some(AccessPermission::HostedAutomationRead)).await;
+        }
+        check(
+            "POST",
+            "/goal-capability-learning/discover",
+            Some(AccessPermission::HostedUse),
+        )
+        .await;
     }
 
     #[tokio::test]

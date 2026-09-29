@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tandem_types::{EngineEvent, TenantContext};
+use tandem_types::{EngineEvent, PrincipalRef, TenantContext};
 
 pub use tandem_automation::RoutineMisfirePolicy;
 
@@ -152,6 +152,10 @@ pub struct RoutineRunArtifact {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExternalActionRecord {
     pub action_id: String,
+    /// Absent on legacy or unresolved receipts. Hosted reads must not infer
+    /// provenance from free-form metadata or a source identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ExternalActionProvenance>,
     pub operation: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,6 +184,13 @@ pub struct ExternalActionRecord {
     pub metadata: Option<Value>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalActionProvenance {
+    pub tenant_context: TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_principal: Option<PrincipalRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

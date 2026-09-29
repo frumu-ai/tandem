@@ -15,8 +15,24 @@ async fn goal_actor_context(
         TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".to_string()), &actor);
     let mut verified = verified_context(&actor);
     verified.tenant_context = tenant.clone();
+    if request
+        .headers()
+        .contains_key("x-test-hosted-policy-version")
+    {
+        verified.policy_version = Some(1);
+        if actor == "other" {
+            verified.org_units.push("executors".to_string());
+        }
+    }
     if actor == "administrator" {
-        verified.roles.push("admin".to_string());
+        verified.roles.push(
+            if verified.policy_version.is_some() {
+                "hosted:admin"
+            } else {
+                "admin"
+            }
+            .to_string(),
+        );
     }
     if actor == "viewer" {
         verified.roles.push("hosted:role:viewer".to_string());
@@ -62,6 +78,45 @@ async fn goal_actor_context(
             ])),
         );
     }
+    if let Some(orchestration_id) = request
+        .headers()
+        .get("x-test-goal-orchestration-execute")
+        .and_then(|value| value.to_str().ok())
+    {
+        let resource = ResourceRef::new(
+            "org-a",
+            "dep-a",
+            ResourceKind::Orchestration,
+            orchestration_id,
+        );
+        let principal = PrincipalRef::human_user(&actor);
+        verified.strict_projection = Some(
+            tandem_types::StrictTenantContext::new(
+                tenant.clone(),
+                principal.clone(),
+                verified.authority_chain.clone(),
+                ResourceScope::root(resource.clone()),
+                tandem_types::AssertionMetadata::new(
+                    "tandem-web",
+                    "tandem-runtime",
+                    1_000,
+                    9_999_999_999_999,
+                    "orchestration-executor",
+                ),
+            )
+            .with_grants(vec![tandem_types::ScopedGrant::new(
+                "orchestration-execute",
+                principal,
+                resource,
+                tandem_types::GrantSource::Direct,
+            )
+            .with_permissions(vec![AccessPermission::Execute])
+            .with_data_classes(vec![tandem_types::DataClass::Internal])])
+            .with_data_boundary(tandem_types::DataBoundary::allow(vec![
+                tandem_types::DataClass::Internal,
+            ])),
+        );
+    }
     request.extensions_mut().insert(tenant);
     request
         .extensions_mut()
@@ -92,6 +147,28 @@ fn goal_actor_post(actor: &str, path: impl Into<String>, body: Value) -> Request
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
+}
+
+fn goal_actor_post_with_execute(
+    actor: &str,
+    path: impl Into<String>,
+    body: Value,
+    orchestration_id: &str,
+) -> Request<Body> {
+    let mut request = goal_actor_post(actor, path, body);
+    request.headers_mut().insert(
+        "x-test-goal-orchestration-execute",
+        orchestration_id.parse().unwrap(),
+    );
+    request
+}
+
+fn goal_actor_post_hosted(actor: &str, body: Value) -> Request<Body> {
+    let mut request = goal_actor_post(actor, "/goals", body);
+    request
+        .headers_mut()
+        .insert("x-test-hosted-policy-version", "1".parse().unwrap());
+    request
 }
 
 #[tokio::test]
@@ -205,6 +282,20 @@ async fn hosted_goal_reads_are_actor_scoped_across_models_and_stream() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{published}");
+    let (status, denied_start) = dispatch(
+        &hosted_app,
+        goal_actor_post(
+            "outsider",
+            "/goals",
+            json!({
+                "orchestration_id": "orch-goals",
+                "objective": "must not start a private orchestration",
+                "idempotency_key": "outsider-private-goal",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{denied_start}");
     let (status, started) = dispatch(
         &hosted_app,
         goal_actor_post(
@@ -298,6 +389,22 @@ async fn hosted_goal_reads_are_actor_scoped_across_models_and_stream() {
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     let (status, other_started) = dispatch(
         &hosted_app,
+        goal_actor_post_with_execute(
+            "other",
+            "/goals",
+            json!({
+                "orchestration_id": "orch-goals",
+                "objective": "other actor objective",
+                "idempotency_key": "other-private-goal",
+            }),
+            "orch-goals",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{other_started}");
+    let other_goal_id = other_started["goal"]["goal_id"].as_str().unwrap();
+    let (status, replay_after_source_grant_removed) = dispatch(
+        &hosted_app,
         goal_actor_post(
             "other",
             "/goals",
@@ -309,8 +416,12 @@ async fn hosted_goal_reads_are_actor_scoped_across_models_and_stream() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{other_started}");
-    let other_goal_id = other_started["goal"]["goal_id"].as_str().unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{replay_after_source_grant_removed}"
+    );
+    assert_eq!(replay_after_source_grant_removed["replayed"], true);
     let (status, scoped_page) = dispatch(
         &hosted_app,
         goal_actor_request("grantee", "/goals?limit=1", Some(&goal_id)),
@@ -382,6 +493,241 @@ async fn hosted_goal_reads_are_actor_scoped_across_models_and_stream() {
         &actor,
     )
     .is_err());
+}
+
+#[tokio::test]
+async fn hosted_goal_start_requires_live_orchestration_execute_or_owner() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut state = test_state().await;
+    state.automation_v2_runs_path = directory.path().join("automation_v2_runs.json");
+    let tenant = TenantContext::explicit_user_workspace(
+        "org-a",
+        "dep-a",
+        Some("dep-a".to_string()),
+        "operator",
+    );
+    let mut planner = AutomationSpecBuilder::new("planner").build();
+    planner.set_tenant_context(&tenant);
+    let planner = state.put_automation_v2(planner).await.unwrap();
+    let mut executor = AutomationSpecBuilder::new("executor").build();
+    executor.set_tenant_context(&tenant);
+    let executor = state.put_automation_v2(executor).await.unwrap();
+    let app = Router::new()
+        .route(
+            "/orchestrations",
+            axum::routing::post(crate::http::orchestrations_api::create_orchestration_draft),
+        )
+        .route(
+            "/orchestrations/{id}/publish",
+            axum::routing::post(crate::http::orchestrations_api::publish_orchestration),
+        )
+        .route(
+            "/goals",
+            axum::routing::post(crate::http::goals_api::start_goal),
+        )
+        .layer(axum::middleware::from_fn(goal_actor_context))
+        .with_state(state.clone());
+    let (status, draft) = dispatch(
+        &app,
+        goal_actor_post(
+            "operator",
+            "/orchestrations",
+            draft_payload(
+                &automation_definition_snapshot_hash(&planner),
+                &automation_definition_snapshot_hash(&executor),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let (status, published) = dispatch(
+        &app,
+        goal_actor_post(
+            "operator",
+            "/orchestrations/orch-goals/publish",
+            Value::Null,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{published}");
+
+    let now = crate::now_ms();
+    let member_capabilities =
+        tandem_enterprise_contract::hosted_policy::role_capabilities("member");
+    let bundle = tandem_enterprise_contract::hosted_policy::HostedPolicyBundle::from_json(
+        serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "policy_version": 1,
+            "organization_id": "org-a",
+            "deployment_id": "dep-a",
+            "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+            "users": [
+                {"id":"operator", "email":null, "username":null, "role":"member", "is_active":true, "email_verified":true, "capabilities":member_capabilities},
+                {"id":"other", "email":null, "username":null, "role":"member", "is_active":true, "email_verified":true, "capabilities":member_capabilities},
+                {"id":"outsider", "email":null, "username":null, "role":"member", "is_active":true, "email_verified":true, "capabilities":member_capabilities},
+                {"id":"administrator", "email":null, "username":null, "role":"admin", "is_active":true, "email_verified":true, "capabilities":tandem_enterprise_contract::hosted_policy::role_capabilities("admin")},
+            ],
+            "org_units": [{"id":"executors", "slug":"executors", "display_name":"Executors", "kind":"team", "state":"active"}],
+            "org_unit_memberships": [{"unit_id":"executors", "user_id":"other"}],
+            "deployment_grants": [
+                {"id":"operator-use", "deployment_id":"dep-a", "principal_kind":"member", "principal_id":"operator", "resource_kind":"deployment", "resource_id":"dep-a", "permissions":["hosted.use"]},
+                {"id":"other-use", "deployment_id":"dep-a", "principal_kind":"member", "principal_id":"other", "resource_kind":"deployment", "resource_id":"dep-a", "permissions":["hosted.use"]},
+                {"id":"outsider-use", "deployment_id":"dep-a", "principal_kind":"member", "principal_id":"outsider", "resource_kind":"deployment", "resource_id":"dep-a", "permissions":["hosted.use"]},
+                {"id":"admin-use", "deployment_id":"dep-a", "principal_kind":"member", "principal_id":"administrator", "resource_kind":"deployment", "resource_id":"dep-a", "permissions":["hosted.use", "hosted.admin"]},
+            ],
+        }))
+        .unwrap()
+        .as_slice(),
+    )
+    .unwrap();
+    state
+        .enterprise
+        .hosted_policy
+        .install_test_bundle(bundle)
+        .unwrap();
+
+    let start_body = |key: &str| {
+        json!({
+            "orchestration_id": "orch-goals",
+            "objective": "private hosted objective",
+            "idempotency_key": key,
+        })
+    };
+    let mut outsider_absent_response = Value::Null;
+    for actor in ["other", "outsider"] {
+        let (status, denied) = dispatch(
+            &app,
+            goal_actor_post_hosted(actor, start_body(&format!("{actor}-denied"))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{actor}: {denied}");
+        if actor == "outsider" {
+            outsider_absent_response = denied;
+        }
+    }
+    let (status, owner) = dispatch(
+        &app,
+        goal_actor_post_hosted("operator", start_body("hosted-owner")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{owner}");
+    let (status, admin) = dispatch(
+        &app,
+        goal_actor_post_hosted("administrator", start_body("hosted-admin")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{admin}");
+
+    let unit = tandem_enterprise_contract::hosted_policy::hosted_unit_principal("executors");
+    let grant_for = |id: &str, kind: ResourceKind, resource_id: &str| {
+        OrganizationUnitAccessGrant::active(
+            id,
+            tenant.clone(),
+            unit.clone(),
+            ResourceRef::new("org-a", "dep-a", kind, resource_id),
+            now,
+        )
+        .with_permissions(vec![AccessPermission::Execute])
+        .with_data_classes(vec![tandem_types::DataClass::Internal])
+    };
+    let grants = &state.enterprise.org_unit_access_grants;
+    grants.write().await.insert(
+        "goal-source-grant".to_string(),
+        grant_for("alias-project", ResourceKind::Project, "orch-goals"),
+    );
+    let (status, alias_denied) = dispatch(
+        &app,
+        goal_actor_post_hosted("other", start_body("alias-denied")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{alias_denied}");
+    grants.write().await.insert(
+        "goal-source-grant".to_string(),
+        grant_for(
+            "exact-orchestration",
+            ResourceKind::Orchestration,
+            "orch-goals",
+        ),
+    );
+    let (status, granted) = dispatch(
+        &app,
+        goal_actor_post_hosted("other", start_body("hosted-granted")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{granted}");
+
+    let other_tenant = TenantContext::explicit_user_workspace(
+        "org-a",
+        "dep-a",
+        Some("dep-a".to_string()),
+        "other",
+    );
+    let mut other_verified = verified_context("other");
+    other_verified.tenant_context = other_tenant.clone();
+    other_verified.policy_version = Some(1);
+    other_verified.org_units.push("executors".to_string());
+    let store = crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+        &state.automation_v2_runs_path,
+    )
+    .unwrap();
+    let source = store
+        .get_orchestration_for_tenant(&other_tenant, "orch-goals", 1)
+        .unwrap()
+        .unwrap();
+    let stale = crate::http::goals_authority::current_goal_context(
+        &state,
+        &other_tenant,
+        Some(&other_verified),
+        AccessPermission::HostedUse,
+    )
+    .await
+    .unwrap();
+    assert!(state.can_start_goal_from_orchestration(&other_tenant, stale.as_ref(), &source,));
+    grants.write().await.remove("goal-source-grant");
+    // This old async projection still contains Execute; the final synchronous
+    // projection must not admit a new start after the live grant is removed.
+    assert!(state.can_start_goal_from_orchestration(&other_tenant, stale.as_ref(), &source,));
+    let fresh = state
+        .current_goal_start_context_before_commit(&other_tenant, Some(&other_verified))
+        .unwrap();
+    assert!(!state.can_start_goal_from_orchestration(&other_tenant, fresh.as_ref(), &source,));
+    let (status, new_start_denied) = dispatch(
+        &app,
+        goal_actor_post_hosted("other", start_body("grant-revoked-new")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{new_start_denied}");
+    let (status, replay) = dispatch(
+        &app,
+        goal_actor_post_hosted("other", start_body("hosted-granted")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["replayed"], true);
+    let (status, private_replay) = dispatch(
+        &app,
+        goal_actor_post_hosted("outsider", start_body("hosted-owner")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{private_replay}");
+    assert_eq!(private_replay, outsider_absent_response);
+    for version in [None, Some(1)] {
+        let (status, absent_source) = dispatch(
+            &app,
+            goal_actor_post_hosted(
+                "outsider",
+                json!({
+                    "orchestration_id": "missing-goal-source",
+                    "orchestration_version": version,
+                    "objective": "private hosted objective",
+                    "idempotency_key": "missing-source-key",
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{absent_source}");
+        assert_eq!(absent_source, outsider_absent_response);
+    }
 }
 
 #[tokio::test]

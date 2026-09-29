@@ -9,9 +9,11 @@ impl AppState {
         &self,
         goal: tandem_types::GoalSpec,
         tenant_id: String,
-    ) -> tandem_types::GoalCapabilityLearningResponse {
+        owner_actor_id: Option<String>,
+        precommit: impl FnOnce() -> bool + Send,
+    ) -> Option<tandem_types::GoalCapabilityLearningResponse> {
         self.goal_capability_learning_store
-            .discover_for_goal(goal, tenant_id)
+            .discover_for_goal_guarded(goal, tenant_id, owner_actor_id, precommit)
             .await
     }
 

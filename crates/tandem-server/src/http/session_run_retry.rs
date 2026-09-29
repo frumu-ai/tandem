@@ -241,15 +241,28 @@ where
     }
 
     let recovery = recovery_for_execution(state, tenant_context, surface, session_id, run_id);
-    let policy = state.enterprise.hosted_policy.clone();
+    let authority_state = state.clone();
+    let authority_tenant = tenant_context.clone();
     let verified = verified_tenant_context.cloned();
     let authority = ProviderDispatchAuthority::new(move || {
-        let policy = policy.clone();
+        let state = authority_state.clone();
+        let tenant = authority_tenant.clone();
         let verified = verified.clone();
         async move {
-            policy
-                .authorize_execution(verified.as_ref())
+            if surface == PromptExecutionSurface::Planner {
+                super::workflow_planner_policy::require_live_planner_write(
+                    &state,
+                    &tenant,
+                    verified.as_ref(),
+                )
                 .map_err(anyhow::Error::msg)
+            } else {
+                state
+                    .enterprise
+                    .hosted_policy
+                    .authorize_execution(verified.as_ref())
+                    .map_err(anyhow::Error::msg)
+            }
         }
     });
     let allow_private_provider_endpoints =
