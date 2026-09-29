@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 // OAuth runtime publication shares the config-providers module's imports and
 // caller authority types. Keep authorization and the registry commit together.
 
