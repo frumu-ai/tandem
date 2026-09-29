@@ -765,6 +765,212 @@ async fn failed_restore_does_not_write_a_success_audit_event() {
 }
 
 #[tokio::test]
+async fn pending_restore_replays_once_after_audit_crash_boundary() {
+    let mut state = test_state().await;
+    let alice_tenant = tenant("alice", "org-a");
+    let mut original = automation("audit-failed-restore", &alice_tenant, "alice");
+    original.status = crate::AutomationV2Status::Active;
+    state.put_automation_v2(original).await.unwrap();
+    state
+        .delete_automation_v2_with_governance(
+            "audit-failed-restore",
+            crate::automation_v2::governance::GovernanceActorRef::system("test-delete"),
+        )
+        .await
+        .unwrap();
+
+    let real_audit_path = state.protected_audit_path.clone();
+    let failed_audit_path = real_audit_path.with_file_name("restore-audit-is-a-directory");
+    tokio::fs::create_dir_all(&failed_audit_path).await.unwrap();
+    state.protected_audit_path = failed_audit_path;
+    let actor = crate::automation_v2::governance::GovernanceActorRef::system("test-restore");
+    state
+        .restore_deleted_automation_v2(
+            "audit-failed-restore",
+            actor.clone(),
+            None,
+            &alice_tenant,
+            || Ok(()),
+        )
+        .await
+        .expect_err("the required audit must fail");
+    state.protected_audit_path = real_audit_path;
+
+    let pending = state
+        .automation_governance
+        .read()
+        .await
+        .deleted_automations
+        .get("audit-failed-restore")
+        .and_then(|deleted| deleted.pending_restore.clone())
+        .expect("durable pending intent retains the tombstone");
+    assert!(!pending.operation_id.is_empty());
+    assert!(state
+        .get_automation_v2("audit-failed-restore")
+        .await
+        .is_none());
+    let shard_path = state
+        .automations_v2_path
+        .parent()
+        .unwrap()
+        .join("automations-v2/audit-failed-restore.json");
+    assert!(
+        shard_path.exists(),
+        "the shard was staged before audit failure"
+    );
+
+    let wrong_actor = state
+        .restore_deleted_automation_v2(
+            "audit-failed-restore",
+            crate::automation_v2::governance::GovernanceActorRef::system("different-actor"),
+            None,
+            &alice_tenant,
+            || Ok(()),
+        )
+        .await
+        .expect_err("a different actor cannot take over the pending restore");
+    assert!(wrong_actor.to_string().contains("different request"));
+
+    // Simulate a crash after the protected append returned but before the
+    // governance snapshot cleared the tombstone. Retry must find this exact
+    // operation in the verified ledger and must not append a duplicate.
+    crate::audit::append_protected_audit_event_once(
+        &state,
+        &pending.operation_id,
+        "automation.governance.restored",
+        &pending.tenant_context,
+        pending
+            .restored_by
+            .actor_id
+            .clone()
+            .or_else(|| pending.restored_by.source.clone()),
+        json!({
+            "automationID": "audit-failed-restore",
+            "restoredBy": pending.restored_by,
+            "approvalID": pending.approval_id,
+            "operationID": pending.operation_id,
+        }),
+    )
+    .await
+    .unwrap();
+    let collision = crate::audit::append_protected_audit_event_once(
+        &state,
+        &pending.operation_id,
+        "automation.governance.restored",
+        &pending.tenant_context,
+        None,
+        json!({"automationID": "another-object"}),
+    )
+    .await
+    .expect_err("a reused audit event id with changed content must fail closed");
+    assert!(collision.to_string().contains("different event"));
+
+    state.automations_v2.write().await.clear();
+    state.load_automation_governance().await.unwrap();
+    state.load_automations_v2().await.unwrap();
+    assert!(
+        state
+            .get_automation_v2("audit-failed-restore")
+            .await
+            .is_none(),
+        "a staged shard must never enter the startup live map"
+    );
+    state.bootstrap_automation_governance().await.unwrap();
+    assert!(state
+        .get_deleted_automation_v2("audit-failed-restore")
+        .await
+        .is_none());
+    assert_eq!(
+        state
+            .get_automation_v2("audit-failed-restore")
+            .await
+            .unwrap()
+            .status,
+        crate::AutomationV2Status::Active
+    );
+    let rows = crate::audit::try_load_protected_audit_events_for_tenant(&state, &alice_tenant)
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.event_type == "automation.governance.restored")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn pending_restore_survives_shard_failure_without_success_audit() {
+    let state = test_state().await;
+    let alice_tenant = tenant("alice", "org-a");
+    let mut original = automation("restore-shard-failure", &alice_tenant, "alice");
+    original.status = crate::AutomationV2Status::Active;
+    state.put_automation_v2(original).await.unwrap();
+    state
+        .delete_automation_v2_with_governance(
+            "restore-shard-failure",
+            crate::automation_v2::governance::GovernanceActorRef::system("test-delete"),
+        )
+        .await
+        .unwrap();
+    let shard_path = state
+        .automations_v2_path
+        .parent()
+        .unwrap()
+        .join("automations-v2/restore-shard-failure.json");
+    assert!(!shard_path.exists());
+    tokio::fs::create_dir_all(&shard_path).await.unwrap();
+    let actor = crate::automation_v2::governance::GovernanceActorRef::system("test-restore");
+    state
+        .restore_deleted_automation_v2(
+            "restore-shard-failure",
+            actor.clone(),
+            None,
+            &alice_tenant,
+            || Ok(()),
+        )
+        .await
+        .expect_err("a shard write failure must stop before success audit");
+    assert!(state
+        .get_automation_v2("restore-shard-failure")
+        .await
+        .is_none());
+    assert!(state
+        .automation_governance
+        .read()
+        .await
+        .deleted_automations
+        .get("restore-shard-failure")
+        .and_then(|deleted| deleted.pending_restore.as_ref())
+        .is_some());
+    let before = crate::audit::try_load_protected_audit_events_for_tenant(&state, &alice_tenant)
+        .await
+        .unwrap();
+    assert!(!before
+        .iter()
+        .any(|row| row.event_type == "automation.governance.restored"));
+
+    tokio::fs::remove_dir(&shard_path).await.unwrap();
+    state
+        .restore_deleted_automation_v2("restore-shard-failure", actor, None, &alice_tenant, || {
+            Ok(())
+        })
+        .await
+        .unwrap()
+        .expect("the same actor can resume after storage recovery");
+    let after = crate::audit::try_load_protected_audit_events_for_tenant(&state, &alice_tenant)
+        .await
+        .unwrap();
+    assert_eq!(
+        after
+            .iter()
+            .filter(|row| row.event_type == "automation.governance.restored")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn operator_duplicate_cannot_overwrite_a_concurrent_destination() {
     let state = test_state().await;
     let alice_tenant = tenant("alice", "org-a");

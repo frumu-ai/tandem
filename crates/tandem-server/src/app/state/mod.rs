@@ -1115,22 +1115,41 @@ async fn archive_automation_v2_aggregate_file(active_path: &Path) -> anyhow::Res
 }
 
 async fn write_string_atomic(path: &Path, payload: &str) -> anyhow::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("state.json");
-    let temp_path = parent.join(format!(
-        ".{file_name}.tmp-{}-{}",
-        std::process::id(),
-        now_ms()
-    ));
-    fs::write(&temp_path, payload).await?;
-    if let Err(error) = fs::rename(&temp_path, path).await {
-        let _ = fs::remove_file(&temp_path).await;
-        return Err(error.into());
-    }
-    Ok(())
+    let path = path.to_path_buf();
+    let payload = payload.to_owned();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        use std::io::Write;
+
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("state.json");
+        let temp_path = parent.join(format!(".{file_name}.tmp-{}", uuid::Uuid::new_v4()));
+        let result = (|| -> anyhow::Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temp_path)?;
+            file.write_all(payload.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&temp_path, &path)?;
+            #[cfg(unix)]
+            std::fs::File::open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+        result
+    })
+    .await?
 }
 
 async fn read_state_file_with_legacy(

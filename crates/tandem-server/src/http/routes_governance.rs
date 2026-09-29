@@ -291,17 +291,32 @@ async fn require_independent_mutation_approval(
         (reserved_action == action && reserved_actor.eq_ignore_ascii_case(actor_id))
             .then(|| reservation_id.to_string())
     });
-    // Only grant revocation has a mutation-level idempotent continuation: an
-    // already-revoked grant remains addressable so an exact retry can finish a
-    // failed dependency pause. Reusing a reservation for create/restore/retire
-    // operations could repeat a mutation that committed before approval
-    // consumption failed (for example by creating a second grant).
-    let retryable_after_reservation = action == "revoke_modify_access";
+    // A restore continuation is retryable only while its retained tombstone
+    // durably binds this exact actor, tenant, approval and reservation. New
+    // restores and every other create/retire mutation keep the anti-replay gate.
+    let exact_pending_restore = if action == "restore_automation" {
+        if let Some(reservation_id) = reusable_reservation_id.as_deref() {
+            state
+                .pending_restore_matches_approval(
+                    automation_id,
+                    actor,
+                    approval_id,
+                    reservation_id,
+                    tenant_context,
+                )
+                .await
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let retryable_after_reservation = action == "revoke_modify_access" || exact_pending_restore;
     let unconsumed = approval.context.get("_mutation_consumption").is_none()
         && (existing_reservation.is_none()
             || (retryable_after_reservation && reusable_reservation_id.is_some()));
     if approval.status != GovernanceApprovalStatus::Approved
-        || crate::now_ms() >= approval.expires_at_ms
+        || (crate::now_ms() >= approval.expires_at_ms && !exact_pending_restore)
         || !allowed_types.contains(&approval.request_type)
         || !target_matches
         || !action_matches
@@ -1183,10 +1198,13 @@ pub(super) async fn automation_restore(
     )
     .await?;
     let Some(restored) = state
-        .restore_deleted_automation_v2(
+        .restore_deleted_automation_v2_with_reservation(
             &id,
             actor.clone(),
             approval_id.map(str::to_string),
+            approval_reservation
+                .as_ref()
+                .map(|reservation| reservation.reservation_id.clone()),
             &tenant_context,
             governance_commit_authority(
                 state.clone(),
@@ -1206,13 +1224,8 @@ pub(super) async fn automation_restore(
             })),
         ));
     };
-    commit_mutation_approval_reservation(
-        &state,
-        &tenant_context,
-        &actor,
-        approval_reservation.as_ref(),
-    )
-    .await?;
+    // Restore commits the exact reservation in the same durable governance
+    // snapshot that clears its tombstone, after both required audit rows.
     debug_assert_eq!(deleted.automation_id, restored.automation_id);
     Ok(Json(json!({
         "automation": restored,

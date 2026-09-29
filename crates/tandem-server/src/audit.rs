@@ -313,6 +313,45 @@ pub async fn append_protected_audit_event(
     actor: Option<String>,
     payload: Value,
 ) -> anyhow::Result<()> {
+    append_protected_audit_event_with_id(state, None, event_type, tenant_context, actor, payload)
+        .await
+}
+
+/// Append a required event once, using a durable operation id. The lookup and
+/// append share the protected chain lock, so a retry after an ambiguous write
+/// cannot create a second success event (including across server processes).
+pub async fn append_protected_audit_event_once(
+    state: &AppState,
+    event_id: &str,
+    event_type: impl Into<String>,
+    tenant_context: &TenantContext,
+    actor: Option<String>,
+    payload: Value,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !event_id.trim().is_empty(),
+        "protected audit event id is required"
+    );
+    append_protected_audit_event_with_id(
+        state,
+        Some(event_id),
+        event_type,
+        tenant_context,
+        actor,
+        payload,
+    )
+    .await
+}
+
+async fn append_protected_audit_event_with_id(
+    state: &AppState,
+    event_id: Option<&str>,
+    event_type: impl Into<String>,
+    tenant_context: &TenantContext,
+    actor: Option<String>,
+    payload: Value,
+) -> anyhow::Result<()> {
+    let event_type = event_type.into();
     let path = state.protected_audit_path.clone();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
@@ -342,6 +381,19 @@ pub async fn append_protected_audit_event(
         verification.violation
     );
     verify_protected_audit_anchor(&path, &records).await?;
+    if let Some(event_id) = event_id {
+        if let Some(existing) = records.iter().find(|row| row.event_id == event_id) {
+            anyhow::ensure!(
+                matches!(&existing.durability, AuditDurability::DurableRequired)
+                    && existing.event_type == event_type
+                    && existing.tenant_context == *tenant_context
+                    && existing.actor == actor
+                    && existing.payload == payload,
+                "protected audit event id already belongs to a different event"
+            );
+            return Ok(());
+        }
+    }
     let migrating_unsequenced = records.iter().any(|record| record.seq == 0);
     let mut records = if migrating_unsequenced {
         migrate_unsequenced_audit_records(records, authority.as_ref())?
@@ -361,9 +413,11 @@ pub async fn append_protected_audit_event(
     let requester_context = requester_context_from_payload(&payload);
 
     let mut row = ProtectedAuditEnvelope {
-        event_id: Uuid::new_v4().to_string(),
+        event_id: event_id
+            .map(str::to_string)
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
         durability: AuditDurability::DurableRequired,
-        event_type: event_type.into(),
+        event_type,
         tenant_context: tenant_context.clone(),
         requester_context,
         actor,

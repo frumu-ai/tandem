@@ -8,6 +8,21 @@ pub struct DeletedAutomationRecord {
     pub deleted_at_ms: u64,
     pub deleted_by: GovernanceActorRef,
     pub restore_until_ms: u64,
+    /// A restore remains a tombstone until its definition and required audit
+    /// records are durable. Older tombstones deserialize without this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_restore: Option<PendingAutomationRestore>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PendingAutomationRestore {
+    pub operation_id: String,
+    pub restored_by: GovernanceActorRef,
+    pub tenant_context: tandem_types::TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

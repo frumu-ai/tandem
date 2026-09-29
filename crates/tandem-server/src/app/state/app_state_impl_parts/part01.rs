@@ -863,10 +863,10 @@ impl AppState {
         self.load_routines().await?;
         let _ = self.load_routine_history().await;
         let _ = self.load_routine_runs().await;
+        self.load_automation_governance().await?;
         self.load_automations_v2().await?;
         let _ = self.load_channel_automation_drafts().await;
         let _ = self.load_channel_user_capabilities().await;
-        self.load_automation_governance().await?;
         self.bootstrap_automation_governance().await?;
         let _ = self.load_automation_v2_runs().await;
         self.load_automation_webhook_records().await?;
@@ -1452,8 +1452,27 @@ impl AppState {
             migrated = canonicalize_automation_output_paths(automation) || migrated;
             migrated = repair_automation_output_contracts(automation) || migrated;
         }
+        // A restore intent may have staged a definition shard immediately
+        // before a crash. Governance is loaded first during startup, so never
+        // publish that unaudited shard into the live automation map.
+        let pending_restore_ids = self
+            .automation_governance
+            .read()
+            .await
+            .deleted_automations
+            .iter()
+            .filter_map(|(id, deleted)| deleted.pending_restore.as_ref().map(|_| id.clone()))
+            .collect::<std::collections::HashSet<_>>();
+        let before_pending_filter = merged.len();
+        merged.retain(|id, _| !pending_restore_ids.contains(id));
+        let quarantined_pending = before_pending_filter != merged.len();
         *self.automations_v2.write().await = merged;
-        if loaded_from_alternate || migrated || !shards_loaded {
+        if quarantined_pending {
+            // A pending restore's staged shard must be removed durably before
+            // startup can report Ready. Do not treat cleanup failure as a
+            // best-effort migration.
+            self.persist_automations_v2().await?;
+        } else if loaded_from_alternate || migrated || !shards_loaded {
             let _ = self.persist_automations_v2().await;
         } else if canonical_loaded {
             let _ = archive_automation_v2_aggregate_file(&self.automations_v2_path).await;
