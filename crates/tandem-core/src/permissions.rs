@@ -19,6 +19,9 @@ use crate::event_bus::EventBus;
 const PERMISSION_STATE_SCHEMA_VERSION: u32 = 3;
 const PERMISSION_REQUEST_TTL_MS: u64 = 15 * 60 * 1000;
 
+#[path = "permissions_batch.rs"]
+mod batch;
+
 #[cfg(test)]
 #[path = "permissions_checked_tests.rs"]
 mod checked_rule_tests;
@@ -1019,15 +1022,11 @@ async fn write_permission_state_file(
     tokio::fs::write(&tmp, payload)
         .await
         .context("failed to write temporary permission state file")?;
-    match tokio::fs::rename(&tmp, path).await {
-        Ok(()) => Ok(()),
-        Err(rename_error) => {
-            let _ = tokio::fs::remove_file(path).await;
-            tokio::fs::rename(&tmp, path).await.with_context(|| {
-                format!("failed to replace permission state file after {rename_error}")
-            })
-        }
+    if let Err(error) = tokio::fs::rename(&tmp, path).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(error).context("failed to replace permission state file");
     }
+    Ok(())
 }
 
 fn wildcard_matches(pattern: &str, value: &str) -> bool {

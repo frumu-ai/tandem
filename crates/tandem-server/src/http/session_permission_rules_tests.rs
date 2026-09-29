@@ -96,7 +96,10 @@ mod session_permission_rule_tests {
                 .hosted_policy
                 .authorize_execution(Some(&member))
                 .unwrap();
-            let permission = json!([{"permission": "read", "pattern": "*", "action": "allow"}]);
+            let permission = json!([
+                {"permission": "read", "pattern": "*", "action": "allow"},
+                {"permission": "write", "pattern": "*", "action": "deny"}
+            ]);
             if update {
                 let result = update_session(
                     State(state.clone()),
@@ -154,14 +157,17 @@ mod session_permission_rule_tests {
                 Some(&verified),
                 Some(vec![
                     json!({"permission":"read", "pattern":"*", "action":"allow"}),
+                    json!({"permission":"write", "pattern":"*", "action":"deny"}),
                 ]),
             )
             .await
             .unwrap();
             assert_eq!(
                 state.permissions.list_rules().await.len(),
-                before.as_array().unwrap().len() + 1
+                before.as_array().unwrap().len() + 2
             );
         }
     }
 }
+
+include!("session_permission_batch_tests.rs");
