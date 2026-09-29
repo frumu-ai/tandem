@@ -202,7 +202,13 @@ fn allowed(
                     membership.is_active_at(now)
                         && audience
                             .iter()
-                            .any(|entry| entry.as_str() == Some(membership.unit.id.as_str()))
+                            .filter_map(serde_json::Value::as_str)
+                            .any(|unit_id| {
+                                membership.unit
+                                    == tandem_enterprise_contract::hosted_policy::hosted_unit_principal(
+                                        unit_id,
+                                    )
+                            })
                 })
             } else {
                 current.org_units.iter().any(|unit| {

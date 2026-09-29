@@ -26,6 +26,112 @@ fn optimization_verified_actor(actor: &str) -> tandem_types::VerifiedTenantConte
 }
 
 #[tokio::test]
+async fn hosted_group_audience_uses_current_unit_membership() {
+    let state = test_state().await;
+    let now = crate::now_ms();
+    let bundle = tandem_enterprise_contract::hosted_policy::HostedPolicyBundle::from_json(
+        serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "policy_version": 1,
+            "organization_id": "org-a",
+            "deployment_id": "dep-a",
+            "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+            "users": [
+                {"id": "alice", "email": null, "username": null, "role": "member", "capabilities": [], "is_active": true, "email_verified": true},
+                {"id": "bob", "email": null, "username": null, "role": "member", "capabilities": ["automation.read"], "is_active": true, "email_verified": true}
+            ],
+            "org_units": [{"id": "eng", "slug": "eng", "display_name": "Engineering", "kind": "department", "state": "active"}],
+            "org_unit_memberships": [{"unit_id": "eng", "user_id": "bob"}],
+            "deployment_grants": []
+        }))
+        .unwrap()
+        .as_slice(),
+    )
+    .unwrap();
+    state
+        .enterprise
+        .hosted_policy
+        .install_test_bundle(bundle.clone())
+        .unwrap();
+
+    let workspace = tempfile::tempdir().unwrap();
+    let mut source = sample_automation(workspace.path().to_str().unwrap());
+    source.creator_id = "alice".into();
+    source.metadata = Some(json!({
+        "resource_access": {
+            "visibility": "group",
+            "owner_principal": {"kind": "human_user", "id": "alice"},
+            "audience_principals": ["eng"]
+        }
+    }));
+    source.set_tenant_context(&tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "dep-a",
+        Some("dep-a".into()),
+        "alice",
+    ));
+    let mut verified = optimization_verified_actor("bob");
+    verified.policy_version = Some(1);
+    verified.org_units.push("eng".into());
+    verified.capabilities.push("automation.read".into());
+    let tenant = verified.tenant_context.clone();
+
+    assert!(crate::http::automation_object_authority::can_read(
+        &state,
+        &tenant,
+        Some(&verified),
+        &source,
+    ));
+    assert!(!crate::http::automation_object_authority::can_write(
+        &state,
+        &tenant,
+        Some(&verified),
+        &source,
+    ));
+
+    source.metadata.as_mut().unwrap()["resource_access"]["audience_principals"] = json!(["ops"]);
+    assert!(!crate::http::automation_object_authority::can_read(
+        &state,
+        &tenant,
+        Some(&verified),
+        &source,
+    ));
+    source.metadata.as_mut().unwrap()["resource_access"]["audience_principals"] = json!(["eng"]);
+
+    let mut removed = bundle.clone();
+    removed.policy_version = 2;
+    removed.org_unit_memberships.clear();
+    state
+        .enterprise
+        .hosted_policy
+        .install_test_bundle(removed)
+        .unwrap();
+    verified.policy_version = Some(2);
+    assert!(!crate::http::automation_object_authority::can_read(
+        &state,
+        &tenant,
+        Some(&verified),
+        &source,
+    ));
+
+    let mut archived = bundle;
+    archived.policy_version = 3;
+    archived.org_units[0].state = "archived".into();
+    state
+        .enterprise
+        .hosted_policy
+        .install_test_bundle(archived)
+        .unwrap();
+    verified.policy_version = Some(3);
+    assert!(!crate::http::automation_object_authority::can_read(
+        &state,
+        &tenant,
+        Some(&verified),
+        &source,
+    ));
+}
+
+#[tokio::test]
 async fn private_optimization_source_accepts_current_scoped_org_unit_grant() {
     use tandem_types::{
         AccessPermission, DataClass, OrganizationUnitAccessGrant, ResourceKind, ResourceRef,
