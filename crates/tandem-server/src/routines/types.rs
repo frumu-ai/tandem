@@ -83,8 +83,21 @@ pub enum RoutineStatus {
     Paused,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolutionRoutineOwner {
+    pub instance_id: String,
+    pub component_id: String,
+    pub composition_sha256: String,
+    /// Only the installation activation lifecycle may enable this resource.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutineSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solution_owner: Option<SolutionRoutineOwner>,
     pub routine_id: String,
     #[serde(default, skip_serializing_if = "TenantContext::is_local_implicit")]
     pub tenant_context: TenantContext,
@@ -108,6 +121,19 @@ pub struct RoutineSpec {
     pub next_fire_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_fired_at_ms: Option<u64>,
+}
+
+impl RoutineSpec {
+    pub fn installation_disabled(&self) -> bool {
+        self.solution_owner
+            .as_ref()
+            .is_some_and(|owner| !owner.enabled)
+            || (solution_routine_id(&self.routine_id) && self.solution_owner.is_none())
+    }
+}
+
+pub(crate) fn solution_routine_id(id: &str) -> bool {
+    id.trim().to_ascii_lowercase().starts_with("solution-")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -84,6 +84,8 @@ jobs:
         run: cargo test -p tandem-server --locked --features storage-postgres solution_installation_ --lib -- --test-threads=1
       - name: Verify native disabled agent staging and reconciliation
         run: cargo test -p tandem-server --locked --features storage-postgres agent_teams::solution_templates --lib
+      - name: Verify native routine staging and execution barriers
+        run: cargo test -p tandem-server --locked --features storage-postgres solution_routines::tests --lib
       - name: Verify disabled template cannot request spawn approval
         run: cargo test -p tandem-orchestrator --locked disabled_template_cannot --lib
       - name: Lint the PostgreSQL and SQLite store adapter
