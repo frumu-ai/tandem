@@ -2,6 +2,7 @@
 // Licensed under the Business Source License 1.1
 
 use super::context_runs::context_run_engine;
+use super::host_authority::{self, RequestLocality};
 use super::*;
 
 #[derive(Debug, Deserialize)]
@@ -54,10 +55,21 @@ pub(super) struct PackBuilderPendingQuery {
 pub(super) async fn run_pack_builder_tool(
     state: &AppState,
     args: Value,
+    tenant_context: &TenantContext,
+    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
+    locality: RequestLocality,
 ) -> Result<Value, StatusCode> {
+    // The Pack Builder can write process-wide connector, pack, automation, and
+    // routine stores. Never manufacture a local identity for an HTTP caller.
+    if !locality.is_direct_loopback()
+        || verified_tenant_context.is_some()
+        || !host_authority::standalone_local_runtime_posture(state, tenant_context)
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let dispatch_context = state.tool_dispatch_context(
         tandem_tools::ToolDispatchSource::new("pack_builder"),
-        TenantContext::local_implicit(),
+        tenant_context.clone(),
         vec!["pack_builder".to_string()],
     );
     let result = state
@@ -309,6 +321,9 @@ pub(super) async fn pack_builder_emit_blackboard_task(
 
 pub(super) async fn pack_builder_preview(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
+    request_locality: Option<Extension<RequestLocality>>,
     Json(input): Json<PackBuilderPreviewRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let context_run_id = input.context_run_id.clone();
@@ -322,7 +337,14 @@ pub(super) async fn pack_builder_preview(
         "selected_connectors": input.selected_connectors.unwrap_or_default(),
         "schedule": input.schedule,
     });
-    let payload = run_pack_builder_tool(&state, args).await?;
+    let payload = run_pack_builder_tool(
+        &state,
+        args,
+        &tenant_context,
+        verified_tenant_context.as_ref().map(|value| &value.0),
+        request_locality.map(|value| value.0).unwrap_or_default(),
+    )
+    .await?;
     if let Some(run_id) = sanitize_context_id(context_run_id.as_deref()) {
         ensure_pack_builder_context_run(&state, &run_id, Some("Pack Builder Preview")).await?;
         let _ = pack_builder_emit_blackboard_task(
@@ -339,6 +361,9 @@ pub(super) async fn pack_builder_preview(
 
 pub(super) async fn pack_builder_apply(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
+    request_locality: Option<Extension<RequestLocality>>,
     Json(input): Json<PackBuilderApplyRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let context_run_id = input.context_run_id.clone();
@@ -355,7 +380,14 @@ pub(super) async fn pack_builder_apply(
         "approve_enable_routines": approvals.approve_enable_routines,
         "secret_refs_confirmed": input.secret_refs_confirmed.unwrap_or(json!({})),
     });
-    let payload = run_pack_builder_tool(&state, args).await?;
+    let payload = run_pack_builder_tool(
+        &state,
+        args,
+        &tenant_context,
+        verified_tenant_context.as_ref().map(|value| &value.0),
+        request_locality.map(|value| value.0).unwrap_or_default(),
+    )
+    .await?;
     if let Some(run_id) = sanitize_context_id(context_run_id.as_deref()) {
         ensure_pack_builder_context_run(&state, &run_id, Some("Pack Builder Application")).await?;
         let _ = pack_builder_emit_blackboard_task(
@@ -372,6 +404,9 @@ pub(super) async fn pack_builder_apply(
 
 pub(super) async fn pack_builder_cancel(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
+    request_locality: Option<Extension<RequestLocality>>,
     Json(input): Json<PackBuilderCancelRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let context_run_id = input.context_run_id.clone();
@@ -382,7 +417,14 @@ pub(super) async fn pack_builder_cancel(
         "__session_id": input.session_id,
         "thread_key": input.thread_key,
     });
-    let payload = run_pack_builder_tool(&state, args).await?;
+    let payload = run_pack_builder_tool(
+        &state,
+        args,
+        &tenant_context,
+        verified_tenant_context.as_ref().map(|value| &value.0),
+        request_locality.map(|value| value.0).unwrap_or_default(),
+    )
+    .await?;
     if let Some(run_id) = sanitize_context_id(context_run_id.as_deref()) {
         ensure_pack_builder_context_run(&state, &run_id, Some("Pack Builder cancellation")).await?;
         let _ = pack_builder_emit_blackboard_task(
@@ -399,6 +441,9 @@ pub(super) async fn pack_builder_cancel(
 
 pub(super) async fn pack_builder_pending(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
+    request_locality: Option<Extension<RequestLocality>>,
     Query(query): Query<PackBuilderPendingQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let context_run_id = query.context_run_id.clone();
@@ -409,7 +454,14 @@ pub(super) async fn pack_builder_pending(
         "__session_id": query.session_id,
         "thread_key": query.thread_key,
     });
-    let payload = run_pack_builder_tool(&state, args).await?;
+    let payload = run_pack_builder_tool(
+        &state,
+        args,
+        &tenant_context,
+        verified_tenant_context.as_ref().map(|value| &value.0),
+        request_locality.map(|value| value.0).unwrap_or_default(),
+    )
+    .await?;
     if let Some(run_id) = sanitize_context_id(context_run_id.as_deref()) {
         ensure_pack_builder_context_run(&state, &run_id, Some("Pack Builder pending")).await?;
         let _ = pack_builder_emit_blackboard_task(

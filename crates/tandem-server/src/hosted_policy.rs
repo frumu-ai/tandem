@@ -96,6 +96,29 @@ impl HostedPolicyRuntime {
             .ok_or("hosted_policy_not_synchronized")
     }
 
+    /// Keep publication of a newer snapshot serialized with a synchronous
+    /// authorization-and-commit section. Callers must not await in `inspect`.
+    pub(crate) fn with_current_policy<R>(
+        &self,
+        inspect: impl FnOnce(Option<&ValidatedHostedPolicy>) -> R,
+    ) -> Result<R, &'static str> {
+        let source = self
+            .source
+            .read()
+            .map_err(|_| "hosted_policy_lock_failed")?;
+        if source.is_none() {
+            return Ok(inspect(None));
+        }
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| "hosted_policy_lock_failed")?;
+        let policy = snapshot
+            .as_deref()
+            .ok_or("hosted_policy_not_synchronized")?;
+        Ok(inspect(Some(policy)))
+    }
+
     pub(crate) fn project(
         &self,
         verified: &mut VerifiedTenantContext,

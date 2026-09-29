@@ -1489,6 +1489,7 @@ impl EngineLoop {
             .execute_tool_with_timeout(
                 session_id,
                 message_id,
+                run_id,
                 &tool,
                 args,
                 preauthorized_dispatch_decision,

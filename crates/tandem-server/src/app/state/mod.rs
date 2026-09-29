@@ -420,12 +420,27 @@ impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
             .clone()
             .unwrap_or_else(|| context.requested_tool.clone());
         // Pack Builder stages and installs into process-wide pack, connector,
-        // and automation stores without hosted object provenance. Match the
-        // local-only boundary enforced by the dedicated pack HTTP API.
+        // and automation stores without hosted object provenance. Canonical
+        // matching also covers tool aliases and nested batch dispatch. Only
+        // the guarded Pack Builder helper and a direct local generic HTTP
+        // request may dispatch this process-wide tool. Automation preflight,
+        // workflow, and other autonomous sources cannot inherit local_implicit
+        // tenancy as authority. The generic route's locality comes from the
+        // server's peer/forwarding-header check, not tool arguments.
+        let local_pack_builder_source = match context.source.kind.as_str() {
+            "pack_builder" => true,
+            "http_global_tool" => context.direct_loopback_http_request,
+            _ => false,
+        };
         if dispatch_tool == "pack_builder"
             && (!context.tenant_context.is_local_implicit()
                 || context.verified_tenant_context.is_some()
-                || !matches!(self.state.enterprise.hosted_policy.current(), Ok(None)))
+                || !matches!(self.state.enterprise.hosted_policy.current(), Ok(None))
+                || !crate::http::host_authority::standalone_local_runtime_posture(
+                    &self.state,
+                    &context.tenant_context,
+                )
+                || !local_pack_builder_source)
         {
             return Ok(ToolDispatchDecision::deny(
                 "pack_builder requires the local single-user runtime",

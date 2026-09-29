@@ -179,6 +179,133 @@ fn verified_reviewer_context(
     }
 }
 
+fn hosted_gate_policy(
+    version: u64,
+    reviewer_has_hosted_use: bool,
+    now: u64,
+) -> tandem_enterprise_contract::hosted_policy::HostedPolicyBundle {
+    let capabilities = tandem_enterprise_contract::hosted_policy::role_capabilities("member")
+        .into_iter()
+        .filter(|capability| reviewer_has_hosted_use || *capability != "hosted.use")
+        .collect::<Vec<_>>();
+    tandem_enterprise_contract::hosted_policy::HostedPolicyBundle::from_json(
+        json!({
+            "schema_version": 1,
+            "policy_version": version,
+            "organization_id": "org-a",
+            "deployment_id": "dep-a",
+            "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+            "users": [{
+                "id": "reviewer", "email": null, "username": null,
+                "role": "member", "capabilities": capabilities,
+                "is_active": true, "email_verified": true
+            }],
+            "org_units": [{
+                "id": "reviewers", "slug": "reviewers", "display_name": "Reviewers",
+                "kind": "team", "state": "active"
+            }],
+            "org_unit_memberships": [{"unit_id": "reviewers", "user_id": "reviewer"}],
+            "deployment_grants": []
+        })
+        .to_string()
+        .as_bytes(),
+    )
+    .expect("hosted gate policy")
+}
+
+async fn hosted_gate_reviewer_context(
+    state: &AppState,
+    now: u64,
+) -> tandem_types::VerifiedTenantContext {
+    let tenant = tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "dep-a",
+        Some("dep-a".into()),
+        "reviewer",
+    );
+    let mut claims = tandem_types::TenantContextAssertionClaims::new_v1(
+        "tandem-web",
+        "tandem-runtime",
+        now,
+        now + 60_000,
+        "gate-reviewer-assertion",
+        tenant,
+        tandem_types::HumanActor::tandem_user("reviewer"),
+        tandem_types::AuthorityChain::from_request(
+            tandem_types::RequestPrincipal::authenticated_user("reviewer", "tandem-web"),
+        ),
+        vec!["hosted:role:member".into()],
+    );
+    claims.policy_version = Some(1);
+    claims.org_units = vec!["reviewers".into()];
+    claims.capabilities = tandem_enterprise_contract::hosted_policy::role_capabilities("member")
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect();
+    let mut verified: tandem_types::VerifiedTenantContext = claims.into();
+    let memberships = state
+        .enterprise
+        .hosted_policy
+        .project(&mut verified)
+        .expect("project hosted reviewer")
+        .expect("hosted memberships");
+    crate::http::middleware::enrich_verified_context_with_org_unit_grants(
+        state,
+        &mut verified,
+        Some(memberships),
+    )
+    .await;
+    verified
+}
+
+async fn arrange_hosted_review_gate(
+    state: &AppState,
+    automation_id: &str,
+) -> (
+    crate::automation_v2::types::AutomationV2RunRecord,
+    tandem_types::ResourceRef,
+) {
+    let requester = tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "dep-a",
+        Some("dep-a".into()),
+        "requester",
+    );
+    let resource = tandem_types::ResourceRef::new(
+        "org-a",
+        "dep-a",
+        tandem_types::ResourceKind::Approval,
+        format!("{automation_id}:publish"),
+    );
+    let run = arrange_governed_awaiting_publish_gate(
+        state,
+        automation_id,
+        requester,
+        "requester",
+        elevated_gate_metadata(&resource),
+    )
+    .await;
+    let grant_tenant = tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "dep-a",
+        Some("dep-a".into()),
+        "reviewer",
+    );
+    state.enterprise.org_unit_access_grants.write().await.insert(
+        "reviewer-approval-grant".into(),
+        tandem_types::OrganizationUnitAccessGrant::active(
+            "reviewer-approval-grant",
+            grant_tenant,
+            tandem_enterprise_contract::hosted_policy::hosted_unit_principal("reviewers"),
+            resource.clone(),
+            crate::now_ms(),
+        )
+        .with_permissions(vec![tandem_types::AccessPermission::Admin])
+        .with_data_classes(vec![tandem_types::DataClass::FinancialRecord]),
+    );
+    (run, resource)
+}
+
 /// GOV-B1: an agent-context caller cannot decide (self-approve) an approval gate.
 #[tokio::test]
 async fn gate_decision_rejects_agent_context_caller() {
@@ -594,6 +721,259 @@ async fn governed_gate_rejects_elevated_reviewer_with_unrelated_resource_grant()
     let after = state.get_automation_v2_run(&run.run_id).await.expect("run");
     assert_eq!(after.status, crate::AutomationRunStatus::AwaitingApproval);
     assert!(after.checkpoint.gate_history.is_empty());
+}
+
+#[tokio::test]
+async fn governed_gate_rechecks_revoked_hosted_resource_grant_at_commit() {
+    let state = test_state().await;
+    let now = crate::now_ms();
+    state
+        .enterprise
+        .hosted_policy
+        .install_test_bundle(hosted_gate_policy(1, true, now))
+        .expect("initial hosted policy");
+    let (run, resource) = arrange_hosted_review_gate(&state, "hosted-gate-grant-revoked").await;
+    let verified = hosted_gate_reviewer_context(&state, now).await;
+    assert_eq!(
+        verified
+            .strict_projection
+            .as_ref()
+            .unwrap()
+            .evaluate_access(
+                &resource,
+                tandem_types::AccessPermission::Admin,
+                tandem_types::DataClass::FinancialRecord,
+                crate::now_ms(),
+            )
+            .decision,
+        tandem_types::AccessDecision::Allow,
+        "ingress authorized the reviewer before revocation"
+    );
+    state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .remove("reviewer-approval-grant");
+    let reviewer_tenant = verified.tenant_context.clone();
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        reviewer_tenant,
+        Some(verified.clone()),
+        run.run_id.clone(),
+        crate::http::routines_automations::AutomationV2GateDecisionInput {
+            decision: "approve".to_string(),
+            reason: None,
+            approval_request_id: None,
+            transition_id: None,
+        },
+        reviewer_decider("reviewer"),
+    )
+    .await;
+    let (status, body) = result.expect_err("revoked reviewer grant denied at commit");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body.0["code"],
+        "AUTOMATION_V2_GATE_REVIEWER_AUTHORITY_DENIED"
+    );
+    let after = state.get_automation_v2_run(&run.run_id).await.unwrap();
+    assert_eq!(after.status, crate::AutomationRunStatus::AwaitingApproval);
+    assert!(after.checkpoint.gate_history.is_empty());
+    assert_eq!(after.updated_at_ms, run.updated_at_ms);
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit");
+    assert!(audit.contains("AUTOMATION_V2_GATE_REVIEWER_AUTHORITY_DENIED"));
+
+    // The same still-valid assertion becomes eligible when its scoped grant is
+    // restored. This controls for accidentally denying all hosted reviewers.
+    state.enterprise.org_unit_access_grants.write().await.insert(
+        "reviewer-approval-grant".into(),
+        tandem_types::OrganizationUnitAccessGrant::active(
+            "reviewer-approval-grant",
+            verified.tenant_context.clone(),
+            tandem_enterprise_contract::hosted_policy::hosted_unit_principal("reviewers"),
+            resource,
+            crate::now_ms(),
+        )
+        .with_permissions(vec![tandem_types::AccessPermission::Admin])
+        .with_data_classes(vec![tandem_types::DataClass::FinancialRecord]),
+    );
+    crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        verified.tenant_context.clone(),
+        Some(verified),
+        run.run_id.clone(),
+        crate::http::routines_automations::AutomationV2GateDecisionInput {
+            decision: "approve".to_string(),
+            reason: None,
+            approval_request_id: None,
+            transition_id: None,
+        },
+        reviewer_decider("reviewer"),
+    )
+    .await
+    .expect("reviewer with current matching grant may approve");
+    let approved = state.get_automation_v2_run(&run.run_id).await.unwrap();
+    assert_eq!(approved.status, crate::AutomationRunStatus::Queued);
+    assert_eq!(approved.checkpoint.gate_history.len(), 1);
+}
+
+#[tokio::test]
+async fn governed_gate_rechecks_revoked_hosted_use_at_commit() {
+    let state = test_state().await;
+    let now = crate::now_ms();
+    state
+        .enterprise
+        .hosted_policy
+        .install_test_bundle(hosted_gate_policy(1, true, now))
+        .expect("initial hosted policy");
+    let (run, _) = arrange_hosted_review_gate(&state, "hosted-gate-use-revoked").await;
+    let verified = hosted_gate_reviewer_context(&state, now).await;
+    assert!(verified
+        .strict_projection
+        .as_ref()
+        .unwrap()
+        .has_permission(tandem_types::AccessPermission::HostedUse));
+    state
+        .enterprise
+        .hosted_policy
+        .install_test_bundle(hosted_gate_policy(2, false, crate::now_ms()))
+        .expect("new policy removes hosted use");
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        verified.tenant_context.clone(),
+        Some(verified),
+        run.run_id.clone(),
+        crate::http::routines_automations::AutomationV2GateDecisionInput {
+            decision: "approve".to_string(),
+            reason: None,
+            approval_request_id: None,
+            transition_id: None,
+        },
+        reviewer_decider("reviewer"),
+    )
+    .await;
+    let (status, body) = result.expect_err("revoked hosted use denied at commit");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body.0["code"],
+        "AUTOMATION_V2_GATE_REVIEWER_AUTHORITY_DENIED"
+    );
+    let after = state.get_automation_v2_run(&run.run_id).await.unwrap();
+    assert_eq!(after.status, crate::AutomationRunStatus::AwaitingApproval);
+    assert!(after.checkpoint.gate_history.is_empty());
+    assert_eq!(after.updated_at_ms, run.updated_at_ms);
+}
+
+#[tokio::test]
+async fn governed_gate_rechecks_same_node_reviewer_policy_under_run_lock() {
+    let state = test_state().await;
+    let tenant = explicit_tenant("requester");
+    let run = arrange_governed_awaiting_publish_gate(
+        &state,
+        "gate-policy-replaced",
+        tenant.clone(),
+        "requester",
+        json!({}),
+    )
+    .await;
+    let automation = state
+        .get_automation_v2(&run.automation_id)
+        .await
+        .expect("automation");
+    let submitted_gate = run.checkpoint.awaiting_gate.clone().expect("ordinary gate");
+    let resource = tandem_types::ResourceRef::new(
+        "acme",
+        "finance",
+        tandem_types::ResourceKind::Approval,
+        "gate-policy-replaced:publish",
+    );
+    let mut runs = state.automation_v2_runs.write().await;
+    let live_run = runs.get_mut(&run.run_id).expect("live run");
+    let live_gate = live_run
+        .checkpoint
+        .awaiting_gate
+        .as_mut()
+        .expect("pending gate");
+    live_gate.metadata = Some(elevated_gate_metadata(&resource));
+    let live_gate = live_gate.clone();
+    let result = crate::http::routines_automations::apply_gate_decision_with_current_authority(
+        &state,
+        live_run,
+        &automation,
+        &automation,
+        &submitted_gate,
+        &live_gate,
+        "approve",
+        None,
+        &reviewer_decider("requester"),
+        &tenant,
+        None,
+        None,
+        None,
+    );
+    assert!(result.is_err(), "the old ordinary card cannot decide the elevated gate");
+    assert_eq!(live_run.status, crate::AutomationRunStatus::AwaitingApproval);
+    assert!(live_run.checkpoint.gate_history.is_empty());
+}
+
+#[tokio::test]
+async fn governed_gate_rechecks_live_definition_owner_under_run_lock() {
+    let state = test_state().await;
+    let tenant = explicit_tenant("requester");
+    let run = arrange_governed_awaiting_publish_gate(
+        &state,
+        "gate-owner-replaced",
+        tenant.clone(),
+        "requester",
+        json!({}),
+    )
+    .await;
+    let submitted_automation = state
+        .get_automation_v2(&run.automation_id)
+        .await
+        .expect("automation");
+    let mut live_automation = submitted_automation.clone();
+    let metadata = live_automation
+        .metadata
+        .get_or_insert_with(|| json!({}));
+    metadata["resource_access"] = json!({
+        "visibility": "private",
+        "owner_principal": {"kind": "human_user", "id": "new-owner"}
+    });
+    let gate = run.checkpoint.awaiting_gate.clone().expect("gate");
+    let verified = verified_reviewer_context(
+        "requester",
+        tenant.clone(),
+        tandem_types::ResourceRef::new(
+            "acme",
+            "finance",
+            tandem_types::ResourceKind::Approval,
+            "gate-owner-replaced:publish",
+        ),
+        vec![tandem_types::AccessPermission::Admin],
+    );
+    let mut runs = state.automation_v2_runs.write().await;
+    let live_run = runs.get_mut(&run.run_id).expect("live run");
+    let result = crate::http::routines_automations::apply_gate_decision_with_current_authority(
+        &state,
+        live_run,
+        &submitted_automation,
+        &live_automation,
+        &gate,
+        &gate,
+        "approve",
+        None,
+        &reviewer_decider("requester"),
+        &tenant,
+        Some(&verified),
+        None,
+        None,
+    );
+    assert!(result.is_err(), "former owner cannot decide the live definition's gate");
+    assert_eq!(live_run.status, crate::AutomationRunStatus::AwaitingApproval);
+    assert!(live_run.checkpoint.gate_history.is_empty());
 }
 
 #[tokio::test]

@@ -1923,6 +1923,9 @@ async fn export_workflow_plan_to_pack_builder(
     state: &AppState,
     plan: &crate::WorkflowPlan,
     export: &WorkflowPlanPackBuilderExportRequest,
+    tenant_context: &tandem_types::TenantContext,
+    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
+    locality: super::host_authority::RequestLocality,
 ) -> Value {
     let args = compiler_api::pack_builder_export_args(
         plan,
@@ -1932,7 +1935,15 @@ async fn export_workflow_plan_to_pack_builder(
             auto_apply: export.auto_apply.unwrap_or(false),
         },
     );
-    match super::pack_builder::run_pack_builder_tool(state, args).await {
+    match super::pack_builder::run_pack_builder_tool(
+        state,
+        args,
+        tenant_context,
+        verified_tenant_context,
+        locality,
+    )
+    .await
+    {
         Ok(payload) => payload,
         Err(code) => json!({
             "status": "export_failed",

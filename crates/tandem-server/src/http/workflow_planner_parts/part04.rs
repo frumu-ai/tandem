@@ -26,6 +26,7 @@ pub(super) async fn workflow_plan_apply(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<tandem_types::TenantContext>,
     verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
+    request_locality: Option<Extension<super::host_authority::RequestLocality>>,
     Json(input): Json<WorkflowPlanApplyRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // The operator materialization tool calls this handler directly, without
@@ -606,9 +607,17 @@ pub(super) async fn workflow_plan_apply(
         }
     }
     let pack_builder_export = match input.pack_builder_export {
-        Some(export) if export.enabled.unwrap_or(true) => {
-            Some(export_workflow_plan_to_pack_builder(&state, &plan, &export).await)
-        }
+        Some(export) if export.enabled.unwrap_or(true) => Some(
+            export_workflow_plan_to_pack_builder(
+                &state,
+                &plan,
+                &export,
+                &tenant_context,
+                verified_tenant_context.as_ref().map(|value| &value.0),
+                request_locality.map(|value| value.0).unwrap_or_default(),
+            )
+            .await,
+        ),
         _ => None,
     };
     let response = json!({

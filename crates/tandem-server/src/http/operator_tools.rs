@@ -899,6 +899,7 @@ async fn workflow_materialize(
         State(state.clone()),
         Extension(tenant.clone()),
         verified.map(Extension),
+        None,
         Json(input),
     )
     .await

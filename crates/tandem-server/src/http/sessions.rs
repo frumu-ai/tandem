@@ -35,6 +35,18 @@ fn with_tenant_context(mut properties: Value, tenant_context: &TenantContext) ->
     properties
 }
 
+pub(super) fn prompt_has_local_pack_builder_authority(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    locality: Option<super::host_authority::RequestLocality>,
+) -> bool {
+    locality.is_some_and(|value| value.is_direct_loopback())
+        && verified_tenant_context.is_none()
+        && matches!(state.enterprise.hosted_policy.current(), Ok(None))
+        && super::host_authority::standalone_local_runtime_posture(state, tenant_context)
+}
+
 pub(super) fn publish_tenant_event(
     state: &AppState,
     tenant_context: &TenantContext,
@@ -596,6 +608,7 @@ pub(super) async fn prompt_async(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    request_locality: Option<Extension<super::host_authority::RequestLocality>>,
     Path(id): Path<String>,
     Query(query): Query<PromptAsyncQuery>,
     headers: HeaderMap,
@@ -637,14 +650,21 @@ pub(super) async fn prompt_async(
         ));
     }
 
+    let local_pack_builder_authorized = prompt_has_local_pack_builder_authority(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        request_locality.map(|Extension(value)| value),
+    );
     let active_run = match state
         .run_registry
-        .acquire(
+        .acquire_http_prompt(
             &session_id,
             run_id.clone(),
             client_id.clone(),
             req.agent.clone(),
             req.agent.clone(),
+            local_pack_builder_authorized,
         )
         .await
     {
@@ -778,6 +798,7 @@ pub(super) async fn prompt_sync(
     State(state): State<AppState>,
     Extension(request_tenant_context): Extension<TenantContext>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    request_locality: Option<Extension<super::host_authority::RequestLocality>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(req): Json<SendMessageRequest>,
@@ -840,14 +861,21 @@ pub(super) async fn prompt_sync(
     let agent_profile = req.agent.clone();
     let tenant_context = session.tenant_context.clone();
     let run_id = Uuid::new_v4().to_string();
+    let local_pack_builder_authorized = prompt_has_local_pack_builder_authority(
+        &state,
+        &request_tenant_context,
+        verified_tenant_context.as_deref(),
+        request_locality.map(|Extension(value)| value),
+    );
     let active_run = match state
         .run_registry
-        .acquire(
+        .acquire_http_prompt(
             &id,
             run_id.clone(),
             client_id.clone(),
             agent_id.clone(),
             agent_profile.clone(),
+            local_pack_builder_authorized,
         )
         .await
     {

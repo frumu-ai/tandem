@@ -108,6 +108,7 @@ async fn cli_dispatch_policy_denies_unmatched_tools_and_allows_explicit_rules() 
         args: json!({ "path": "Cargo.toml" }),
         tenant_context: TenantContext::local_implicit(),
         verified_tenant_context: None,
+        direct_loopback_http_request: false,
         source: tandem_tools::ToolDispatchSource::new("cli_test"),
         scope_allowlist: Vec::new(),
         schema: None,

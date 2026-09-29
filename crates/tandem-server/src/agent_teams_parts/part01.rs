@@ -855,6 +855,52 @@ impl ToolPolicyHook for ServerToolPolicyHook {
         })
     }
 
+    fn revalidate_dispatch(
+        &self,
+        context: tandem_tools::ToolDispatchPolicyContext,
+    ) -> BoxFuture<'static, anyhow::Result<Option<tandem_tools::ToolDispatchDecision>>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            let tool = context
+                .canonical_tool
+                .as_deref()
+                .unwrap_or(&context.requested_tool);
+            if normalize_tool_name(tool) != "pack_builder" {
+                return Ok(None);
+            }
+
+            // Core EngineLoop dispatch has no HTTP peer. Only the exact prompt
+            // run admitted from a direct local request may use Pack Builder;
+            // this check runs for nested batch children as well as direct calls.
+            let active_run = match (
+                context.source.session_id.as_deref(),
+                context.source.run_id.as_deref(),
+            ) {
+                (Some(session_id), Some(run_id)) if context.source.kind == "engine_loop" => {
+                    state.run_registry.get(session_id).await.filter(|run| run.run_id == run_id)
+                }
+                _ => None,
+            };
+            let local_authorized = active_run
+                .as_ref()
+                .is_some_and(|run| run.local_pack_builder_authorized)
+                && context.tenant_context.is_local_implicit()
+                && context.verified_tenant_context.is_none()
+                && matches!(state.enterprise.hosted_policy.current(), Ok(None))
+                && crate::http::host_authority::standalone_local_runtime_posture(
+                    &state,
+                    &context.tenant_context,
+                );
+            if local_authorized {
+                Ok(None)
+            } else {
+                Ok(Some(tandem_tools::ToolDispatchDecision::deny(
+                    "pack_builder requires the local single-user runtime",
+                )))
+            }
+        })
+    }
+
     fn evaluate_tool(
         &self,
         ctx: ToolPolicyContext,

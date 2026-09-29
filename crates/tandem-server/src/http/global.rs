@@ -778,6 +778,7 @@ pub(super) async fn execute_tool(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
+    request_locality: Option<Extension<super::host_authority::RequestLocality>>,
     Json(input): Json<ToolExecutionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let mut args = input.args.unwrap_or_else(|| json!({}));
@@ -790,12 +791,16 @@ pub(super) async fn execute_tool(
             );
         }
     }
-    let mut dispatch_context = state.untrusted_tool_dispatch_context(
-        tandem_tools::ToolDispatchSource::new("http_global_tool")
-            .request(Uuid::new_v4().to_string()),
-        tenant_context,
-        crate::config::channels::normalize_allowed_tools(input.scope_allowlist),
-    );
+    let mut dispatch_context = state
+        .untrusted_tool_dispatch_context(
+            tandem_tools::ToolDispatchSource::new("http_global_tool")
+                .request(Uuid::new_v4().to_string()),
+            tenant_context,
+            crate::config::channels::normalize_allowed_tools(input.scope_allowlist),
+        )
+        .with_direct_loopback_http_request(
+            request_locality.is_some_and(|value| value.0.is_direct_loopback()),
+        );
     if let Some(verified_tenant_context) = verified_tenant_context {
         dispatch_context = dispatch_context.with_verified_tenant_context(verified_tenant_context);
     }

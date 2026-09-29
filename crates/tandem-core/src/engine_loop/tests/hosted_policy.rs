@@ -1,5 +1,78 @@
 use super::*;
+use crate::engine_loop::tool_execution::EnginePreauthorizedDispatchPolicy;
 use std::sync::atomic::AtomicBool;
+
+struct DenyNestedPackBuilder;
+
+impl ToolPolicyHook for DenyNestedPackBuilder {
+    fn evaluate_tool(
+        &self,
+        _ctx: ToolPolicyContext,
+    ) -> futures::future::BoxFuture<'static, anyhow::Result<ToolPolicyDecision>> {
+        Box::pin(async {
+            Ok(ToolPolicyDecision {
+                allowed: true,
+                reason: None,
+                policy_decision_id: None,
+                dispatch_decision: None,
+            })
+        })
+    }
+
+    fn revalidate_dispatch(
+        &self,
+        context: tandem_tools::ToolDispatchPolicyContext,
+    ) -> futures::future::BoxFuture<
+        'static,
+        anyhow::Result<Option<tandem_tools::ToolDispatchDecision>>,
+    > {
+        Box::pin(async move {
+            Ok((context.canonical_tool.as_deref() == Some("pack_builder"))
+                .then(|| tandem_tools::ToolDispatchDecision::deny("nested Pack Builder blocked")))
+        })
+    }
+}
+
+#[tokio::test]
+async fn engine_dispatch_rechecks_canonical_batch_children() {
+    use tandem_tools::{ToolDispatchPolicy, ToolDispatchPolicyContext, ToolDispatchPolicyOutcome};
+
+    let policy = EnginePreauthorizedDispatchPolicy {
+        decision: tandem_tools::ToolDispatchDecision::allow(),
+        authority: Some(Arc::new(DenyNestedPackBuilder)),
+    };
+    let mut context = ToolDispatchPolicyContext {
+        requested_tool: "batch".to_string(),
+        canonical_tool: Some("batch".to_string()),
+        args: json!({"tool_calls": []}),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
+        verified_tenant_context: None,
+        direct_loopback_http_request: false,
+        source: tandem_tools::ToolDispatchSource::new("engine_loop")
+            .session("session-a")
+            .run("run-a"),
+        scope_allowlist: vec!["batch".to_string(), "pack_builder".to_string()],
+        schema: None,
+    };
+    assert_eq!(
+        policy
+            .evaluate(context.clone())
+            .await
+            .expect("parent policy")
+            .outcome,
+        ToolDispatchPolicyOutcome::Allowed
+    );
+    context.requested_tool = "functions.pack_builder".to_string();
+    context.canonical_tool = Some("pack_builder".to_string());
+    assert_eq!(
+        policy
+            .evaluate(context)
+            .await
+            .expect("child policy")
+            .outcome,
+        ToolDispatchPolicyOutcome::Denied
+    );
+}
 
 struct MutableAuthority {
     revoked: Arc<AtomicBool>,

@@ -42,7 +42,7 @@ pub(super) fn try_enrich_verified_context_with_inbound_cross_tenant_grants(
     true
 }
 
-fn project_inbound_cross_tenant_grants<'a>(
+pub(super) fn project_inbound_cross_tenant_grants<'a>(
     verified: &mut VerifiedTenantContext,
     records: impl IntoIterator<Item = &'a CrossTenantGrantRecord>,
     now: u64,

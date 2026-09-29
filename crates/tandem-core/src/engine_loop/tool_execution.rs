@@ -6,9 +6,9 @@ use tandem_tools::{
     ToolDispatchReceiptPhase, ToolDispatchSource, ToolDispatchStatus,
 };
 
-struct EnginePreauthorizedDispatchPolicy {
-    decision: ToolDispatchDecision,
-    authority: Option<Arc<dyn ToolPolicyHook>>,
+pub(super) struct EnginePreauthorizedDispatchPolicy {
+    pub(super) decision: ToolDispatchDecision,
+    pub(super) authority: Option<Arc<dyn ToolPolicyHook>>,
 }
 
 #[async_trait::async_trait]
@@ -23,8 +23,13 @@ impl ToolDispatchPolicy for EnginePreauthorizedDispatchPolicy {
 
     async fn evaluate(
         &self,
-        _context: ToolDispatchPolicyContext,
+        context: ToolDispatchPolicyContext,
     ) -> anyhow::Result<ToolDispatchDecision> {
+        if let Some(hook) = &self.authority {
+            if let Some(decision) = hook.revalidate_dispatch(context).await? {
+                return Ok(decision);
+            }
+        }
         Ok(self.decision.clone())
     }
 }
@@ -125,6 +130,7 @@ impl EngineLoop {
         &self,
         session_id: &str,
         message_id: &str,
+        run_id: Option<&str>,
         tool: &str,
         args: Value,
         preauthorized_decision: Option<ToolDispatchDecision>,
@@ -146,12 +152,14 @@ impl EngineLoop {
             .cloned()
             .unwrap_or_default();
         let tool_dispatch_ledger = self.tool_dispatch_ledger.read().await.clone();
+        let mut source = ToolDispatchSource::new("engine_loop")
+            .session(session_id)
+            .message(message_id);
+        if let Some(run_id) = run_id {
+            source = source.run(run_id);
+        }
         let mut dispatch_context = ToolDispatchContext::for_tenant("engine_loop", tenant_context)
-            .with_source(
-                ToolDispatchSource::new("engine_loop")
-                    .session(session_id)
-                    .message(message_id),
-            )
+            .with_source(source)
             .with_scope_allowlist(scope_allowlist)
             .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy {
                 decision: preauthorized_decision

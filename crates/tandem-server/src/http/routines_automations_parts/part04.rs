@@ -678,35 +678,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
         }
         return Err((StatusCode::CONFLICT, Json(body)));
     }
-    let recovered_gate = || {
-        let pending_nodes = current
-            .checkpoint
-            .pending_nodes
-            .iter()
-            .collect::<std::collections::HashSet<_>>();
-        automation
-            .flow
-            .nodes
-            .iter()
-            .find(|node| {
-                pending_nodes.contains(&node.node_id)
-                    && !crate::app::state::automation_gate_has_settled_decision(
-                        &current,
-                        &node.node_id,
-                    )
-                    && crate::app::state::is_automation_approval_node(node)
-            })
-            .and_then(crate::app::state::build_automation_pending_gate)
-            .map(|mut gate| {
-                gate.requested_at_ms = current.updated_at_ms.max(current.created_at_ms);
-                gate
-            })
-    };
-    let gate = current
-        .checkpoint
-        .awaiting_gate
-        .clone()
-        .or_else(recovered_gate);
+    let gate = pending_gate_for_run(&current, &automation);
     // Ordinary gates remain owner/admin operations. Consequential gates with
     // reviewer requirements instead use the gate's scoped authority check below,
     // which permits an independent reviewer without granting run ownership.
@@ -798,26 +770,60 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
     let mut winning_decision = None;
     let mut decision_applied = false;
     let mut transition_guard_denial = None;
+    let mut commit_denial = None;
+    let mut committed_gate = gate.clone();
     let updated = state
-        .update_automation_v2_run(&run_id, |run| {
-            match crate::app::state::apply_automation_gate_decision_with_transition_guard(
+        .update_automation_v2_run_if(&run_id, |run| {
+            let Ok(definitions) = state.automations_v2.try_read() else {
+                commit_denial = Some(GateCommitDenial::Authority(
+                    "AUTOMATION_V2_GATE_REVIEWER_AUTHORITY_REQUIRED",
+                    "Approval definition could not be verified for this decision",
+                ));
+                return false;
+            };
+            let Some(live_automation) = definitions
+                .get(&run.automation_id)
+                .or(run.automation_snapshot.as_ref())
+                .cloned()
+            else {
+                commit_denial = Some(GateCommitDenial::Changed);
+                return false;
+            };
+            let Some(live_gate) = pending_gate_for_run(run, &live_automation) else {
+                winning_decision = run.checkpoint.gate_history.last().cloned();
+                return false;
+            };
+            committed_gate = live_gate.clone();
+            match apply_gate_decision_with_current_authority(
+                &state,
                 run,
                 &automation,
+                &live_automation,
                 &gate,
+                &live_gate,
                 &decision,
                 reason.clone(),
-                Some(decider.clone()),
+                &decider,
+                &tenant_context,
+                verified_tenant_context.as_ref(),
                 requested_approval_request_id.as_deref(),
                 requested_transition_id.as_deref(),
             ) {
                 Ok(crate::app::state::AutomationGateDecisionOutcome::Applied) => {
                     decision_applied = true;
+                    true
                 }
                 Ok(crate::app::state::AutomationGateDecisionOutcome::AlreadyDecided(winner)) => {
                     winning_decision = winner;
+                    false
+                }
+                Err(GateCommitDenial::TransitionGuard(denial)) => {
+                    transition_guard_denial = Some(denial);
+                    true
                 }
                 Err(denial) => {
-                    transition_guard_denial = Some(denial);
+                    commit_denial = Some(denial);
+                    false
                 }
             }
         })
@@ -830,6 +836,22 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
                 ),
             )
         })?;
+    if let Some(denial) = commit_denial {
+        let (status, code, detail) = denial.response();
+        audit_gate_decision_denial(&state, &updated, Some(&committed_gate), &decider, code, detail)
+            .await?;
+        return Err((
+            status,
+            Json(json!({
+                "error": detail,
+                "code": code,
+                "runID": run_id,
+                "automationID": automation.automation_id,
+                "nodeID": committed_gate.node_id,
+                "decidedBy": decider,
+            })),
+        ));
+    }
     if let Some(denial) = transition_guard_denial {
         record_transition_guard_policy_decision(
             &state,
@@ -993,6 +1015,8 @@ fn authorize_gate_decider(
         ))
 }
 
+include!("gate_commit_authority.rs");
+
 fn actor_identity_matches(
     left_actor_id: &str,
     left_source: Option<&str>,
@@ -1041,6 +1065,7 @@ fn channel_verified_decider_satisfies_reviewer_authority(
         && channel_kind_from_source(decider.source.as_deref()).is_some()
 }
 
+#[derive(PartialEq, Eq)]
 struct GateReviewerPolicy {
     reviewer_eligibility: tandem_types::ReviewerEligibility,
     risk_tier: Option<tandem_types::ToolRiskTier>,

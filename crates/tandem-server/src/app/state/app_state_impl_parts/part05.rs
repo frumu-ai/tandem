@@ -1643,6 +1643,31 @@ impl AppState {
         expected: Option<&AutomationV2RunRecord>,
         update: impl FnOnce(&mut AutomationV2RunRecord),
     ) -> Option<AutomationV2RunRecord> {
+        self.update_automation_v2_run_matching_if(run_id, expected, |run| {
+            update(run);
+            true
+        })
+        .await
+    }
+
+    /// The callback must leave the run unchanged when it returns `false`.
+    /// A rejected gate decision can then return the current row without
+    /// refreshing timestamps, scheduling, or persistence.
+    pub(crate) async fn update_automation_v2_run_if(
+        &self,
+        run_id: &str,
+        update: impl FnOnce(&mut AutomationV2RunRecord) -> bool,
+    ) -> Option<AutomationV2RunRecord> {
+        self.update_automation_v2_run_matching_if(run_id, None, update)
+            .await
+    }
+
+    async fn update_automation_v2_run_matching_if(
+        &self,
+        run_id: &str,
+        expected: Option<&AutomationV2RunRecord>,
+        update: impl FnOnce(&mut AutomationV2RunRecord) -> bool,
+    ) -> Option<AutomationV2RunRecord> {
         let mut guard = self.automation_v2_runs.write().await;
         // Recovery must not resurrect a run removed since its snapshot.
         if expected.is_some() && !guard.contains_key(run_id) {
@@ -1680,7 +1705,9 @@ impl AppState {
         }
         let previous_status = run.status.clone();
         let previous_gate = run.checkpoint.awaiting_gate.clone();
-        update(run);
+        if !update(run) {
+            return Some(run.clone());
+        }
         refresh_stale_running_detail(run);
         if run.status != AutomationRunStatus::Queued {
             run.scheduler = None;
