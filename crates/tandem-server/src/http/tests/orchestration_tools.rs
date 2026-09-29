@@ -120,7 +120,7 @@ async fn orchestration_create_tool_replays_matching_idempotency_key() {
         .unwrap();
     let previous_updated_at_ms = stored.updated_at_ms;
     stored.created_at_ms = 123;
-    stored.updated_at_ms = 456;
+    stored.updated_at_ms = previous_updated_at_ms.saturating_add(1);
     store
         .put_orchestration_draft(&stored, Some(previous_updated_at_ms))
         .unwrap();
@@ -135,7 +135,7 @@ async fn orchestration_create_tool_replays_matching_idempotency_key() {
         )
         .unwrap();
     let recovered = tool.execute_for_tenant(args.clone(), tenant).await.unwrap();
-    assert_eq!(recovered.metadata["updated_at_ms"], 456);
+    assert_eq!(recovered.metadata["updated_at_ms"], stored.updated_at_ms);
     assert_eq!(recovered.metadata["orchestration"]["created_at_ms"], 123);
 
     let error = tool

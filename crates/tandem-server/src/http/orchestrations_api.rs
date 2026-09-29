@@ -96,6 +96,19 @@ fn revision_from_body(body: &Bytes) -> Result<Option<u64>, Response> {
         })
 }
 
+fn publish_revision_from_body(body: &Bytes, loaded_updated_at_ms: u64) -> Result<u64, Response> {
+    let requested = revision_from_body(body)?;
+    if requested.is_some_and(|value| value != loaded_updated_at_ms) {
+        return Err(orchestration_error_response(&anyhow::anyhow!(
+            "{DRAFT_CONCURRENCY_CONFLICT}: stored updated_at_ms {loaded_updated_at_ms}, expected {}",
+            requested.unwrap_or_default()
+        )));
+    }
+    // Legacy empty/null bodies omit the client precondition, not the store's
+    // compare-and-swap against the draft actually loaded by this request.
+    Ok(loaded_updated_at_ms)
+}
+
 fn definition_store(state: &AppState) -> Result<OrchestrationStateStore, Response> {
     OrchestrationStateStore::from_automation_runs_path(&state.automation_v2_runs_path).map_err(
         |error| {
@@ -395,7 +408,7 @@ pub(super) async fn update_orchestration_draft(
         )
             .into_response();
     };
-    let now = crate::util::time::now_ms();
+    let now = crate::util::time::now_ms().max(existing.updated_at_ms.saturating_add(1));
     let mut spec = draft_spec(
         &tenant,
         orchestration_id,
@@ -803,7 +816,7 @@ pub(super) async fn refresh_orchestration_references(
             }
         }
     }
-    draft.updated_at_ms = crate::util::time::now_ms();
+    draft.updated_at_ms = crate::util::time::now_ms().max(expected.saturating_add(1));
     if let Err(response) = require_orchestration_owner(&state, &tenant, verified, &draft, &actor) {
         return response;
     }
@@ -838,17 +851,10 @@ pub(super) async fn publish_orchestration(
     if let Err(response) = require_orchestration_owner(&state, &tenant, verified, &draft, &actor) {
         return response;
     }
-    let expected = match revision_from_body(&body) {
+    let expected = match publish_revision_from_body(&body, draft.updated_at_ms) {
         Ok(expected) => expected,
         Err(response) => return response,
     };
-    if expected.is_some_and(|value| value != draft.updated_at_ms) {
-        return orchestration_error_response(&anyhow::anyhow!(
-            "{DRAFT_CONCURRENCY_CONFLICT}: stored updated_at_ms {}, expected {}",
-            draft.updated_at_ms,
-            expected.unwrap_or_default()
-        ));
-    }
     if draft.status == OrchestrationStatus::Archived {
         return (
             StatusCode::CONFLICT,
@@ -909,7 +915,7 @@ pub(super) async fn publish_orchestration(
     if let Err(response) = require_orchestration_owner(&state, &tenant, verified, &draft, &actor) {
         return response;
     }
-    match store.publish_orchestration_draft(&candidate, expected) {
+    match store.publish_orchestration_draft(&candidate, Some(expected)) {
         Ok(()) => {
             state
                 .event_bus
@@ -1199,6 +1205,39 @@ mod authority_tests {
         AuthorityChain, HumanActor, OrganizationUnitAccessGrant, PrincipalRef,
         TenantContextAssertionClaims,
     };
+
+    #[test]
+    fn publish_legacy_bodies_use_the_loaded_draft_revision() {
+        for body in [
+            b"".as_slice(),
+            b" \n".as_slice(),
+            b"null".as_slice(),
+            b"{}".as_slice(),
+            br#"{"expected_updated_at_ms":null}"#.as_slice(),
+        ] {
+            assert_eq!(
+                publish_revision_from_body(&Bytes::copy_from_slice(body), 42).unwrap(),
+                42
+            );
+        }
+        assert_eq!(
+            publish_revision_from_body(
+                &Bytes::from_static(br#"{"expected_updated_at_ms":42}"#),
+                42
+            )
+            .unwrap(),
+            42
+        );
+        assert_eq!(
+            publish_revision_from_body(
+                &Bytes::from_static(br#"{"expected_updated_at_ms":41}"#),
+                42
+            )
+            .unwrap_err()
+            .status(),
+            StatusCode::CONFLICT
+        );
+    }
 
     fn verified(actor: &str) -> VerifiedTenantContext {
         let now = crate::now_ms();

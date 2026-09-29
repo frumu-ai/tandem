@@ -756,6 +756,104 @@ fn published_versions_are_immutable() {
 }
 
 #[test]
+fn publish_requires_the_live_draft_revision_and_draft_status() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = OrchestrationStateStore::open(OrchestrationStorePaths {
+        database_path: directory.path().join("runtime.sqlite3"),
+        engine_lock_path: directory.path().join("engine.lock"),
+    })
+    .unwrap();
+    let tenant = TenantContext::local_implicit();
+    let mut draft = published_spec();
+    draft.status = OrchestrationStatus::Draft;
+    draft.version = ORCHESTRATION_DRAFT_VERSION;
+    draft.updated_at_ms = 100;
+    draft.published_at_ms = None;
+    store.put_orchestration_draft(&draft, None).unwrap();
+    let loaded = store
+        .get_orchestration_draft(&tenant, "orch-1")
+        .unwrap()
+        .unwrap();
+
+    let mut edited = loaded.clone();
+    edited.name = "Concurrent edit".to_string();
+    edited.updated_at_ms = loaded.updated_at_ms;
+    assert!(store
+        .put_orchestration_draft(&edited, Some(loaded.updated_at_ms))
+        .unwrap_err()
+        .to_string()
+        .contains(DRAFT_CONCURRENCY_CONFLICT));
+    edited.updated_at_ms += 1;
+    store
+        .put_orchestration_draft(&edited, Some(loaded.updated_at_ms))
+        .unwrap();
+
+    let mut stale_publish = loaded.clone();
+    stale_publish.status = OrchestrationStatus::Published;
+    stale_publish.version = 1;
+    stale_publish.updated_at_ms = 102;
+    stale_publish.published_at_ms = Some(102);
+    for expected in [None, Some(loaded.updated_at_ms)] {
+        assert!(store
+            .publish_orchestration_draft(&stale_publish, expected)
+            .unwrap_err()
+            .to_string()
+            .contains(DRAFT_CONCURRENCY_CONFLICT));
+    }
+    assert!(store
+        .get_orchestration_for_tenant(&tenant, "orch-1", 1)
+        .unwrap()
+        .is_none());
+
+    // A legacy archived row may share the loaded millisecond token. Status
+    // must be checked independently of the revision before publication.
+    let mut archived = loaded;
+    archived.orchestration_id = "orch-archived".to_string();
+    archived.status = OrchestrationStatus::Archived;
+    store.put_orchestration_draft(&archived, None).unwrap();
+    let mut archived_publish = archived.clone();
+    archived_publish.status = OrchestrationStatus::Published;
+    archived_publish.version = 1;
+    archived_publish.published_at_ms = Some(102);
+    assert!(store
+        .publish_orchestration_draft(&archived_publish, Some(archived.updated_at_ms))
+        .unwrap_err()
+        .to_string()
+        .contains(DRAFT_CONCURRENCY_CONFLICT));
+    assert!(store
+        .get_orchestration_for_tenant(&tenant, "orch-archived", 1)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn archiving_in_the_same_millisecond_advances_the_draft_revision() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = OrchestrationStateStore::open(OrchestrationStorePaths {
+        database_path: directory.path().join("runtime.sqlite3"),
+        engine_lock_path: directory.path().join("engine.lock"),
+    })
+    .unwrap();
+    let tenant = TenantContext::local_implicit();
+    let mut draft = published_spec();
+    draft.status = OrchestrationStatus::Draft;
+    draft.version = ORCHESTRATION_DRAFT_VERSION;
+    draft.updated_at_ms = 100;
+    draft.published_at_ms = None;
+    store.put_orchestration_draft(&draft, None).unwrap();
+
+    let archived = store
+        .archive_orchestration_draft(&tenant, "orch-1", Some(100), 100)
+        .unwrap();
+    assert_eq!(archived.status, OrchestrationStatus::Archived);
+    assert_eq!(archived.updated_at_ms, 101);
+    assert_eq!(
+        store.get_orchestration_draft(&tenant, "orch-1").unwrap(),
+        Some(archived)
+    );
+}
+
+#[test]
 fn tool_request_ledger_blocks_concurrent_replays_and_reclaims_stale_leases() {
     let directory = tempfile::tempdir().unwrap();
     let store = OrchestrationStateStore::open(OrchestrationStorePaths {

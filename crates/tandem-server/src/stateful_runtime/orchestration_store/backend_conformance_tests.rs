@@ -456,6 +456,67 @@ fn orchestration_specs_publish_and_stay_immutable() {
 
 #[test]
 #[serial]
+fn orchestration_draft_publish_requires_live_revision_and_draft_status() {
+    for_each_backend(|name, store| {
+        let tenant = TenantContext::local_implicit();
+        let draft: OrchestrationSpec = serde_json::from_value(serde_json::json!({
+            "orchestration_id": "orch-cas",
+            "name": "CAS draft",
+            "status": "draft",
+            "version": ORCHESTRATION_DRAFT_VERSION,
+            "root_node_id": "root",
+            "tenant_context": tenant,
+            "created_at_ms": 1,
+            "updated_at_ms": 10
+        }))
+        .unwrap();
+        store.put_orchestration_draft(&draft, None).unwrap();
+        let mut published = draft.clone();
+        published.status = OrchestrationStatus::Published;
+        published.version = 1;
+        published.updated_at_ms = 11;
+        published.published_at_ms = Some(11);
+
+        assert!(
+            store.publish_orchestration_draft(&published, None).is_err(),
+            "{name}"
+        );
+        store
+            .publish_orchestration_draft(&published, Some(draft.updated_at_ms))
+            .unwrap();
+        assert_eq!(
+            store
+                .get_orchestration_for_tenant(&TenantContext::local_implicit(), "orch-cas", 1)
+                .unwrap(),
+            Some(published),
+            "{name}"
+        );
+
+        let mut archived = draft;
+        archived.orchestration_id = "orch-archived".to_string();
+        archived.status = OrchestrationStatus::Archived;
+        store.put_orchestration_draft(&archived, None).unwrap();
+        let mut archived_publish = archived.clone();
+        archived_publish.status = OrchestrationStatus::Published;
+        archived_publish.version = 1;
+        assert!(
+            store
+                .publish_orchestration_draft(&archived_publish, Some(archived.updated_at_ms))
+                .is_err(),
+            "{name}"
+        );
+        assert!(
+            store
+                .get_orchestration_for_tenant(&TenantContext::local_implicit(), "orch-archived", 1)
+                .unwrap()
+                .is_none(),
+            "{name}"
+        );
+    });
+}
+
+#[test]
+#[serial]
 fn tool_request_ledger_blocks_and_replays() {
     for_each_backend(|name, store| {
         let tenant = TenantContext::local_implicit();

@@ -62,6 +62,7 @@ async fn draft_lifecycle_enforces_optimistic_concurrency() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated["orchestration"]["name"], json!("Renamed"));
     let updated_token = updated["updated_at_ms"].as_u64().expect("updated token");
+    assert!(updated_token > token);
 
     // List surfaces the draft; archive retires it.
     let (status, listed) = dispatch(&app, local_request("GET", "/orchestrations", None)).await;
@@ -88,6 +89,59 @@ async fn draft_lifecycle_enforces_optimistic_concurrency() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(archived["status"], json!("archived"));
+    assert!(archived["updated_at_ms"].as_u64().unwrap() > updated_token);
+}
+
+#[tokio::test]
+async fn draft_update_advances_a_future_revision_instead_of_reusing_the_clock_tick() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let (planner_hash, executor_hash) = seed_workflows(&state).await;
+    let (status, created) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/orchestrations",
+            Some(draft_payload(&planner_hash, &executor_hash)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let tenant = TenantContext::local_implicit();
+    let store = crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+        &state.automation_v2_runs_path,
+    )
+    .unwrap();
+    let mut draft = store
+        .get_orchestration_draft(&tenant, "orch-goals")
+        .unwrap()
+        .unwrap();
+    let original = created["updated_at_ms"].as_u64().unwrap();
+    let future_revision = crate::now_ms().saturating_add(60_000);
+    draft.updated_at_ms = future_revision;
+    store
+        .put_orchestration_draft(&draft, Some(original))
+        .unwrap();
+
+    let mut update = draft_payload(&planner_hash, &executor_hash);
+    update["name"] = json!("Future-token edit");
+    update["expected_updated_at_ms"] = json!(future_revision);
+    let (status, response) = dispatch(
+        &app,
+        local_request("PUT", "/orchestrations/orch-goals", Some(update)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["updated_at_ms"], json!(future_revision + 1));
+    assert_eq!(
+        store
+            .get_orchestration_draft(&tenant, "orch-goals")
+            .unwrap()
+            .unwrap()
+            .updated_at_ms,
+        future_revision + 1
+    );
 }
 
 #[tokio::test]
@@ -464,7 +518,14 @@ async fn missing_author_fails_closed_for_referenced_workflow_authority() {
         .unwrap()
         .unwrap();
     let expected_updated_at_ms = draft.updated_at_ms;
-    draft.metadata.as_mut().unwrap().as_object_mut().unwrap().remove("created_by");
+    draft
+        .metadata
+        .as_mut()
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("created_by");
+    draft.updated_at_ms = expected_updated_at_ms.saturating_add(1);
     store
         .put_orchestration_draft(&draft, Some(expected_updated_at_ms))
         .unwrap();
