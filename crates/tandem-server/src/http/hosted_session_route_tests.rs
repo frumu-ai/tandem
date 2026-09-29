@@ -97,12 +97,7 @@ mod tests {
     #[tokio::test]
     async fn hosted_planner_generation_requires_automation_write() {
         for path in ["/workflow-plans/preview", "/workflow-plans/chat/start"] {
-            check(
-                "POST",
-                path,
-                Some(AccessPermission::HostedAutomationWrite),
-            )
-            .await;
+            check("POST", path, Some(AccessPermission::HostedAutomationWrite)).await;
         }
     }
 

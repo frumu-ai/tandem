@@ -203,10 +203,10 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
         (
             "POST",
             "/automations/v2"
-                | "/workflow-plans/preview"
-                | "/workflow-plans/chat/start"
-                | "/workflow-plans/apply"
-                | "/mission-builder/apply",
+            | "/workflow-plans/preview"
+            | "/workflow-plans/chat/start"
+            | "/workflow-plans/apply"
+            | "/mission-builder/apply",
         )
         | ("POST", "/automations/v2/{id}/webhook-triggers")
         | ("PATCH" | "DELETE", "/automations/v2/{id}/webhook-triggers/{trigger_id}")
