@@ -109,6 +109,20 @@ async fn hosted_spawned_revision_session_hides_private_evidence_from_another_act
     let session_uri = format!("/workflow-plans/sessions/{session_id}");
     let plan_uri = format!("/workflow-plans/{plan_id}");
 
+    let edited_notes = format!(
+        "{}\nAlice's authorized edit",
+        spawned_session["notes"].as_str().expect("revision notes")
+    );
+    let (status, patched) = hosted_learning_request(
+        alice.clone(),
+        "PATCH",
+        &session_uri,
+        Some(json!({"notes": edited_notes})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{patched}");
+    assert_eq!(patched["session"]["notes"], edited_notes);
+
     let (status, payload) = hosted_learning_request(alice.clone(), "GET", &session_uri, None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(payload["session"]["notes"]
@@ -244,4 +258,95 @@ async fn hosted_spawned_revision_session_hides_private_evidence_from_another_act
         .expect("denied mutations preserve Alice's session");
     assert!(retained.notes.contains("alice-revision-evidence"));
     assert!(retained.operation.is_none());
+}
+
+#[tokio::test]
+async fn hosted_planner_patch_rechecks_write_authority_after_lock_wait() {
+    let (state, policy_dir) = hosted_learning_state().await;
+    let alice = hosted_revision_router(state.clone(), "alice");
+    let (status, created) = hosted_learning_request(
+        alice.clone(),
+        "POST",
+        "/workflow-plans/sessions",
+        Some(json!({"project_slug": "planner-race", "goal": "Check queued writes"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let session_id = created["session"]["session_id"]
+        .as_str()
+        .expect("hosted session ID")
+        .to_string();
+    let session_uri = format!("/workflow-plans/sessions/{session_id}");
+
+    // The ordinary hosted PATCH still succeeds while Alice has current write
+    // authority. Keep this result to prove the queued request did not apply.
+    let (status, patched) = hosted_learning_request(
+        alice,
+        "PATCH",
+        &session_uri,
+        Some(json!({"notes": "authorized notes"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{patched}");
+
+    let tenant = hosted_learning_tenant("alice");
+    let verified = hosted_learning_verified(&state, "alice");
+    let authority_lock = state.workflow_plan_draft_authority.write().await;
+    let mut queued_patch = Box::pin(
+        crate::http::workflow_planner::workflow_planner_session_patch(
+            axum::extract::State(state.clone()),
+            axum::Extension(tenant),
+            Some(axum::Extension(verified)),
+            axum::extract::Path(session_id.clone()),
+            axum::Json(
+                crate::http::workflow_planner::WorkflowPlannerSessionPatchRequest {
+                    notes: Some("revoked notes".to_string()),
+                    ..Default::default()
+                },
+            ),
+        ),
+    );
+    // This no-draft Actor-bound session has no earlier awaited authority read.
+    // The first poll passes the handler's access check and waits for the
+    // authority writer lock; the second waits for the session writer lock.
+    assert!(matches!(
+        futures::poll!(&mut queued_patch),
+        std::task::Poll::Pending
+    ));
+    let sessions_lock = state.workflow_planner_sessions.write().await;
+    drop(authority_lock);
+    assert!(matches!(
+        futures::poll!(&mut queued_patch),
+        std::task::Poll::Pending
+    ));
+    assert!(state.workflow_plan_draft_authority.try_write().is_err());
+
+    let policy_path = policy_dir.path().join("policy.json");
+    let mut policy: Value =
+        serde_json::from_slice(&std::fs::read(&policy_path).expect("read policy"))
+            .expect("policy JSON");
+    policy["policy_version"] = json!(2);
+    policy["generated_at"] = json!(chrono::Utc::now());
+    policy["deployment_grants"] = json!([]);
+    std::fs::write(
+        &policy_path,
+        serde_json::to_vec(&policy).expect("policy bytes"),
+    )
+    .expect("revoke hosted write grant");
+    state
+        .reload_hosted_policy()
+        .await
+        .expect("publish revocation");
+
+    drop(sessions_lock);
+    let (status, axum::Json(error)) = queued_patch
+        .await
+        .expect_err("queued PATCH must lose revoked write authority");
+    assert_eq!(status, StatusCode::NOT_FOUND, "{error}");
+    assert_eq!(error["code"], "WORKFLOW_PLAN_SESSION_NOT_FOUND");
+    let retained = state
+        .get_workflow_planner_session(&session_id)
+        .await
+        .expect("session remains stored");
+    assert_eq!(retained.notes, "authorized notes");
 }

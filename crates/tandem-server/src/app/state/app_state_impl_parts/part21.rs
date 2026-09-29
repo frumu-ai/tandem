@@ -50,6 +50,17 @@ fn hosted_workflow_planner_session_plan_id(
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct WorkflowPlannerSessionWriteDenied;
+
+impl std::fmt::Display for WorkflowPlannerSessionWriteDenied {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("workflow planner session write authority changed")
+    }
+}
+
+impl std::error::Error for WorkflowPlannerSessionWriteDenied {}
+
 impl AppState {
     pub async fn put_workflow_plan(&self, plan: WorkflowPlan) {
         self.workflow_plans
@@ -281,7 +292,28 @@ impl AppState {
 
     pub async fn put_workflow_planner_session(
         &self,
+        session: crate::http::workflow_planner::WorkflowPlannerSessionRecord,
+    ) -> anyhow::Result<crate::http::workflow_planner::WorkflowPlannerSessionRecord> {
+        self.put_workflow_planner_session_inner(session, None).await
+    }
+
+    pub(crate) async fn put_workflow_planner_session_checked(
+        &self,
+        session: crate::http::workflow_planner::WorkflowPlannerSessionRecord,
+        tenant: &tandem_types::TenantContext,
+        verified: Option<&tandem_types::VerifiedTenantContext>,
+    ) -> anyhow::Result<crate::http::workflow_planner::WorkflowPlannerSessionRecord> {
+        self.put_workflow_planner_session_inner(session, Some((tenant, verified)))
+            .await
+    }
+
+    async fn put_workflow_planner_session_inner(
+        &self,
         mut session: crate::http::workflow_planner::WorkflowPlannerSessionRecord,
+        caller: Option<(
+            &tandem_types::TenantContext,
+            Option<&tandem_types::VerifiedTenantContext>,
+        )>,
     ) -> anyhow::Result<crate::http::workflow_planner::WorkflowPlannerSessionRecord> {
         if session.session_id.trim().is_empty() {
             anyhow::bail!("session_id is required");
@@ -306,6 +338,16 @@ impl AppState {
         session.updated_at_ms = now;
         let mut authority = self.workflow_plan_draft_authority.write().await;
         let mut sessions = self.workflow_planner_sessions.write().await;
+        let current = if caller.is_some() {
+            Some(
+                sessions
+                    .get(&session.session_id)
+                    .cloned()
+                    .ok_or_else(|| anyhow::Error::new(WorkflowPlannerSessionWriteDenied))?,
+            )
+        } else {
+            None
+        };
         let previous_plan_id = if let Some(previous) = sessions.get(&session.session_id) {
             if !previous.tenant_context.is_local_implicit()
                 && (previous.tenant_context != session.tenant_context
@@ -320,47 +362,106 @@ impl AppState {
         } else {
             None
         };
-        if let (Some(plan_id), Some(binding)) = (plan_id.as_deref(), binding) {
+        if let (Some(plan_id), Some(binding)) = (plan_id.as_deref(), binding.as_ref()) {
             match authority.get(plan_id) {
                 Some(WorkflowPlanDraftAuthority::Bound {
                     binding: existing_binding,
                     session_id,
-                }) if existing_binding == &binding
+                }) if existing_binding == binding
                     && session_id
                         .as_deref()
                         .is_none_or(|owner| owner == session.session_id.as_str()) => {}
                 None if !self.workflow_plan_drafts.read().await.contains_key(plan_id) => {}
                 _ => anyhow::bail!("workflow plan ID is already bound to another source"),
             }
-            authority.insert(
-                plan_id.to_string(),
-                WorkflowPlanDraftAuthority::Bound {
-                    binding,
-                    session_id: Some(session.session_id.clone()),
-                },
-            );
         } else if let Some(plan_id) = plan_id.as_deref() {
             if authority.contains_key(plan_id) {
                 anyhow::bail!("workflow plan ID is already bound to a hosted source");
             }
         }
-        if let Some(previous_plan_id) = previous_plan_id.as_deref() {
-            if Some(previous_plan_id) != plan_id.as_deref()
+        let previous_plan_to_remove = previous_plan_id.filter(|previous_plan_id| {
+            Some(previous_plan_id.as_str()) != plan_id.as_deref()
                 && matches!(
                     authority.get(previous_plan_id),
                     Some(WorkflowPlanDraftAuthority::Bound { session_id: Some(owner), .. })
                         if owner == &session.session_id
                 )
-            {
-                authority.remove(previous_plan_id);
-                self.workflow_plan_drafts
-                    .write()
-                    .await
-                    .remove(previous_plan_id);
-                self.workflow_plans.write().await.remove(previous_plan_id);
+        });
+        let checked_binding = if let Some((tenant, _verified)) = caller {
+            let current = current.as_ref().expect("checked write has current session");
+            if current.tenant_context.is_local_implicit() {
+                if !tenant.is_local_implicit()
+                    || tenant.org_id != current.tenant_context.org_id
+                    || tenant.workspace_id != current.tenant_context.workspace_id
+                    || tenant.deployment_id != current.tenant_context.deployment_id
+                {
+                    return Err(anyhow::Error::new(WorkflowPlannerSessionWriteDenied));
+                }
+                None
+            } else {
+                let current_binding = workflow_planner_session_draft_binding(current)
+                    .ok_or_else(|| anyhow::Error::new(WorkflowPlannerSessionWriteDenied))?;
+                let current_plan_id = hosted_workflow_planner_session_plan_id(current)
+                    .map_err(|_| anyhow::Error::new(WorkflowPlannerSessionWriteDenied))?;
+                if current_plan_id.is_some_and(|plan_id| {
+                    authority.get(plan_id)
+                        != Some(&WorkflowPlanDraftAuthority::Bound {
+                            binding: current_binding.clone(),
+                            session_id: Some(current.session_id.clone()),
+                        })
+                }) {
+                    return Err(anyhow::Error::new(WorkflowPlannerSessionWriteDenied));
+                }
+                Some(current_binding)
             }
+        } else {
+            None
+        };
+        let mut commit = || {
+            if let (Some(plan_id), Some(binding)) = (plan_id.as_deref(), binding.as_ref()) {
+                authority.insert(
+                    plan_id.to_string(),
+                    WorkflowPlanDraftAuthority::Bound {
+                        binding: binding.clone(),
+                        session_id: Some(session.session_id.clone()),
+                    },
+                );
+            }
+            if let Some(previous_plan_id) = previous_plan_to_remove.as_deref() {
+                authority.remove(previous_plan_id);
+            }
+            sessions.insert(session.session_id.clone(), session.clone());
+        };
+        if let Some((tenant, verified)) = caller {
+            if let Some(current_binding) = checked_binding.as_ref() {
+                self.enterprise
+                    .hosted_policy
+                    .with_current_policy(|policy| {
+                        crate::http::workflow_planner::with_current_planner_session_write_authority(
+                            self,
+                            current_binding,
+                            tenant,
+                            verified,
+                            policy,
+                            &mut commit,
+                        )
+                    })
+                    .map_err(|_| anyhow::Error::new(WorkflowPlannerSessionWriteDenied))?
+                    .map_err(|_| anyhow::Error::new(WorkflowPlannerSessionWriteDenied))?;
+            } else {
+                commit();
+            }
+        } else {
+            commit();
         }
-        sessions.insert(session.session_id.clone(), session.clone());
+        drop(commit);
+        if let Some(previous_plan_id) = previous_plan_to_remove.as_deref() {
+            self.workflow_plan_drafts
+                .write()
+                .await
+                .remove(previous_plan_id);
+            self.workflow_plans.write().await.remove(previous_plan_id);
+        }
         drop(sessions);
         self.sync_workflow_planner_session_cache(&session).await;
         drop(authority);

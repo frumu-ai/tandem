@@ -317,9 +317,16 @@ pub(super) async fn workflow_planner_session_patch(
         normalize_workflow_planning_record(planning, session.current_plan_id.as_deref(), now);
     }
     let stored = state
-        .put_workflow_planner_session(session)
+        .put_workflow_planner_session_checked(
+            session,
+            &tenant_context,
+            verified_tenant_context.as_deref(),
+        )
         .await
         .map_err(|error| {
+            if error.is::<crate::app::state::WorkflowPlannerSessionWriteDenied>() {
+                return workflow_planner_session_scope_error(&session_id);
+            }
             (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
