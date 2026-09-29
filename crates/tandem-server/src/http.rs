@@ -1064,7 +1064,7 @@ fn require_current_hosted_permission(
 
 /// Check against a borrowed snapshot while its read guard is still held.
 /// This must not call `current()` or await; callers may commit under the guard.
-fn require_hosted_permission_under_policy(
+pub(crate) fn require_hosted_permission_under_policy(
     tenant: &TenantContext,
     verified: Option<&tandem_types::VerifiedTenantContext>,
     permission: tandem_types::AccessPermission,

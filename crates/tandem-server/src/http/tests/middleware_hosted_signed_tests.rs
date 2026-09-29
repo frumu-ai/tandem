@@ -726,12 +726,12 @@ async fn hosted_policy_signed_http_downgrade_removal_and_unaffected_user_refresh
     std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
     state.reload_hosted_policy().await.unwrap();
     let fresh = sign("alice", "viewer", 7);
-    // Workflow delegation is distinct from automation authoring delegation.
+    // Workflow sharing does not grant deployment-wide hook administration.
     assert_eq!(
         automation_request(&app, &fresh, "PATCH", "/workflow-hooks/missing")
             .await
             .status(),
-        StatusCode::UNPROCESSABLE_ENTITY
+        StatusCode::FORBIDDEN
     );
     assert_eq!(
         automation_request(&app, &fresh, "POST", "/workflow-plans/apply")
