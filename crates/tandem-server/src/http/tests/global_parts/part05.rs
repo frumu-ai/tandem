@@ -538,6 +538,141 @@ async fn governed_gate_allows_elevated_reviewer_with_matching_authority() {
     assert_eq!(after.checkpoint.gate_history.len(), 1);
 }
 
+#[tokio::test]
+async fn governed_gate_rejects_elevated_reviewer_with_unrelated_resource_grant() {
+    let state = test_state().await;
+    let requester_tenant = explicit_tenant("requester");
+    let reviewer_tenant = explicit_tenant("reviewer");
+    let resource = tandem_types::ResourceRef::new(
+        "acme",
+        "finance",
+        tandem_types::ResourceKind::Approval,
+        "auto-v2-reviewer-unrelated:publish",
+    );
+    let unrelated_resource = tandem_types::ResourceRef::new(
+        "acme",
+        "finance",
+        tandem_types::ResourceKind::Approval,
+        "another-automation:publish",
+    );
+    let run = arrange_governed_awaiting_publish_gate(
+        &state,
+        "auto-v2-reviewer-unrelated",
+        requester_tenant,
+        "requester",
+        elevated_gate_metadata(&resource),
+    )
+    .await;
+    let verified = verified_reviewer_context(
+        "reviewer",
+        reviewer_tenant.clone(),
+        unrelated_resource,
+        vec![tandem_types::AccessPermission::Admin],
+    );
+
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        reviewer_tenant,
+        Some(verified),
+        run.run_id.clone(),
+        crate::http::routines_automations::AutomationV2GateDecisionInput {
+            decision: "approve".to_string(),
+            reason: None,
+            approval_request_id: None,
+            transition_id: None,
+        },
+        reviewer_decider("reviewer"),
+    )
+    .await;
+
+    let (status, body) = result.expect_err("unrelated resource grant rejected");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body.0.get("code").and_then(serde_json::Value::as_str),
+        Some("AUTOMATION_V2_GATE_REVIEWER_AUTHORITY_DENIED")
+    );
+    let after = state.get_automation_v2_run(&run.run_id).await.expect("run");
+    assert_eq!(after.status, crate::AutomationRunStatus::AwaitingApproval);
+    assert!(after.checkpoint.gate_history.is_empty());
+}
+
+#[tokio::test]
+async fn ordinary_gate_still_requires_run_owner_or_admin() {
+    let state = test_state().await;
+    let requester_tenant = explicit_tenant("requester");
+    let reviewer_tenant = explicit_tenant("reviewer");
+    let resource = tandem_types::ResourceRef::new(
+        "acme",
+        "finance",
+        tandem_types::ResourceKind::Approval,
+        "auto-v2-ordinary-owner-only:publish",
+    );
+    let run = arrange_governed_awaiting_publish_gate(
+        &state,
+        "auto-v2-ordinary-owner-only",
+        requester_tenant.clone(),
+        "requester",
+        json!({}),
+    )
+    .await;
+    let verified = verified_reviewer_context(
+        "reviewer",
+        reviewer_tenant.clone(),
+        resource.clone(),
+        vec![tandem_types::AccessPermission::Admin],
+    );
+
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        reviewer_tenant,
+        Some(verified),
+        run.run_id.clone(),
+        crate::http::routines_automations::AutomationV2GateDecisionInput {
+            decision: "approve".to_string(),
+            reason: None,
+            approval_request_id: None,
+            transition_id: None,
+        },
+        reviewer_decider("reviewer"),
+    )
+    .await;
+
+    let (status, body) = result.expect_err("ordinary gate remains owner-only");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body.0.get("code").and_then(serde_json::Value::as_str),
+        Some("AUTOMATION_V2_ACCESS_DENIED")
+    );
+    let after = state.get_automation_v2_run(&run.run_id).await.expect("run");
+    assert_eq!(after.status, crate::AutomationRunStatus::AwaitingApproval);
+    assert!(after.checkpoint.gate_history.is_empty());
+
+    let owner = verified_reviewer_context(
+        "requester",
+        requester_tenant.clone(),
+        resource,
+        vec![tandem_types::AccessPermission::Admin],
+    );
+    let owner_result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        requester_tenant,
+        Some(owner),
+        run.run_id.clone(),
+        crate::http::routines_automations::AutomationV2GateDecisionInput {
+            decision: "approve".to_string(),
+            reason: None,
+            approval_request_id: None,
+            transition_id: None,
+        },
+        reviewer_decider("requester"),
+    )
+    .await;
+    assert!(owner_result.is_ok(), "run owner can still decide ordinary gate");
+    let after = state.get_automation_v2_run(&run.run_id).await.expect("run");
+    assert_eq!(after.status, crate::AutomationRunStatus::Queued);
+    assert_eq!(after.checkpoint.gate_history.len(), 1);
+}
+
 /// GOV-B1: a human decision is applied and attributed to a verified decider.
 #[tokio::test]
 async fn gate_decision_records_human_decider() {

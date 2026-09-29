@@ -208,7 +208,7 @@ fn hosted_learning_verified(state: &AppState, actor: &str) -> tandem_types::Veri
         vec!["hosted:role:member".into()],
     );
     claims.policy_version = Some(1);
-    claims.capabilities = ["automation.read", "automation.execute"]
+    claims.capabilities = ["hosted.use", "automation.read", "automation.execute"]
         .into_iter()
         .map(str::to_owned)
         .collect();
@@ -221,6 +221,7 @@ fn hosted_learning_verified(state: &AppState, actor: &str) -> tandem_types::Veri
         .expect("hosted learning identity projects under current policy")
         .expect("hosted learning policy is installed");
     for permission in [
+        tandem_types::AccessPermission::HostedUse,
         tandem_types::AccessPermission::HostedAutomationRead,
         tandem_types::AccessPermission::HostedAutomationWrite,
     ] {
@@ -233,7 +234,7 @@ fn hosted_learning_verified(state: &AppState, actor: &str) -> tandem_types::Veri
     verified
 }
 
-fn hosted_learning_router(state: AppState, actor: &str) -> axum::Router {
+pub(super) fn hosted_learning_router(state: AppState, actor: &str) -> axum::Router {
     let tenant = hosted_learning_tenant(actor);
     let verified = hosted_learning_verified(&state, actor);
     axum::Router::<AppState>::new()
@@ -262,7 +263,7 @@ fn hosted_learning_router(state: AppState, actor: &str) -> axum::Router {
         .with_state(state)
 }
 
-async fn hosted_learning_state() -> (AppState, tempfile::TempDir) {
+pub(super) async fn hosted_learning_state() -> (AppState, tempfile::TempDir) {
     let state = test_state().await;
     let temp = tempfile::tempdir().expect("policy directory");
     let path = temp.path().join("policy.json");
@@ -275,7 +276,7 @@ async fn hosted_learning_state() -> (AppState, tempfile::TempDir) {
                 "email": null,
                 "username": null,
                 "role": "member",
-                "capabilities": ["automation.read", "automation.execute"],
+                "capabilities": ["hosted.use", "automation.read", "automation.execute"],
                 "is_active": true,
                 "email_verified": true
             })
@@ -342,7 +343,7 @@ fn hosted_learning_automation(
     automation
 }
 
-async fn hosted_learning_request(
+pub(super) async fn hosted_learning_request(
     app: axum::Router,
     method: &str,
     uri: &str,

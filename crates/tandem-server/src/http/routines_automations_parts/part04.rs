@@ -647,12 +647,10 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             })),
         ));
     }
-    // GOV-B1/B9: approving a gate is at least as privileged as resuming/cancelling
-    // a run, so require owner-or-admin rather than mere read visibility.
-    let automation_for_access =
-        ensure_automation_v2_run_owner_or_admin(&state, &current, verified_tenant_context.as_ref())
-            .await?;
+    let automation = automation_v2_run_automation_for_access(&state, &current).await?;
     if current.status != AutomationRunStatus::AwaitingApproval {
+        // Only the run owner or an admin may inspect a settled gate's winner.
+        ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref())?;
         // Race UX: when a second surface tries to decide a gate that has just
         // been resolved by another surface (Slack click + control-panel click,
         // etc.), surface the winner's decision so the loser's UI can render
@@ -680,19 +678,6 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
         }
         return Err((StatusCode::CONFLICT, Json(body)));
     }
-    let Some(automation) = state
-        .get_automation_v2(&current.automation_id)
-        .await
-        .or_else(|| current.automation_snapshot.clone())
-        .or(Some(automation_for_access))
-    else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(
-                json!({"error":"Automation not found", "code":"AUTOMATION_V2_NOT_FOUND", "automationID": current.automation_id}),
-            ),
-        ));
-    };
     let recovered_gate = || {
         let pending_nodes = current
             .checkpoint
@@ -717,12 +702,20 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
                 gate
             })
     };
-    let Some(gate) = current
+    let gate = current
         .checkpoint
         .awaiting_gate
         .clone()
-        .or_else(recovered_gate)
-    else {
+        .or_else(recovered_gate);
+    // Ordinary gates remain owner/admin operations. Consequential gates with
+    // reviewer requirements instead use the gate's scoped authority check below,
+    // which permits an independent reviewer without granting run ownership.
+    if gate.as_ref().is_none_or(|gate| {
+        !GateReviewerPolicy::from_gate(gate, &automation).requires_reviewer_authority()
+    }) {
+        ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref())?;
+    }
+    let Some(gate) = gate else {
         return Err((
             StatusCode::CONFLICT,
             Json(
