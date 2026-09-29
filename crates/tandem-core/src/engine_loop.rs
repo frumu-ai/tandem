@@ -57,6 +57,7 @@ use prompt_context::{
 };
 use prompt_helpers::*;
 use prompt_runtime::*;
+use tool_execution::ProviderStreamPoll;
 use tool_output::*;
 use tool_parsing::*;
 use types::{EngineToolProgressSink, StreamedToolCall, WritePathRecoveryMode};
