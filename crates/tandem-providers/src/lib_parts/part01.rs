@@ -987,7 +987,14 @@ impl std::fmt::Debug for ProviderAuthOverride {
 pub struct ProviderRegistry {
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     default_provider: Arc<RwLock<Option<String>>>,
-    tenant_bearer_tokens: Arc<RwLock<HashMap<String, String>>>,
+    tenant_bearer_tokens: Arc<RwLock<HashMap<String, Arc<str>>>>,
+}
+
+/// Identifies one publication, not just its token value. A newer publication
+/// of the same bearer must not be removed by an older credential load.
+#[derive(Clone)]
+pub struct TenantProviderBearerTokenSnapshot {
+    token: Option<Arc<str>>,
 }
 
 /// Provider/model route resolved before a guarded egress evaluation. Callers
@@ -1053,10 +1060,116 @@ impl ProviderRegistry {
                 .await;
             return;
         }
-        self.tenant_bearer_tokens
-            .write()
-            .await
-            .insert(tenant_provider_auth_key(tenant_context, provider_id), token);
+        self.tenant_bearer_tokens.write().await.insert(
+            tenant_provider_auth_key(tenant_context, provider_id),
+            Arc::from(token),
+        );
+    }
+
+    /// Hold the registry write lock while the caller checks live authority and
+    /// commits. The callback must invoke `commit` under its policy read guard;
+    /// neither callback nor commit may await.
+    pub async fn set_tenant_provider_bearer_token_guarded<G>(
+        &self,
+        tenant_context: &TenantContext,
+        provider_id: &str,
+        bearer_token: String,
+        authorize_and_commit: G,
+    ) -> anyhow::Result<()>
+    where
+        G: FnOnce(&mut dyn FnMut() -> anyhow::Result<()>) -> anyhow::Result<()> + Send,
+    {
+        let key = tenant_provider_auth_key(tenant_context, provider_id);
+        let mut tokens = self.tenant_bearer_tokens.write().await;
+        let mut token = Some(bearer_token.trim().to_string());
+        {
+            let mut commit = || {
+                let token = token
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("provider bearer commit already attempted"))?;
+                if token.is_empty() {
+                    tokens.remove(&key);
+                } else {
+                    tokens.insert(key.clone(), Arc::from(token));
+                }
+                Ok(())
+            };
+            authorize_and_commit(&mut commit)?;
+        }
+        anyhow::ensure!(
+            token.is_none(),
+            "provider bearer authority guard skipped publication"
+        );
+        Ok(())
+    }
+
+    pub async fn tenant_provider_bearer_token_snapshot(
+        &self,
+        tenant_context: &TenantContext,
+        provider_id: &str,
+    ) -> TenantProviderBearerTokenSnapshot {
+        TenantProviderBearerTokenSnapshot {
+            token: self
+                .tenant_bearer_tokens
+                .read()
+                .await
+                .get(&tenant_provider_auth_key(tenant_context, provider_id))
+                .cloned(),
+        }
+    }
+
+    /// Clear only the publication observed before a credential read began.
+    /// Pointer identity protects a newer set even when it uses the same token.
+    pub async fn clear_tenant_provider_bearer_token_if_unchanged(
+        &self,
+        tenant_context: &TenantContext,
+        provider_id: &str,
+        snapshot: &TenantProviderBearerTokenSnapshot,
+    ) -> bool {
+        let key = tenant_provider_auth_key(tenant_context, provider_id);
+        let mut tokens = self.tenant_bearer_tokens.write().await;
+        match (snapshot.token.as_ref(), tokens.get(&key)) {
+            (Some(expected), Some(current)) if Arc::ptr_eq(expected, current) => {
+                tokens.remove(&key);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Recheck caller authority after acquiring the registry write lock, then
+    /// clear only the publication observed before the caller's credential read.
+    /// `authorize_and_commit` must hold its authority read guard through the
+    /// supplied synchronous commit callback.
+    pub async fn clear_tenant_provider_bearer_token_if_unchanged_guarded<G>(
+        &self,
+        tenant_context: &TenantContext,
+        provider_id: &str,
+        snapshot: &TenantProviderBearerTokenSnapshot,
+        authorize_and_commit: G,
+    ) -> anyhow::Result<bool>
+    where
+        G: FnOnce(&mut dyn FnMut() -> anyhow::Result<()>) -> anyhow::Result<()> + Send,
+    {
+        let key = tenant_provider_auth_key(tenant_context, provider_id);
+        let mut tokens = self.tenant_bearer_tokens.write().await;
+        let mut committed = None;
+        {
+            let mut commit = || {
+                anyhow::ensure!(committed.is_none(), "provider bearer clear already attempted");
+                let removed = match (snapshot.token.as_ref(), tokens.get(&key)) {
+                    (Some(expected), Some(current)) if Arc::ptr_eq(expected, current) => {
+                        tokens.remove(&key);
+                        true
+                    }
+                    _ => false,
+                };
+                committed = Some(removed);
+                Ok(())
+            };
+            authorize_and_commit(&mut commit)?;
+        }
+        committed.ok_or_else(|| anyhow::anyhow!("provider bearer authority guard skipped clear"))
     }
 
     pub async fn clear_tenant_provider_bearer_token(
@@ -1095,7 +1208,7 @@ impl ProviderRegistry {
             .get(&tenant_provider_auth_key(&tenant_context, provider_id))
             .cloned()
         {
-            ProviderAuthOverride::Bearer(token)
+            ProviderAuthOverride::Bearer(token.to_string())
         } else if tenant_context.is_local_implicit() {
             ProviderAuthOverride::Inherit
         } else {

@@ -223,45 +223,186 @@ pub(crate) async fn load_openai_codex_oauth_into_runtime(
     .await
 }
 
+pub(crate) async fn load_openai_codex_oauth_into_runtime_for_request(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+) -> anyhow::Result<bool> {
+    load_openai_codex_oauth_into_runtime_for_caller(
+        state,
+        tenant_context,
+        OAuthRefreshCaller::Http(verified),
+    )
+    .await
+}
+
 async fn load_openai_codex_oauth_into_runtime_for_caller(
     state: &AppState,
     tenant_context: &TenantContext,
     caller: OAuthRefreshCaller<'_>,
 ) -> anyhow::Result<bool> {
     caller.require_current_use(state, tenant_context)?;
+    let previous_token = state
+        .providers
+        .tenant_provider_bearer_token_snapshot(tenant_context, OPENAI_CODEX_PROVIDER_ID)
+        .await;
     let Some(credential) = openai_codex_oauth_credential(state, tenant_context) else {
-        state
-            .providers
-            .clear_tenant_provider_bearer_token(tenant_context, OPENAI_CODEX_PROVIDER_ID)
-            .await;
+        clear_openai_codex_runtime_token_for_caller(state, tenant_context, &previous_token, caller)
+            .await?;
         return Ok(false);
     };
-    let Some(runtime_token) = tandem_core::ProviderCredential::OAuth(credential)
+    let Some(runtime_token) = tandem_core::ProviderCredential::OAuth(credential.clone())
         .runtime_bearer_token()
         .filter(|token| !token.trim().is_empty())
         .map(str::to_string)
     else {
-        state
-            .providers
-            .clear_tenant_provider_bearer_token(tenant_context, OPENAI_CODEX_PROVIDER_ID)
-            .await;
+        clear_openai_codex_runtime_token_for_caller(state, tenant_context, &previous_token, caller)
+            .await?;
         return Ok(false);
     };
 
     ensure_openai_codex_runtime_provider_loaded(state).await;
-    caller.require_current_use(state, tenant_context)?;
+    publish_loaded_openai_codex_runtime_token_for_caller(
+        state,
+        tenant_context,
+        &credential,
+        runtime_token,
+        caller,
+    )
+    .await
+}
+
+async fn clear_openai_codex_runtime_token_for_caller(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    previous_token: &tandem_providers::TenantProviderBearerTokenSnapshot,
+    caller: OAuthRefreshCaller<'_>,
+) -> anyhow::Result<bool> {
     state
         .providers
-        .set_tenant_provider_bearer_token(tenant_context, OPENAI_CODEX_PROVIDER_ID, runtime_token)
+        .clear_tenant_provider_bearer_token_if_unchanged_guarded(
+            tenant_context,
+            OPENAI_CODEX_PROVIDER_ID,
+            previous_token,
+            |commit| {
+                state
+                    .enterprise
+                    .hosted_policy
+                    .with_current_policy(|policy| {
+                        caller.require_use_under_policy(tenant_context, policy)?;
+                        commit()
+                    })
+                    .map_err(anyhow::Error::msg)?
+            },
+        )
+        .await
+}
+
+async fn publish_openai_codex_runtime_token_for_caller(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    runtime_token: String,
+    caller: OAuthRefreshCaller<'_>,
+) -> anyhow::Result<()> {
+    state
+        .providers
+        .set_tenant_provider_bearer_token_guarded(
+            tenant_context,
+            OPENAI_CODEX_PROVIDER_ID,
+            runtime_token,
+            |commit| {
+                state
+                    .enterprise
+                    .hosted_policy
+                    .with_current_policy(|policy| {
+                        caller.require_use_under_policy(tenant_context, policy)?;
+                        commit()
+                    })
+                    .map_err(anyhow::Error::msg)?
+            },
+        )
+        .await
+}
+
+/// A credential can be deleted or replaced while provider loading awaits.
+/// Re-read it under the bearer registry write lock so a stale load cannot
+/// publish after a completed delete or overwrite. The admin delete path
+/// clears the registry after its durable write, so a delete racing after
+/// this comparison still removes this publication.
+async fn publish_loaded_openai_codex_runtime_token_for_caller(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    loaded_credential: &tandem_core::OAuthProviderCredential,
+    runtime_token: String,
+    caller: OAuthRefreshCaller<'_>,
+) -> anyhow::Result<bool> {
+    let mut stale_credential = false;
+    let publication = state
+        .providers
+        .set_tenant_provider_bearer_token_guarded(
+            tenant_context,
+            OPENAI_CODEX_PROVIDER_ID,
+            runtime_token,
+            |commit| {
+                let credential_is_current = openai_codex_oauth_credential(state, tenant_context)
+                    .as_ref()
+                    == Some(loaded_credential);
+                state
+                    .enterprise
+                    .hosted_policy
+                    .with_current_policy(|policy| {
+                        caller.require_use_under_policy(tenant_context, policy)?;
+                        if !credential_is_current {
+                            stale_credential = true;
+                            anyhow::bail!(
+                                "OAuth credential changed while runtime hydration was in flight"
+                            );
+                        }
+                        commit()
+                    })
+                    .map_err(anyhow::Error::msg)?
+            },
+        )
         .await;
-    if let Err(error) = caller.require_current_use(state, tenant_context) {
-        state
-            .providers
-            .clear_tenant_provider_bearer_token(tenant_context, OPENAI_CODEX_PROVIDER_ID)
-            .await;
-        return Err(error);
+    if stale_credential {
+        Ok(false)
+    } else {
+        publication.map(|()| true)
     }
-    Ok(true)
+}
+
+#[cfg(test)]
+pub(crate) async fn publish_loaded_openai_codex_runtime_token_for_request_test(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified: &tandem_types::VerifiedTenantContext,
+    loaded_credential: &tandem_core::OAuthProviderCredential,
+    runtime_token: String,
+) -> anyhow::Result<bool> {
+    publish_loaded_openai_codex_runtime_token_for_caller(
+        state,
+        tenant_context,
+        loaded_credential,
+        runtime_token,
+        OAuthRefreshCaller::Http(Some(verified)),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn publish_openai_codex_runtime_token_for_request_test(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified: &tandem_types::VerifiedTenantContext,
+    runtime_token: String,
+) -> anyhow::Result<()> {
+    publish_openai_codex_runtime_token_for_caller(
+        state,
+        tenant_context,
+        runtime_token,
+        OAuthRefreshCaller::Http(Some(verified)),
+    )
+    .await
 }
 
 #[derive(Clone)]
@@ -641,8 +782,25 @@ pub(crate) async fn refresh_openai_codex_oauth_if_needed_for_request(
     tenant_context: &TenantContext,
     verified: Option<&tandem_types::VerifiedTenantContext>,
 ) -> anyhow::Result<()> {
+    refresh_openai_codex_oauth_for_request(state, tenant_context, verified, false).await
+}
+
+pub(crate) async fn refresh_openai_codex_oauth_now_for_request(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+) -> anyhow::Result<()> {
+    refresh_openai_codex_oauth_for_request(state, tenant_context, verified, true).await
+}
+
+async fn refresh_openai_codex_oauth_for_request(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    force: bool,
+) -> anyhow::Result<()> {
     let caller = OAuthRefreshCaller::Http(verified);
-    refresh_openai_codex_oauth_with_caller(state, tenant_context, false, caller, |credential| {
+    refresh_openai_codex_oauth_with_caller(state, tenant_context, force, caller, |credential| {
         refresh_openai_codex_oauth_credential_guarded(credential, || {
             caller.require_current_use(state, tenant_context)
         })
@@ -787,6 +945,10 @@ where
         std::future::Future<Output = anyhow::Result<tandem_core::OAuthProviderCredential>>,
 {
     caller.require_current_use(state, tenant_context)?;
+    let previous_token = state
+        .providers
+        .tenant_provider_bearer_token_snapshot(tenant_context, OPENAI_CODEX_PROVIDER_ID)
+        .await;
     let initial_credential = openai_codex_oauth_credential(state, tenant_context);
     let mut credential_guard = state
         .oauth
@@ -803,10 +965,8 @@ where
     }
     let expected_generation = credential_guard.generation();
     let Some(credential) = openai_codex_oauth_credential(state, tenant_context) else {
-        state
-            .providers
-            .clear_tenant_provider_bearer_token(tenant_context, OPENAI_CODEX_PROVIDER_ID)
-            .await;
+        clear_openai_codex_runtime_token_for_caller(state, tenant_context, &previous_token, caller)
+            .await?;
         return Ok(());
     };
     if initial_credential.as_ref() != Some(&credential) {
@@ -993,23 +1153,16 @@ async fn persist_refreshed_openai_codex_oauth(
         ensure_openai_codex_runtime_provider_loaded(state).await;
         if caller.require_current_use(state, tenant_context).is_ok() {
             if let Some(runtime_token) = runtime_token {
-                state
-                    .providers
-                    .set_tenant_provider_bearer_token(
-                        tenant_context,
-                        OPENAI_CODEX_PROVIDER_ID,
-                        runtime_token,
-                    )
-                    .await;
-                if caller.require_current_use(state, tenant_context).is_err() {
-                    state
-                        .providers
-                        .clear_tenant_provider_bearer_token(
-                            tenant_context,
-                            OPENAI_CODEX_PROVIDER_ID,
-                        )
-                        .await;
-                }
+                // Persistence has already committed. A concurrent revocation
+                // may skip runtime publication, but must not clear a newer
+                // authorized publication from another caller.
+                let _ = publish_openai_codex_runtime_token_for_caller(
+                    state,
+                    tenant_context,
+                    runtime_token,
+                    caller,
+                )
+                .await;
             }
         }
     }

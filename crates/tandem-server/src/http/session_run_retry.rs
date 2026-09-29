@@ -93,17 +93,20 @@ fn tenant_has_refreshable_codex_oauth(state: &AppState, tenant_context: &TenantC
 fn recovery_for_execution(
     state: &AppState,
     tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
     surface: PromptExecutionSurface,
     session_id: Option<&str>,
     run_id: Option<&str>,
 ) -> ProviderAuthRecovery {
     let state = state.clone();
     let tenant_context = tenant_context.clone();
+    let verified_tenant_context = verified_tenant_context.cloned();
     let session_id = session_id.map(str::to_string);
     let run_id = run_id.map(str::to_string);
     ProviderAuthRecovery::new(move |provider_id| {
         let state = state.clone();
         let tenant_context = tenant_context.clone();
+        let verified_tenant_context = verified_tenant_context.clone();
         let session_id = session_id.clone();
         let run_id = run_id.clone();
         async move {
@@ -138,9 +141,10 @@ fn recovery_for_execution(
 
             match tokio::time::timeout(
                 DISPATCH_REFRESH_TIMEOUT,
-                crate::http::config_providers::refresh_openai_codex_oauth_now(
+                crate::http::config_providers::refresh_openai_codex_oauth_now_for_request(
                     &state,
                     &tenant_context,
+                    verified_tenant_context.as_ref(),
                 ),
             )
             .await
@@ -221,11 +225,13 @@ where
     };
     if resolved_provider_is_codex || tenant_codex_oauth_credential(state, tenant_context).is_some()
     {
-        if let Err(error) = crate::http::config_providers::load_openai_codex_oauth_into_runtime(
-            state,
-            tenant_context,
-        )
-        .await
+        if let Err(error) =
+            crate::http::config_providers::load_openai_codex_oauth_into_runtime_for_request(
+                state,
+                tenant_context,
+                verified_tenant_context,
+            )
+            .await
         {
             tracing::warn!(
                 provider_id = OPENAI_CODEX_PROVIDER_ID,
@@ -240,7 +246,14 @@ where
         }
     }
 
-    let recovery = recovery_for_execution(state, tenant_context, surface, session_id, run_id);
+    let recovery = recovery_for_execution(
+        state,
+        tenant_context,
+        verified_tenant_context,
+        surface,
+        session_id,
+        run_id,
+    );
     let authority_state = state.clone();
     let authority_tenant = tenant_context.clone();
     let verified = verified_tenant_context.cloned();

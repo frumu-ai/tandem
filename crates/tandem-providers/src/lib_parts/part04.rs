@@ -138,6 +138,124 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn stale_credential_clear_does_not_remove_new_bearer_publication() {
+        let registry = ProviderRegistry::new(cfg(&["openai-codex"], None, false));
+        let tenant = TenantContext::explicit("org", "workspace", None);
+        let absent = registry
+            .tenant_provider_bearer_token_snapshot(&tenant, "openai-codex")
+            .await;
+        registry
+            .set_tenant_provider_bearer_token(&tenant, "openai-codex", "same-token".into())
+            .await;
+        assert!(
+            !registry
+                .clear_tenant_provider_bearer_token_if_unchanged(&tenant, "openai-codex", &absent)
+                .await
+        );
+
+        let stale = registry
+            .tenant_provider_bearer_token_snapshot(&tenant, "openai-codex")
+            .await;
+        registry
+            .set_tenant_provider_bearer_token(&tenant, "openai-codex", "same-token".into())
+            .await;
+        assert!(
+            !registry
+                .clear_tenant_provider_bearer_token_if_unchanged(&tenant, "openai-codex", &stale)
+                .await,
+            "even an identical new token is a distinct authorized publication"
+        );
+        let current = registry
+            .tenant_provider_bearer_token_snapshot(&tenant, "openai-codex")
+            .await;
+        assert!(
+            registry
+                .clear_tenant_provider_bearer_token_if_unchanged(&tenant, "openai-codex", &current)
+                .await
+        );
+        assert!(
+            !registry
+                .tenant_provider_auth_is_loaded(&tenant, "openai-codex")
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn guarded_bearer_commit_preserves_previous_token_when_denied() {
+        let registry = ProviderRegistry::new(cfg(&["openai-codex"], None, false));
+        let tenant = TenantContext::explicit("org", "workspace", None);
+        registry
+            .set_tenant_provider_bearer_token(&tenant, "openai-codex", "old-token".into())
+            .await;
+        let denied = registry
+            .set_tenant_provider_bearer_token_guarded(
+                &tenant,
+                "openai-codex",
+                "revoked-token".into(),
+                |_commit| anyhow::bail!("revoked"),
+            )
+            .await;
+        assert!(denied.is_err());
+        let auth = registry
+            .scope_tenant_provider_auth(
+                tenant.clone(),
+                registry.auth_override_for_provider("openai-codex"),
+            )
+            .await;
+        assert!(matches!(auth, ProviderAuthOverride::Bearer(token) if token == "old-token"));
+
+        registry
+            .set_tenant_provider_bearer_token_guarded(
+                &tenant,
+                "openai-codex",
+                "new-token".into(),
+                |commit| commit(),
+            )
+            .await
+            .expect("authorized publication");
+        let auth = registry
+            .scope_tenant_provider_auth(tenant, registry.auth_override_for_provider("openai-codex"))
+            .await;
+        assert!(matches!(auth, ProviderAuthOverride::Bearer(token) if token == "new-token"));
+    }
+
+    #[tokio::test]
+    async fn guarded_clear_keeps_the_observed_bearer_when_authority_is_revoked() {
+        let registry = ProviderRegistry::new(cfg(&["openai-codex"], None, false));
+        let tenant = TenantContext::explicit("org", "workspace", None);
+        registry
+            .set_tenant_provider_bearer_token(&tenant, "openai-codex", "authorized-token".into())
+            .await;
+        let observed = registry
+            .tenant_provider_bearer_token_snapshot(&tenant, "openai-codex")
+            .await;
+        assert!(registry
+            .clear_tenant_provider_bearer_token_if_unchanged_guarded(
+                &tenant,
+                "openai-codex",
+                &observed,
+                |_commit| anyhow::bail!("caller revoked before clear"),
+            )
+            .await
+            .is_err());
+        assert!(registry
+            .tenant_provider_auth_is_loaded(&tenant, "openai-codex")
+            .await);
+        assert!(registry
+            .clear_tenant_provider_bearer_token_if_unchanged_guarded(
+                &tenant,
+                "openai-codex",
+                &observed,
+                |commit| commit(),
+            )
+            .await
+            .expect("authorized clear"));
+        assert!(!registry
+            .tenant_provider_auth_is_loaded(&tenant, "openai-codex")
+            .await);
+    }
+
     #[derive(Clone)]
     struct CapturingCodexProvider {
         attempts: Arc<AtomicUsize>,
