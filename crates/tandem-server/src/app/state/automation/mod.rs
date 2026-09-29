@@ -104,13 +104,20 @@ pub(crate) async fn resolve_automation_agent_template(
     if template_id.is_empty() {
         return Ok(None);
     }
+    let executable = |template: Option<tandem_orchestrator::AgentTemplate>| {
+        anyhow::ensure!(
+            template.as_ref().is_none_or(|template| template.enabled),
+            "agent template `{template_id}` is staged or disabled"
+        );
+        Ok(template)
+    };
 
     if let Some(template) = state
         .agent_teams
         .get_template_for_workspace(workspace_root, template_id)
         .await?
     {
-        return Ok(Some(template));
+        return executable(Some(template));
     }
 
     let global_workspace_root = state.workspace_index.snapshot().await.root;
@@ -118,10 +125,12 @@ pub(crate) async fn resolve_automation_agent_template(
         return Ok(None);
     }
 
-    state
-        .agent_teams
-        .get_template_for_workspace(&global_workspace_root, template_id)
-        .await
+    executable(
+        state
+            .agent_teams
+            .get_template_for_workspace(&global_workspace_root, template_id)
+            .await?,
+    )
 }
 
 use serde_json::{json, Value};

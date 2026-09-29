@@ -401,6 +401,7 @@ impl AgentTeamRuntime {
         policy: Option<SpawnPolicy>,
         templates: Vec<AgentTemplate>,
     ) {
+        let _operation = self.template_persistence.lock().await;
         *self.policy.write().await = policy;
         let mut by_id = HashMap::new();
         for template in templates {
@@ -777,9 +778,15 @@ mod fintech_policy_tests {
     }
 
     async fn fintech_policy_state(metadata: Value) -> AppState {
-        let mut state = AppState::new_starting("test".to_string(), true);
+        configure_fintech_policy_state(AppState::new_starting("test".to_string(), true), metadata)
+            .await
+    }
+
+    async fn configure_fintech_policy_state(mut state: AppState, metadata: Value) -> AppState {
         state.policy_decisions_path =
             std::env::temp_dir().join(format!("tandem-policy-decisions-{}.json", Uuid::new_v4()));
+        // Keep the allow-audit chain isolated from other tests and local runtime data.
+        state.protected_audit_path = state.policy_decisions_path.with_extension("audit.jsonl");
         let automation = fintech_test_automation(metadata);
         let run = fintech_test_run(automation);
         state
@@ -954,7 +961,11 @@ mod fintech_policy_tests {
 
     #[tokio::test]
     async fn fintech_strict_enterprise_override_blocks_approved_receipt() {
-        let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
+        let state = configure_fintech_policy_state(
+            crate::test_support::test_state().await,
+            json!({"runtime_profile": "fintech_strict"}),
+        )
+        .await;
         state.enterprise.policy_rules.write().await.insert(
             "enterprise-fintech-deny".to_string(),
             EnterprisePolicyRule::new(
@@ -986,7 +997,7 @@ mod fintech_policy_tests {
             .evaluate_tool(ToolPolicyContext {
                 session_id: "session-fintech".to_string(),
                 message_id: "message-1".to_string(),
-                tenant_context: None,
+                tenant_context: Some(TenantContext::local_implicit()),
                 verified_tenant_context: None,
                 tool: "mcp.bank.release_funds".to_string(),
                 args,
@@ -995,11 +1006,10 @@ mod fintech_policy_tests {
             .expect("policy decision");
 
         assert!(!decision.allowed);
-        assert!(decision
-            .reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("enterprise_fintech_floor"));
+        assert_eq!(
+            decision.reason.as_deref(),
+            Some("enterprise policy denies fintech protected actions")
+        );
         let decision_id = decision
             .policy_decision_id
             .as_deref()

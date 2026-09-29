@@ -326,6 +326,9 @@ impl PackManager {
         let stage_unpacked = stage_root.join("unpacked");
         tokio::fs::create_dir_all(&stage_unpacked).await?;
         let _stage_cleanup = StagingDirCleanup(stage_root.clone());
+        if manifest.pack_type == "solution" {
+            solution::validate_archive_paths(&source_file)?;
+        }
         safe_extract_zip(&source_file, &stage_unpacked)?;
         let manifest_value = serde_json::to_value(&manifest)?;
         validate_manifest(&manifest, &manifest_value, &stage_unpacked)?;

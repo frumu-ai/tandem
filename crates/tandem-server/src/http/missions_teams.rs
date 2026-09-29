@@ -609,9 +609,9 @@ pub(super) async fn agent_team_templates(
     Query(_query): Query<AgentTeamTemplatesQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let workspace_root = global_template_workspace_root(&state).await;
-    state
+    let templates = state
         .agent_teams
-        .ensure_loaded_for_workspace(&workspace_root)
+        .list_templates_for_workspace(&workspace_root)
         .await
         .map_err(|error| {
             (
@@ -624,7 +624,6 @@ pub(super) async fn agent_team_templates(
             )
         })?;
 
-    let templates = state.agent_teams.list_templates().await;
     Ok(Json(json!({
         "templates": templates,
         "count": templates.len(),
@@ -674,9 +673,9 @@ pub(super) async fn agent_team_template_patch(
     Json(input): Json<AgentTeamTemplatePatchInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let workspace_root = global_template_workspace_root(&state).await;
-    state
+    let existing = state
         .agent_teams
-        .ensure_loaded_for_workspace(&workspace_root)
+        .get_template_for_workspace(&workspace_root, &id)
         .await
         .map_err(|error| {
             (
@@ -687,13 +686,7 @@ pub(super) async fn agent_team_template_patch(
                     "error": error.to_string(),
                 })),
             )
-        })?;
-    let existing = state
-        .agent_teams
-        .list_templates()
-        .await
-        .into_iter()
-        .find(|template| template.template_id == id)
+        })?
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
@@ -846,9 +839,9 @@ pub(super) async fn compose_standup(
         )
     })?;
     let template_workspace_root = global_template_workspace_root(&state).await;
-    state
+    let templates = state
         .agent_teams
-        .ensure_loaded_for_workspace(&template_workspace_root)
+        .list_templates_for_workspace(&template_workspace_root)
         .await
         .map_err(|error| {
             (
@@ -878,7 +871,6 @@ pub(super) async fn compose_standup(
         ));
     }
 
-    let templates = state.agent_teams.list_templates().await;
     let template_map = templates
         .into_iter()
         .map(|template| (template.template_id.clone(), template))

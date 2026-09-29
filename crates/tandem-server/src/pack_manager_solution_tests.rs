@@ -62,6 +62,114 @@ fn export_request(name: &str) -> PackExportRequest {
 
 #[tokio::test]
 #[serial_test::serial(pack_signature_env)]
+async fn solution_pack_enforces_portable_entrypoint_names_before_publication() {
+    for (entrypoint, valid) in [
+        ("solution?.json", false),
+        ("CON", false),
+        ("CONIN$", false),
+        ("conout$.json", false),
+        ("CLOCK$", false),
+        ("nested./solution.json", false),
+        ("LPT²/solution.json", false),
+        ("资料/solution.json", true),
+        (".config/solution.v2.json", true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut entries = fixture();
+        entries[0].1 = entries[0].1.replace(
+            "solution: solution.json",
+            &format!("solution: {entrypoint}"),
+        );
+        entries[1].0 = entrypoint.into();
+        let archive = root.path().join("solution.zip");
+        let key = signed(&archive, &entries);
+        let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+        let manager = PackManager::new(root.path().join("packs"));
+        let result = manager.install(request(&archive)).await;
+        assert_eq!(result.is_ok(), valid, "{entrypoint}: {result:?}");
+        assert_eq!(manager.list().await.unwrap().len(), usize::from(valid));
+        if valid {
+            assert!(manager
+                .solution_artifacts("tandem.company-brain")
+                .await
+                .is_ok());
+        }
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_pack_rejects_case_collisions_before_publication() {
+    for alias in ["agents/CENTRAL-BRAIN.json", "Agents/extra.json", "AGENTS"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut entries = fixture();
+        entries.push((alias.into(), "{}".into()));
+        let archive = root.path().join("solution.zip");
+        let key = signed(&archive, &entries);
+        let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+        let manager = PackManager::new(root.path().join("packs"));
+        let error = manager.install(request(&archive)).await.unwrap_err();
+        assert!(
+            error.to_string().contains("paths collide"),
+            "{alias}: {error:?}"
+        );
+        assert!(manager.list().await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_pack_export_round_trips_highly_compressible_artifacts() {
+    let root = tempfile::tempdir().unwrap();
+    let mut entries = fixture();
+    // JSON whitespace preserves the artifact while exceeding the ZIP ratio limit.
+    entries[2].1.push_str(&" ".repeat(1024 * 1024));
+    let mut blueprint: Value = serde_json::from_str(&entries[1].1).unwrap();
+    blueprint["components"]["central-brain"]["artifact"]["sha256"] =
+        format!("{:x}", Sha256::digest(entries[2].1.as_bytes())).into();
+    entries[1].1 = serde_json::to_string(&blueprint).unwrap();
+    let compressed = root.path().join("compressed.zip");
+    let key = signed(&compressed, &entries);
+    let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+    let stored = root.path().join("stored.zip");
+    let mut source = ZipArchive::new(File::open(&compressed).unwrap()).unwrap();
+    let mut destination = ZipWriter::new(File::create(&stored).unwrap());
+    for index in 0..source.len() {
+        let mut entry = source.by_index(index).unwrap();
+        destination
+            .start_file(
+                entry.name(),
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+            )
+            .unwrap();
+        std::io::copy(&mut entry, &mut destination).unwrap();
+    }
+    destination.finish().unwrap();
+    let manager = PackManager::new(root.path().join("packs"));
+    manager.install(request(&stored)).await.unwrap();
+    let before = manager
+        .solution_artifacts("tandem.company-brain")
+        .await
+        .unwrap();
+    let exported = manager
+        .export(export_request("round-trip.zip"))
+        .await
+        .unwrap();
+    let other = PackManager::new(root.path().join("other"));
+    other
+        .install(request(Path::new(&exported.path)))
+        .await
+        .unwrap();
+    let after = other
+        .solution_artifacts("tandem.company-brain")
+        .await
+        .unwrap();
+    assert_eq!(before.blueprint, after.blueprint);
+    assert_eq!(before.artifacts, after.artifacts);
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn solution_pack_snapshot_preserves_existing_nested_path_signature_order() {
     let root = tempfile::tempdir().unwrap();
     let mut entries = fixture();
