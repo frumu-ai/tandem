@@ -373,4 +373,150 @@ mod tests {
             .is_ok()
         );
     }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn planner_session_create_rechecks_write_after_preflight_revocation() {
+        let (state, policy_dir) = hosted_state().await;
+        let scope = tenant("alice");
+        let identity = verified("alice", "member");
+        let before = state.storage.list_sessions().await.len();
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        let worker_state = state.clone();
+        let worker_gate = gate.clone();
+        let pending = tokio::spawn(async move {
+            let mut host = crate::http::workflow_planner_host::WorkflowPlannerHost::new(
+                &worker_state,
+                &scope,
+                Some(&identity),
+            );
+            host.session_write_test_gate = Some(worker_gate);
+            host.create_planner_session("revoked planner", "/tmp").await
+        });
+
+        gate.wait().await; // The host has passed its initial write check.
+        revoke_member_write(&state, &policy_dir).await;
+        gate.wait().await;
+        assert!(pending.await.expect("planner task").is_err());
+        assert_eq!(state.storage.list_sessions().await.len(), before);
+    }
+
+    async fn assert_revoked_planner_append_is_not_persisted(assistant: bool) {
+        let (state, policy_dir) = hosted_state().await;
+        let scope = tenant("alice");
+        let identity = verified("alice", "member");
+        let host = crate::http::workflow_planner_host::WorkflowPlannerHost::new(
+            &state,
+            &scope,
+            Some(&identity),
+        );
+        let session_id = host
+            .create_planner_session("planner transcript", "/tmp")
+            .await
+            .expect("create authorized planner session");
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        let worker_state = state.clone();
+        let worker_gate = gate.clone();
+        let pending = tokio::spawn(async move {
+            let mut host = crate::http::workflow_planner_host::WorkflowPlannerHost::new(
+                &worker_state,
+                &scope,
+                Some(&identity),
+            );
+            host.session_write_test_gate = Some(worker_gate);
+            if assistant {
+                host.append_planner_assistant_response(&session_id, "generated plan")
+                    .await
+            } else {
+                host.append_planner_user_prompt(&session_id, "plan my workflow")
+                    .await
+            }
+        });
+
+        gate.wait().await;
+        revoke_member_write(&state, &policy_dir).await;
+        gate.wait().await;
+        assert!(pending.await.expect("planner append task").is_err());
+        let sessions = state.storage.list_sessions().await;
+        let session = sessions
+            .into_iter()
+            .find(|session| session.title == "planner transcript")
+            .expect("original planner session remains");
+        assert!(
+            session.messages.is_empty(),
+            "revoked append must not persist"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn planner_user_prompt_append_rechecks_write_after_revocation() {
+        assert_revoked_planner_append_is_not_persisted(false).await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn planner_assistant_response_append_rechecks_write_after_revocation() {
+        assert_revoked_planner_append_is_not_persisted(true).await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn planner_session_transcript_writes_still_work_for_hosted_and_local() {
+        let (hosted, _policy_dir) = hosted_state().await;
+        let scope = tenant("alice");
+        let identity = verified("alice", "member");
+        let hosted_host = crate::http::workflow_planner_host::WorkflowPlannerHost::new(
+            &hosted,
+            &scope,
+            Some(&identity),
+        );
+        let hosted_session = hosted_host
+            .create_planner_session("hosted planner", "/tmp")
+            .await
+            .expect("hosted session");
+        hosted_host
+            .append_planner_user_prompt(&hosted_session, "plan")
+            .await
+            .expect("hosted user prompt");
+        hosted_host
+            .append_planner_assistant_response(&hosted_session, "response")
+            .await
+            .expect("hosted assistant response");
+        assert_eq!(
+            hosted
+                .storage
+                .get_session(&hosted_session)
+                .await
+                .unwrap()
+                .messages
+                .len(),
+            2
+        );
+
+        let local = test_state().await;
+        let local_host = crate::http::workflow_planner_host::WorkflowPlannerHost::local(&local);
+        let local_session = local_host
+            .create_planner_session("local planner", "/tmp")
+            .await
+            .expect("local session");
+        local_host
+            .append_planner_user_prompt(&local_session, "plan")
+            .await
+            .expect("local user prompt");
+        local_host
+            .append_planner_assistant_response(&local_session, "response")
+            .await
+            .expect("local assistant response");
+        assert_eq!(
+            local
+                .storage
+                .get_session(&local_session)
+                .await
+                .unwrap()
+                .messages
+                .len(),
+            2
+        );
+    }
 }

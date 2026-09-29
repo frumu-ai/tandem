@@ -22,6 +22,8 @@ pub(crate) struct WorkflowPlannerHost<'a> {
     pub(crate) verified_tenant_context: Option<tandem_types::VerifiedTenantContext>,
     pub(crate) draft_binding: Option<super::workflow_planner::WorkflowPlanDraftAccessBinding>,
     pub(crate) new_draft_only: bool,
+    #[cfg(test)]
+    pub(crate) session_write_test_gate: Option<std::sync::Arc<tokio::sync::Barrier>>,
 }
 
 impl<'a> WorkflowPlannerHost<'a> {
@@ -36,6 +38,8 @@ impl<'a> WorkflowPlannerHost<'a> {
             verified_tenant_context: verified_tenant_context.cloned(),
             draft_binding: None,
             new_draft_only: false,
+            #[cfg(test)]
+            session_write_test_gate: None,
         }
     }
 
@@ -68,8 +72,29 @@ impl<'a> WorkflowPlannerHost<'a> {
             verified_tenant_context: None,
             draft_binding: None,
             new_draft_only: false,
+            #[cfg(test)]
+            session_write_test_gate: None,
         }
     }
+}
+
+fn commit_planner_session_write(
+    state: &AppState,
+    tenant: &tandem_types::TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    commit: &mut dyn FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    state
+        .enterprise
+        .hosted_policy
+        .with_current_policy(|policy| {
+            super::workflow_planner_policy::require_planner_write_under_policy(
+                tenant, verified, policy,
+            )
+            .map_err(anyhow::Error::msg)?;
+            commit()
+        })
+        .map_err(anyhow::Error::msg)?
 }
 
 pub(crate) async fn resolve_workspace_root(
@@ -594,9 +619,19 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
         session.workspace_root = Some(workspace_root.to_string());
         session.tenant_context = self.tenant_context.clone();
         session.verified_tenant_context = self.verified_tenant_context.clone();
+        #[cfg(test)]
+        if let Some(gate) = &self.session_write_test_gate {
+            gate.wait().await;
+            gate.wait().await;
+        }
+        let state = (*self.state).clone();
+        let tenant = self.tenant_context.clone();
+        let verified = self.verified_tenant_context.clone();
         self.state
             .storage
-            .save_session(session)
+            .save_session_with_commit_guard(session, move |commit| {
+                commit_planner_session_write(&state, &tenant, verified.as_ref(), commit)
+            })
             .await
             .map_err(|error| truncate_text(&error.to_string(), 500))?;
         Ok(session_id)
@@ -607,9 +642,17 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
         session_id: &str,
         prompt: &str,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(gate) = &self.session_write_test_gate {
+            gate.wait().await;
+            gate.wait().await;
+        }
+        let state = (*self.state).clone();
+        let tenant = self.tenant_context.clone();
+        let verified = self.verified_tenant_context.clone();
         self.state
             .storage
-            .append_message(
+            .append_message_with_commit_guard(
                 session_id,
                 Message::new(
                     MessageRole::User,
@@ -617,6 +660,9 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
                         text: prompt.to_string(),
                     }],
                 ),
+                move |commit| {
+                    commit_planner_session_write(&state, &tenant, verified.as_ref(), commit)
+                },
             )
             .await
             .map_err(|error| truncate_text(&error.to_string(), 500))
@@ -627,9 +673,17 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
         session_id: &str,
         response: &str,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(gate) = &self.session_write_test_gate {
+            gate.wait().await;
+            gate.wait().await;
+        }
+        let state = (*self.state).clone();
+        let tenant = self.tenant_context.clone();
+        let verified = self.verified_tenant_context.clone();
         self.state
             .storage
-            .append_message(
+            .append_message_with_commit_guard(
                 session_id,
                 Message::new(
                     MessageRole::Assistant,
@@ -637,6 +691,9 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
                         text: response.to_string(),
                     }],
                 ),
+                move |commit| {
+                    commit_planner_session_write(&state, &tenant, verified.as_ref(), commit)
+                },
             )
             .await
             .map_err(|error| truncate_text(&error.to_string(), 500))

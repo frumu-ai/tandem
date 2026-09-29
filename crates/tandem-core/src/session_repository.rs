@@ -12,6 +12,10 @@ use crate::message_part_reducer::reduce_message_parts;
 
 use super::{QuestionRequest, SessionMeta, MAX_SESSION_SNAPSHOTS};
 
+#[cfg(test)]
+#[path = "session_repository_commit_guard_tests.rs"]
+mod commit_guard_tests;
+
 const JSON_IMPORT_MIGRATION: &str = "sessions_json_import_v1";
 
 /// Migration inputs are retained on disk. The transaction records their digest
@@ -173,13 +177,37 @@ impl SessionRepository {
     }
 
     pub(crate) fn save_session(&self, session: &Session) -> Result<()> {
+        self.save_session_with_commit_guard(session, |commit| commit())
+    }
+
+    pub(crate) fn save_session_with_commit_guard(
+        &self,
+        session: &Session,
+        guard: impl FnOnce(&mut dyn FnMut() -> Result<()>) -> Result<()>,
+    ) -> Result<()> {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            replace_session(&transaction, session)?;
-            ensure_metadata(&transaction, &session.id)?;
-            transaction.commit()?;
-            Ok(())
+            let mut transaction = Some(transaction);
+            let mut committed = false;
+            let result = {
+                let mut commit = || {
+                    let transaction = transaction
+                        .take()
+                        .context("session transaction already consumed")?;
+                    replace_session(&transaction, session)?;
+                    ensure_metadata(&transaction, &session.id)?;
+                    transaction.commit()?;
+                    committed = true;
+                    Ok(())
+                };
+                guard(&mut commit)
+            };
+            if committed {
+                return result.context("session commit guard failed after session commit");
+            }
+            result?;
+            anyhow::bail!("session commit guard skipped commit")
         })
     }
 
@@ -223,40 +251,63 @@ impl SessionRepository {
     }
 
     pub(crate) fn append_message(&self, session_id: &str, message: &Message) -> Result<()> {
+        self.append_message_with_commit_guard(session_id, message, |commit| commit())
+    }
+
+    pub(crate) fn append_message_with_commit_guard(
+        &self,
+        session_id: &str,
+        message: &Message,
+        guard: impl FnOnce(&mut dyn FnMut() -> Result<()>) -> Result<()>,
+    ) -> Result<()> {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let next_ordinal: i64 = transaction.query_row(
-                "SELECT COALESCE(MAX(ordinal) + 1, 0) FROM session_messages WHERE session_id = ?1",
-                [session_id],
-                |row| row.get(0),
-            )?;
-            let exists = transaction
-                .query_row(
-                    "SELECT 1 FROM session_records WHERE session_id = ?1",
-                    [session_id],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some();
-            if !exists {
-                anyhow::bail!("session not found for append_message");
+            let mut transaction = Some(transaction);
+            let mut committed = false;
+            let result = {
+                let mut commit = || {
+                    let transaction = transaction.take().context("session transaction already consumed")?;
+                    let next_ordinal: i64 = transaction.query_row(
+                        "SELECT COALESCE(MAX(ordinal) + 1, 0) FROM session_messages WHERE session_id = ?1",
+                        [session_id],
+                        |row| row.get(0),
+                    )?;
+                    let exists = transaction
+                        .query_row(
+                            "SELECT 1 FROM session_records WHERE session_id = ?1",
+                            [session_id],
+                            |_| Ok(()),
+                        )
+                        .optional()?
+                        .is_some();
+                    if !exists {
+                        anyhow::bail!("session not found for append_message");
+                    }
+                    transaction.execute(
+                        "INSERT INTO session_messages (session_id, ordinal, message_id, role, message_json)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            session_id,
+                            next_ordinal,
+                            message.id,
+                            message_role_name(&message.role),
+                            serde_json::to_string(&message_header(message))?,
+                        ],
+                    )?;
+                    insert_message_parts(&transaction, session_id, next_ordinal, &message.parts)?;
+                    touch_session(&transaction, session_id)?;
+                    transaction.commit()?;
+                    committed = true;
+                    Ok(())
+                };
+                guard(&mut commit)
+            };
+            if committed {
+                return result.context("session commit guard failed after message commit");
             }
-            transaction.execute(
-                "INSERT INTO session_messages (session_id, ordinal, message_id, role, message_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    session_id,
-                    next_ordinal,
-                    message.id,
-                    message_role_name(&message.role),
-                    serde_json::to_string(&message_header(message))?,
-                ],
-            )?;
-            insert_message_parts(&transaction, session_id, next_ordinal, &message.parts)?;
-            touch_session(&transaction, session_id)?;
-            transaction.commit()?;
-            Ok(())
+            result?;
+            anyhow::bail!("session commit guard skipped commit")
         })
     }
 
