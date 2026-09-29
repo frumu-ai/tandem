@@ -78,6 +78,18 @@ pub(crate) fn standalone_local_runtime_posture(state: &AppState, tenant: &Tenant
     )
 }
 
+pub(super) fn prompt_has_local_pack_builder_authority(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    locality: Option<RequestLocality>,
+) -> bool {
+    locality.is_some_and(RequestLocality::is_direct_loopback)
+        && verified.is_none()
+        && matches!(state.enterprise.hosted_policy.current(), Ok(None))
+        && standalone_local_runtime_posture(state, tenant)
+}
+
 fn is_loopback_local_operator(
     listener_is_loopback: bool,
     server_base_url: &str,
