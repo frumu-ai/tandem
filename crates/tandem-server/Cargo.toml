@@ -33,6 +33,8 @@ acme-demo = ["premium-governance"]
 anyhow = "1"
 base64 = "0.22"
 axum = { version = "0.8", features = ["ws"] }
+cap-std = "4.0.3"
+cap-fs-ext = "4.0.3"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 cron = "0.12"

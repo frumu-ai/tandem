@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, openSync, readFileSync, writeFileSync, writeSync } from "fs";
 import { mkdir } from "fs/promises";
 import { randomBytes } from "crypto";
 import { dirname, resolve } from "path";
@@ -27,6 +27,24 @@ function parseDotEnv(content) {
 
 function serializeEnv(entries) {
   return `${entries.map(([k, v]) => `${k}=${v}`).join("\n")}\n`;
+}
+
+function readExistingEnv(pathname) {
+  let descriptor;
+  try {
+    descriptor = openSync(pathname, constants.O_RDONLY | (constants.O_NONBLOCK || 0));
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  }
+  try {
+    // Read-only diagnostics may follow a link to a regular configuration file,
+    // but must not block reading pipes or devices before the health timeout.
+    if (!fstatSync(descriptor).isFile()) throw new Error("Env path must identify a regular file");
+    return parseDotEnv(readFileSync(descriptor, "utf8"));
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function loadDotEnvFile(pathname, targetEnv = process.env) {
@@ -107,6 +125,56 @@ function sanitizeExampleEnv(parsed) {
 }
 
 async function ensureBootstrapEnv(options = {}) {
+  if (options.readOnly) return buildBootstrapEnv(options);
+  const paths = resolveSetupPaths({
+    env: options.env || process.env,
+    platform: options.platform,
+    allowAmbientStateEnv: options.allowAmbientStateEnv,
+  });
+  const envPath = resolve(options.envPath || paths.envFile);
+  // Complete asynchronous setup before reading the configuration to merge.
+  await mkdir(dirname(envPath), { recursive: true });
+  await mkdir(paths.logsDir, { recursive: true });
+  await mkdir(paths.engineStateDir, { recursive: true });
+  await mkdir(paths.controlPanelStateDir, { recursive: true });
+  const descriptor = openManagedEnv(envPath);
+  try {
+    // No await between descriptor-bound read, merge and write.
+    return buildBootstrapEnv(options, descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function openManagedEnv(envPath) {
+  const noFollow = constants.O_NOFOLLOW || 0;
+  let descriptor;
+  try {
+    descriptor = openSync(envPath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    // Open without truncating or relying on a previous path check. Nonblocking
+    // mode lets descriptor validation reject FIFOs without waiting for a peer.
+    descriptor = openSync(envPath, constants.O_RDWR | noFollow | (constants.O_NONBLOCK || 0));
+  }
+  try {
+    // Validate both created and existing files before any content is read or
+    // written. On platforms without O_NOFOLLOW, the path check also rejects
+    // symlinks and substitutions; subsequent I/O stays bound to this inode.
+    const opened = fstatSync(descriptor);
+    const after = lstatSync(envPath);
+    if (!opened.isFile() || opened.nlink !== 1 || !after.isFile() || after.isSymbolicLink() ||
+        opened.dev !== after.dev || opened.ino !== after.ino) {
+      throw new Error("Managed env changed while opening or has multiple links");
+    }
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+  return descriptor;
+}
+
+function buildBootstrapEnv(options = {}, descriptor = null) {
   const cwd = resolve(options.cwd || process.cwd());
   const paths = resolveSetupPaths({
     env: options.env || process.env,
@@ -117,22 +185,24 @@ async function ensureBootstrapEnv(options = {}) {
   const overwrite = options.overwrite === true;
   const cwdEnvPath = resolve(cwd, ".env");
   const sourceExamplePath = resolve(cwd, ".env.example");
-  const existing = existsSync(envPath) ? parseDotEnv(readFileSync(envPath, "utf8")) : {};
+  const existing = descriptor !== null
+    ? parseDotEnv(readFileSync(descriptor, "utf8"))
+    : readExistingEnv(envPath);
   const cwdEnv =
-    options.allowCwdEnvMerge !== false && envPath !== cwdEnvPath && existsSync(cwdEnvPath)
-      ? parseDotEnv(readFileSync(cwdEnvPath, "utf8"))
+    options.allowCwdEnvMerge !== false && envPath !== cwdEnvPath
+      ? readExistingEnv(cwdEnvPath)
       : {};
-  const example = options.allowCwdEnvMerge !== false && existsSync(sourceExamplePath)
-    ? sanitizeExampleEnv(parseDotEnv(readFileSync(sourceExamplePath, "utf8")))
+  const example = options.allowCwdEnvMerge !== false
+    ? sanitizeExampleEnv(readExistingEnv(sourceExamplePath))
     : {};
   const defaults = { ...bootstrapDefaults(paths), ...example };
   const merged = { ...defaults, ...cwdEnv, ...existing };
 
-  if (
+  if (!options.readOnly && (
     overwrite ||
     !merged.TANDEM_CONTROL_PANEL_ENGINE_TOKEN ||
     merged.TANDEM_CONTROL_PANEL_ENGINE_TOKEN === "tk_change_me"
-  ) {
+  )) {
     merged.TANDEM_CONTROL_PANEL_ENGINE_TOKEN = `tk_${randomBytes(16).toString("hex")}`;
   }
 
@@ -163,11 +233,16 @@ async function ensureBootstrapEnv(options = {}) {
     if (!preferredOrder.includes(key)) ordered.push([key, value]);
   }
 
-  await mkdir(dirname(envPath), { recursive: true });
-  await mkdir(paths.logsDir, { recursive: true });
-  await mkdir(paths.engineStateDir, { recursive: true });
-  await mkdir(paths.controlPanelStateDir, { recursive: true });
-  writeFileSync(envPath, serializeEnv(ordered), "utf8");
+  if (!options.readOnly) {
+    const content = Buffer.from(serializeEnv(ordered), "utf8");
+    let offset = 0;
+    while (offset < content.length) {
+      const written = writeSync(descriptor, content, offset, content.length - offset, offset);
+      if (written === 0) throw new Error("Managed env write made no progress");
+      offset += written;
+    }
+    ftruncateSync(descriptor, content.length);
+  }
 
   return {
     envPath,

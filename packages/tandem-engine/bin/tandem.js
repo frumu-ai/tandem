@@ -489,9 +489,32 @@ async function runAddonCli(args, options = {}) {
 async function runAddonDoctorJson() {
   const addon = getAddonCommand();
   if (!addon) return null;
+  let result;
   try {
-    const res = await captureCommand(addon.command, ["doctor", "--json"], { timeoutMs: 2500 });
-    return JSON.parse(String(res.stdout || "{}"));
+    result = await captureCommand(addon.command, ["doctor", "--json"], { timeoutMs: 2500 });
+  } catch (error) {
+    // An unhealthy runtime is a completed diagnosis, not missing output.
+    // Spawn errors, signals and timeouts are not completed doctor reports.
+    if (!Number.isInteger(error.code) || error.code <= 0) return null;
+    result = error;
+  }
+  try {
+    const report = JSON.parse(String(result.stdout || ""));
+    if (!report || typeof report !== "object" || Array.isArray(report)) return null;
+    // Accept completed unhealthy diagnoses, but not arbitrary JSON objects.
+    // These are the fields consumed by status/open and the health contract.
+    const health = report.engineHealth;
+    const panelPort = typeof report.panelPort === "string" && /^[0-9]+$/.test(report.panelPort)
+      ? Number(report.panelPort) : report.panelPort;
+    if (typeof report.ok !== "boolean"
+      || typeof report.panelHost !== "string" || !report.panelHost.trim()
+      || !Number.isInteger(panelPort) || panelPort < 1 || panelPort > 65535
+      || typeof report.panelPublicUrl !== "string"
+      || typeof report.engineUrl !== "string"
+      || (health !== null && (!health || typeof health !== "object" || Array.isArray(health)
+        || typeof health.ready !== "boolean" || typeof health.healthy !== "boolean"))) return null;
+    if (report.ok && (!health?.ready || !health?.healthy || !report.engineUrl.trim())) return null;
+    return { ...report, panelPort, doctorExitCode: result.code || (report.ok ? 0 : 1) };
   } catch {
     return null;
   }
@@ -722,13 +745,13 @@ async function handlePanelCommand(subcommand, cli, env = process.env) {
       if (report) {
         console.log(`[Tandem] panel: http://${report.panelHost}:${report.panelPort}`);
         console.log(`[Tandem] engine: ${report.engineUrl}`);
-        return 0;
+        return report.doctorExitCode;
       }
       console.log(`[Tandem] panel add-on is installed but did not return a quick status response.`);
       console.log(`[Tandem] try: tandem panel doctor`);
-      return 0;
+      return 1;
     }
-    await runCommand(addon.command, args.slice(1), { stdio: "inherit" });
+    await runCommand(addon.command, args, { stdio: "inherit" });
     return 0;
   }
   await runCommand(addon.command, [subcommand, ...cli.argv.slice(1)], { stdio: "inherit" });
