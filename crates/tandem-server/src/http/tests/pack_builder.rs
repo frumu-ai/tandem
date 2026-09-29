@@ -431,7 +431,7 @@ async fn pack_builder_prompt_run_authority_is_local_and_bound_to_exact_run() {
         &forwarded_headers,
     );
     assert!(
-        crate::http::sessions::prompt_has_local_pack_builder_authority(
+        crate::http::host_authority::prompt_has_local_pack_builder_authority(
             &state,
             &tenant,
             None,
@@ -440,7 +440,7 @@ async fn pack_builder_prompt_run_authority_is_local_and_bound_to_exact_run() {
     );
     for locality in [Some(remote), Some(forwarded), None] {
         assert!(
-            !crate::http::sessions::prompt_has_local_pack_builder_authority(
+            !crate::http::host_authority::prompt_has_local_pack_builder_authority(
                 &state, &tenant, None, locality,
             )
         );
