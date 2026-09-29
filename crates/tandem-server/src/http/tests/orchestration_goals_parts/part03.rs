@@ -674,6 +674,32 @@ async fn hosted_goal_start_requires_live_orchestration_execute_or_owner() {
         .get_orchestration_for_tenant(&other_tenant, "orch-goals", 1)
         .unwrap()
         .unwrap();
+    let mut owner_verified = verified_context("operator");
+    owner_verified.tenant_context = tenant.clone();
+    owner_verified.policy_version = Some(1);
+    let admin_tenant = TenantContext::explicit_user_workspace(
+        "org-a",
+        "dep-a",
+        Some("dep-a".to_string()),
+        "administrator",
+    );
+    let mut admin_verified = verified_context("administrator");
+    admin_verified.tenant_context = admin_tenant.clone();
+    admin_verified.policy_version = Some(1);
+    let unrelated_grant_writer = grants.write().await;
+    for (actor_tenant, actor_verified) in
+        [(&tenant, &owner_verified), (&admin_tenant, &admin_verified)]
+    {
+        state
+            .with_goal_start_commit_authority(
+                actor_tenant,
+                Some(actor_verified),
+                &source,
+                || Ok(()),
+            )
+            .expect("owner and current admin do not depend on unrelated grant writers");
+    }
+    drop(unrelated_grant_writer);
     let stale = crate::http::goals_authority::current_goal_context(
         &state,
         &other_tenant,
@@ -683,6 +709,29 @@ async fn hosted_goal_start_requires_live_orchestration_execute_or_owner() {
     .await
     .unwrap();
     assert!(state.can_start_goal_from_orchestration(&other_tenant, stale.as_ref(), &source,));
+    state
+        .with_goal_start_commit_authority(&other_tenant, Some(&other_verified), &source, || {
+            assert!(
+                grants.try_write().is_err(),
+                "the live object grant must stay locked through commit"
+            );
+            Ok(())
+        })
+        .expect("current Execute grant permits a guarded start");
+    grants.write().await.insert(
+        "goal-source-deny".to_string(),
+        grant_for("exact-orchestration-deny", ResourceKind::Orchestration, "orch-goals")
+            .with_effect(AccessEffect::Deny),
+    );
+    let mut committed_with_live_deny = false;
+    assert!(state
+        .with_goal_start_commit_authority(&other_tenant, Some(&other_verified), &source, || {
+            committed_with_live_deny = true;
+            Ok(())
+        })
+        .is_err());
+    assert!(!committed_with_live_deny, "a live Deny must override Execute");
+    grants.write().await.remove("goal-source-deny");
     grants.write().await.remove("goal-source-grant");
     // This old async projection still contains Execute; the final synchronous
     // projection must not admit a new start after the live grant is removed.
@@ -691,6 +740,14 @@ async fn hosted_goal_start_requires_live_orchestration_execute_or_owner() {
         .current_goal_start_context_before_commit(&other_tenant, Some(&other_verified))
         .unwrap();
     assert!(!state.can_start_goal_from_orchestration(&other_tenant, fresh.as_ref(), &source,));
+    let mut committed_after_revocation = false;
+    assert!(state
+        .with_goal_start_commit_authority(&other_tenant, Some(&other_verified), &source, || {
+            committed_after_revocation = true;
+            Ok(())
+        })
+        .is_err());
+    assert!(!committed_after_revocation);
     let (status, new_start_denied) = dispatch(
         &app,
         goal_actor_post_hosted("other", start_body("grant-revoked-new")),

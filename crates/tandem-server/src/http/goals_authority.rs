@@ -348,11 +348,200 @@ impl AppState {
         Ok(Some(current))
     }
 
+    /// The store calls this only after acquiring its serialized writer lock.
+    /// Keep the hosted snapshot and revocable object-grant read locks held
+    /// through the durable commit, so a revocation during the lock wait wins.
+    pub(crate) fn with_goal_start_commit_authority<T>(
+        &self,
+        tenant: &TenantContext,
+        verified: Option<&VerifiedTenantContext>,
+        orchestration: &OrchestrationSpec,
+        commit: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let denied = || anyhow::anyhow!("goal start not authorized");
+        self.enterprise
+            .hosted_policy
+            .with_current_policy(|policy| {
+                let now = crate::now_ms();
+                let local_access = policy.is_none()
+                    && (tenant.is_local_implicit()
+                        || self.trust_test_tenant_headers.load(Ordering::Relaxed));
+                let mut current = verified.cloned();
+                let mut local_membership_guard = None;
+                let mut access_grant_guard = None;
+                let mut cross_tenant_grant_guard = None;
+                let mut current_admin = false;
+
+                if let Some(current_verified) = current.as_mut() {
+                    if !request_identity_matches(tenant, current_verified) {
+                        return Err(denied());
+                    }
+                    let hosted_memberships = if let Some(policy) = policy {
+                        let memberships = policy
+                            .memberships_for_identity(current_verified, now)
+                            .map_err(|_| denied())?;
+                        let projection = policy
+                            .project_identity(current_verified, now)
+                            .map_err(|_| denied())?;
+                        let deployment = policy.deployment_resource();
+                        if projection
+                            .evaluate_access(
+                                &deployment,
+                                AccessPermission::HostedUse,
+                                DataClass::Internal,
+                                now,
+                            )
+                            .decision
+                            != AccessDecision::Allow
+                        {
+                            return Err(denied());
+                        }
+                        current_admin = projection
+                            .evaluate_access(
+                                &deployment,
+                                AccessPermission::HostedAdmin,
+                                DataClass::Internal,
+                                now,
+                            )
+                            .decision
+                            == AccessDecision::Allow;
+                        current_verified.strict_projection = Some(projection);
+                        Some(memberships)
+                    } else {
+                        // A no-policy signed projection may contain ingress-
+                        // enriched grants. Retain direct grants, then rebuild
+                        // the revocable sources under their read locks.
+                        if let Some(strict) = current_verified.strict_projection.as_mut() {
+                            strict.grants.retain(|grant| {
+                                !matches!(
+                                    grant.grant_source,
+                                    GrantSource::OrganizationUnitMembership
+                                        | GrantSource::CrossTenantGrant
+                                )
+                            });
+                        }
+                        if current_verified.policy_version.is_none() {
+                            current_admin = super::goals_api::verified_has_admin_authority(Some(
+                                current_verified,
+                            ));
+                        }
+                        None
+                    };
+
+                    // Owner, current admin, and local compatibility bypass
+                    // object grants. A direct Execute allow does not: a live
+                    // mutable org-unit Deny can still override that allow.
+                    if current_verified.strict_projection.is_some()
+                        && !self.goal_start_bypasses_object_grants(
+                            tenant,
+                            Some(current_verified),
+                            orchestration,
+                            local_access,
+                            current_admin,
+                        )
+                    {
+                        if hosted_memberships.is_none() {
+                            local_membership_guard = Some(
+                                self.enterprise
+                                    .org_unit_memberships
+                                    .try_read()
+                                    .map_err(|_| denied())?,
+                            );
+                        }
+                        access_grant_guard = Some(
+                            self.enterprise
+                                .org_unit_access_grants
+                                .try_read()
+                                .map_err(|_| denied())?,
+                        );
+                        let memberships = hosted_memberships.unwrap_or_else(|| {
+                            local_membership_guard
+                                .as_ref()
+                                .map(|guard| guard.values().cloned().collect())
+                                .unwrap_or_default()
+                        });
+                        let hosted = policy.is_some();
+                        super::middleware::project_org_unit_grants_into_verified_context(
+                            current_verified,
+                            memberships.iter(),
+                            access_grant_guard
+                                .as_ref()
+                                .expect("access grant guard")
+                                .values()
+                                .filter(|grant| {
+                                    !hosted || super::middleware::local_hosted_data_grant(grant)
+                                }),
+                            now,
+                        );
+                        if !current_verified.tenant_context.is_local_implicit() {
+                            cross_tenant_grant_guard = Some(
+                                self.enterprise
+                                    .cross_tenant_grants
+                                    .try_read()
+                                    .map_err(|_| denied())?,
+                            );
+                            super::cross_tenant_grants::project_inbound_cross_tenant_grants(
+                                current_verified,
+                                cross_tenant_grant_guard
+                                    .as_ref()
+                                    .expect("cross-tenant grant guard")
+                                    .values(),
+                                now,
+                            );
+                        }
+                    }
+                } else if !local_access {
+                    return Err(denied());
+                }
+
+                if !self.can_start_goal_from_orchestration_projected(
+                    tenant,
+                    current.as_ref(),
+                    orchestration,
+                    local_access,
+                    current_admin,
+                ) {
+                    return Err(anyhow::anyhow!("goal not found"));
+                }
+                let outcome = commit();
+                drop(cross_tenant_grant_guard);
+                drop(access_grant_guard);
+                drop(local_membership_guard);
+                outcome
+            })
+            .map_err(|_| denied())?
+    }
+
     pub(crate) fn can_start_goal_from_orchestration(
         &self,
         tenant: &TenantContext,
         current: Option<&VerifiedTenantContext>,
         orchestration: &OrchestrationSpec,
+    ) -> bool {
+        let local_access = unverified_local_access(self, tenant);
+        let current_admin = current.is_some_and(|current| {
+            if current.policy_version.is_some() {
+                self.authorize_current_hosted_admin(current).is_ok()
+            } else {
+                super::goals_api::verified_has_admin_authority(Some(current))
+            }
+        });
+        self.can_start_goal_from_orchestration_projected(
+            tenant,
+            current,
+            orchestration,
+            local_access,
+            current_admin,
+        )
+    }
+
+    fn goal_start_bypasses_object_grants(
+        &self,
+        tenant: &TenantContext,
+        current: Option<&VerifiedTenantContext>,
+        orchestration: &OrchestrationSpec,
+        local_access: bool,
+        current_admin: bool,
     ) -> bool {
         if !super::tenant_matches(tenant, &orchestration.tenant_context) {
             return false;
@@ -361,11 +550,11 @@ impl AppState {
         // without converting the implicit single-tenant workspace into a
         // private hosted resource. A configured (even unsynced) hosted source
         // disables this compatibility path.
-        if tenant.is_local_implicit() && unverified_local_access(self, tenant) {
+        if tenant.is_local_implicit() && local_access {
             return true;
         }
         let Some(current) = current else {
-            return unverified_local_access(self, tenant);
+            return local_access;
         };
         if !request_identity_matches(tenant, current) {
             return false;
@@ -384,14 +573,42 @@ impl AppState {
         if creator == Some(actor) {
             return true;
         }
-        let current_admin = if current.policy_version.is_some() {
-            self.authorize_current_hosted_admin(current).is_ok()
-        } else {
-            super::goals_api::verified_has_admin_authority(Some(current))
-        };
         if current_admin {
             return true;
         }
+
+        false
+    }
+
+    /// Use a projection and admin decision obtained under the caller's policy
+    /// read guard. This avoids reentering the policy lock during a commit.
+    fn can_start_goal_from_orchestration_projected(
+        &self,
+        tenant: &TenantContext,
+        current: Option<&VerifiedTenantContext>,
+        orchestration: &OrchestrationSpec,
+        local_access: bool,
+        current_admin: bool,
+    ) -> bool {
+        if self.goal_start_bypasses_object_grants(
+            tenant,
+            current,
+            orchestration,
+            local_access,
+            current_admin,
+        ) {
+            return true;
+        }
+        if !super::tenant_matches(tenant, &orchestration.tenant_context) {
+            return false;
+        }
+        let Some(current) = current else {
+            return false;
+        };
+        if !request_identity_matches(tenant, current) {
+            return false;
+        }
+        let actor = current.human_actor.actor_id.trim();
 
         let Some(strict) = current.strict_projection.as_ref() else {
             return false;

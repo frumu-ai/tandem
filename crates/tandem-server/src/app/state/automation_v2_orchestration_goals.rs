@@ -214,12 +214,20 @@ impl AppState {
         let current = self.current_goal_start_context_before_commit(tenant, verified)?;
         let outcome =
             if self.can_start_goal_from_orchestration(tenant, current.as_ref(), &orchestration) {
-                let outcome = store.start_goal(&goal, &root_run, &link, actor)?;
-                if let StartGoalOutcome::AlreadyStarted { goal, .. } = &outcome {
-                    if !self.can_inspect_goal_start_replay(tenant, current.as_ref(), goal) {
-                        bail!("goal not found");
-                    }
-                }
+                let outcome = store.start_goal_with_commit_guard(
+                    &goal,
+                    &root_run,
+                    &link,
+                    actor,
+                    |commit| {
+                        self.with_goal_start_commit_authority(
+                            tenant,
+                            verified,
+                            &orchestration,
+                            || commit(),
+                        )
+                    },
+                )?;
                 outcome
             } else {
                 // Source access may have been revoked after the original start.
@@ -259,6 +267,15 @@ impl AppState {
                     root_run: stored_root_run,
                 }
             };
+        // The store may have waited for its writer lock (and the read-only
+        // replay path may have waited on storage). Do not return a stored goal
+        // to the tool caller using the projection from before that wait.
+        if let StartGoalOutcome::AlreadyStarted { goal, .. } = &outcome {
+            let replay_current = self.current_goal_start_context_before_commit(tenant, verified)?;
+            if !self.can_inspect_goal_start_replay(tenant, replay_current.as_ref(), goal) {
+                bail!("goal not found");
+            }
+        }
         if let StartGoalOutcome::Created { root_run, goal } = &outcome {
             self.automation_v2_runs
                 .write()

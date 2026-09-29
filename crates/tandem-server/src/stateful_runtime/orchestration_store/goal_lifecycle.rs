@@ -67,6 +67,22 @@ impl OrchestrationStateStore {
         link: &GoalRunLink,
         actor: &PrincipalRef,
     ) -> anyhow::Result<StartGoalOutcome> {
+        self.start_goal_with_commit_guard(goal, root_run, link, actor, |commit| commit())
+    }
+
+    /// Invoke the authority continuation only after the backend's serialized
+    /// writer lock has been acquired. The continuation must keep revocable
+    /// authority read guards alive while it calls `commit`.
+    pub(crate) fn start_goal_with_commit_guard(
+        &self,
+        goal: &LongRunningGoal,
+        root_run: &AutomationV2RunRecord,
+        link: &GoalRunLink,
+        actor: &PrincipalRef,
+        guard: impl FnOnce(
+            &mut dyn FnMut() -> anyhow::Result<StartGoalOutcome>,
+        ) -> anyhow::Result<StartGoalOutcome>,
+    ) -> anyhow::Result<StartGoalOutcome> {
         if link.goal_id != goal.goal_id || link.run_id != root_run.run_id {
             bail!("goal start lineage must bind the goal to its root run");
         }
@@ -79,6 +95,8 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // Authorization before this point can go stale while SQLite waits
+            // for BEGIN IMMEDIATE or Postgres waits for its advisory lock.
             let existing = transaction
                 .query_row(
                     "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
@@ -128,6 +146,15 @@ impl OrchestrationStateStore {
                 });
             }
 
+            // A replay does not create anything. Keep it available to a
+            // caller who can still inspect the stored goal even if source
+            // Execute was revoked during the writer-lock wait. The app checks
+            // current replay visibility before returning the stored record.
+            let mut transaction = Some(transaction);
+            let mut commit_once = || {
+                let transaction = transaction
+                    .take()
+                    .context("goal start transaction already consumed")?;
             upsert_goal(&transaction, goal)?;
             upsert_automation_run(&transaction, root_run)?;
             transaction.execute(
@@ -170,6 +197,13 @@ impl OrchestrationStateStore {
                 goal: goal.clone(),
                 root_run: root_run.clone(),
             })
+            };
+            let outcome = guard(&mut commit_once)?;
+            drop(commit_once);
+            if transaction.is_some() {
+                bail!("goal start authority guard skipped durable commit");
+            }
+            Ok(outcome)
         })
     }
 
