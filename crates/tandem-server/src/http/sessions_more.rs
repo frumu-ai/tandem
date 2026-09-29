@@ -300,9 +300,9 @@ async fn persist_direct_kb_answer_messages(
     if question.trim().is_empty() || answer.trim().is_empty() {
         return Ok(());
     }
-    // Keep the published policy stable across both transcript writes. The
-    // per-message callback checks it again after SQLite's writer wait and
-    // holds the snapshot read lock through each durable commit.
+    // Keep the published policy stable while SQLite waits for its writer lock.
+    // The commit callback checks it again under that lock and holds the
+    // snapshot read lock through the atomic transcript commit.
     let _policy_publication = state.enterprise.hosted_policy.lock_publication().await;
     let user_message = Message::new(
         MessageRole::User,
@@ -319,20 +319,6 @@ async fn persist_direct_kb_answer_messages(
             },
         ],
     );
-    let commit_state = state.clone();
-    let commit_tenant = tenant_context.clone();
-    let commit_verified = verified_tenant_context.cloned();
-    state
-        .storage
-        .append_message_with_commit_guard(session_id, user_message, move |commit| {
-            commit_direct_kb_message_write(
-                &commit_state,
-                &commit_tenant,
-                commit_verified.as_ref(),
-                commit,
-            )
-        })
-        .await?;
     let assistant_message = Message::new(
         MessageRole::Assistant,
         vec![MessagePart::Text {
@@ -344,14 +330,18 @@ async fn persist_direct_kb_answer_messages(
     let commit_verified = verified_tenant_context.cloned();
     state
         .storage
-        .append_message_with_commit_guard(session_id, assistant_message, move |commit| {
-            commit_direct_kb_message_write(
-                &commit_state,
-                &commit_tenant,
-                commit_verified.as_ref(),
-                commit,
-            )
-        })
+        .append_messages_with_commit_guard(
+            session_id,
+            vec![user_message, assistant_message],
+            move |commit| {
+                commit_direct_kb_message_write(
+                    &commit_state,
+                    &commit_tenant,
+                    commit_verified.as_ref(),
+                    commit,
+                )
+            },
+        )
         .await
 }
 
@@ -448,6 +438,10 @@ mod direct_kb_persistence_tests {
             &persisted.messages[2].parts[1],
             MessagePart::ToolInvocation { result: Some(value), .. }
                 if value == &json!("ordinary retrieved excerpt")
+        ));
+        assert!(matches!(
+            &persisted.messages[3].parts[0],
+            MessagePart::Text { text } if text == "ordinary answer"
         ));
     }
 

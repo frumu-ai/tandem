@@ -519,6 +519,24 @@ impl Storage {
         .await
     }
 
+    /// Append a batch under one SQLite transaction and one authority guard.
+    /// Either every message is committed in order or none is persisted.
+    pub async fn append_messages_with_commit_guard<G>(
+        &self,
+        session_id: &str,
+        messages: Vec<Message>,
+        guard: G,
+    ) -> anyhow::Result<()>
+    where
+        G: FnOnce(&mut dyn FnMut() -> anyhow::Result<()>) -> anyhow::Result<()> + Send + 'static,
+    {
+        let session_id = session_id.to_string();
+        self.run_blocking(move |repository| {
+            repository.append_messages_with_commit_guard(&session_id, &messages, guard)
+        })
+        .await
+    }
+
     pub async fn append_message_part(
         &self,
         session_id: &str,

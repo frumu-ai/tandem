@@ -260,6 +260,15 @@ impl SessionRepository {
         message: &Message,
         guard: impl FnOnce(&mut dyn FnMut() -> Result<()>) -> Result<()>,
     ) -> Result<()> {
+        self.append_messages_with_commit_guard(session_id, std::slice::from_ref(message), guard)
+    }
+
+    pub(crate) fn append_messages_with_commit_guard(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+        guard: impl FnOnce(&mut dyn FnMut() -> Result<()>) -> Result<()>,
+    ) -> Result<()> {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -284,18 +293,21 @@ impl SessionRepository {
                     if !exists {
                         anyhow::bail!("session not found for append_message");
                     }
-                    transaction.execute(
-                        "INSERT INTO session_messages (session_id, ordinal, message_id, role, message_json)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![
-                            session_id,
-                            next_ordinal,
-                            message.id,
-                            message_role_name(&message.role),
-                            serde_json::to_string(&message_header(message))?,
-                        ],
-                    )?;
-                    insert_message_parts(&transaction, session_id, next_ordinal, &message.parts)?;
+                    for (offset, message) in messages.iter().enumerate() {
+                        let ordinal = next_ordinal + offset as i64;
+                        transaction.execute(
+                            "INSERT INTO session_messages (session_id, ordinal, message_id, role, message_json)
+                             VALUES (?1, ?2, ?3, ?4, ?5)",
+                            params![
+                                session_id,
+                                ordinal,
+                                message.id,
+                                message_role_name(&message.role),
+                                serde_json::to_string(&message_header(message))?,
+                            ],
+                        )?;
+                        insert_message_parts(&transaction, session_id, ordinal, &message.parts)?;
+                    }
                     touch_session(&transaction, session_id)?;
                     transaction.commit()?;
                     committed = true;
