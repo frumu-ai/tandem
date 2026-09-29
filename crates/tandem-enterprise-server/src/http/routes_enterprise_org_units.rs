@@ -214,17 +214,28 @@ pub(super) async fn list_org_units(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<EnterpriseOrgUnitsResponse> {
-    let mut org_units = state
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
+    let view = state
         .enterprise_org_unit_view(&tenant_context)
         .await
-        .map_err(registry_error)?
-        .units;
+        .map_err(registry_error)?;
+    let mut org_units = view.units;
     org_units.sort_by(|left, right| {
         left.taxonomy_id
             .cmp(&right.taxonomy_id)
             .then_with(|| left.unit_id.cmp(&right.unit_id))
     });
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
 
     Ok(Json(EnterpriseOrgUnitsResponse {
         base: storage_base(tenant_context, request_principal),
@@ -237,12 +248,18 @@ pub(super) async fn list_org_unit_memberships(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<EnterpriseOrgUnitMembershipsResponse> {
-    let mut memberships = state
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
+    let view = state
         .enterprise_org_unit_view(&tenant_context)
         .await
-        .map_err(registry_error)?
-        .memberships;
+        .map_err(registry_error)?;
+    let mut memberships = view.memberships;
     memberships.sort_by(|left, right| {
         left.unit
             .id
@@ -250,6 +267,11 @@ pub(super) async fn list_org_unit_memberships(
             .then_with(|| left.member.id.cmp(&right.member.id))
             .then_with(|| left.membership_id.cmp(&right.membership_id))
     });
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
 
     Ok(Json(EnterpriseOrgUnitMembershipsResponse {
         base: storage_base(tenant_context, request_principal),
@@ -262,12 +284,18 @@ pub(super) async fn list_org_unit_access_grants(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<EnterpriseOrgUnitAccessGrantsResponse> {
-    let mut access_grants = state
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
+    let view = state
         .enterprise_org_unit_view(&tenant_context)
         .await
-        .map_err(registry_error)?
-        .access_grants;
+        .map_err(registry_error)?;
+    let mut access_grants = view.access_grants;
     access_grants.sort_by(|left, right| {
         left.unit
             .id
@@ -275,6 +303,11 @@ pub(super) async fn list_org_unit_access_grants(
             .then_with(|| left.resource.resource_id.cmp(&right.resource.resource_id))
             .then_with(|| left.grant_id.cmp(&right.grant_id))
     });
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
 
     Ok(Json(EnterpriseOrgUnitAccessGrantsResponse {
         base: storage_base(tenant_context, request_principal),
@@ -288,7 +321,13 @@ pub(super) async fn list_effective_org_unit_grants(
     Query(query): Query<EffectiveOrgUnitGrantsQuery>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<EnterpriseOrgUnitEffectiveGrantsResponse> {
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
     let member_id = validate_external_id("member_id", &query.member_id)?;
     let member = PrincipalRef::new(query.member_kind, member_id);
     let now = now_ms();
@@ -319,6 +358,11 @@ pub(super) async fn list_effective_org_unit_grants(
         }
     }
     grants.sort_by(|left, right| left.grant_id.cmp(&right.grant_id));
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
 
     Ok(Json(EnterpriseOrgUnitEffectiveGrantsResponse {
         base: storage_base(tenant_context, request_principal),

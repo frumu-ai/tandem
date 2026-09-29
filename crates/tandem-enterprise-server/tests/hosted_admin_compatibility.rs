@@ -8,7 +8,10 @@ use axum::{
 };
 use serde_json::{json, Value};
 use tandem_enterprise_contract::{
-    hosted_policy::{role_capabilities, HostedPolicyBundle},
+    hosted_policy::{
+        role_capabilities, HostedPolicyBundle, HostedPolicyGrant, HostedPolicyMembership,
+        HostedPolicyUnit, HostedPolicyUser,
+    },
     AccessEffect, AuthorityChain, HumanActor, IngestionJob, IngestionJobState, IngestionQuarantine,
     RequestPrincipal, TenantContext, VerifiedTenantContext,
 };
@@ -90,6 +93,42 @@ fn revoked_admin_bundle(mut bundle: HostedPolicyBundle) -> HostedPolicyBundle {
     bundle
 }
 
+fn with_org_unit_roster(mut bundle: HostedPolicyBundle) -> HostedPolicyBundle {
+    bundle.users.push(HostedPolicyUser {
+        id: "bob".into(),
+        email: None,
+        username: None,
+        role: "member".into(),
+        capabilities: role_capabilities("member")
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        is_active: true,
+        email_verified: true,
+    });
+    bundle.org_units.push(HostedPolicyUnit {
+        id: "eng".into(),
+        slug: "eng".into(),
+        display_name: "Engineering".into(),
+        kind: "department".into(),
+        state: "active".into(),
+    });
+    bundle.org_unit_memberships.push(HostedPolicyMembership {
+        unit_id: "eng".into(),
+        user_id: "bob".into(),
+    });
+    bundle.deployment_grants.push(HostedPolicyGrant {
+        id: "eng-view".into(),
+        deployment_id: Some("dep-a".into()),
+        principal_kind: "org_unit".into(),
+        principal_id: "eng".into(),
+        resource_kind: "deployment".into(),
+        resource_id: "dep-a".into(),
+        permissions: vec!["hosted.view".into()],
+    });
+    bundle
+}
+
 fn app(state: AppState, verified: VerifiedTenantContext) -> Router {
     apply_routes(Router::new())
         .layer(Extension(verified.tenant_context.clone()))
@@ -112,6 +151,90 @@ fn request(method: &str, path: &str, body: Value) -> Request<Body> {
 
 fn unit(taxonomy: &str) -> Value {
     json!({"unit_id": "hr", "taxonomy_id": taxonomy, "display_name": "Human Resources", "kind": "department"})
+}
+
+const ORG_UNIT_READ_PATHS: [&str; 4] = [
+    "/enterprise/org-units",
+    "/enterprise/org-unit-memberships",
+    "/enterprise/org-unit-access-grants",
+    "/enterprise/org-unit-access-grants/effective?member_kind=human_user&member_id=bob",
+];
+
+#[tokio::test]
+async fn hosted_org_unit_roster_and_grants_require_current_admin() {
+    for (role, delegated_admin, allowed) in [
+        ("viewer", false, false),
+        ("member", false, false),
+        ("admin", false, true),
+        ("owner", false, true),
+        ("viewer", true, true),
+    ] {
+        let state = test_state().await;
+        let (verified, bundle) = projected_context(role, delegated_admin);
+        install_hosted_policy_snapshot(&state, with_org_unit_roster(bundle)).unwrap();
+        let app = app(state, verified);
+        for path in ORG_UNIT_READ_PATHS {
+            let response = app
+                .clone()
+                .oneshot(request("GET", path, json!({})))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if allowed {
+                    StatusCode::OK
+                } else {
+                    StatusCode::FORBIDDEN
+                },
+                "{role}, delegated={delegated_admin}: GET {path}"
+            );
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 16_384).await.unwrap())
+                    .unwrap();
+            if allowed {
+                assert_eq!(body["count"], 1, "authorized GET {path}: {body}");
+                if path == "/enterprise/org-unit-memberships" {
+                    assert_eq!(body["memberships"][0]["member"]["id"], "bob");
+                }
+            } else {
+                assert_eq!(body["code"], "ENTERPRISE_ADMIN_REQUIRED");
+                assert!(body.get("memberships").is_none());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn hosted_org_unit_roster_read_rechecks_admin_after_registry_wait() {
+    let state = test_state().await;
+    let (verified, bundle) = projected_context("admin", false);
+    let bundle = with_org_unit_roster(bundle);
+    install_hosted_policy_snapshot(&state, bundle.clone()).unwrap();
+    let held_registry = state.enterprise.org_units.write().await;
+    let app = app(state.clone(), verified);
+    let request_task = tokio::spawn(async move {
+        app.oneshot(request(
+            "GET",
+            "/enterprise/org-unit-memberships",
+            json!({}),
+        ))
+        .await
+        .unwrap()
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !request_task.is_finished(),
+        "read should wait for the registry"
+    );
+    install_hosted_policy_snapshot(&state, revoked_admin_bundle(bundle)).unwrap();
+    drop(held_registry);
+
+    let response = request_task.await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(body["code"], "ENTERPRISE_ADMIN_REQUIRED");
+    assert!(body.get("memberships").is_none());
 }
 
 #[tokio::test]
@@ -372,6 +495,14 @@ async fn legacy_enterprise_admin_read_and_mutation_remain_available() {
         let response = app
             .clone()
             .oneshot(request(method, path, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "legacy admin: {path}");
+    }
+    for path in ORG_UNIT_READ_PATHS {
+        let response = app
+            .clone()
+            .oneshot(request("GET", path, json!({})))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK, "legacy admin: {path}");
