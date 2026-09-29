@@ -3,7 +3,6 @@
 
 use std::{collections::HashSet, sync::OnceLock};
 
-use futures::StreamExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -20,6 +19,7 @@ use session_kb_security::suspicious_kb_retrieval_query_reason;
 mod session_kb_security;
 
 const STRICT_KB_FALLBACK: &str = "I do not see that in the connected knowledgebase.";
+const STRICT_KB_AUTHORITY_REVOKED: &str = "Knowledgebase access was revoked.";
 const STRICT_KB_FETCH_FALLBACK: &str = "I found a likely matching document, but could not retrieve enough content to answer safely from the knowledgebase.";
 const STRICT_KB_MODEL_FAILURE_FALLBACK: &str =
     "I found the knowledgebase evidence, but the model response failed while generating the answer. Please try again.";
@@ -310,7 +310,18 @@ pub(super) async fn render_strict_kb_direct_answer(
                                 (label, answer, evidence_count)
                             }
                         }
-                        Ok(None) | Err(_) => (label, answer, evidence_count),
+                        Ok(None) => (label, answer, evidence_count),
+                        Err(error) => {
+                            if strict_kb_synthesis_authority_revoked(
+                                state,
+                                tenant_context,
+                                verified_tenant_context,
+                                &error,
+                            ) {
+                                return Some(strict_kb_revoked_answer());
+                            }
+                            (label, answer, evidence_count)
+                        }
                     }
                 } else {
                     (label, answer, evidence_count)
@@ -344,7 +355,18 @@ pub(super) async fn render_strict_kb_direct_answer(
                                 ("supported".to_string(), answer, evidence_count)
                             }
                         }
-                        Ok(None) | Err(_) => ("supported".to_string(), answer, evidence_count),
+                        Ok(None) => ("supported".to_string(), answer, evidence_count),
+                        Err(error) => {
+                            if strict_kb_synthesis_authority_revoked(
+                                state,
+                                tenant_context,
+                                verified_tenant_context,
+                                &error,
+                            ) {
+                                return Some(strict_kb_revoked_answer());
+                            }
+                            ("supported".to_string(), answer, evidence_count)
+                        }
                     }
                 } else {
                     ("supported".to_string(), answer, evidence_count)
@@ -358,6 +380,9 @@ pub(super) async fn render_strict_kb_direct_answer(
             }
         }
     };
+    if strict_kb_synthesis_authority_revoked(state, tenant_context, verified_tenant_context, "") {
+        return Some(strict_kb_revoked_answer());
+    }
     sources = merged_sources(sources, Vec::new());
     let answer_text = append_source_footer(answer_text, &sources);
     Some((
@@ -368,6 +393,37 @@ pub(super) async fn render_strict_kb_direct_answer(
             evidence_count,
         },
     ))
+}
+
+fn strict_kb_revoked_answer() -> (String, StrictKbGroundingOutcome) {
+    (
+        STRICT_KB_AUTHORITY_REVOKED.to_string(),
+        StrictKbGroundingOutcome {
+            support: "blocked".to_string(),
+            sources: Vec::new(),
+            evidence_count: 0,
+        },
+    )
+}
+
+fn strict_kb_synthesis_authority_revoked(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    error: &str,
+) -> bool {
+    if error.contains(crate::http::session_run_retry::DIRECT_PROVIDER_AUTHORITY_REVOKED) {
+        return true;
+    }
+    crate::http::session_run_retry::DirectProviderStreamAuthority::new(
+        state,
+        tenant_context,
+        verified_tenant_context,
+        crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
+        CancellationToken::new(),
+    )
+    .check()
+    .is_err()
 }
 
 fn latest_exchange_indexes(session: &tandem_types::Session) -> Option<(usize, usize)> {
@@ -1138,6 +1194,13 @@ async fn synthesize_strict_kb_answer(
     .await?;
     let messages = prepared.messages;
     let cancel = CancellationToken::new();
+    let authority = crate::http::session_run_retry::DirectProviderStreamAuthority::new(
+        state,
+        tenant_context,
+        verified_tenant_context,
+        crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
+        cancel.clone(),
+    );
     state.event_bus.publish(tandem_types::EngineEvent::new(
         "context.budget.bypassed",
         json!({
@@ -1157,7 +1220,7 @@ async fn synthesize_strict_kb_answer(
         ToolMode::None,
         None,
         tandem_types::SamplingParams::default(),
-        cancel,
+        cancel.clone(),
     );
     let stream = match crate::http::session_run_retry::scope_provider_auth_for_tenant(
         state,
@@ -1193,7 +1256,11 @@ async fn synthesize_strict_kb_answer(
     };
     tokio::pin!(stream);
     let mut completion = String::new();
-    while let Some(chunk) = stream.next().await {
+    while let Some(chunk) = authority
+        .next_chunk(&mut stream)
+        .await
+        .map_err(str::to_string)?
+    {
         match chunk {
             Ok(StreamChunk::TextDelta(delta)) => {
                 let delta = strip_model_control_markers(&delta);
@@ -1223,74 +1290,11 @@ async fn synthesize_strict_kb_answer(
             }
         }
     }
+    authority.check().map_err(str::to_string)?;
     Ok(parse_strict_synthesis_response(&completion))
 }
 
-async fn retry_strict_kb_non_streaming_synthesis(
-    state: &AppState,
-    provider_id: &str,
-    model_id: Option<&str>,
-    messages: &[ChatMessage],
-    stream_error: &str,
-    session_id: &str,
-    run_id: &str,
-    tenant_context: &TenantContext,
-    verified_tenant_context: Option<&VerifiedTenantContext>,
-) -> Result<Option<StrictKbSynthesisResponse>, String> {
-    tracing::warn!(
-        error = %stream_error,
-        "strict KB synthesis stream failed; retrying with non-streamed completion"
-    );
-    let prompt = messages
-        .iter()
-        .map(|message| format!("{}:\n{}", message.role, message.content))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let fallback_messages = [ChatMessage {
-        role: String::new(),
-        content: prompt,
-        attachments: Vec::new(),
-    }];
-    let operation_id = format!("{session_id}:kb_synthesis:completion_fallback");
-    let prepared = crate::provider_egress::prepare_chat_messages(
-        state,
-        Some(tenant_context),
-        verified_tenant_context,
-        Some(run_id),
-        session_id,
-        &operation_id,
-        "server.session_kb_grounding.completion_fallback",
-        crate::provider_egress::ServerProviderEgressKind::KnowledgeBase,
-        provider_id,
-        model_id,
-        &fallback_messages,
-    )
-    .await?;
-    let prompt = prepared
-        .messages
-        .first()
-        .map(|message| message.content.as_str())
-        .unwrap_or_default();
-    let dispatch = state.providers.complete_with_egress_permit(
-        &prepared.permit,
-        Some(provider_id),
-        prompt,
-        model_id,
-    );
-    crate::http::session_run_retry::scope_provider_auth_for_tenant(
-        state,
-        tenant_context,
-        verified_tenant_context,
-        crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
-        Some(session_id),
-        Some(run_id),
-        Some(provider_id),
-        dispatch,
-    )
-    .await
-    .map_err(|error| error.to_string())
-    .map(|completion| parse_strict_synthesis_response(&completion))
-}
+include!("session_kb_grounding_fallback.rs");
 
 fn should_retry_strict_kb_completion_fallback(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();

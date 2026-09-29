@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use super::session_kb_grounding::{
     apply_strict_kb_grounding_after_run, policy_answer_question_tool,
-    render_strict_kb_direct_answer, tool_allowlist_for_kb_grounding,
+    render_strict_kb_direct_answer, tool_allowlist_for_kb_grounding, StrictKbGroundingOutcome,
 };
 use super::sessions_actor_scope::{ensure_same_session_actor, session_visible_to_actor};
 use super::*;
@@ -1095,7 +1095,7 @@ pub(super) async fn execute_run(
                             )
                             .await
                             {
-                                persist_direct_kb_answer_messages(
+                                let persisted = persist_direct_kb_answer_messages(
                                     &state,
                                     &session_id,
                                     &question,
@@ -1103,8 +1103,24 @@ pub(super) async fn execute_run(
                                     args.clone(),
                                     &output,
                                     &answer,
+                                    &outcome,
+                                    &tenant_context,
+                                    verified_tenant_context.as_ref(),
                                 )
-                                .await?;
+                                .await;
+                                if let Err(error) = persisted {
+                                    if error.is::<DirectKbTranscriptAuthorityDenied>() {
+                                        finish_direct_kb_authority_denied_run(
+                                            &state,
+                                            &session_id,
+                                            &run_id,
+                                            &tenant_context,
+                                        )
+                                        .await;
+                                        return Ok(());
+                                    }
+                                    return Err(error);
+                                }
                                 direct_kb_outcome = Some(outcome);
                                 tracing::info!(
                                     prefix = "STRICT_KB_DIRECT_ANSWER",
@@ -1333,48 +1349,6 @@ async fn persist_session_error_message(
         }],
     );
     state.storage.append_message(session_id, msg).await
-}
-
-async fn persist_direct_kb_answer_messages(
-    state: &AppState,
-    session_id: &str,
-    question: &str,
-    tool_name: &str,
-    tool_args: Value,
-    tool_output: &str,
-    answer: &str,
-) -> anyhow::Result<()> {
-    if question.trim().is_empty() || answer.trim().is_empty() {
-        return Ok(());
-    }
-    let user_message = Message::new(
-        MessageRole::User,
-        vec![
-            MessagePart::Text {
-                text: question.trim().to_string(),
-            },
-            MessagePart::ToolInvocation {
-                tool: tool_name.to_string(),
-                args: tool_args,
-                result: Some(Value::String(tool_output.to_string())),
-                error: None,
-            },
-        ],
-    );
-    state
-        .storage
-        .append_message(session_id, user_message)
-        .await?;
-    let assistant_message = Message::new(
-        MessageRole::Assistant,
-        vec![MessagePart::Text {
-            text: answer.trim().to_string(),
-        }],
-    );
-    state
-        .storage
-        .append_message(session_id, assistant_message)
-        .await
 }
 
 pub(super) fn sse_run_stream(

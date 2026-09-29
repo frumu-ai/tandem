@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-use futures::StreamExt;
 use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
 use tandem_providers::{ChatMessage, StreamChunk, TokenUsage};
 use tandem_types::ToolMode;
@@ -114,6 +113,15 @@ pub(crate) async fn invoke_planner_provider(
             attachments: Vec::new(),
         }];
         let session = state.storage.get_session(session_id).await;
+        let authority = crate::http::session_run_retry::DirectProviderStreamAuthority::new(
+            state,
+            tenant_context,
+            session
+                .as_ref()
+                .and_then(|session| session.verified_tenant_context.as_ref()),
+            crate::http::session_run_retry::PromptExecutionSurface::Planner,
+            cancel.clone(),
+        );
         let operation_id = format!("{session_id}:workflow_planner");
         let prepared = crate::provider_egress::prepare_chat_messages(
             state,
@@ -229,7 +237,10 @@ pub(crate) async fn invoke_planner_provider(
             Err(error) => {
                 let error_text = error.to_string();
                 if should_retry_planner_completion_fallback(&error_text) {
-                    return completion_fallback().await;
+                    return authority
+                        .guarded_future(completion_fallback())
+                        .await
+                        .map_err(planner_failure)?;
                 }
                 return Err(planner_failure(&error_text));
             }
@@ -253,7 +264,11 @@ pub(crate) async fn invoke_planner_provider(
         let mut last_progress_chars = 0usize;
         let mut last_progress_at = std::time::Instant::now();
         let mut usage: Option<TokenUsage> = None;
-        while let Some(chunk) = stream.next().await {
+        while let Some(chunk) = authority
+            .next_chunk(&mut stream)
+            .await
+            .map_err(planner_failure)?
+        {
             match chunk {
                 Ok(StreamChunk::TextDelta(delta)) => {
                     response_chars = response_chars.saturating_add(delta.chars().count());
@@ -342,12 +357,16 @@ pub(crate) async fn invoke_planner_provider(
                 Err(error) => {
                     let error_text = error.to_string();
                     if should_retry_planner_completion_fallback(&error_text) {
-                        return completion_fallback().await;
+                        return authority
+                            .guarded_future(completion_fallback())
+                            .await
+                            .map_err(planner_failure)?;
                     }
                     return Err(planner_failure(&error_text));
                 }
             }
         }
+        authority.check().map_err(planner_failure)?;
         Ok::<(String, Option<TokenUsage>, usize), tandem_plan_compiler::api::PlannerInvocationFailure>(
             (output, usage, response_chars),
         )

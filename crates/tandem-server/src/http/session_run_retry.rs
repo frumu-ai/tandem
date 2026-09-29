@@ -9,16 +9,19 @@
 //! replayed, so tool calls and other side effects completed earlier in a run
 //! remain at-most-once.
 
+use futures::{Stream, StreamExt};
 use serde_json::json;
 use tandem_data_boundary::SensitiveDataClass;
 use tandem_providers::{ProviderAuthRecovery, ProviderDispatchAuthority};
 use tandem_types::{SendMessageRequest, TenantContext, VerifiedTenantContext};
+use tokio_util::sync::CancellationToken;
 
 use super::sessions::publish_tenant_event;
 use crate::http::AppState;
 
 const OPENAI_CODEX_PROVIDER_ID: &str = "openai-codex";
 const DISPATCH_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const DIRECT_PROVIDER_AUTHORITY_REVOKED: &str = "hosted_provider_authority_revoked";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptExecutionSurface {
@@ -69,6 +72,115 @@ impl PromptExecutionSurface {
             Self::Session | Self::Channel => {}
         }
         classes
+    }
+}
+
+/// Direct provider streams outlive their dispatch-time authority check. Keep
+/// their hosted grant live while a response is consumed, including idle waits.
+/// This is intentionally separate from engine-owned streams, which have their
+/// own execution lifecycle and cancellation boundary.
+pub(crate) struct DirectProviderStreamAuthority<'a> {
+    state: &'a AppState,
+    tenant: &'a TenantContext,
+    verified: Option<&'a VerifiedTenantContext>,
+    surface: PromptExecutionSurface,
+    cancel: CancellationToken,
+}
+
+impl<'a> DirectProviderStreamAuthority<'a> {
+    pub(crate) fn new(
+        state: &'a AppState,
+        tenant: &'a TenantContext,
+        verified: Option<&'a VerifiedTenantContext>,
+        surface: PromptExecutionSurface,
+        cancel: CancellationToken,
+    ) -> Self {
+        Self {
+            state,
+            tenant,
+            verified,
+            surface,
+            cancel,
+        }
+    }
+
+    pub(crate) fn check(&self) -> Result<(), &'static str> {
+        let result = if self.surface == PromptExecutionSurface::Planner {
+            super::workflow_planner_policy::require_live_planner_write(
+                self.state,
+                self.tenant,
+                self.verified,
+            )
+        } else {
+            self.state
+                .enterprise
+                .hosted_policy
+                .with_current_policy(|policy| {
+                    super::require_hosted_permission_under_policy(
+                        self.tenant,
+                        self.verified,
+                        tandem_types::AccessPermission::HostedUse,
+                        policy,
+                    )
+                    .map_err(|_| "hosted_provider_authority_revoked")
+                })
+                .and_then(|decision| decision)
+        };
+        if result.is_err() {
+            self.cancel.cancel();
+            return Err(DIRECT_PROVIDER_AUTHORITY_REVOKED);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn next_chunk<S>(
+        &self,
+        stream: &mut S,
+    ) -> Result<Option<S::Item>, &'static str>
+    where
+        S: Stream + Unpin,
+    {
+        self.check()?;
+        let next = stream.next();
+        tokio::pin!(next);
+        let mut ticker = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        );
+        loop {
+            tokio::select! {
+                biased;
+                _ = ticker.tick() => self.check()?,
+                chunk = &mut next => {
+                    self.check()?;
+                    return Ok(chunk);
+                }
+            }
+        }
+    }
+
+    /// The direct completion fallbacks have no stream to poll. Dropping their
+    /// future on denial stops the in-flight request before accepting output.
+    pub(crate) async fn guarded_future<F>(&self, future: F) -> Result<F::Output, &'static str>
+    where
+        F: std::future::Future,
+    {
+        self.check()?;
+        tokio::pin!(future);
+        let mut ticker = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        );
+        loop {
+            tokio::select! {
+                biased;
+                _ = ticker.tick() => self.check()?,
+                output = &mut future => {
+                    self.check()?;
+                    return Ok(output);
+                }
+            }
+        }
     }
 }
 
@@ -508,6 +620,243 @@ mod tests {
         ToolSchema,
     };
     use tokio_util::sync::CancellationToken;
+
+    async fn hosted_direct_stream_fixture() -> (
+        AppState,
+        tempfile::TempDir,
+        TenantContext,
+        VerifiedTenantContext,
+    ) {
+        use tandem_types::{
+            AuthorityChain, HumanActor, RequestPrincipal, TenantContextAssertionClaims,
+        };
+
+        let state = crate::test_support::test_state().await;
+        let directory = tempfile::tempdir().expect("hosted policy directory");
+        let path = directory.path().join("policy.json");
+        write_direct_stream_policy(&path, 1, "admin");
+        state.enterprise.hosted_policy.configure_test_source(
+            "direct-stream-org",
+            "direct-stream-deployment",
+            path,
+        );
+        state
+            .reload_hosted_policy()
+            .await
+            .expect("load hosted policy");
+
+        let tenant = TenantContext::explicit_user_workspace(
+            "direct-stream-org",
+            "direct-stream-deployment",
+            Some("direct-stream-deployment".to_string()),
+            "admin",
+        );
+        let now = crate::now_ms();
+        let mut claims = TenantContextAssertionClaims::new_v1(
+            "tandem-web",
+            "tandem-runtime",
+            now,
+            now + 60_000,
+            uuid::Uuid::new_v4().to_string(),
+            tenant.clone(),
+            HumanActor::tandem_user("admin"),
+            AuthorityChain::from_request(RequestPrincipal::authenticated_user(
+                "admin",
+                "tandem-web",
+            )),
+            vec!["hosted:role:admin".to_string()],
+        );
+        claims.policy_version = Some(1);
+        claims.capabilities = tandem_enterprise_contract::hosted_policy::role_capabilities("admin")
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let mut verified: VerifiedTenantContext = claims.into();
+        state
+            .enterprise
+            .hosted_policy
+            .project(&mut verified)
+            .expect("project current admin");
+        (state, directory, tenant, verified)
+    }
+
+    fn write_direct_stream_policy(path: &std::path::Path, version: u64, role: &str) {
+        std::fs::write(
+            path,
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "policy_version": version,
+                "organization_id": "direct-stream-org",
+                "deployment_id": "direct-stream-deployment",
+                "generated_at": chrono::DateTime::from_timestamp_millis(crate::now_ms() as i64).unwrap(),
+                "users": [{
+                    "id": "admin", "email": null, "username": null, "role": role,
+                    "capabilities": tandem_enterprise_contract::hosted_policy::role_capabilities(role),
+                    "is_active": true, "email_verified": true
+                }],
+                "org_units": [],
+                "org_unit_memberships": [],
+                "deployment_grants": []
+            }))
+            .expect("policy JSON"),
+        )
+        .expect("write hosted policy");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .expect("private hosted policy");
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_provider_stream_rejects_chunk_after_hosted_revocation() {
+        for surface in [
+            PromptExecutionSurface::MissionBuilder,
+            PromptExecutionSurface::Planner,
+            PromptExecutionSurface::KnowledgeBase,
+        ] {
+            let (state, directory, tenant, verified) = hosted_direct_stream_fixture().await;
+            let cancel = CancellationToken::new();
+            let observed_cancel = cancel.clone();
+            let reload_state = state.clone();
+            let (polled_tx, polled_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let run = tokio::spawn(async move {
+                let authority = DirectProviderStreamAuthority::new(
+                    &state,
+                    &tenant,
+                    Some(&verified),
+                    surface,
+                    cancel,
+                );
+                let stream = stream::once(async move {
+                    polled_tx.send(()).expect("stream polled");
+                    release_rx.await.expect("release held stream");
+                    Ok::<_, anyhow::Error>(StreamChunk::TextDelta("secret".to_string()))
+                });
+                tokio::pin!(stream);
+                authority.next_chunk(&mut stream).await
+            });
+            polled_rx.await.expect("provider stream reached held chunk");
+            write_direct_stream_policy(&directory.path().join("policy.json"), 2, "viewer");
+            reload_state
+                .reload_hosted_policy()
+                .await
+                .expect("publish revoked policy");
+            release_tx.send(()).expect("release provider chunk");
+            let result = run.await.expect("stream task");
+            assert!(
+                result.is_err(),
+                "revoked {surface:?} chunk must be rejected"
+            );
+            assert!(
+                observed_cancel.is_cancelled(),
+                "revoked stream must be cancelled"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_direct_provider_stream_cancels_within_one_tick_after_revocation() {
+        let (state, directory, tenant, verified) = hosted_direct_stream_fixture().await;
+        let cancel = CancellationToken::new();
+        let observed_cancel = cancel.clone();
+        let reload_state = state.clone();
+        let (polled_tx, polled_rx) = tokio::sync::oneshot::channel();
+        let run = tokio::spawn(async move {
+            let authority = DirectProviderStreamAuthority::new(
+                &state,
+                &tenant,
+                Some(&verified),
+                PromptExecutionSurface::KnowledgeBase,
+                cancel,
+            );
+            let mut polled_tx = Some(polled_tx);
+            let stream = stream::poll_fn(move |_| {
+                if let Some(tx) = polled_tx.take() {
+                    tx.send(()).expect("idle stream polled");
+                }
+                std::task::Poll::<Option<anyhow::Result<StreamChunk>>>::Pending
+            });
+            tokio::pin!(stream);
+            authority.next_chunk(&mut stream).await
+        });
+        polled_rx.await.expect("provider stream is idle");
+        write_direct_stream_policy(&directory.path().join("policy.json"), 2, "viewer");
+        reload_state
+            .reload_hosted_policy()
+            .await
+            .expect("publish revoked policy");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+            .await
+            .expect("idle stream revocation deadline")
+            .expect("idle stream task");
+        assert!(result.is_err());
+        assert!(observed_cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn direct_provider_completion_fallback_stops_on_revocation() {
+        let (state, directory, tenant, verified) = hosted_direct_stream_fixture().await;
+        let cancel = CancellationToken::new();
+        let observed_cancel = cancel.clone();
+        let reload_state = state.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let run = tokio::spawn(async move {
+            let authority = DirectProviderStreamAuthority::new(
+                &state,
+                &tenant,
+                Some(&verified),
+                PromptExecutionSurface::KnowledgeBase,
+                cancel,
+            );
+            authority
+                .guarded_future(async move {
+                    started_tx.send(()).expect("completion started");
+                    std::future::pending::<()>().await;
+                })
+                .await
+        });
+        started_rx.await.expect("completion fallback is waiting");
+        write_direct_stream_policy(&directory.path().join("policy.json"), 2, "viewer");
+        reload_state
+            .reload_hosted_policy()
+            .await
+            .expect("publish revoked policy");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+            .await
+            .expect("completion revocation deadline")
+            .expect("completion task");
+        assert_eq!(result, Err(DIRECT_PROVIDER_AUTHORITY_REVOKED));
+        assert!(observed_cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn direct_provider_stream_keeps_local_unversioned_execution() {
+        let state = crate::test_support::test_state().await;
+        let tenant = TenantContext::local_implicit();
+        let cancel = CancellationToken::new();
+        let authority = DirectProviderStreamAuthority::new(
+            &state,
+            &tenant,
+            None,
+            PromptExecutionSurface::KnowledgeBase,
+            cancel.clone(),
+        );
+        let stream = stream::iter([Ok::<_, anyhow::Error>(StreamChunk::TextDelta(
+            "local response".to_string(),
+        ))]);
+        tokio::pin!(stream);
+        let chunk = authority
+            .next_chunk(&mut stream)
+            .await
+            .expect("local stream allowed")
+            .expect("local chunk");
+        assert!(matches!(chunk, Ok(StreamChunk::TextDelta(text)) if text == "local response"));
+        assert_eq!(authority.guarded_future(async { 42 }).await, Ok(42));
+        assert!(!cancel.is_cancelled());
+    }
 
     #[test]
     fn execution_surfaces_have_stable_observability_labels() {

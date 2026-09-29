@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::Value;
 use tandem_observability::{emit_event, ObservabilityEvent, ProcessKind};
@@ -203,6 +202,13 @@ async fn invoke_mission_builder_provider(
     verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
 ) -> Result<String, String> {
     let cancel = CancellationToken::new();
+    let authority = crate::http::session_run_retry::DirectProviderStreamAuthority::new(
+        state,
+        tenant_context,
+        verified_tenant_context,
+        crate::http::session_run_retry::PromptExecutionSurface::MissionBuilder,
+        cancel.clone(),
+    );
     emit_event(
         Level::INFO,
         ProcessKind::Engine,
@@ -275,7 +281,11 @@ async fn invoke_mission_builder_provider(
         tokio::pin!(stream);
         let mut output = String::new();
         let mut saw_first_delta = false;
-        while let Some(chunk) = stream.next().await {
+        while let Some(chunk) = authority
+            .next_chunk(&mut stream)
+            .await
+            .map_err(str::to_string)?
+        {
             match chunk {
                 Ok(StreamChunk::TextDelta(delta)) => {
                     if !saw_first_delta && !delta.trim().is_empty() {
@@ -343,6 +353,7 @@ async fn invoke_mission_builder_provider(
                 Err(error) => return Err(truncate_text(&error.to_string(), 500)),
             }
         }
+        authority.check().map_err(str::to_string)?;
         Ok::<String, String>(output)
     };
 
