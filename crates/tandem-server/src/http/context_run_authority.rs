@@ -102,6 +102,7 @@ pub(super) async fn context_run_visible(
     }
     let owner =
         || super::sessions_actor_scope::session_visible_to_actor(tenant, &run.tenant_context);
+    let mut hosted_automation_source = None;
     let visible = match run.run_type.as_str() {
         "session" => {
             let Some(session_id) = run.run_id.strip_prefix("session-") else {
@@ -144,15 +145,17 @@ pub(super) async fn context_run_visible(
             ) else {
                 return false;
             };
-            tenant_matches(tenant, &spec.tenant_context())
-                && if let Some(current) = current.as_ref() {
-                    super::routines_automations::automation_v2_visible_to_context(
-                        &spec,
-                        Some(current),
-                    )
-                } else {
-                    owner()
-                }
+            if !tenant_matches(tenant, &spec.tenant_context()) {
+                return false;
+            }
+            if current.is_some() {
+                let readable =
+                    super::automation_object_authority::can_read(state, tenant, verified, &spec);
+                hosted_automation_source = Some(spec);
+                readable
+            } else {
+                owner()
+            }
         }
         "workflow" => {
             let Some(native_id) = run.run_id.strip_prefix("workflow-") else {
@@ -212,6 +215,9 @@ pub(super) async fn context_run_visible(
     };
     if !visible || !mutation {
         return visible;
+    }
+    if let Some(spec) = hosted_automation_source.as_ref() {
+        return super::automation_object_authority::can_execute(state, tenant, verified, spec);
     }
     // A resource reader (including a shared automation audience or workflow
     // reviewer) is not thereby allowed to mutate tasks, checkpoints or files.
@@ -282,6 +288,7 @@ pub(super) async fn guard_context_route(
 mod tests {
     use super::*;
     use crate::app::state::tests::{test_automation_node, AutomationSpecBuilder};
+    use serde_json::json;
 
     #[tokio::test]
     async fn triage_projection_uses_native_automation_scope() {
@@ -333,5 +340,127 @@ mod tests {
             .await
             .insert(spec.automation_id.clone(), wrong_spec_scope);
         assert!(!context_run_visible(&state, &projection, &alice, None, false).await);
+    }
+
+    #[tokio::test]
+    async fn hosted_automation_projection_honors_current_exact_object_grants() {
+        use tandem_types::{
+            AccessPermission, AuthorityChain, DataClass, HumanActor, OrganizationUnitAccessGrant,
+            RequestPrincipal, ResourceKind, ResourceRef, TenantContextAssertionClaims,
+        };
+
+        let state = crate::test_support::test_state().await;
+        let alice =
+            TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".into()), "alice");
+        let bob =
+            TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".into()), "bob");
+        let mut spec = AutomationSpecBuilder::new("shared-context-run-source")
+            .nodes(vec![test_automation_node("inspect", vec![], "triage", 0)])
+            .build();
+        spec.creator_id = "alice".into();
+        spec.metadata = Some(json!({"resource_access": {
+            "visibility": "private",
+            "owner_principal": {"kind": "human_user", "id": "alice"}
+        }}));
+        spec.set_tenant_context(&alice);
+        let spec = state.put_automation_v2(spec).await.unwrap();
+        let native = state
+            .create_automation_v2_run(&spec, "manual")
+            .await
+            .unwrap();
+        let projection_id =
+            super::super::context_runs::automation_v2_context_run_id(&native.run_id);
+        let projection = super::super::context_runs::load_context_run_state(&state, &projection_id)
+            .await
+            .unwrap();
+
+        let now = crate::now_ms();
+        let bundle = tandem_enterprise_contract::hosted_policy::HostedPolicyBundle::from_json(
+            serde_json::to_vec(&json!({
+                "schema_version": 1, "policy_version": 1,
+                "organization_id": "org-a", "deployment_id": "dep-a",
+                "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+                "users": [
+                    {"id": "alice", "email": null, "username": null, "role": "member", "capabilities": [], "is_active": true, "email_verified": true},
+                    {"id": "bob", "email": null, "username": null, "role": "member", "capabilities": ["automation.read", "automation.execute"], "is_active": true, "email_verified": true}
+                ],
+                "org_units": [{"id": "eng", "slug": "eng", "display_name": "Engineering", "kind": "department", "state": "active"}],
+                "org_unit_memberships": [{"unit_id": "eng", "user_id": "bob"}],
+                "deployment_grants": []
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap();
+        state
+            .enterprise
+            .hosted_policy
+            .install_test_bundle(bundle)
+            .unwrap();
+        let mut claims = TenantContextAssertionClaims::new_v1(
+            "tandem-web",
+            "tandem-runtime",
+            now,
+            now + 60_000,
+            "context-run-bob",
+            bob.clone(),
+            HumanActor::tandem_user("bob"),
+            AuthorityChain::from_request(RequestPrincipal::authenticated_user("bob", "tandem-web")),
+            vec!["hosted:role:member".into()],
+        );
+        claims.policy_version = Some(1);
+        claims.capabilities = vec!["automation.read".into(), "automation.execute".into()];
+        claims.org_units = vec!["eng".into()];
+        let verified = claims.into();
+        let grant = OrganizationUnitAccessGrant::active(
+            "bob-context-run-source",
+            bob.clone(),
+            tandem_enterprise_contract::hosted_policy::hosted_unit_principal("eng"),
+            ResourceRef::new(
+                "org-a",
+                "dep-a",
+                ResourceKind::Automation,
+                &spec.automation_id,
+            ),
+            now,
+        )
+        .with_permissions(vec![AccessPermission::Read])
+        .with_data_classes(vec![DataClass::Internal]);
+        state
+            .enterprise
+            .org_unit_access_grants
+            .write()
+            .await
+            .insert("bob-context-run-source".into(), grant.clone());
+
+        assert!(context_run_visible(&state, &projection, &bob, Some(&verified), false).await);
+        assert!(!context_run_visible(&state, &projection, &bob, Some(&verified), true).await);
+        let execute_grant =
+            grant.with_permissions(vec![AccessPermission::Read, AccessPermission::Execute]);
+        state
+            .enterprise
+            .org_unit_access_grants
+            .write()
+            .await
+            .insert("bob-context-run-source".into(), execute_grant);
+        assert!(context_run_visible(&state, &projection, &bob, Some(&verified), true).await);
+
+        state
+            .enterprise
+            .org_unit_access_grants
+            .write()
+            .await
+            .remove("bob-context-run-source");
+        assert!(!context_run_visible(&state, &projection, &bob, Some(&verified), false).await);
+        assert!(!context_run_visible(&state, &projection, &bob, Some(&verified), true).await);
+        let wrong_tenant = TenantContext::explicit_user_workspace(
+            "other-org",
+            "dep-a",
+            Some("dep-a".into()),
+            "bob",
+        );
+        assert!(
+            !context_run_visible(&state, &projection, &wrong_tenant, Some(&verified), false).await
+        );
     }
 }
