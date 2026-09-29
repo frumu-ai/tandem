@@ -151,55 +151,56 @@ impl OrchestrationStateStore {
             // Execute was revoked during the writer-lock wait. The app checks
             // current replay visibility before returning the stored record.
             let mut transaction = Some(transaction);
-            let mut commit_once = || {
-                let transaction = transaction
-                    .take()
-                    .context("goal start transaction already consumed")?;
-            upsert_goal(&transaction, goal)?;
-            upsert_automation_run(&transaction, root_run)?;
-            transaction.execute(
-                "INSERT INTO goal_run_links
+            let outcome = {
+                let mut commit_once = || {
+                    let transaction = transaction
+                        .take()
+                        .context("goal start transaction already consumed")?;
+                    upsert_goal(&transaction, goal)?;
+                    upsert_automation_run(&transaction, root_run)?;
+                    transaction.execute(
+                        "INSERT INTO goal_run_links
                     (goal_id, run_id, orchestration_node_id, orchestration_version, hop_index,
                      parent_run_id, triggering_handoff_id, link_json, created_at_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    link.goal_id,
-                    link.run_id,
-                    link.orchestration_node_id,
-                    link.orchestration_version,
-                    link.hop_index,
-                    link.parent_run_id,
-                    link.triggering_handoff_id,
-                    protected_records::encode(
-                        &goal.tenant_context,
-                        "link",
-                        &link.run_id,
-                        link,
-                    )?,
-                    link.created_at_ms,
-                ],
-            )?;
-            insert_goal_event(
-                &transaction,
-                goal,
-                actor,
-                goal.created_at_ms,
-                "stateful_runtime.goal.started",
-                json!({
-                    "goal_id": goal.goal_id,
-                    "orchestration_id": goal.orchestration_id,
-                    "orchestration_version": goal.orchestration_version,
-                    "root_run_id": root_run.run_id,
-                }),
-            )?;
-            transaction.commit()?;
-            Ok(StartGoalOutcome::Created {
-                goal: goal.clone(),
-                root_run: root_run.clone(),
-            })
+                        params![
+                            link.goal_id,
+                            link.run_id,
+                            link.orchestration_node_id,
+                            link.orchestration_version,
+                            link.hop_index,
+                            link.parent_run_id,
+                            link.triggering_handoff_id,
+                            protected_records::encode(
+                                &goal.tenant_context,
+                                "link",
+                                &link.run_id,
+                                link,
+                            )?,
+                            link.created_at_ms,
+                        ],
+                    )?;
+                    insert_goal_event(
+                        &transaction,
+                        goal,
+                        actor,
+                        goal.created_at_ms,
+                        "stateful_runtime.goal.started",
+                        json!({
+                            "goal_id": goal.goal_id,
+                            "orchestration_id": goal.orchestration_id,
+                            "orchestration_version": goal.orchestration_version,
+                            "root_run_id": root_run.run_id,
+                        }),
+                    )?;
+                    transaction.commit()?;
+                    Ok(StartGoalOutcome::Created {
+                        goal: goal.clone(),
+                        root_run: root_run.clone(),
+                    })
+                };
+                guard(&mut commit_once)?
             };
-            let outcome = guard(&mut commit_once)?;
-            drop(commit_once);
             if transaction.is_some() {
                 bail!("goal start authority guard skipped durable commit");
             }

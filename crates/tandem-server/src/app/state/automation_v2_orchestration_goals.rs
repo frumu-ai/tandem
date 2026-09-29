@@ -214,21 +214,11 @@ impl AppState {
         let current = self.current_goal_start_context_before_commit(tenant, verified)?;
         let outcome =
             if self.can_start_goal_from_orchestration(tenant, current.as_ref(), &orchestration) {
-                let outcome = store.start_goal_with_commit_guard(
-                    &goal,
-                    &root_run,
-                    &link,
-                    actor,
-                    |commit| {
-                        self.with_goal_start_commit_authority(
-                            tenant,
-                            verified,
-                            &orchestration,
-                            || commit(),
-                        )
-                    },
-                )?;
-                outcome
+                store.start_goal_with_commit_guard(&goal, &root_run, &link, actor, |commit| {
+                    self.with_goal_start_commit_authority(tenant, verified, &orchestration, || {
+                        commit()
+                    })
+                })?
             } else {
                 // Source access may have been revoked after the original start.
                 // An authorized replay reads existing records only; it must not
