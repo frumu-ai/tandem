@@ -246,6 +246,27 @@ pub(super) fn required_permission(request: &Request) -> Option<AccessPermission>
         ) => Some(HostedAutomationWrite),
         (
             _,
+            "/orchestrations"
+            | "/orchestrations/{orchestration_id}"
+            | "/orchestrations/{orchestration_id}/versions"
+            | "/orchestrations/{orchestration_id}/versions/{version}"
+            | "/orchestrations/{orchestration_id}/stale-references",
+        ) if read => Some(HostedAutomationRead),
+        (
+            "POST",
+            "/orchestrations/{orchestration_id}/validate"
+            | "/orchestrations/{orchestration_id}/dry-run",
+        ) => Some(HostedAutomationRead),
+        ("POST", "/orchestrations")
+        | ("PUT", "/orchestrations/{orchestration_id}")
+        | (
+            "POST",
+            "/orchestrations/{orchestration_id}/archive"
+            | "/orchestrations/{orchestration_id}/publish"
+            | "/orchestrations/{orchestration_id}/refresh-references",
+        ) => Some(HostedAutomationWrite),
+        (
+            _,
             "/workflows"
             | "/workflows/{id}"
             | "/workflows/runs"

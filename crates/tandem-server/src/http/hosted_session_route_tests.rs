@@ -26,6 +26,8 @@ mod tests {
             .replace("{id}", "session-a")
             .replace("{run_id}", "run-a")
             .replace("{session_id}", "session-a")
+            .replace("{orchestration_id}", "orchestration-a")
+            .replace("{version}", "1")
             .replace("{tool_call_id}", "tool-a")
             .replace("{question_id}", "question-a");
         let response = router
@@ -153,6 +155,38 @@ mod tests {
             "/sessions/{session_id}/questions/{question_id}/answer",
         ] {
             check("POST", path, None).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_orchestration_routes_classify_reads_and_authoring_separately() {
+        for path in [
+            "/orchestrations",
+            "/orchestrations/{orchestration_id}",
+            "/orchestrations/{orchestration_id}/versions",
+            "/orchestrations/{orchestration_id}/versions/{version}",
+            "/orchestrations/{orchestration_id}/stale-references",
+        ] {
+            check("GET", path, Some(AccessPermission::HostedAutomationRead)).await;
+            check("HEAD", path, Some(AccessPermission::HostedAutomationRead)).await;
+        }
+        for path in [
+            "/orchestrations/{orchestration_id}/validate",
+            "/orchestrations/{orchestration_id}/dry-run",
+        ] {
+            check("POST", path, Some(AccessPermission::HostedAutomationRead)).await;
+        }
+        for (method, path) in [
+            ("POST", "/orchestrations"),
+            ("PUT", "/orchestrations/{orchestration_id}"),
+            ("POST", "/orchestrations/{orchestration_id}/archive"),
+            ("POST", "/orchestrations/{orchestration_id}/publish"),
+            (
+                "POST",
+                "/orchestrations/{orchestration_id}/refresh-references",
+            ),
+        ] {
+            check(method, path, Some(AccessPermission::HostedAutomationWrite)).await;
         }
     }
 }

@@ -284,8 +284,7 @@ pub(super) async fn enrich_verified_context_with_org_unit_grants(
     if verified.strict_projection.is_none() {
         return;
     }
-    // Some(empty) is authoritative: retained local memberships cannot restore
-    // membership removed by the control plane.
+    // An empty hosted membership set is authoritative; local state cannot restore it.
     let hosted = hosted_memberships.is_some();
     let memberships = match hosted_memberships {
         Some(memberships) => memberships,
@@ -317,8 +316,7 @@ pub(super) async fn enrich_verified_context_with_org_unit_grants(
 }
 
 pub(super) fn local_hosted_data_grant(grant: &OrganizationUnitAccessGrant) -> bool {
-    // Deployment operations remain exclusively control-plane authored. Reject
-    // mixed grants rather than silently changing their permission semantics.
+    // Deployment operations are control-plane authored; reject mixed permission grants.
     grant.resource.resource_kind != tandem_types::ResourceKind::HostedDeployment
         && grant.permissions.iter().all(|permission| {
             matches!(
@@ -1802,6 +1800,7 @@ fn resource_kind_scope_label(kind: ResourceKind) -> &'static str {
         ResourceKind::KnowledgeSpace => "knowledge_space",
         ResourceKind::SecretProviderCredential => "secret_provider_credential",
         ResourceKind::Automation => "automation",
+        ResourceKind::Orchestration => "orchestration",
         ResourceKind::Run => "run",
         ResourceKind::Approval => "approval",
         ResourceKind::AuditExport => "audit_export",

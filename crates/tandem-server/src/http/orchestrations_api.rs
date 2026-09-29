@@ -17,7 +17,10 @@ use tandem_automation::{
     OrchestrationNodeSpec, OrchestrationSpec, OrchestrationStatus, OrchestrationValidationIssue,
     OrchestrationValidationReport,
 };
-use tandem_types::RequestPrincipal;
+use tandem_types::{
+    AccessDecision, AccessPermission, DataClass, RequestPrincipal, ResourceKind, ResourceRef,
+    VerifiedTenantContext,
+};
 
 use crate::stateful_runtime::{
     automation_definition_snapshot_hash, OrchestrationStateStore, DRAFT_CONCURRENCY_CONFLICT,
@@ -130,11 +133,14 @@ pub(super) fn orchestration_error_response(error: &anyhow::Error) -> Response {
 /// assertion means local single-tenant mode where the operator owns
 /// everything.
 fn require_orchestration_owner(
-    _tenant: &TenantContext,
-    verified: Option<&tandem_types::VerifiedTenantContext>,
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
     spec: &OrchestrationSpec,
     actor: &tandem_types::PrincipalRef,
 ) -> Result<(), Response> {
+    let current = current_orchestration_write_context(state, tenant, verified)?;
+    let verified = current.as_ref().or(verified);
     if verified.is_none() || super::goals_api::verified_has_admin_authority(verified) {
         return Ok(());
     }
@@ -150,6 +156,119 @@ fn require_orchestration_owner(
             .into_response());
     }
     Ok(())
+}
+
+fn orchestration_forbidden() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({"error": "orchestration_forbidden"})),
+    )
+        .into_response()
+}
+
+fn current_orchestration_write_context(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+) -> Result<Option<VerifiedTenantContext>, Response> {
+    let current = super::event_stream_authority::current_context(
+        state,
+        tenant,
+        verified,
+        Some(AccessPermission::HostedAutomationWrite),
+    )
+    .map_err(|_| orchestration_forbidden())?;
+    if current.is_none() && verified.is_some_and(|assertion| assertion.policy_version.is_some()) {
+        return Err(orchestration_forbidden());
+    }
+    Ok(current)
+}
+
+async fn orchestration_visible(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    spec: &OrchestrationSpec,
+) -> bool {
+    if !super::tenant_matches(tenant, &spec.tenant_context) {
+        return false;
+    }
+    let Some(mut current) = (match super::event_stream_authority::current_context(
+        state,
+        tenant,
+        verified,
+        Some(AccessPermission::HostedAutomationRead),
+    ) {
+        Ok(current) => current,
+        Err(_) => return false,
+    }) else {
+        // Local/legacy tenant-scoped callers keep their existing behavior, but
+        // a versioned hosted assertion must never fall back to tenant-wide ACLs.
+        return !verified.is_some_and(|assertion| assertion.policy_version.is_some());
+    };
+    let actor = current.human_actor.actor_id.as_str();
+    if orchestration_metadata_principal_id(spec, "created_by") == Some(actor)
+        || state.authorize_current_hosted_admin(&current).is_ok()
+    {
+        return true;
+    }
+
+    // A deployment operation grant is not an object grant. Keep orchestration
+    // grants distinct from workflow grants even when their IDs are identical.
+    let Ok(memberships) = state.enterprise.hosted_policy.project(&mut current) else {
+        return false;
+    };
+    super::middleware::enrich_verified_context_with_org_unit_grants(
+        state,
+        &mut current,
+        memberships,
+    )
+    .await;
+    if state
+        .enterprise
+        .hosted_policy
+        .authorize_permission(Some(&current), AccessPermission::HostedAutomationRead)
+        .is_err()
+    {
+        return false;
+    }
+    let Some(strict) = current.strict_projection.as_ref() else {
+        return false;
+    };
+    let resource = ResourceRef::new(
+        &tenant.org_id,
+        &tenant.workspace_id,
+        ResourceKind::Orchestration,
+        &spec.orchestration_id,
+    );
+    // This definition has no project or department binding. A grant for an
+    // unrelated project/department with the same ID must not become an object
+    // grant through ResourceRef's generic ID matching. Organization/workspace
+    // grants remain valid broad scopes; exact orchestration grants remain valid.
+    let mut scoped = strict.clone();
+    scoped
+        .grants
+        .retain(|grant| match grant.resource.resource_kind {
+            ResourceKind::Orchestration | ResourceKind::Organization => true,
+            ResourceKind::Workspace => {
+                grant.resource.resource_id == tenant.workspace_id
+                    || grant.resource.resource_id == "*"
+            }
+            _ => false,
+        });
+    [
+        AccessPermission::View,
+        AccessPermission::Read,
+        AccessPermission::Edit,
+        AccessPermission::Admin,
+    ]
+    .into_iter()
+    .any(|permission| {
+        scoped
+            .evaluate_access(&resource, permission, DataClass::Internal, crate::now_ms())
+            .decision
+            == AccessDecision::Allow
+    })
 }
 
 fn orchestration_metadata_principal_id<'a>(
@@ -210,6 +329,9 @@ pub(super) async fn create_orchestration_draft(
     Json(payload): Json<OrchestrationDraftPayload>,
 ) -> Response {
     let verified = verified.as_deref();
+    if let Err(response) = current_orchestration_write_context(&state, &tenant, verified) {
+        return response;
+    }
     if payload.expected_updated_at_ms.is_some() {
         return (
             StatusCode::BAD_REQUEST,
@@ -258,7 +380,8 @@ pub(super) async fn update_orchestration_draft(
         Err(response) => return response,
     };
     let actor = super::goals_api::effective_actor(&principal, verified);
-    if let Err(response) = require_orchestration_owner(&tenant, verified, &existing, &actor) {
+    if let Err(response) = require_orchestration_owner(&state, &tenant, verified, &existing, &actor)
+    {
         return response;
     }
     let Some(expected) = payload.expected_updated_at_ms else {
@@ -353,6 +476,7 @@ fn load_tenant_draft(
 pub(super) async fn list_orchestrations(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<OrchestrationListQuery>,
 ) -> Response {
     let store = match definition_store(&state) {
@@ -370,6 +494,9 @@ pub(super) async fn list_orchestrations(
     // One summary per orchestration: the draft slot plus published versions.
     let mut summaries = std::collections::BTreeMap::<String, Value>::new();
     for spec in specs {
+        if !orchestration_visible(&state, &tenant, verified.as_deref(), &spec).await {
+            continue;
+        }
         let entry = summaries
             .entry(spec.orchestration_id.clone())
             .or_insert_with(|| {
@@ -424,6 +551,7 @@ pub(super) async fn list_orchestrations(
 pub(super) async fn get_orchestration(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
 ) -> Response {
     let store = match definition_store(&state) {
@@ -444,9 +572,18 @@ pub(super) async fn get_orchestration(
                 .ok()
                 .flatten()
         });
-    let visible = |spec: &OrchestrationSpec| super::tenant_matches(&tenant, &spec.tenant_context);
-    let draft = draft.filter(visible);
-    let latest_published = latest_published.filter(visible);
+    let draft = match draft {
+        Some(spec) if orchestration_visible(&state, &tenant, verified.as_deref(), &spec).await => {
+            Some(spec)
+        }
+        _ => None,
+    };
+    let latest_published = match latest_published {
+        Some(spec) if orchestration_visible(&state, &tenant, verified.as_deref(), &spec).await => {
+            Some(spec)
+        }
+        _ => None,
+    };
     if draft.is_none() && latest_published.is_none() {
         return (
             StatusCode::NOT_FOUND,
@@ -480,7 +617,7 @@ pub(super) async fn archive_orchestration_draft(
         Err(response) => return response,
     };
     let actor = super::goals_api::effective_actor(&principal, verified);
-    if let Err(response) = require_orchestration_owner(&tenant, verified, &draft, &actor) {
+    if let Err(response) = require_orchestration_owner(&state, &tenant, verified, &draft, &actor) {
         return response;
     }
     let expected = match revision_from_body(&body) {
@@ -501,6 +638,7 @@ pub(super) async fn archive_orchestration_draft(
 pub(super) async fn list_orchestration_versions(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
 ) -> Response {
     let store = match definition_store(&state) {
@@ -508,20 +646,28 @@ pub(super) async fn list_orchestration_versions(
         Err(response) => return response,
     };
     match store.list_orchestration_versions(&tenant, &orchestration_id) {
-        Ok(versions) => Json(json!({
-            "orchestration_id": orchestration_id,
-            "versions": versions
-                .iter()
-                .map(|spec| json!({
-                    "version": spec.version,
-                    "name": spec.name,
-                    "published_at_ms": spec.published_at_ms,
-                    "metadata": spec.metadata,
-                }))
-                .collect::<Vec<_>>(),
-            "count": versions.len(),
-        }))
-        .into_response(),
+        Ok(versions) => {
+            let mut visible = Vec::new();
+            for spec in versions {
+                if orchestration_visible(&state, &tenant, verified.as_deref(), &spec).await {
+                    visible.push(spec);
+                }
+            }
+            Json(json!({
+                "orchestration_id": orchestration_id,
+                "versions": visible
+                    .iter()
+                    .map(|spec| json!({
+                        "version": spec.version,
+                        "name": spec.name,
+                        "published_at_ms": spec.published_at_ms,
+                        "metadata": spec.metadata,
+                    }))
+                    .collect::<Vec<_>>(),
+                "count": visible.len(),
+            }))
+            .into_response()
+        }
         Err(error) => orchestration_error_response(&error),
     }
 }
@@ -529,6 +675,7 @@ pub(super) async fn list_orchestration_versions(
 pub(super) async fn get_orchestration_version(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path((orchestration_id, version)): Path<(String, u64)>,
 ) -> Response {
     let store = match definition_store(&state) {
@@ -536,7 +683,9 @@ pub(super) async fn get_orchestration_version(
         Err(response) => return response,
     };
     match store.get_orchestration_for_tenant(&tenant, &orchestration_id, version) {
-        Ok(Some(spec)) if super::tenant_matches(&tenant, &spec.tenant_context) => {
+        Ok(Some(spec))
+            if orchestration_visible(&state, &tenant, verified.as_deref(), &spec).await =>
+        {
             Json(spec_response(&spec)).into_response()
         }
         Ok(_) => (
@@ -554,6 +703,7 @@ pub(super) async fn get_orchestration_version(
 pub(super) async fn validate_orchestration(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
 ) -> Response {
     let store = match definition_store(&state) {
@@ -564,6 +714,9 @@ pub(super) async fn validate_orchestration(
         Ok(draft) => draft,
         Err(response) => return response,
     };
+    if !orchestration_visible(&state, &tenant, verified.as_deref(), &draft).await {
+        return orchestration_forbidden();
+    }
     let report = full_validation_report(&state, &tenant, &draft).await;
     Json(json!({
         "orchestration_id": orchestration_id,
@@ -577,6 +730,7 @@ pub(super) async fn validate_orchestration(
 pub(super) async fn orchestration_stale_references(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
 ) -> Response {
     let store = match definition_store(&state) {
@@ -587,6 +741,9 @@ pub(super) async fn orchestration_stale_references(
         Ok(draft) => draft,
         Err(response) => return response,
     };
+    if !orchestration_visible(&state, &tenant, verified.as_deref(), &draft).await {
+        return orchestration_forbidden();
+    }
     let references = workflow_reference_states(&state, &tenant, &draft).await;
     Json(json!({
         "orchestration_id": orchestration_id,
@@ -620,7 +777,7 @@ pub(super) async fn refresh_orchestration_references(
         Err(response) => return response,
     };
     let actor = super::goals_api::effective_actor(&principal, verified);
-    if let Err(response) = require_orchestration_owner(&tenant, verified, &draft, &actor) {
+    if let Err(response) = require_orchestration_owner(&state, &tenant, verified, &draft, &actor) {
         return response;
     }
     let expected = payload.expected_updated_at_ms;
@@ -647,6 +804,9 @@ pub(super) async fn refresh_orchestration_references(
         }
     }
     draft.updated_at_ms = crate::util::time::now_ms();
+    if let Err(response) = require_orchestration_owner(&state, &tenant, verified, &draft, &actor) {
+        return response;
+    }
     match store.put_orchestration_draft(&draft, Some(expected)) {
         Ok(()) => Json(json!({
             "orchestration": draft,
@@ -675,7 +835,7 @@ pub(super) async fn publish_orchestration(
         Err(response) => return response,
     };
     let actor = super::goals_api::effective_actor(&principal, verified);
-    if let Err(response) = require_orchestration_owner(&tenant, verified, &draft, &actor) {
+    if let Err(response) = require_orchestration_owner(&state, &tenant, verified, &draft, &actor) {
         return response;
     }
     let expected = match revision_from_body(&body) {
@@ -746,6 +906,9 @@ pub(super) async fn publish_orchestration(
     );
     candidate.metadata = Some(Value::Object(metadata));
 
+    if let Err(response) = require_orchestration_owner(&state, &tenant, verified, &draft, &actor) {
+        return response;
+    }
     match store.publish_orchestration_draft(&candidate, expected) {
         Ok(()) => {
             state
@@ -771,6 +934,7 @@ pub(super) async fn publish_orchestration(
 pub(super) async fn dry_run_orchestration_transition(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(orchestration_id): Path<String>,
     Json(payload): Json<OrchestrationDryRunPayload>,
 ) -> Response {
@@ -796,6 +960,9 @@ pub(super) async fn dry_run_orchestration_transition(
         )
             .into_response();
     };
+    if !orchestration_visible(&state, &tenant, verified.as_deref(), &spec).await {
+        return orchestration_forbidden();
+    }
     let source = spec
         .nodes
         .iter()
@@ -1023,4 +1190,165 @@ async fn workflow_reference_states(
         }));
     }
     references
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+    use tandem_types::{
+        AuthorityChain, HumanActor, OrganizationUnitAccessGrant, PrincipalRef,
+        TenantContextAssertionClaims,
+    };
+
+    fn verified(actor: &str) -> VerifiedTenantContext {
+        let now = crate::now_ms();
+        let mut claims = TenantContextAssertionClaims::new_v1(
+            "tandem-web",
+            "tandem-runtime",
+            now,
+            now + 60_000,
+            format!("orchestration-{actor}"),
+            TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".into()), actor),
+            HumanActor::tandem_user(actor),
+            AuthorityChain::from_request(RequestPrincipal::authenticated_user(actor, "tandem-web")),
+            vec!["hosted:role:viewer".into()],
+        );
+        claims.policy_version = Some(1);
+        claims.capabilities = vec!["hosted.view".into()];
+        if actor == "bob" {
+            claims.org_units = vec!["eng".into()];
+        }
+        VerifiedTenantContext::from(claims)
+    }
+
+    #[tokio::test]
+    async fn hosted_orchestration_reads_require_owner_or_live_scoped_grant() {
+        let state = crate::test_support::test_state().await;
+        let now = crate::now_ms();
+        let bundle = tandem_enterprise_contract::hosted_policy::HostedPolicyBundle::from_json(
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "policy_version": 1,
+                "organization_id": "org-a",
+                "deployment_id": "dep-a",
+                "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+                "users": [
+                    {"id": "alice", "email": null, "username": null, "role": "viewer", "capabilities": ["hosted.view"], "is_active": true, "email_verified": true},
+                    {"id": "bob", "email": null, "username": null, "role": "viewer", "capabilities": ["hosted.view"], "is_active": true, "email_verified": true}
+                ],
+                "org_units": [{"id": "eng", "slug": "eng", "display_name": "Engineering", "kind": "department", "state": "active"}],
+                "org_unit_memberships": [{"unit_id": "eng", "user_id": "bob"}],
+                "deployment_grants": [
+                    {"id": "alice-read", "deployment_id": "dep-a", "principal_kind": "member", "principal_id": "alice", "resource_kind": "deployment", "resource_id": "dep-a", "permissions": ["automation.read"]},
+                    {"id": "bob-read", "deployment_id": "dep-a", "principal_kind": "member", "principal_id": "bob", "resource_kind": "deployment", "resource_id": "dep-a", "permissions": ["automation.read"]}
+                ]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap();
+        state
+            .enterprise
+            .hosted_policy
+            .install_test_bundle(bundle)
+            .unwrap();
+
+        let alice = verified("alice");
+        let bob = verified("bob");
+        let mut spec = draft_spec(
+            &alice.tenant_context,
+            "orch-private".into(),
+            &OrchestrationDraftPayload {
+                orchestration_id: None,
+                name: "Private graph".into(),
+                description: None,
+                root_node_id: "root".into(),
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                goal_policy: None,
+                metadata: None,
+                expected_updated_at_ms: None,
+            },
+            now,
+            now,
+        );
+        spec.metadata = stamp_created_by(None, &PrincipalRef::human_user("alice"));
+        assert!(orchestration_visible(&state, &alice.tenant_context, Some(&alice), &spec).await);
+        assert!(!orchestration_visible(&state, &bob.tenant_context, Some(&bob), &spec).await);
+        assert!(
+            current_orchestration_write_context(&state, &bob.tenant_context, Some(&bob)).is_err()
+        );
+
+        // A grant for an automation with the same literal ID is not a grant
+        // for this definition.
+        state
+            .enterprise
+            .org_unit_access_grants
+            .write()
+            .await
+            .insert(
+                "eng-automation-read".into(),
+                OrganizationUnitAccessGrant::active(
+                    "eng-automation-read",
+                    bob.tenant_context.clone(),
+                    tandem_enterprise_contract::hosted_policy::hosted_unit_principal("eng"),
+                    ResourceRef::new("org-a", "dep-a", ResourceKind::Automation, "orch-private"),
+                    now,
+                )
+                .with_permissions(vec![AccessPermission::Read])
+                .with_data_classes(vec![DataClass::Internal]),
+            );
+        assert!(!orchestration_visible(&state, &bob.tenant_context, Some(&bob), &spec).await);
+
+        state
+            .enterprise
+            .org_unit_access_grants
+            .write()
+            .await
+            .insert(
+                "eng-project-collision".into(),
+                OrganizationUnitAccessGrant::active(
+                    "eng-project-collision",
+                    bob.tenant_context.clone(),
+                    tandem_enterprise_contract::hosted_policy::hosted_unit_principal("eng"),
+                    ResourceRef::new("org-a", "dep-a", ResourceKind::Project, "orch-private"),
+                    now,
+                )
+                .with_permissions(vec![AccessPermission::Read])
+                .with_data_classes(vec![DataClass::Internal]),
+            );
+        assert!(!orchestration_visible(&state, &bob.tenant_context, Some(&bob), &spec).await);
+
+        state
+            .enterprise
+            .org_unit_access_grants
+            .write()
+            .await
+            .insert(
+                "eng-orchestration-read".into(),
+                OrganizationUnitAccessGrant::active(
+                    "eng-orchestration-read",
+                    bob.tenant_context.clone(),
+                    tandem_enterprise_contract::hosted_policy::hosted_unit_principal("eng"),
+                    ResourceRef::new(
+                        "org-a",
+                        "dep-a",
+                        ResourceKind::Orchestration,
+                        "orch-private",
+                    ),
+                    now,
+                )
+                .with_permissions(vec![AccessPermission::Read])
+                .with_data_classes(vec![DataClass::Internal]),
+            );
+        assert!(orchestration_visible(&state, &bob.tenant_context, Some(&bob), &spec).await);
+
+        state
+            .enterprise
+            .org_unit_access_grants
+            .write()
+            .await
+            .clear();
+        assert!(!orchestration_visible(&state, &bob.tenant_context, Some(&bob), &spec).await);
+    }
 }
