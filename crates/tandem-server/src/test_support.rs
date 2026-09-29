@@ -42,6 +42,26 @@ pub fn install_hosted_policy_snapshot(
     state.enterprise.hosted_policy.install_test_bundle(bundle)
 }
 
+/// Configure a file-backed hosted policy for cross-crate tests and publish it
+/// through the production reload path, including its publication mutex.
+pub async fn configure_hosted_policy_file_for_test(
+    state: &AppState,
+    organization_id: &str,
+    deployment_id: &str,
+    path: std::path::PathBuf,
+) -> anyhow::Result<()> {
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source(organization_id, deployment_id, path);
+    state.reload_hosted_policy().await
+}
+
+/// Publish the next revision of a test's already-configured policy file.
+pub async fn reload_hosted_policy_file_for_test(state: &AppState) -> anyhow::Result<()> {
+    state.reload_hosted_policy().await
+}
+
 /// Build a ready [`AppState`] backed by per-call temp directories, with the
 /// enterprise storage paths and a seeded in-memory MCP server wired up. Suitable
 /// for axum `oneshot` HTTP integration tests.

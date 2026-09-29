@@ -72,7 +72,7 @@ impl HostedPolicyRuntime {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn configure_test_source(
         &self,
         organization_id: &str,
@@ -227,6 +227,13 @@ impl HostedPolicyRuntime {
 }
 
 impl AppState {
+    /// Serialize an enterprise commit with hosted-policy publication. Acquire
+    /// this before the target registry writer lock, and recheck current
+    /// authority after that writer lock is acquired.
+    pub async fn lock_hosted_policy_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.enterprise.hosted_policy.lock_publication().await
+    }
+
     /// Reproject a versioned hosted identity against the currently published
     /// policy, rather than trusting the projection attached at request ingress.
     pub fn authorize_current_hosted_admin(

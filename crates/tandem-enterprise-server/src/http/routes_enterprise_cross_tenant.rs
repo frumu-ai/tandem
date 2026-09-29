@@ -204,25 +204,19 @@ async fn issue_cross_tenant_grant(
     let record =
         CrossTenantGrantRecord::active(CrossTenantGrant::new(header, claims, signature), now);
     let storage_key = cross_tenant_grant_key(&record);
-    {
-        let mut registry = state.enterprise.cross_tenant_grants.write().await;
-        require_current_enterprise_admin(
-            &state,
-            &request_principal,
-            verified_tenant_context.as_deref(),
-        )?;
-        if registry.contains_key(&storage_key) {
-            return Err(bad_request("ENTERPRISE_CROSS_TENANT_GRANT_ALREADY_EXISTS"));
-        }
-        registry.insert(storage_key, record.clone());
-        persist_cross_tenant_grants(&state.enterprise.cross_tenant_grants_path, &registry).await?;
-    }
-    append_cross_tenant_grant_audit(
+    let record = commit_cross_tenant_grant_change(
         &state,
         "enterprise.cross_tenant_grant.issued",
         &tenant_context,
         &request_principal,
-        &record,
+        verified_tenant_context.as_deref(),
+        move |candidate| {
+            if candidate.contains_key(&storage_key) {
+                return Err(bad_request("ENTERPRISE_CROSS_TENANT_GRANT_ALREADY_EXISTS"));
+            }
+            candidate.insert(storage_key, record.clone());
+            Ok(record)
+        },
     )
     .await?;
 
@@ -243,42 +237,36 @@ async fn revoke_cross_tenant_grant(
 ) -> EnterpriseResult<EnterpriseCrossTenantGrantsResponse> {
     require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let grant_id = validate_enterprise_id("cross_tenant_grant_id", &grant_id)?;
-    let updated = {
-        let mut registry = state.enterprise.cross_tenant_grants.write().await;
-        require_current_enterprise_admin(
-            &state,
-            &request_principal,
-            verified_tenant_context.as_deref(),
-        )?;
-        let Some(record) = registry.values_mut().find(|record| {
-            record.grant.claims.grant_id == grant_id
-                && record
-                    .grant
-                    .claims
-                    .issuer
-                    .matches_tenant_context(&tenant_context)
-        }) else {
-            return Err(super::routes_enterprise::not_found(
-                "ENTERPRISE_CROSS_TENANT_GRANT_NOT_FOUND",
-            ));
-        };
-        record.revoke(
-            now_ms(),
-            principal_from_request(&request_principal),
-            input.reason,
-            input.source_policy_decision_id,
-            input.source_audit_event_id,
-        );
-        let updated = record.clone();
-        persist_cross_tenant_grants(&state.enterprise.cross_tenant_grants_path, &registry).await?;
-        updated
-    };
-    append_cross_tenant_grant_audit(
+    let issuer_tenant = tenant_context.clone();
+    let revoked_by = principal_from_request(&request_principal);
+    let updated = commit_cross_tenant_grant_change(
         &state,
         "enterprise.cross_tenant_grant.revoked",
         &tenant_context,
         &request_principal,
-        &updated,
+        verified_tenant_context.as_deref(),
+        move |candidate| {
+            let Some(record) = candidate.values_mut().find(|record| {
+                record.grant.claims.grant_id == grant_id
+                    && record
+                        .grant
+                        .claims
+                        .issuer
+                        .matches_tenant_context(&issuer_tenant)
+            }) else {
+                return Err(super::routes_enterprise::not_found(
+                    "ENTERPRISE_CROSS_TENANT_GRANT_NOT_FOUND",
+                ));
+            };
+            record.revoke(
+                now_ms(),
+                revoked_by,
+                input.reason,
+                input.source_policy_decision_id,
+                input.source_audit_event_id,
+            );
+            Ok(record.clone())
+        },
     )
     .await?;
 
@@ -345,21 +333,186 @@ fn cross_tenant_grant_key(record: &CrossTenantGrantRecord) -> String {
     )
 }
 
+/// The hosted-policy publication lock precedes the grant writer lock: other
+/// commits can read cross-tenant grants while holding the publication lock.
+/// Check current authority only after both locks have been acquired, then
+/// persist a candidate before making it visible to readers. The transaction
+/// task owns both guards so HTTP cancellation cannot separate disk publication
+/// from the live-map swap.
+async fn commit_cross_tenant_grant_change<F>(
+    state: &AppState,
+    event_type: &'static str,
+    tenant_context: &TenantContext,
+    request_principal: &RequestPrincipal,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    change: F,
+) -> Result<CrossTenantGrantRecord, (StatusCode, Json<Value>)>
+where
+    F: FnOnce(
+            &mut HashMap<String, CrossTenantGrantRecord>,
+        ) -> Result<CrossTenantGrantRecord, (StatusCode, Json<Value>)>
+        + Send
+        + 'static,
+{
+    commit_cross_tenant_grant_change_inner(
+        state.clone(),
+        event_type,
+        tenant_context.clone(),
+        request_principal.clone(),
+        verified_tenant_context.cloned(),
+        change,
+        None,
+    )
+    .await
+}
+
+struct GrantCommitPause {
+    published: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+}
+
+async fn commit_cross_tenant_grant_change_inner<F>(
+    state: AppState,
+    event_type: &'static str,
+    tenant_context: TenantContext,
+    request_principal: RequestPrincipal,
+    verified_tenant_context: Option<VerifiedTenantContext>,
+    change: F,
+    pause: Option<GrantCommitPause>,
+) -> Result<CrossTenantGrantRecord, (StatusCode, Json<Value>)>
+where
+    F: FnOnce(
+            &mut HashMap<String, CrossTenantGrantRecord>,
+        ) -> Result<CrossTenantGrantRecord, (StatusCode, Json<Value>)>
+        + Send
+        + 'static,
+{
+    tokio::spawn(async move {
+        let _policy_publication = state.lock_hosted_policy_publication().await;
+        let mut registry = state.enterprise.cross_tenant_grants.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_ref(),
+        )?;
+        let mut candidate = registry.clone();
+        let record = change(&mut candidate)?;
+        persist_cross_tenant_grants(&state.enterprise.cross_tenant_grants_path, &candidate).await?;
+        if let Some(pause) = pause {
+            let _ = pause.published.send(());
+            let _ = pause.resume.await;
+        }
+        *registry = candidate;
+        drop(registry);
+        drop(_policy_publication);
+        // The grant file and protected audit are separate stores. Keep audit in
+        // this owned task so caller cancellation cannot skip it after commit.
+        append_cross_tenant_grant_audit(
+            &state,
+            event_type,
+            &tenant_context,
+            &request_principal,
+            &record,
+        )
+        .await?;
+        Ok(record)
+    })
+    .await
+    .map_err(|_| internal_error("ENTERPRISE_CROSS_TENANT_GRANTS_PERSIST_FAILED"))?
+}
+
 async fn persist_cross_tenant_grants(
     path: &std::path::Path,
     registry: &HashMap<String, CrossTenantGrantRecord>,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|_| internal_error("ENTERPRISE_CROSS_TENANT_GRANTS_PERSIST_FAILED"))?;
-    }
     let payload = serde_json::to_vec_pretty(registry)
         .map_err(|_| internal_error("ENTERPRISE_CROSS_TENANT_GRANTS_PERSIST_FAILED"))?;
-    tokio::fs::write(path, payload)
-        .await
-        .map_err(|_| internal_error("ENTERPRISE_CROSS_TENANT_GRANTS_PERSIST_FAILED"))?;
-    Ok(())
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        use std::io::Write;
+
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("cross_tenant_grants.json");
+        let temporary = parent.join(format!(".{file_name}.tmp-{}", uuid::Uuid::new_v4()));
+        let result = (|| {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temporary)?;
+            file.write_all(&payload)?;
+            file.sync_all()?;
+            drop(file);
+            replace_cross_tenant_grants_file(&temporary, &path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        } else {
+            // Rename is the commit point. A later directory-sync error must
+            // not report failure while leaving the new file but old live map.
+            #[cfg(unix)]
+            if let Err(error) = std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+                tracing::warn!(path = %path.display(), %error,
+                    "cross-tenant grant replacement published but directory sync failed");
+            }
+        }
+        result
+    })
+    .await
+    .map_err(|_| internal_error("ENTERPRISE_CROSS_TENANT_GRANTS_PERSIST_FAILED"))?
+    .map_err(|_| internal_error("ENTERPRISE_CROSS_TENANT_GRANTS_PERSIST_FAILED"))
+}
+
+#[cfg(not(windows))]
+fn replace_cross_tenant_grants_file(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_cross_tenant_grants_file(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 async fn append_cross_tenant_grant_audit(
@@ -469,7 +622,215 @@ fn service_unavailable(code: impl Into<String>) -> (StatusCode, Json<Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tandem_enterprise_contract::ResourceKind;
+    use std::path::Path;
+    use std::time::Duration;
+    use tandem_enterprise_contract::{
+        hosted_policy::{role_capabilities, HostedPolicyBundle},
+        AuthorityChain, HumanActor, ResourceKind, TenantContextAssertionClaims,
+    };
+    use tandem_server::test_support::{
+        configure_hosted_policy_file_for_test, reload_hosted_policy_file_for_test, test_state,
+    };
+
+    fn hosted_policy_file(path: &Path, version: u64, role: Option<&str>) {
+        let users = role
+            .map(|role| {
+                vec![json!({
+                    "id": "admin", "email": null, "username": null, "role": role,
+                    "capabilities": role_capabilities(role), "is_active": true,
+                    "email_verified": true
+                })]
+            })
+            .unwrap_or_default();
+        std::fs::write(
+            path,
+            serde_json::to_vec(&json!({
+                "schema_version": 1, "policy_version": version,
+                "organization_id": "org-a", "deployment_id": "dep-a",
+                "generated_at": chrono::DateTime::from_timestamp_millis(now_ms() as i64).unwrap(),
+                "users": users, "org_units": [], "org_unit_memberships": [],
+                "deployment_grants": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    fn hosted_admin_identity(path: &Path) -> VerifiedTenantContext {
+        let bytes = std::fs::read(path).unwrap();
+        let bundle = HostedPolicyBundle::from_json(&bytes).unwrap();
+        let now = now_ms();
+        let tenant =
+            TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".into()), "admin");
+        let mut claims = TenantContextAssertionClaims::new_v1(
+            "tandem-web",
+            "tandem-runtime",
+            now,
+            now + 60_000,
+            uuid::Uuid::new_v4().to_string(),
+            tenant,
+            HumanActor::tandem_user("admin"),
+            AuthorityChain::from_request(RequestPrincipal::authenticated_user(
+                "admin",
+                "tandem-web",
+            )),
+            vec!["hosted:role:admin".into()],
+        );
+        claims.policy_version = Some(bundle.policy_version);
+        claims.capabilities = role_capabilities("admin")
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let mut verified: VerifiedTenantContext = claims.into();
+        verified.strict_projection = Some(
+            bundle
+                .validate("org-a", "dep-a", now, None)
+                .unwrap()
+                .project_identity(&verified, now)
+                .unwrap(),
+        );
+        verified
+    }
+
+    async fn hosted_test_state() -> (AppState, std::path::PathBuf, VerifiedTenantContext) {
+        let state = test_state().await;
+        let policy_path = state
+            .enterprise
+            .cross_tenant_grants_path
+            .with_file_name("hosted-policy.json");
+        hosted_policy_file(&policy_path, 1, Some("admin"));
+        configure_hosted_policy_file_for_test(&state, "org-a", "dep-a", policy_path.clone())
+            .await
+            .unwrap();
+        let verified = hosted_admin_identity(&policy_path);
+        (state, policy_path, verified)
+    }
+
+    fn test_record(tenant: &TenantContext, grant_id: &str) -> CrossTenantGrantRecord {
+        let now = now_ms();
+        let header = CrossTenantGrantHeader::ed25519("test-cross-tenant-key");
+        let claims = CrossTenantGrantClaims::new_v1(
+            grant_id,
+            CrossTenantGrantParty::from_tenant_context(tenant),
+            CrossTenantGrantParty {
+                organization_id: "outside-org".into(),
+                workspace_id: "outside-space".into(),
+                deployment_id: None,
+            },
+            PrincipalRef::human_user("recipient"),
+            ResourceScope::root(ResourceRef::new(
+                &tenant.org_id,
+                &tenant.workspace_id,
+                ResourceKind::DocumentCollection,
+                "shared-docs",
+            )),
+            vec![AccessPermission::Read],
+            vec![DataClass::Internal],
+            now,
+            now + 60_000,
+            PrincipalRef::human_user("admin"),
+        );
+        let signature =
+            sign_cross_tenant_grant(&header, &claims, &SigningKey::from_bytes(&[7; 32])).unwrap();
+        CrossTenantGrantRecord::active(CrossTenantGrant::new(header, claims, signature), now)
+    }
+
+    async fn commit_test_issue(
+        state: &AppState,
+        principal: &RequestPrincipal,
+        verified: Option<&VerifiedTenantContext>,
+        tenant: &TenantContext,
+        record: CrossTenantGrantRecord,
+    ) -> Result<CrossTenantGrantRecord, (StatusCode, Json<Value>)> {
+        let key = cross_tenant_grant_key(&record);
+        commit_cross_tenant_grant_change(
+            state,
+            "enterprise.cross_tenant_grant.issued",
+            tenant,
+            principal,
+            verified,
+            move |candidate| {
+                if candidate.contains_key(&key) {
+                    return Err(bad_request("ENTERPRISE_CROSS_TENANT_GRANT_ALREADY_EXISTS"));
+                }
+                candidate.insert(key, record.clone());
+                Ok(record)
+            },
+        )
+        .await
+    }
+
+    async fn commit_test_revoke(
+        state: &AppState,
+        principal: &RequestPrincipal,
+        verified: Option<&VerifiedTenantContext>,
+        tenant: &TenantContext,
+        grant_id: &str,
+    ) -> Result<CrossTenantGrantRecord, (StatusCode, Json<Value>)> {
+        let issuer_tenant = tenant.clone();
+        let grant_id = grant_id.to_string();
+        let reviewer = principal_from_request(principal);
+        commit_cross_tenant_grant_change(
+            state,
+            "enterprise.cross_tenant_grant.revoked",
+            tenant,
+            principal,
+            verified,
+            move |candidate| {
+                let record = candidate
+                    .values_mut()
+                    .find(|record| {
+                        record.grant.claims.grant_id == grant_id
+                            && record
+                                .grant
+                                .claims
+                                .issuer
+                                .matches_tenant_context(&issuer_tenant)
+                    })
+                    .ok_or_else(|| {
+                        super::super::routes_enterprise::not_found(
+                            "ENTERPRISE_CROSS_TENANT_GRANT_NOT_FOUND",
+                        )
+                    })?;
+                record.revoke(now_ms(), reviewer, None, None, None);
+                Ok(record.clone())
+            },
+        )
+        .await
+    }
+
+    async fn wait_for_queued_grant_writer(state: &AppState) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if state.enterprise.cross_tenant_grants.try_read().is_err() {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("grant writer did not queue");
+    }
+
+    async fn wait_for_grant_audit(state: &AppState, event_type: &str, grant_id: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(audit) = tokio::fs::read_to_string(&state.protected_audit_path).await {
+                    if audit.contains(event_type) && audit.contains(grant_id) {
+                        return;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("owned grant task did not append protected audit");
+    }
 
     #[test]
     fn grant_issuer_scope_rejects_wildcard_workspace() {
@@ -483,5 +844,326 @@ mod tests {
         );
 
         assert!(validate_resource_matches_tenant(&resource, &tenant_context).is_err());
+    }
+
+    #[tokio::test]
+    async fn revoked_hosted_admin_cannot_issue_or_revoke_after_grant_writer_wait() {
+        for role in [Some("member"), None] {
+            let (state, policy_path, stale_admin) = hosted_test_state().await;
+            let principal = RequestPrincipal::authenticated_user("admin", "tandem-web");
+            let tenant = stale_admin.tenant_context.clone();
+            let existing = test_record(&tenant, "existing-grant");
+            commit_test_issue(
+                &state,
+                &principal,
+                Some(&stale_admin),
+                &tenant,
+                existing.clone(),
+            )
+            .await
+            .unwrap();
+            let before_disk = tokio::fs::read(&state.enterprise.cross_tenant_grants_path)
+                .await
+                .unwrap();
+
+            hosted_policy_file(&policy_path, 2, role);
+            reload_hosted_policy_file_for_test(&state).await.unwrap();
+
+            let held = state.enterprise.cross_tenant_grants.read().await;
+            let issue_state = state.clone();
+            let issue_principal = principal.clone();
+            let issue_admin = stale_admin.clone();
+            let issue_tenant = tenant.clone();
+            let new_record = test_record(&tenant, "forbidden-grant");
+            let issue = tokio::spawn(async move {
+                commit_test_issue(
+                    &issue_state,
+                    &issue_principal,
+                    Some(&issue_admin),
+                    &issue_tenant,
+                    new_record,
+                )
+                .await
+            });
+            wait_for_queued_grant_writer(&state).await;
+            drop(held);
+            assert_eq!(issue.await.unwrap().unwrap_err().0, StatusCode::FORBIDDEN);
+
+            let held = state.enterprise.cross_tenant_grants.read().await;
+            let revoke_state = state.clone();
+            let revoke_principal = principal.clone();
+            let revoke_admin = stale_admin.clone();
+            let revoke_tenant = tenant.clone();
+            let revoke = tokio::spawn(async move {
+                commit_test_revoke(
+                    &revoke_state,
+                    &revoke_principal,
+                    Some(&revoke_admin),
+                    &revoke_tenant,
+                    "existing-grant",
+                )
+                .await
+            });
+            wait_for_queued_grant_writer(&state).await;
+            drop(held);
+            assert_eq!(revoke.await.unwrap().unwrap_err().0, StatusCode::FORBIDDEN);
+
+            let registry = state.enterprise.cross_tenant_grants.read().await;
+            assert_eq!(registry.len(), 1);
+            assert_eq!(registry.values().next(), Some(&existing));
+            assert_eq!(
+                tokio::fs::read(&state.enterprise.cross_tenant_grants_path)
+                    .await
+                    .unwrap(),
+                before_disk
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_policy_publication_waits_for_grant_commit() {
+        let (state, policy_path, admin) = hosted_test_state().await;
+        let principal = RequestPrincipal::authenticated_user("admin", "tandem-web");
+        let tenant = admin.tenant_context.clone();
+        let held = state.enterprise.cross_tenant_grants.read().await;
+        let issue_state = state.clone();
+        let issue_principal = principal.clone();
+        let issue_admin = admin.clone();
+        let issue = tokio::spawn(async move {
+            commit_test_issue(
+                &issue_state,
+                &issue_principal,
+                Some(&issue_admin),
+                &tenant,
+                test_record(&tenant, "authorized-before-revocation"),
+            )
+            .await
+        });
+        wait_for_queued_grant_writer(&state).await;
+
+        hosted_policy_file(&policy_path, 2, Some("member"));
+        let reload_state = state.clone();
+        let reload =
+            tokio::spawn(async move { reload_hosted_policy_file_for_test(&reload_state).await });
+        tokio::task::yield_now().await;
+        assert!(
+            !reload.is_finished(),
+            "publication must wait for grant commit"
+        );
+        drop(held);
+
+        assert!(issue.await.unwrap().is_ok());
+        reload.await.unwrap().unwrap();
+        assert!(state.authorize_current_hosted_admin(&admin).is_err());
+        let registry = state.enterprise.cross_tenant_grants.read().await;
+        assert_eq!(registry.len(), 1);
+        let persisted: HashMap<String, CrossTenantGrantRecord> = serde_json::from_slice(
+            &tokio::fs::read(&state.enterprise.cross_tenant_grants_path)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(*registry, persisted);
+    }
+
+    #[tokio::test]
+    async fn canceled_caller_cannot_split_grant_file_and_live_registry() {
+        let state = test_state().await;
+        let principal = RequestPrincipal::authenticated_user("admin", "local_api_token");
+        let tenant =
+            TenantContext::explicit_user_workspace("local-org", "local-workspace", None, "admin");
+        let record = test_record(&tenant, "cancel-safe-grant");
+        let key = cross_tenant_grant_key(&record);
+        let (published_tx, published_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        let issue_state = state.clone();
+        let issue_principal = principal.clone();
+        let issue_tenant = tenant.clone();
+        let issue_key = key.clone();
+        let issue = tokio::spawn(async move {
+            commit_cross_tenant_grant_change_inner(
+                issue_state,
+                "enterprise.cross_tenant_grant.issued",
+                issue_tenant,
+                issue_principal,
+                None,
+                move |candidate| {
+                    candidate.insert(issue_key, record.clone());
+                    Ok(record)
+                },
+                Some(GrantCommitPause {
+                    published: published_tx,
+                    resume: resume_rx,
+                }),
+            )
+            .await
+        });
+        published_rx.await.expect("issue file published");
+        assert!(state.enterprise.cross_tenant_grants.try_read().is_err());
+        let disk_during_issue: HashMap<String, CrossTenantGrantRecord> = serde_json::from_slice(
+            &tokio::fs::read(&state.enterprise.cross_tenant_grants_path)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(disk_during_issue.contains_key(&key));
+        issue.abort();
+        assert!(issue.await.unwrap_err().is_cancelled());
+        resume_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if state.enterprise.cross_tenant_grants.read().await.len() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("issued grant published in live registry");
+        assert_eq!(
+            *state.enterprise.cross_tenant_grants.read().await,
+            disk_during_issue
+        );
+        wait_for_grant_audit(
+            &state,
+            "enterprise.cross_tenant_grant.issued",
+            "cancel-safe-grant",
+        )
+        .await;
+
+        let (published_tx, published_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        let revoke_state = state.clone();
+        let revoke_principal = principal.clone();
+        let revoke_tenant = tenant.clone();
+        let revoke_key = key.clone();
+        let revoke = tokio::spawn(async move {
+            commit_cross_tenant_grant_change_inner(
+                revoke_state,
+                "enterprise.cross_tenant_grant.revoked",
+                revoke_tenant,
+                revoke_principal,
+                None,
+                move |candidate| {
+                    let record = candidate.get_mut(&revoke_key).unwrap();
+                    record.revoke(
+                        now_ms(),
+                        PrincipalRef::human_user("admin"),
+                        None,
+                        None,
+                        None,
+                    );
+                    Ok(record.clone())
+                },
+                Some(GrantCommitPause {
+                    published: published_tx,
+                    resume: resume_rx,
+                }),
+            )
+            .await
+        });
+        published_rx.await.expect("revoke file published");
+        assert!(state.enterprise.cross_tenant_grants.try_read().is_err());
+        let disk_during_revoke: HashMap<String, CrossTenantGrantRecord> = serde_json::from_slice(
+            &tokio::fs::read(&state.enterprise.cross_tenant_grants_path)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(disk_during_revoke[&key].revocation.is_some());
+        revoke.abort();
+        assert!(revoke.await.unwrap_err().is_cancelled());
+        resume_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if state.enterprise.cross_tenant_grants.read().await[&key]
+                    .revocation
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("revocation published in live registry");
+        assert_eq!(
+            *state.enterprise.cross_tenant_grants.read().await,
+            disk_during_revoke
+        );
+        wait_for_grant_audit(
+            &state,
+            "enterprise.cross_tenant_grant.revoked",
+            "cancel-safe-grant",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn grant_persistence_failure_preserves_live_registry_and_local_admin_compatibility() {
+        let state = test_state().await;
+        let principal = RequestPrincipal::authenticated_user("admin", "local_api_token");
+        let tenant =
+            TenantContext::explicit_user_workspace("local-org", "local-workspace", None, "admin");
+        let existing = test_record(&tenant, "local-grant");
+        commit_test_issue(&state, &principal, None, &tenant, existing.clone())
+            .await
+            .expect("local admin issue remains available");
+        let persisted_before = tokio::fs::read(&state.enterprise.cross_tenant_grants_path)
+            .await
+            .unwrap();
+        let revoked = commit_test_revoke(&state, &principal, None, &tenant, "local-grant")
+            .await
+            .expect("local admin revoke remains available");
+        assert!(revoked.revocation.is_some());
+        let persisted_after = tokio::fs::read(&state.enterprise.cross_tenant_grants_path)
+            .await
+            .unwrap();
+        assert_ne!(persisted_before, persisted_after);
+
+        let mut failing_state = state.clone();
+        let blocked_path = state
+            .enterprise
+            .cross_tenant_grants_path
+            .with_file_name("blocked-cross-tenant-grants");
+        tokio::fs::create_dir_all(&blocked_path).await.unwrap();
+        failing_state.enterprise.cross_tenant_grants_path = blocked_path.clone();
+        let before_registry = state.enterprise.cross_tenant_grants.read().await.clone();
+        let issue_error = commit_test_issue(
+            &failing_state,
+            &principal,
+            None,
+            &tenant,
+            test_record(&tenant, "failed-grant"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(issue_error.0, StatusCode::INTERNAL_SERVER_ERROR);
+        let revoke_error =
+            commit_test_revoke(&failing_state, &principal, None, &tenant, "local-grant")
+                .await
+                .unwrap_err();
+        assert_eq!(revoke_error.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            *state.enterprise.cross_tenant_grants.read().await,
+            before_registry
+        );
+        assert_eq!(
+            tokio::fs::read(&state.enterprise.cross_tenant_grants_path)
+                .await
+                .unwrap(),
+            persisted_after
+        );
+        assert!(blocked_path.is_dir());
+        assert_eq!(std::fs::read_dir(&blocked_path).unwrap().count(), 0);
+        assert!(!std::fs::read_dir(blocked_path.parent().unwrap())
+            .unwrap()
+            .any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".blocked-cross-tenant-grants.tmp-")
+            }));
     }
 }
