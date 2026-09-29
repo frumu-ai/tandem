@@ -1053,12 +1053,24 @@ fn require_current_hosted_permission(
     verified: Option<&tandem_types::VerifiedTenantContext>,
     permission: tandem_types::AccessPermission,
 ) -> Result<(), StatusCode> {
-    match state
+    state
         .enterprise
         .hosted_policy
-        .current()
+        .with_current_policy(|policy| {
+            require_hosted_permission_under_policy(tenant, verified, permission, policy)
+        })
         .map_err(|_| StatusCode::FORBIDDEN)?
-    {
+}
+
+/// Check against a borrowed snapshot while its read guard is still held.
+/// This must not call `current()` or await; callers may commit under the guard.
+fn require_hosted_permission_under_policy(
+    tenant: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    permission: tandem_types::AccessPermission,
+    policy: Option<&tandem_enterprise_contract::hosted_policy::ValidatedHostedPolicy>,
+) -> Result<(), StatusCode> {
+    match policy {
         None => {
             if verified.is_some_and(|context| context.policy_version.is_some()) {
                 Err(StatusCode::FORBIDDEN)
@@ -1066,22 +1078,34 @@ fn require_current_hosted_permission(
                 Ok(())
             }
         }
-        Some(_) => {
+        Some(policy) => {
             let verified = verified.ok_or(StatusCode::FORBIDDEN)?;
             let actor = verified.human_actor.actor_id.trim();
+            let now = crate::now_ms();
             if actor.is_empty()
                 || verified.policy_version.is_none()
-                || verified.is_expired_at(crate::now_ms())
+                || verified.is_expired_at(now)
                 || !tenant_matches(tenant, &verified.tenant_context)
                 || tenant.actor_id.as_deref() != Some(actor)
             {
                 return Err(StatusCode::FORBIDDEN);
             }
-            state
-                .enterprise
-                .hosted_policy
-                .authorize_permission(Some(verified), permission)
-                .map_err(|_| StatusCode::FORBIDDEN)
+            let projection = policy
+                .project_identity(verified, now)
+                .map_err(|_| StatusCode::FORBIDDEN)?;
+            if projection
+                .evaluate_access(
+                    &policy.deployment_resource(),
+                    permission,
+                    tandem_enterprise_contract::DataClass::Internal,
+                    now,
+                )
+                .decision
+                != tandem_enterprise_contract::AccessDecision::Allow
+            {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            Ok(())
         }
     }
 }

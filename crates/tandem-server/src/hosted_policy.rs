@@ -119,6 +119,11 @@ impl HostedPolicyRuntime {
         Ok(inspect(Some(policy)))
     }
 
+    #[cfg(test)]
+    pub(crate) fn publication_write_blocked_for_test(&self) -> bool {
+        self.snapshot.try_write().is_err()
+    }
+
     pub(crate) fn project(
         &self,
         verified: &mut VerifiedTenantContext,

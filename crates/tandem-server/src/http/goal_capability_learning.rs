@@ -62,14 +62,22 @@ pub(super) async fn discover_goal_capabilities(
     }
 
     let response = state
-        .discover_goal_capabilities(input.goal, tenant_id, owner_actor_id, || {
-            super::require_current_hosted_permission(
-                &state,
-                &tenant_context,
-                verified.as_deref(),
-                tandem_types::AccessPermission::HostedUse,
-            )
-            .is_ok()
+        .discover_goal_capabilities(input.goal, tenant_id, owner_actor_id, |commit| {
+            state
+                .enterprise
+                .hosted_policy
+                .with_current_policy(|policy| {
+                    super::require_hosted_permission_under_policy(
+                        &tenant_context,
+                        verified.as_deref(),
+                        tandem_types::AccessPermission::HostedUse,
+                        policy,
+                    )
+                    .ok()?;
+                    commit()
+                })
+                .ok()
+                .flatten()
         })
         .await
         .ok_or(StatusCode::FORBIDDEN)?;

@@ -10,10 +10,13 @@ impl AppState {
         goal: tandem_types::GoalSpec,
         tenant_id: String,
         owner_actor_id: Option<String>,
-        precommit: impl FnOnce() -> bool + Send,
+        authorize_and_commit: impl FnOnce(
+                &mut dyn FnMut() -> Option<tandem_types::GoalCapabilityLearningResponse>,
+            ) -> Option<tandem_types::GoalCapabilityLearningResponse>
+            + Send,
     ) -> Option<tandem_types::GoalCapabilityLearningResponse> {
         self.goal_capability_learning_store
-            .discover_for_goal_guarded(goal, tenant_id, owner_actor_id, precommit)
+            .discover_for_goal_guarded(goal, tenant_id, owner_actor_id, authorize_and_commit)
             .await
     }
 
@@ -22,7 +25,9 @@ impl AppState {
         &self,
         decision_id: &str,
     ) -> Option<crate::goal_capability_learning::DiscoveryDecision> {
-        self.goal_capability_learning_store.get_decision(decision_id).await
+        self.goal_capability_learning_store
+            .get_decision(decision_id)
+            .await
     }
 
     /// List discovery decisions for a tenant.
