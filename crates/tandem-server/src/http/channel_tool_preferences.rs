@@ -38,18 +38,61 @@ async fn load_tool_preferences_map(path: &std::path::Path) -> ToolPreferencesMap
 async fn save_tool_preferences_map(
     path: PathBuf,
     map: &ToolPreferencesMap,
-    authorize: impl Fn() -> Result<(), StatusCode> + Send + 'static,
+    state: AppState,
+    verified: Option<tandem_types::VerifiedTenantContext>,
+) -> Result<(), StatusCode> {
+    save_tool_preferences_map_with_hook(path, map, state, verified, || {}).await
+}
+
+async fn save_tool_preferences_map_with_hook(
+    path: PathBuf,
+    map: &ToolPreferencesMap,
+    state: AppState,
+    verified: Option<tandem_types::VerifiedTenantContext>,
+    before_write: impl FnOnce() + Send + 'static,
 ) -> Result<(), StatusCode> {
     let json = serde_json::to_vec_pretty(map).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tokio::task::spawn_blocking(move || {
-        authorize()?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        }
-        // Check after blocking-pool admission and directory preparation. Do not
-        // enqueue another async filesystem operation after this final check.
-        authorize()?;
-        std::fs::write(&path, json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        // The blocking worker owns this entire commit. Dropping the HTTP
+        // future cannot release the policy guard while a queued write runs.
+        state
+            .enterprise
+            .hosted_policy
+            .with_current_policy(|policy| {
+                let authorize = || {
+                    if let Some(policy) = policy {
+                        let verified = verified.as_ref().ok_or(StatusCode::FORBIDDEN)?;
+                        let now = crate::now_ms();
+                        let projection = policy
+                            .project_identity(verified, now)
+                            .map_err(|_| StatusCode::FORBIDDEN)?;
+                        if projection
+                            .evaluate_access(
+                                &policy.deployment_resource(),
+                                tandem_types::AccessPermission::HostedAdmin,
+                                tandem_enterprise_contract::DataClass::Internal,
+                                now,
+                            )
+                            .decision
+                            != tandem_enterprise_contract::AccessDecision::Allow
+                        {
+                            return Err(StatusCode::FORBIDDEN);
+                        }
+                    }
+                    Ok(())
+                };
+                authorize()?;
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                }
+                before_write();
+                // A claim or policy can expire while directory preparation (or
+                // the test pause) runs even though publication is held.
+                authorize()?;
+                std::fs::write(&path, json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            })
+            .map_err(|_| StatusCode::FORBIDDEN)?
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -169,12 +212,7 @@ async fn channel_tool_preferences_put_at_path(
     } else {
         map.insert(key, new_prefs.clone());
     }
-    let state = state.clone();
-    let verified = verified.cloned();
-    save_tool_preferences_map(path, &map, move || {
-        authorize_tool_preferences_write(&state, verified.as_ref())
-    })
-    .await?;
+    save_tool_preferences_map(path, &map, state.clone(), verified.cloned()).await?;
     Ok(Json(new_prefs))
 }
 

@@ -2,12 +2,31 @@
 // Licensed under the Business Source License 1.1
 
 use super::*;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
-use tandem_enterprise_contract::hosted_policy::role_capabilities;
+use tandem_enterprise_contract::hosted_policy::{role_capabilities, HostedPolicyBundle};
 use tandem_types::{
     AuthorityChain, HumanActor, TenantContextAssertionClaims, VerifiedTenantContext,
 };
+
+fn hosted_bundle(role: &str, version: u64) -> HostedPolicyBundle {
+    serde_json::from_value(json!({
+        "schema_version":1, "policy_version":version,
+        "organization_id":"org-a", "deployment_id":"dep-a",
+        "generated_at":chrono::DateTime::from_timestamp_millis(crate::now_ms() as i64).unwrap(),
+        "users":[{"id":"alice", "email":null, "username":null, "role":role,
+            "capabilities":role_capabilities(role), "is_active":true, "email_verified":true}],
+        "org_units":[], "org_unit_memberships":[], "deployment_grants":[]
+    }))
+    .unwrap()
+}
+
+fn write_hosted_bundle(path: &std::path::Path, bundle: &HostedPolicyBundle) {
+    std::fs::write(path, serde_json::to_vec(bundle).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
 
 async fn hosted_fixture(
     role: &str,
@@ -16,18 +35,7 @@ async fn hosted_fixture(
     let state = crate::test_support::test_state().await;
     let path = directory.join("policy.json");
     let now = crate::now_ms();
-    std::fs::write(&path, serde_json::to_vec(&json!({
-        "schema_version":1, "policy_version":1, "organization_id":"org-a", "deployment_id":"dep-a",
-        "generated_at":chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
-        "users":[{"id":"alice", "email":null, "username":null, "role":role,
-            "capabilities":role_capabilities(role), "is_active":true, "email_verified":true}],
-        "org_units":[], "org_unit_memberships":[], "deployment_grants":[]
-    })).unwrap()).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
+    write_hosted_bundle(&path, &hosted_bundle(role, 1));
     state
         .enterprise
         .hosted_policy
@@ -165,6 +173,7 @@ fn channel_preferences_recheck_after_blocking_queue_wait() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("preferences.json");
         std::fs::write(&path, b"original").unwrap();
+        let (state, verified) = hosted_fixture("admin", directory.path()).await;
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let blocker = tokio::task::spawn_blocking(move || {
@@ -172,58 +181,135 @@ fn channel_preferences_recheck_after_blocking_queue_wait() {
             release_rx.recv().unwrap();
         });
         ready_rx.recv().unwrap();
-        let allowed = Arc::new(AtomicBool::new(true));
-        let calls = Arc::new(AtomicUsize::new(0));
-        let checked_allowed = allowed.clone();
-        let checked_calls = calls.clone();
         let map = ToolPreferencesMap::new();
-        let save = save_tool_preferences_map(path.clone(), &map, move || {
-            checked_calls.fetch_add(1, Ordering::SeqCst);
-            if checked_allowed.load(Ordering::SeqCst) {
-                Ok(())
-            } else {
-                Err(StatusCode::FORBIDDEN)
-            }
-        });
+        let save = save_tool_preferences_map(path.clone(), &map, state.clone(), Some(verified));
         tokio::pin!(save);
         let first = std::future::poll_fn(|cx| {
             std::task::Poll::Ready(std::future::Future::poll(save.as_mut(), cx))
         })
         .await;
-        // Release the worker even if a subsequent assertion fails.
-        allowed.store(false, Ordering::SeqCst);
+        // Publication occurs while the sole blocking worker is occupied. The
+        // queued preference commit must see this newer, non-admin snapshot.
+        state
+            .enterprise
+            .hosted_policy
+            .install_test_bundle(hosted_bundle("viewer", 2))
+            .unwrap();
         release_tx.send(()).unwrap();
         assert!(first.is_pending());
         assert_eq!(save.await, Err(StatusCode::FORBIDDEN));
         blocker.await.unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(std::fs::read(&path).unwrap(), b"original");
     });
 }
 
-#[tokio::test]
-async fn channel_preferences_recheck_before_write_and_report_io_errors() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn channel_preferences_hold_policy_through_cancelled_caller_write() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("preferences.json");
+    let policy_path = directory.path().join("policy.json");
+    let (state, verified) = hosted_fixture("admin", directory.path()).await;
+    let mut map = ToolPreferencesMap::new();
+    map.insert("slack".into(), ChannelToolPreferences::default());
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let guarded_state = state.clone();
+    let write_path = path.clone();
+    let write_state = state.clone();
+    let write_map = map.clone();
+    let write = tokio::spawn(async move {
+        save_tool_preferences_map_with_hook(
+            write_path,
+            &write_map,
+            write_state,
+            Some(verified),
+            move || {
+                let guarded = guarded_state
+                    .enterprise
+                    .hosted_policy
+                    .publication_write_blocked_for_test();
+                let _ = entered_tx.send(guarded);
+                release_rx.recv().unwrap();
+            },
+        )
+        .await
+    });
+    let guarded = tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    write.abort();
+    assert!(write.await.unwrap_err().is_cancelled());
+    write_hosted_bundle(&policy_path, &hosted_bundle("viewer", 2));
+    let reload_state = state.clone();
+    let mut reload = tokio::spawn(async move { reload_state.reload_hosted_policy().await });
+    let reload_was_pending =
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut reload)
+            .await
+            .is_err();
+    release_tx.send(()).unwrap();
+    reload.await.unwrap().unwrap();
+    assert!(guarded, "commit must hold the policy snapshot read guard");
+    assert!(
+        reload_was_pending,
+        "revocation must wait for the durable write"
+    );
+    assert_eq!(load_tool_preferences_map(&path).await, map);
+    assert_eq!(
+        authorize_tool_preferences_write(&state, None),
+        Err(StatusCode::FORBIDDEN)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn channel_preferences_recheck_claim_expiry_after_write_pause() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("preferences.json");
     std::fs::write(&path, b"original").unwrap();
-    let calls = AtomicUsize::new(0);
-    assert_eq!(
-        save_tool_preferences_map(path.clone(), &ToolPreferencesMap::new(), move || {
-            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                Ok(())
-            } else {
-                Err(StatusCode::FORBIDDEN)
-            }
-        })
-        .await,
-        Err(StatusCode::FORBIDDEN)
-    );
+    let (state, mut verified) = hosted_fixture("admin", directory.path()).await;
+    let expires_at_ms = crate::now_ms() + 3_000;
+    verified.expires_at_ms = expires_at_ms;
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let write_path = path.clone();
+    let write = tokio::spawn(async move {
+        save_tool_preferences_map_with_hook(
+            write_path,
+            &ToolPreferencesMap::new(),
+            state,
+            Some(verified),
+            move || {
+                let _ = entered_tx.send(());
+                release_rx.recv().unwrap();
+            },
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+        .await
+        .expect("initial admin check did not reach the write pause")
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(
+        expires_at_ms.saturating_sub(crate::now_ms()) + 1,
+    ))
+    .await;
+    let expired = crate::now_ms() >= expires_at_ms;
+    release_tx.send(()).unwrap();
+    assert!(expired, "the claim must expire before the final check");
+    assert_eq!(write.await.unwrap(), Err(StatusCode::FORBIDDEN));
     assert_eq!(std::fs::read(&path).unwrap(), b"original");
+}
+
+#[tokio::test]
+async fn channel_preferences_report_io_errors() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = crate::test_support::test_state().await;
     assert_eq!(
         save_tool_preferences_map(
             directory.path().to_owned(),
             &ToolPreferencesMap::new(),
-            || Ok(())
+            state,
+            None,
         )
         .await,
         Err(StatusCode::INTERNAL_SERVER_ERROR)
