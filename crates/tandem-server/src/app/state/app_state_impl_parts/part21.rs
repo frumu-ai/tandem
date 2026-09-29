@@ -417,44 +417,45 @@ impl AppState {
         } else {
             None
         };
-        let mut commit = || {
-            if let (Some(plan_id), Some(binding)) = (plan_id.as_deref(), binding.as_ref()) {
-                authority.insert(
-                    plan_id.to_string(),
-                    WorkflowPlanDraftAuthority::Bound {
-                        binding: binding.clone(),
-                        session_id: Some(session.session_id.clone()),
-                    },
-                );
-            }
-            if let Some(previous_plan_id) = previous_plan_to_remove.as_deref() {
-                authority.remove(previous_plan_id);
-            }
-            sessions.insert(session.session_id.clone(), session.clone());
-        };
-        if let Some((tenant, verified)) = caller {
-            if let Some(current_binding) = checked_binding.as_ref() {
-                self.enterprise
-                    .hosted_policy
-                    .with_current_policy(|policy| {
-                        crate::http::workflow_planner::with_current_planner_session_write_authority(
-                            self,
-                            current_binding,
-                            tenant,
-                            verified,
-                            policy,
-                            &mut commit,
-                        )
-                    })
-                    .map_err(|_| anyhow::Error::new(WorkflowPlannerSessionWriteDenied))?
-                    .map_err(|_| anyhow::Error::new(WorkflowPlannerSessionWriteDenied))?;
+        {
+            let mut commit = || {
+                if let (Some(plan_id), Some(binding)) = (plan_id.as_deref(), binding.as_ref()) {
+                    authority.insert(
+                        plan_id.to_string(),
+                        WorkflowPlanDraftAuthority::Bound {
+                            binding: binding.clone(),
+                            session_id: Some(session.session_id.clone()),
+                        },
+                    );
+                }
+                if let Some(previous_plan_id) = previous_plan_to_remove.as_deref() {
+                    authority.remove(previous_plan_id);
+                }
+                sessions.insert(session.session_id.clone(), session.clone());
+            };
+            if let Some((tenant, verified)) = caller {
+                if let Some(current_binding) = checked_binding.as_ref() {
+                    self.enterprise
+                        .hosted_policy
+                        .with_current_policy(|policy| {
+                            crate::http::workflow_planner::with_current_planner_session_write_authority(
+                                self,
+                                current_binding,
+                                tenant,
+                                verified,
+                                policy,
+                                &mut commit,
+                            )
+                        })
+                        .map_err(|_| anyhow::Error::new(WorkflowPlannerSessionWriteDenied))?
+                        .map_err(|_| anyhow::Error::new(WorkflowPlannerSessionWriteDenied))?;
+                } else {
+                    commit();
+                }
             } else {
                 commit();
             }
-        } else {
-            commit();
         }
-        drop(commit);
         if let Some(previous_plan_id) = previous_plan_to_remove.as_deref() {
             self.workflow_plan_drafts
                 .write()
