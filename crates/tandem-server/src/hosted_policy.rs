@@ -40,6 +40,14 @@ pub(crate) struct HostedPolicyRuntime {
 }
 
 impl HostedPolicyRuntime {
+    /// Serialize a durable authority-sensitive commit with policy publication.
+    /// Keep a consistent lock order with the caller's target-store locks, then
+    /// reproject against the current snapshot before committing. It may be
+    /// held across async persistence, unlike a std RwLock read guard.
+    pub(crate) async fn lock_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.update.lock().await
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn install_test_bundle(
         &self,

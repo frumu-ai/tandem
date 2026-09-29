@@ -701,7 +701,29 @@ impl Storage {
         tenant_context: &TenantContext,
         expected_session_id: Option<&str>,
     ) -> anyhow::Result<Option<QuestionRequest>> {
+        self.decide_question_for_tenant_checked(
+            request_id,
+            tenant_context,
+            expected_session_id,
+            std::future::ready(Ok(())),
+        )
+        .await
+    }
+
+    /// Run an authority check after the question writer lock is acquired and
+    /// retain its guard across the SQLite delete/commit.
+    pub async fn decide_question_for_tenant_checked<G, F>(
+        &self,
+        request_id: &str,
+        tenant_context: &TenantContext,
+        expected_session_id: Option<&str>,
+        authorize: F,
+    ) -> anyhow::Result<Option<QuestionRequest>>
+    where
+        F: std::future::Future<Output = anyhow::Result<G>>,
+    {
         let _write_guard = self.question_write_lock.lock().await;
+        let _authority_guard = authorize.await?;
         let Some(request) = self
             .get_question_request_for_tenant(request_id, tenant_context, expected_session_id)
             .await?

@@ -154,6 +154,7 @@ pub enum PermissionReplyError {
     ActionMismatch,
     SessionMismatch,
     PersistenceFailed,
+    AuthorityDenied,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -786,7 +787,35 @@ impl PermissionManager {
         decided_by: Option<String>,
         reason: Option<String>,
     ) -> Result<Option<PermissionReplyOutcome>, PermissionReplyError> {
+        self.reply_with_provenance_for_tenant_checked(
+            tenant_context,
+            expected_session_id,
+            id,
+            reply,
+            decided_by,
+            reason,
+            std::future::ready(Ok(())),
+        )
+        .await
+    }
+
+    /// Acquire the caller's authority guard after the queue writer lock and
+    /// retain it until the durable decision and waiter notification complete.
+    pub async fn reply_with_provenance_for_tenant_checked<G, F>(
+        &self,
+        tenant_context: &TenantContext,
+        expected_session_id: Option<&str>,
+        id: &str,
+        reply: &str,
+        decided_by: Option<String>,
+        reason: Option<String>,
+        authorize: F,
+    ) -> Result<Option<PermissionReplyOutcome>, PermissionReplyError>
+    where
+        F: std::future::Future<Output = Result<G, PermissionReplyError>>,
+    {
         let transaction_guard = self.state_write_lock.lock().await;
+        let _authority_guard = authorize.await?;
         let before_requests = self.requests.read().await.clone();
         let before_rules = self.rules.read().await.clone();
         let before_decisions = self.decisions.read().await.clone();
