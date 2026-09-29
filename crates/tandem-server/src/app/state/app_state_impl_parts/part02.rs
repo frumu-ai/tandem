@@ -821,46 +821,97 @@ impl AppState {
         enabled: bool,
         verified: Option<&tandem_types::VerifiedTenantContext>,
     ) -> anyhow::Result<Option<WorkflowHookBinding>> {
-        self.enterprise
-            .hosted_policy
-            .authorize_permission(verified, tandem_types::AccessPermission::HostedAdmin)
-            .map_err(|_| anyhow::Error::new(WorkflowHookAdminDenied))?;
-        let mut overrides = self.workflow_hook_overrides.write().await;
-        let registry = self.workflows.read().await;
-        let Some(mut hook) = registry
-            .hooks
-            .iter()
-            .find(|hook| hook.binding_id == binding_id)
-            .cloned()
-        else {
-            return Ok(None);
-        };
-        let mut updated = overrides.clone();
-        updated.insert(binding_id.to_string(), enabled);
-        let payload = serde_json::to_string_pretty(&updated)?;
-        let policy = self.enterprise.hosted_policy.clone();
+        self.set_workflow_hook_enabled_with_prewrite(binding_id, enabled, verified, || {})
+            .await
+    }
+
+    /// Own the entire commit so a disconnected caller cannot leave the file
+    /// updated while the live override/registry still reflects the old value.
+    pub(crate) async fn set_workflow_hook_enabled_with_prewrite<F>(
+        &self,
+        binding_id: &str,
+        enabled: bool,
+        verified: Option<&tandem_types::VerifiedTenantContext>,
+        before_write: F,
+    ) -> anyhow::Result<Option<WorkflowHookBinding>>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let state = self.clone();
+        let binding_id = binding_id.to_string();
         let verified = verified.cloned();
-        let path = self.workflow_hook_overrides_path.clone();
-        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            policy
+        tokio::spawn(async move {
+            // This lock must precede the override and registry locks. Policy
+            // publication cannot pass a queued or in-flight hook commit.
+            let _publication = state.enterprise.hosted_policy.lock_publication().await;
+            state
+                .enterprise
+                .hosted_policy
                 .authorize_permission(
                     verified.as_ref(),
                     tandem_types::AccessPermission::HostedAdmin,
                 )
                 .map_err(|_| anyhow::Error::new(WorkflowHookAdminDenied))?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(path, payload)?;
-            Ok(())
+            let mut overrides = state.workflow_hook_overrides.write().await;
+            let registry = state.workflows.read().await;
+            let Some(mut hook) = registry
+                .hooks
+                .iter()
+                .find(|hook| hook.binding_id == binding_id)
+                .cloned()
+            else {
+                return Ok(None);
+            };
+            let mut updated = overrides.clone();
+            updated.insert(binding_id, enabled);
+            let payload = serde_json::to_string_pretty(&updated)?;
+            let policy = state.enterprise.hosted_policy.clone();
+            let commit_tenant = verified
+                .as_ref()
+                .map(|identity| identity.tenant_context.clone())
+                .unwrap_or_default();
+            let path = state.workflow_hook_overrides_path.clone();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                // Keep the current policy snapshot read guard through the
+                // synchronous file write. This remains true if the caller
+                // disconnects while this blocking worker is running.
+                policy
+                    .with_current_policy(|snapshot| -> anyhow::Result<()> {
+                        crate::http::require_hosted_permission_under_policy(
+                            &commit_tenant,
+                            verified.as_ref(),
+                            tandem_types::AccessPermission::HostedAdmin,
+                            snapshot,
+                        )
+                        .map_err(|_| anyhow::Error::new(WorkflowHookAdminDenied))?;
+                        before_write();
+                        // The publication guard blocks policy replacement, but
+                        // wall-clock claim expiry can advance during directory
+                        // preparation or a slow filesystem write admission.
+                        crate::http::require_hosted_permission_under_policy(
+                            &commit_tenant,
+                            verified.as_ref(),
+                            tandem_types::AccessPermission::HostedAdmin,
+                            snapshot,
+                        )
+                        .map_err(|_| anyhow::Error::new(WorkflowHookAdminDenied))?;
+                        std::fs::write(path, payload)?;
+                        Ok(())
+                    })
+                    .map_err(|_| anyhow::Error::new(WorkflowHookAdminDenied))?
+            })
+            .await??;
+            *overrides = updated;
+            drop(registry);
+            drop(overrides);
+            let _ = state.reload_workflows().await?;
+            hook.enabled = enabled;
+            Ok(Some(hook))
         })
-        .await??;
-        *overrides = updated;
-        drop(registry);
-        drop(overrides);
-        let _ = self.reload_workflows().await?;
-        hook.enabled = enabled;
-        Ok(Some(hook))
+        .await?
     }
 
     pub async fn put_automation_v2(

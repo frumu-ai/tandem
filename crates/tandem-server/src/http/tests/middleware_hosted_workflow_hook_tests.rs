@@ -203,3 +203,181 @@ async fn hosted_workflow_share_grant_cannot_change_deployment_hook() {
         Some(&false)
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hosted_workflow_hook_commit_survives_disconnect_before_policy_reload() {
+    let state = crate::test_support::test_state().await;
+    seed_workflow_hook(&state);
+    state.reload_workflows().await.expect("reload workflows");
+    let binding_id = state
+        .list_workflow_hooks(None)
+        .await
+        .into_iter()
+        .find(|hook| hook.workflow_id == "hosted_hook")
+        .expect("seeded hook")
+        .binding_id;
+    let temp = tempfile::tempdir().expect("hosted policy directory");
+    let policy_path = temp.path().join("policy.json");
+    let now = crate::now_ms();
+    write_policy(&policy_path, now);
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", policy_path.clone());
+    state.reload_hosted_policy().await.expect("initial policy");
+    let mut verified: tandem_types::VerifiedTenantContext = claims("alice", "admin", now).into();
+    state
+        .enterprise
+        .hosted_policy
+        .project(&mut verified)
+        .expect("project admin");
+
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let commit_state = state.clone();
+    let commit_id = binding_id.clone();
+    let caller = tokio::spawn(async move {
+        commit_state
+            .set_workflow_hook_enabled_with_prewrite(
+                &commit_id,
+                false,
+                Some(&verified),
+                move || {
+                    entered_tx.send(()).expect("signal prewrite");
+                    release_rx.recv().expect("release prewrite");
+                },
+            )
+            .await
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("hook commit reached guarded write");
+    assert!(state
+        .enterprise
+        .hosted_policy
+        .publication_write_blocked_for_test());
+    caller.abort();
+    assert!(caller.await.is_err());
+
+    let mut policy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&policy_path).expect("read policy"))
+            .expect("parse policy");
+    policy["policy_version"] = json!(2);
+    policy["users"][0]["role"] = json!("member");
+    policy["users"][0]["capabilities"] =
+        json!(tandem_enterprise_contract::hosted_policy::role_capabilities("member"));
+    std::fs::write(
+        &policy_path,
+        serde_json::to_vec(&policy).expect("encode policy"),
+    )
+    .expect("downgrade policy on disk");
+    let reload_state = state.clone();
+    let mut reload = tokio::spawn(async move { reload_state.reload_hosted_policy().await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut reload)
+            .await
+            .is_err(),
+        "policy publication must wait for the guarded hook write"
+    );
+    release_tx.send(()).expect("release hook write");
+    tokio::time::timeout(std::time::Duration::from_secs(5), reload)
+        .await
+        .expect("policy reload completed")
+        .expect("reload task")
+        .expect("publish downgraded policy");
+    assert_eq!(
+        state.workflow_hook_overrides.read().await.get(&binding_id),
+        Some(&false)
+    );
+    assert!(state
+        .list_workflow_hooks(None)
+        .await
+        .iter()
+        .any(|hook| hook.binding_id == binding_id && !hook.enabled));
+    let persisted: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&state.workflow_hook_overrides_path).expect("persisted override"),
+    )
+    .expect("parse override");
+    assert_eq!(persisted[&binding_id], json!(false));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hosted_workflow_hook_expired_admin_cannot_finish_paused_write() {
+    let state = crate::test_support::test_state().await;
+    seed_workflow_hook(&state);
+    state.reload_workflows().await.expect("reload workflows");
+    let binding_id = state
+        .list_workflow_hooks(None)
+        .await
+        .into_iter()
+        .find(|hook| hook.workflow_id == "hosted_hook")
+        .expect("seeded hook")
+        .binding_id;
+    let temp = tempfile::tempdir().expect("hosted policy directory");
+    let policy_path = temp.path().join("policy.json");
+    let now = crate::now_ms();
+    write_policy(&policy_path, now);
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", policy_path);
+    state.reload_hosted_policy().await.expect("initial policy");
+    let mut verified: tandem_types::VerifiedTenantContext = claims("alice", "admin", now).into();
+    verified.expires_at_ms = crate::now_ms() + 3_000;
+    state
+        .enterprise
+        .hosted_policy
+        .project(&mut verified)
+        .expect("project short-lived admin");
+    let expires_at_ms = verified.expires_at_ms;
+    let before_file = std::fs::read(&state.workflow_hook_overrides_path).ok();
+
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let commit_state = state.clone();
+    let commit_id = binding_id.clone();
+    let caller = tokio::spawn(async move {
+        commit_state
+            .set_workflow_hook_enabled_with_prewrite(
+                &commit_id,
+                false,
+                Some(&verified),
+                move || {
+                    entered_tx.send(()).expect("signal prewrite");
+                    release_rx.recv().expect("release prewrite");
+                },
+            )
+            .await
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("hook commit reached guarded write");
+    tokio::time::sleep(std::time::Duration::from_millis(
+        expires_at_ms.saturating_sub(crate::now_ms()) + 10,
+    ))
+    .await;
+    release_tx.send(()).expect("release hook write");
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), caller)
+        .await
+        .expect("hook commit completed")
+        .expect("caller task")
+        .expect_err("expired admin cannot write hook override");
+    assert!(error
+        .downcast_ref::<crate::app::state::WorkflowHookAdminDenied>()
+        .is_some());
+    assert_eq!(
+        std::fs::read(&state.workflow_hook_overrides_path).ok(),
+        before_file
+    );
+    assert!(state
+        .workflow_hook_overrides
+        .read()
+        .await
+        .get(&binding_id)
+        .is_none());
+    assert!(state
+        .list_workflow_hooks(None)
+        .await
+        .iter()
+        .any(|hook| hook.binding_id == binding_id && hook.enabled));
+}
