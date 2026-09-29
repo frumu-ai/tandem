@@ -183,8 +183,18 @@ impl AppState {
             let _ = fs::copy(&self.routines_path, &backup_path).await;
         }
         let tmp_path = config::paths::sibling_tmp_path(&self.routines_path);
-        fs::write(&tmp_path, payload).await?;
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut file = fs::File::create(&tmp_path).await?;
+            file.write_all(payload.as_bytes()).await?;
+            file.sync_all().await?;
+        }
         fs::rename(&tmp_path, &self.routines_path).await?;
+        #[cfg(unix)]
+        if let Some(parent) = self.routines_path.parent() {
+            let parent = parent.to_path_buf();
+            tokio::task::spawn_blocking(move || std::fs::File::open(parent)?.sync_all()).await??;
+        }
         Ok(())
     }
 
@@ -222,7 +232,8 @@ impl AppState {
 
     /// Check an HTTP caller's authority against the row being replaced while
     /// holding the same lock used for the write. Internal callers retain the
-    /// unrestricted `put_routine` API for scheduler and rollback operations.
+    /// `put_routine` API without hosted caller checks for scheduler and rollback
+    /// operations, but solution resources still require their lifecycle.
     pub async fn put_routine_checked<F>(
         &self,
         routine: RoutineSpec,
@@ -231,6 +242,7 @@ impl AppState {
     where
         F: FnOnce(Option<&RoutineSpec>, &mut RoutineSpec) -> bool,
     {
+        solution_routines::require_unmanaged(&routine)?;
         let mut routine = normalize_routine(routine)?;
         let identity = RoutineIdentity::new(&routine.routine_id, &routine.tenant_context);
         let storage_key = identity.storage_key();
@@ -241,6 +253,12 @@ impl AppState {
         {
             return Err(RoutineStoreError::AccessDenied);
         }
+        if let Some(existing) = previous.as_ref() {
+            solution_routines::require_unmanaged(existing)?;
+        }
+        // Preparation may preserve persisted metadata, but it cannot turn a
+        // generic write into installation-owned resource materialization.
+        solution_routines::require_unmanaged(&routine)?;
         let previous = self
             .routines
             .write()
@@ -293,8 +311,10 @@ impl AppState {
         if !authorized(&previous) {
             return Err(RoutineStoreError::AccessDenied);
         }
+        solution_routines::require_unmanaged(&previous)?;
         let mut routine = previous.clone();
         update(&mut routine);
+        solution_routines::require_unmanaged(&routine)?;
         routine.routine_id = previous.routine_id.clone();
         routine.tenant_context = previous.tenant_context.clone();
         let routine = normalize_routine(routine)?;
@@ -409,6 +429,7 @@ impl AppState {
             if !authorized(existing) {
                 return Err(RoutineStoreError::AccessDenied);
             }
+            solution_routines::require_unmanaged(existing)?;
         }
         let removed = self.routines.write().await.remove(&storage_key);
         let allow_empty_overwrite = self.routines.read().await.is_empty();
@@ -433,7 +454,7 @@ impl AppState {
             return plans;
         }
         for routine in guard.values_mut() {
-            if routine.status != RoutineStatus::Active {
+            if routine.status != RoutineStatus::Active || routine.installation_disabled() {
                 continue;
             }
             let Some(next_fire_at_ms) = routine.next_fire_at_ms else {
@@ -554,6 +575,11 @@ impl AppState {
         status: RoutineRunStatus,
         detail: Option<String>,
     ) -> RoutineRunRecord {
+        let status = if routine.installation_disabled() {
+            RoutineRunStatus::BlockedPolicy
+        } else {
+            status
+        };
         let now = now_ms();
         let record = RoutineRunRecord {
             run_id: format!("routine-run-{}", uuid::Uuid::new_v4()),
@@ -657,11 +683,25 @@ impl AppState {
     }
 
     pub async fn claim_next_queued_routine_run(&self) -> Option<RoutineRunRecord> {
+        let routines = self.routines.read().await.clone();
         let mut guard = self.routine_runs.write().await;
         // The policy can become unavailable while this task waits for the lock.
         // Local callers without a hosted source retain their existing behavior.
         if !self.enterprise.hosted_policy.is_ready() {
             return None;
+        }
+        let mut blocked = false;
+        for row in guard.values_mut().filter(|row| row.status == RoutineRunStatus::Queued) {
+            let identity = RoutineIdentity::new(&row.routine_id, &row.tenant_context);
+            let routine = routines.get(&identity.storage_key());
+            if routine.is_some_and(RoutineSpec::installation_disabled)
+                || (crate::routines::types::solution_routine_id(&row.routine_id) && routine.is_none())
+            {
+                row.status = RoutineRunStatus::BlockedPolicy;
+                row.updated_at_ms = now_ms();
+                row.detail = Some("solution routine requires installation activation".to_string());
+                blocked = true;
+            }
         }
         let next_run_id = guard
             .values()
@@ -671,7 +711,14 @@ impl AppState {
                     .cmp(&b.created_at_ms)
                     .then_with(|| a.run_id.cmp(&b.run_id))
             })
-            .map(|row| row.run_id.clone())?;
+            .map(|row| row.run_id.clone());
+        let Some(next_run_id) = next_run_id else {
+            drop(guard);
+            if blocked {
+                let _ = self.persist_routine_runs().await;
+            }
+            return None;
+        };
         let now = now_ms();
         let row = guard.get_mut(&next_run_id)?;
         row.status = RoutineRunStatus::Running;

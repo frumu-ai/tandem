@@ -1,0 +1,6 @@
+name: tandem.company-brain
+pack_id: tandem.company-brain
+version: 0.1.0
+type: solution
+entrypoints:
+  solution: solution.json

@@ -44,7 +44,7 @@ fn record_id(scope: &CustomerScope, generation: u64) -> String {
     format!("{}:{generation}", scope.instance_id)
 }
 
-fn load(
+pub(super) fn load(
     executor: &impl Executor,
     tenant: &TenantContext,
     scope: &CustomerScope,
@@ -210,7 +210,8 @@ pub(super) fn migrate_sqlite(connection: &mut rusqlite::Connection) -> anyhow::R
     )?;
     match version {
         5 => transaction.execute_batch(SCHEMA_V6)?,
-        6 => {}
+        // A concurrent initializer may also have completed the v7 step.
+        6 | 7 => {}
         _ => anyhow::bail!("unsupported schema version for customer config migration: {version}"),
     }
     transaction.commit()?;

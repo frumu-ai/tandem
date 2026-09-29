@@ -116,6 +116,13 @@ pub struct StatefulBackendMigrationReport {
 struct TransferTable {
     name: String,
     columns: Vec<String>,
+    source_present: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TransferSide {
+    Source,
+    Target,
 }
 
 #[derive(Debug, Clone)]
@@ -167,11 +174,15 @@ pub fn migrate_stateful_storage_backend(
     let transfer_tables = transfer_tables(&source, &target)
         .context("inspect source and target stateful store schemas")?;
     let (source_primary_fingerprint, source_primary_records) =
-        fingerprint_store(&source, &transfer_tables)
+        fingerprint_store(&source, &transfer_tables, TransferSide::Source)
             .context("fingerprint locked source stateful storage")?;
-    let (source_fingerprint, record_count) =
-        fingerprint_transfer_state(&source, &transfer_tables, &runtime_root(source.paths()))
-            .context("fingerprint locked source storage state")?;
+    let (source_fingerprint, record_count) = fingerprint_transfer_state(
+        &source,
+        &transfer_tables,
+        &runtime_root(source.paths()),
+        TransferSide::Source,
+    )
+    .context("fingerprint locked source storage state")?;
 
     if let Some(journal) = read_journal(&target)? {
         if journal.status == "complete" {
@@ -184,6 +195,7 @@ pub fn migrate_stateful_storage_backend(
                 &target,
                 &transfer_tables,
                 &runtime_root(target.paths()),
+                TransferSide::Target,
             )
             .context("verify completed target stateful storage")?;
             if journal.target_fingerprint.as_deref() != Some(target_fingerprint.as_str())
@@ -234,9 +246,13 @@ pub fn migrate_stateful_storage_backend(
         .context("copy authoritative session and runtime-event stores")?;
     synchronize_postgres_sequences(&target)?;
 
-    let (target_fingerprint, target_records) =
-        fingerprint_transfer_state(&target, &transfer_tables, &runtime_root(target.paths()))
-            .context("fingerprint imported target storage state")?;
+    let (target_fingerprint, target_records) = fingerprint_transfer_state(
+        &target,
+        &transfer_tables,
+        &runtime_root(target.paths()),
+        TransferSide::Target,
+    )
+    .context("fingerprint imported target storage state")?;
     if target_fingerprint != source_fingerprint || target_records != record_count {
         bail!(
             "stateful storage transfer verification failed: source {source_fingerprint} ({record_count} rows), target {target_fingerprint} ({target_records} rows); target remains fail-closed"
@@ -401,13 +417,42 @@ fn transfer_tables(
     let source_names = table_names(source)?;
     let target_names = table_names(target)?;
     if source_names != target_names {
-        bail!("source and target stateful storage schemas expose different tables");
+        let version = |store: &OrchestrationStateStore| {
+            store.with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT schema_version FROM schema_metadata LIMIT 1",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(Into::into)
+            })
+        };
+        let missing = target_names
+            .difference(&source_names)
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        // The v7 migration only adds these empty tables. Project them into the
+        // locked v6 source instead of migrating the rollback source in place.
+        if !source_names.is_subset(&target_names)
+            || missing
+                != BTreeSet::from(["solution_installations", "solution_installation_versions"])
+            || version(source)? != 6
+            || version(target)? != 7
+        {
+            bail!("source and target stateful storage schemas expose different tables");
+        }
     }
 
     let mut tables = Vec::new();
-    for name in source_names {
-        let source_columns = table_columns(source, &name)?;
+    for name in target_names {
+        let source_present = source_names.contains(&name);
         let target_columns = table_columns(target, &name)?;
+        let source_columns = if source_present {
+            table_columns(source, &name)?
+        } else {
+            target_columns.clone()
+        };
         let source_column_set = source_columns
             .iter()
             .map(String::as_str)
@@ -449,7 +494,11 @@ fn transfer_tables(
         if columns.is_empty() {
             bail!("stateful storage table `{name}` has no transferable columns");
         }
-        tables.push(TransferTable { name, columns });
+        tables.push(TransferTable {
+            name,
+            columns,
+            source_present,
+        });
     }
     if tables.is_empty() {
         bail!("source stateful storage has no transferable tables");
@@ -554,7 +603,8 @@ fn copy_store_if_needed(
     source_fingerprint: &str,
     source_records: u64,
 ) -> anyhow::Result<()> {
-    let (target_fingerprint, target_records) = fingerprint_store(target, tables)?;
+    let (target_fingerprint, target_records) =
+        fingerprint_store(target, tables, TransferSide::Target)?;
     if target_records == 0 {
         return copy_store(source, target, tables);
     }
@@ -643,8 +693,9 @@ fn fingerprint_transfer_state(
     store: &OrchestrationStateStore,
     tables: &[TransferTable],
     root: &Path,
+    side: TransferSide,
 ) -> anyhow::Result<(String, u64)> {
-    let (stateful_fingerprint, stateful_records) = fingerprint_store(store, tables)?;
+    let (stateful_fingerprint, stateful_records) = fingerprint_store(store, tables, side)?;
     let (auxiliary_fingerprint, auxiliary_records) = fingerprint_auxiliary_databases(root)?;
     let mut digest = Sha256::new();
     update_bytes(&mut digest, b"stateful");
@@ -723,6 +774,7 @@ fn fingerprint_sqlite_database(path: &Path) -> anyhow::Result<(String, u64)> {
 fn fingerprint_store(
     store: &OrchestrationStateStore,
     tables: &[TransferTable],
+    side: TransferSide,
 ) -> anyhow::Result<(String, u64)> {
     let mut digest = Sha256::new();
     let mut record_count = 0_u64;
@@ -730,6 +782,9 @@ fn fingerprint_store(
         update_bytes(&mut digest, table.name.as_bytes());
         for column in &table.columns {
             update_bytes(&mut digest, column.as_bytes());
+        }
+        if side == TransferSide::Source && !table.source_present {
+            continue;
         }
         scan_table(store, table, |rows| {
             for row in rows {
@@ -754,6 +809,9 @@ fn copy_store(
             .transaction_with_behavior(backend::TransactionBehavior::Immediate)
             .context("begin target stateful storage import transaction")?;
         for table in tables {
+            if !table.source_present {
+                continue;
+            }
             let insert = format!(
                 "INSERT INTO {} ({}) VALUES ({})",
                 quote_identifier(&table.name),
@@ -931,7 +989,9 @@ impl OrchestrationStateStore {
     }
 }
 
-#[cfg(test)]
+// Every transfer test uses SQLite as a source or destination, including the
+// PostgreSQL round trips. PostgreSQL-only conformance is tested separately.
+#[cfg(all(test, feature = "storage-sqlite"))]
 mod tests {
     use super::*;
     use crate::stateful_runtime::backend::Executor;
@@ -943,11 +1003,175 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "storage-sqlite")]
+    #[test]
+    fn legacy_v6_transfer_projects_empty_installation_tables_without_mutating_source() {
+        let source_root = tempfile::tempdir().unwrap();
+        let target_root = tempfile::tempdir().unwrap();
+        let source = OrchestrationStateStore::open_with_config(
+            paths(source_root.path()),
+            backend::StorageBackendConfig::Sqlite,
+        )
+        .unwrap();
+        super::super::customer_config_tests::seed_protected_config_for_transfer(&source);
+        source
+            .with_connection(|connection| {
+                connection.execute_batch(
+                    "DROP TABLE solution_installation_versions;
+                 DROP TABLE solution_installations;
+                 UPDATE schema_metadata SET schema_version = 6;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let before = std::fs::read(&source.paths().database_path).unwrap();
+        let target = OrchestrationStateStore::open_for_backend_transfer_target(
+            paths(target_root.path()),
+            backend::StorageBackendConfig::Sqlite,
+        )
+        .unwrap();
+        let _source_lock = source.acquire_engine_lock().unwrap();
+        let tables = transfer_tables(&source, &target).unwrap();
+        let source_fingerprint = fingerprint_store(&source, &tables, TransferSide::Source).unwrap();
+        assert!(source_fingerprint.1 > 0);
+        ensure_target_empty(&target, &tables).unwrap();
+        copy_store(&source, &target, &tables).unwrap();
+        assert_eq!(
+            source_fingerprint,
+            fingerprint_store(&target, &tables, TransferSide::Target).unwrap()
+        );
+        assert_eq!(
+            before,
+            std::fs::read(&source.paths().database_path).unwrap()
+        );
+        assert!(!table_names(&source)
+            .unwrap()
+            .contains("solution_installations"));
+
+        // New target-only rows must still participate in verification.
+        target
+            .with_connection(|connection| {
+                connection.execute_batch(
+                    "INSERT INTO solution_installations
+                 (org_id,workspace_id,deployment_id,instance_id,generation,record_json)
+                 VALUES ('org','workspace','deployment','unexpected',1,'{}');",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_ne!(
+            source_fingerprint,
+            fingerprint_store(&target, &tables, TransferSide::Target).unwrap()
+        );
+    }
+
     #[cfg(feature = "storage-postgres")]
     fn postgres_url() -> Option<String> {
         std::env::var("TANDEM_TEST_POSTGRES_URL")
             .ok()
             .filter(|value| !value.trim().is_empty())
+    }
+
+    #[cfg(feature = "storage-postgres")]
+    #[test]
+    fn legacy_v6_transfer_preserves_source_in_both_backend_directions() {
+        let Some(url) = postgres_url() else {
+            eprintln!("skipping v6 backend transfer test without TANDEM_TEST_POSTGRES_URL");
+            return;
+        };
+        let source_root = tempfile::tempdir().unwrap();
+        let postgres_root = tempfile::tempdir().unwrap();
+        let restored_root = tempfile::tempdir().unwrap();
+        let source = OrchestrationStateStore::open_with_config(
+            paths(source_root.path()),
+            backend::StorageBackendConfig::Sqlite,
+        )
+        .unwrap();
+        let config =
+            super::super::customer_config_tests::seed_protected_config_for_transfer(&source);
+        let make_v6 = |store: &OrchestrationStateStore| {
+            store
+                .with_connection(|connection| {
+                    connection.execute_batch(
+                        "DROP TABLE solution_installation_versions;
+                    DROP TABLE solution_installations;
+                    UPDATE schema_metadata SET schema_version = 6;",
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+        };
+        let assert_v6 = |store: &OrchestrationStateStore| {
+            assert!(!table_names(store)
+                .unwrap()
+                .contains("solution_installations"));
+            store
+                .with_connection(|connection| {
+                    let version: i64 = connection.query_row(
+                        "SELECT schema_version FROM schema_metadata",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(version, 6);
+                    Ok(())
+                })
+                .unwrap();
+            super::super::customer_config_tests::assert_protected_config_after_transfer(
+                store, &config,
+            );
+        };
+        make_v6(&source);
+        let before = std::fs::read(&source.paths().database_path).unwrap();
+        let request = StatefulBackendMigrationRequest {
+            source_paths: paths(source_root.path()),
+            target_paths: paths(postgres_root.path()),
+            source_backend: StatefulBackendKind::Sqlite,
+            target_backend: StatefulBackendKind::Postgres,
+            source_postgres_url: None,
+            target_postgres_url: Some(url.clone()),
+        };
+        let first = migrate_stateful_storage_backend(&request).unwrap();
+        assert_eq!(first.source_fingerprint, first.target_fingerprint);
+        assert!(
+            migrate_stateful_storage_backend(&request)
+                .unwrap()
+                .already_complete
+        );
+        assert_v6(&source);
+        assert_eq!(
+            before,
+            std::fs::read(&source.paths().database_path).unwrap()
+        );
+        let postgres = OrchestrationStateStore::open_for_backend_transfer_source(
+            paths(postgres_root.path()),
+            backend::StorageBackendConfig::Postgres { url: url.clone() },
+        )
+        .unwrap();
+        make_v6(&postgres);
+        let restored = migrate_stateful_storage_backend(&StatefulBackendMigrationRequest {
+            source_paths: paths(postgres_root.path()),
+            target_paths: paths(restored_root.path()),
+            source_backend: StatefulBackendKind::Postgres,
+            target_backend: StatefulBackendKind::Sqlite,
+            source_postgres_url: Some(url.clone()),
+            target_postgres_url: None,
+        })
+        .unwrap();
+        assert_eq!(restored.source_fingerprint, restored.target_fingerprint);
+        assert_v6(&postgres);
+        let restored = OrchestrationStateStore::open_with_config(
+            paths(restored_root.path()),
+            backend::StorageBackendConfig::Sqlite,
+        )
+        .unwrap();
+        super::super::customer_config_tests::assert_protected_config_after_transfer(
+            &restored, &config,
+        );
+        let schema = match &postgres.backend {
+            StoreBackendSelection::Postgres(target) => target.schema().to_string(),
+            _ => unreachable!(),
+        };
+        crate::stateful_runtime::backend::postgres::drop_schema_for_tests(&url, &schema).unwrap();
     }
 
     #[cfg(feature = "storage-postgres")]
@@ -1010,6 +1234,10 @@ mod tests {
         seed_runtime_events(source_root.path());
         let customer_config =
             super::super::customer_config_tests::seed_protected_config_for_transfer(&source);
+        let installation =
+            super::super::solution_installation_tests::seed_protected_installation_for_transfer(
+                &source,
+            );
 
         let request = StatefulBackendMigrationRequest {
             source_paths: source_paths.clone(),
@@ -1025,8 +1253,13 @@ mod tests {
         )
         .unwrap();
         let source_tables = transfer_tables(&source, &staged_target).unwrap();
-        let (source_fingerprint, source_records) =
-            fingerprint_transfer_state(&source, &source_tables, source_root.path()).unwrap();
+        let (source_fingerprint, source_records) = fingerprint_transfer_state(
+            &source,
+            &source_tables,
+            source_root.path(),
+            TransferSide::Source,
+        )
+        .unwrap();
         write_in_progress_journal(
             &staged_target,
             &request,
@@ -1061,6 +1294,10 @@ mod tests {
         super::super::customer_config_tests::assert_protected_config_after_transfer(
             &round_trip,
             &customer_config,
+        );
+        super::super::solution_installation_tests::assert_protected_installation_after_transfer(
+            &round_trip,
+            &installation,
         );
         round_trip
             .with_connection(|connection| {

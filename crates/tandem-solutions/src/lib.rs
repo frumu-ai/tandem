@@ -53,6 +53,22 @@ pub fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Stable native resource identity, shared by planning and resource staging.
+/// This derives an identifier; callers must independently authorize the owner.
+pub fn solution_resource_id(
+    org_id: &str,
+    workspace_id: &str,
+    deployment_id: &str,
+    instance_id: &str,
+    component_id: &str,
+) -> Result<String, SolutionError> {
+    let namespace = sha256(&canonical_json(&serde_json::json!({
+        "org": org_id, "workspace": workspace_id,
+        "deployment": deployment_id, "instance": instance_id,
+    }))?);
+    Ok(format!("solution-{namespace}-{component_id}"))
+}
+
 // Object ordering is explicit even when another workspace crate enables
 // serde_json/preserve_order. Arrays retain order; set-like fields use BTreeSet.
 pub fn canonical_json(value: &impl Serialize) -> Result<Vec<u8>, SolutionError> {

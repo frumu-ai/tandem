@@ -7,6 +7,7 @@ use crate::routines::types::{RoutineMisfirePolicy, RoutineSchedule, RoutineSpec,
 
 fn due_routine(id: &str, policy: RoutineMisfirePolicy) -> RoutineSpec {
     RoutineSpec {
+        solution_owner: None,
         routine_id: id.into(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: id.into(),

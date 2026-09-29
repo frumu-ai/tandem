@@ -17,7 +17,7 @@
     "build": "tsup src/index.ts --format esm,cjs --dts --clean",
     "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && tsc --project test/tsconfig.json --noEmit",
     "prepublishOnly": "npm run build"
   },
   "files": [

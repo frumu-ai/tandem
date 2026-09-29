@@ -104,10 +104,6 @@ pub fn resolve(
     let mut model_classes = BTreeSet::new();
     // Tenant-qualified namespace prevents the same logical instance name in a
     // different workspace from claiming existing resources.
-    let namespace = sha256(&canonical_json(&json!({
-        "org": authority.org_id, "workspace": authority.workspace_id,
-        "deployment": authority.deployment_id, "instance": request.instance_id
-    }))?);
     for id in &selected {
         let component = &blueprint.components[id];
         if let Some(conflict) = component.conflicts_with.intersection(&selected).next() {
@@ -141,7 +137,13 @@ pub fn resolve(
         components.insert(
             id.clone(),
             LockedComponent {
-                resource_id: format!("solution-{namespace}-{id}"),
+                resource_id: solution_resource_id(
+                    &authority.org_id,
+                    &authority.workspace_id,
+                    &authority.deployment_id,
+                    &request.instance_id,
+                    id,
+                )?,
                 owner_instance_id: request.instance_id.clone(),
                 kind: component.kind.clone(),
                 artifact: component.artifact.clone(),
