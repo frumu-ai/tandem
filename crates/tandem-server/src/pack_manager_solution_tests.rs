@@ -4,7 +4,7 @@
 use super::tests::{write_signed_zip, EnvGuard};
 use super::*;
 
-fn fixture() -> Vec<(String, String)> {
+pub(super) fn fixture() -> Vec<(String, String)> {
     [
         (
             MARKER_FILE,
@@ -32,7 +32,7 @@ fn fixture() -> Vec<(String, String)> {
     .collect()
 }
 
-fn signed(path: &Path, entries: &[(String, String)]) -> String {
+pub(super) fn signed(path: &Path, entries: &[(String, String)]) -> String {
     write_signed_zip(
         path,
         &entries
@@ -42,7 +42,7 @@ fn signed(path: &Path, entries: &[(String, String)]) -> String {
     )
 }
 
-fn request(path: &Path) -> PackInstallRequest {
+pub(super) fn request(path: &Path) -> PackInstallRequest {
     PackInstallRequest {
         path: Some(path.to_string_lossy().into_owned()),
         url: None,
@@ -154,6 +154,7 @@ async fn solution_pack_signed_artifacts_feed_existing_resolver_and_round_trip() 
     let plan = tandem_solutions::resolve(
         &source.blueprint,
         ResolutionInput {
+            host_facts_sha256: None,
             request: &install,
             verified_context: &context,
             now_ms: 1500,

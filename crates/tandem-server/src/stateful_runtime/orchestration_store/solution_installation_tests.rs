@@ -17,6 +17,7 @@ struct InstallationFixture {
     models: BTreeMap<String, ModelBinding>,
     artifacts: BTreeMap<String, Vec<u8>>,
     readiness: BTreeSet<String>,
+    host_facts: Option<String>,
 }
 
 #[cfg(feature = "storage-postgres")]
@@ -84,6 +85,7 @@ impl InstallationFixture {
             .insert("review-notes".into());
         Self {
             customer: fixture,
+            host_facts: None,
             models: [("local.fixture".into(), ModelBinding {
                 provider: "local".into(), model: "synthetic-model".into(),
                 credential_ref: "secret-ref:local-fixture".into(), uses_network: false,
@@ -120,6 +122,10 @@ impl InstallationFixture {
             .customer
             .save(store, &self.customer.config, None)
             .unwrap();
+        (config, self.composition())
+    }
+
+    fn composition(&self) -> String {
         let prepared = prepare_customer_config(
             &self.customer.blueprint,
             &self.customer.config,
@@ -129,6 +135,7 @@ impl InstallationFixture {
         let plan = resolve(
             &self.customer.blueprint,
             ResolutionInput {
+                host_facts_sha256: self.host_facts.as_deref(),
                 request: &prepared.request,
                 verified_context: &self.customer.context,
                 now_ms: 1500,
@@ -140,7 +147,30 @@ impl InstallationFixture {
             },
         )
         .unwrap();
-        (config, plan.composition_hash().unwrap())
+        plan.composition_hash().unwrap()
+    }
+
+    fn validate_adapter(&self, plan: &ResolvedPlan) -> anyhow::Result<()> {
+        crate::solution_installation::validate_staging_plan(
+            plan,
+            &self.customer.blueprint,
+            &self.artifacts,
+            &self.customer.context.tenant_context,
+        )
+    }
+
+    fn edit_artifact(&mut self, component: &str, edit: impl FnOnce(&mut serde_json::Value)) {
+        let mut artifact = serde_json::from_slice(&self.artifacts[component]).unwrap();
+        edit(&mut artifact);
+        let artifact = serde_json::to_vec(&artifact).unwrap();
+        self.customer
+            .blueprint
+            .components
+            .get_mut(component)
+            .unwrap()
+            .artifact
+            .sha256 = sha256(&artifact);
+        self.artifacts.insert(component.into(), artifact);
     }
 
     fn input<'a>(
@@ -149,6 +179,7 @@ impl InstallationFixture {
         digest: &'a str,
     ) -> SolutionInstallationInput<'a> {
         SolutionInstallationInput {
+            host_facts_sha256: self.host_facts.as_deref(),
             configuration: self.configuration(),
             expected_config: &config.version,
             blueprint: &self.customer.blueprint,
@@ -166,6 +197,197 @@ impl InstallationFixture {
             .unwrap()
             .unwrap()
     }
+}
+
+#[test]
+#[serial]
+fn solution_installation_rejected_adapter_preflight_leaves_no_intent_and_allows_valid_begin() {
+    for_each_backend(|_, store| {
+        for rejection in [
+            "component-kind",
+            "agent-tools",
+            "agent-network",
+            "agent-owner",
+            "routine-tools",
+            "routine-outputs",
+            "routine-external",
+            "model-classes",
+        ] {
+            let mut invalid = InstallationFixture::new("a");
+            invalid.customer.config.scope.instance_id = rejection.into();
+            match rejection {
+                "component-kind" => {
+                    invalid
+                        .customer
+                        .blueprint
+                        .components
+                        .get_mut("central-brain")
+                        .unwrap()
+                        .kind = ComponentKind::Workflow
+                }
+                "agent-tools" => invalid.edit_artifact("central-brain", |artifact| {
+                    artifact["capabilities"]["tool_allowlist"] = serde_json::json!(["bash"]);
+                }),
+                "agent-network" => invalid.edit_artifact("central-brain", |artifact| {
+                    artifact["capabilities"]["net_scopes"]["enabled"] = serde_json::json!(true);
+                }),
+                "agent-owner" => invalid.edit_artifact("central-brain", |artifact| {
+                    artifact["solution_owner"] = serde_json::json!({
+                        "org_id": "org-a", "workspace_id": "workspace-a",
+                        "deployment_id": "deployment-a", "instance_id": "agent-owner",
+                        "component_id": "central-brain", "composition_sha256": "a".repeat(64),
+                    });
+                }),
+                "routine-tools" => invalid.edit_artifact("review-notes", |artifact| {
+                    artifact["allowed_tools"] = serde_json::json!(["bash"]);
+                }),
+                "routine-outputs" => invalid.edit_artifact("review-notes", |artifact| {
+                    artifact["output_targets"] = serde_json::json!(["external"]);
+                }),
+                "routine-external" => invalid.edit_artifact("review-notes", |artifact| {
+                    artifact["external_integrations_allowed"] = serde_json::json!(true);
+                }),
+                "model-classes" => {
+                    invalid
+                        .customer
+                        .blueprint
+                        .components
+                        .get_mut("central-brain")
+                        .unwrap()
+                        .model_classes
+                        .insert("reasoning".into());
+                    invalid
+                        .customer
+                        .config
+                        .models
+                        .insert("reasoning".into(), "local.fixture".into());
+                }
+                _ => unreachable!(),
+            }
+            let (config, digest) = invalid.seed(store);
+            let result = store.transition_solution_installation_checked(
+                invalid.input(&config, &digest),
+                None,
+                SolutionInstallationTransition::Begin,
+                |plan| invalid.validate_adapter(plan),
+            );
+            assert!(result.is_err(), "{rejection}");
+            assert!(
+                store
+                    .solution_installation(
+                        &invalid.customer.context,
+                        &invalid.customer.config.scope,
+                        1500
+                    )
+                    .unwrap()
+                    .is_none(),
+                "{rejection}"
+            );
+            store
+                .with_connection(|connection| {
+                    let versions: i64 = connection.query_row(
+                        "SELECT COUNT(*) FROM solution_installation_versions WHERE instance_id=?1",
+                        params![rejection],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(versions, 0, "{rejection}");
+                    Ok(())
+                })
+                .unwrap();
+            // Fix the selected signed pack/configuration using normal CAS;
+            // rejected preflight must not require journal reconciliation.
+            let mut valid = InstallationFixture::new("a");
+            valid.customer.config.scope.instance_id = rejection.into();
+            let fixed_config = valid
+                .customer
+                .save(store, &valid.customer.config, Some(&config.version))
+                .unwrap();
+            let digest = valid.composition();
+            let begin = store
+                .transition_solution_installation_checked(
+                    valid.input(&fixed_config, &digest),
+                    None,
+                    SolutionInstallationTransition::Begin,
+                    |plan| valid.validate_adapter(plan),
+                )
+                .unwrap();
+            assert_eq!(begin.generation, 1);
+            assert_eq!(
+                store
+                    .transition_solution_installation_checked(
+                        valid.input(&fixed_config, &digest),
+                        None,
+                        SolutionInstallationTransition::Begin,
+                        |plan| valid.validate_adapter(plan),
+                    )
+                    .unwrap(),
+                begin
+            );
+        }
+    });
+}
+
+#[test]
+#[serial]
+fn solution_installation_preflight_ignores_unselected_unsupported_optional_components() {
+    for_each_backend(|_, store| {
+        let mut fixture = InstallationFixture::new("a");
+        fixture.customer.config.optional_components.clear();
+        fixture
+            .customer
+            .blueprint
+            .components
+            .get_mut("review-notes")
+            .unwrap()
+            .kind = ComponentKind::Workflow;
+        fixture.edit_artifact("review-notes", |artifact| {
+            artifact["allowed_tools"] = serde_json::json!(["bash"]);
+        });
+        let (config, digest) = fixture.seed(store);
+        let begin = store
+            .transition_solution_installation_checked(
+                fixture.input(&config, &digest),
+                None,
+                SolutionInstallationTransition::Begin,
+                |plan| fixture.validate_adapter(plan),
+            )
+            .unwrap();
+        assert_eq!(begin.plan.components.len(), 1);
+        assert!(begin.plan.components.contains_key("central-brain"));
+        // Checked and legacy generic callers share the same idempotency/CAS
+        // path; the optional adapter gate does not replace journal semantics.
+        assert_eq!(
+            store
+                .transition_solution_installation(
+                    fixture.input(&config, &digest),
+                    None,
+                    SolutionInstallationTransition::Begin,
+                )
+                .unwrap(),
+            begin
+        );
+        assert!(store
+            .transition_solution_installation_checked(
+                fixture.input(&config, &digest),
+                Some(99),
+                SolutionInstallationTransition::Begin,
+                |plan| fixture.validate_adapter(plan),
+            )
+            .is_err());
+        let claimed = store
+            .transition_solution_installation_checked(
+                fixture.input(&config, &digest),
+                Some(1),
+                SolutionInstallationTransition::Claim {
+                    component_id: "central-brain",
+                    attempt_id: "attempt",
+                },
+                |plan| fixture.validate_adapter(plan),
+            )
+            .unwrap();
+        assert_eq!(claimed.generation, 2);
+        assert_eq!(fixture.read(store), claimed);
+    });
 }
 
 #[test]
@@ -562,5 +784,65 @@ fn solution_installation_schema_upgrade_preserves_configuration() {
             .unwrap();
         store.initialize().unwrap();
         assert_eq!(fixture.read(store), record);
+    });
+}
+
+#[test]
+#[serial]
+fn solution_installation_rejects_host_rebinding_before_claim_or_receipt() {
+    for_each_backend(|_, store| {
+        let mut fixture = InstallationFixture::new("a");
+        fixture.host_facts = Some(sha256(b"approved endpoint and source revision 1"));
+        let (config, digest) = fixture.seed(store);
+        let begin = store
+            .transition_solution_installation(
+                fixture.input(&config, &digest),
+                None,
+                SolutionInstallationTransition::Begin,
+            )
+            .unwrap();
+        let mut rebound = fixture.clone();
+        rebound.host_facts = Some(sha256(b"same IDs, changed endpoint or source"));
+        assert!(store
+            .transition_solution_installation(
+                rebound.input(&config, &digest),
+                Some(begin.generation),
+                SolutionInstallationTransition::Claim {
+                    component_id: "central-brain",
+                    attempt_id: "one"
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("preview is stale"));
+        assert_eq!(fixture.read(store), begin);
+        let claimed = store
+            .transition_solution_installation(
+                fixture.input(&config, &digest),
+                Some(begin.generation),
+                SolutionInstallationTransition::Claim {
+                    component_id: "central-brain",
+                    attempt_id: "one",
+                },
+            )
+            .unwrap();
+        let receipt = sha256(b"disabled native component");
+        for host_facts in [rebound.host_facts.clone(), None] {
+            rebound.host_facts = host_facts;
+            assert!(store
+                .transition_solution_installation(
+                    rebound.input(&config, &digest),
+                    Some(claimed.generation),
+                    SolutionInstallationTransition::RecordStaged {
+                        component_id: "central-brain",
+                        attempt_id: "one",
+                        resource_sha256: &receipt,
+                    },
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("preview is stale"));
+            assert_eq!(fixture.read(store), claimed);
+        }
     });
 }

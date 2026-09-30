@@ -26,6 +26,7 @@ pub const SOLUTION_INSTALLATION_CONFLICT: &str =
 /// Host-owned inputs, never deserialized from an HTTP install request. Every
 /// transition resolves again against the configuration read in its transaction.
 pub struct SolutionInstallationInput<'a> {
+    pub host_facts_sha256: Option<&'a str>,
     pub configuration: CustomerConfigInput<'a>,
     pub expected_config: &'a CustomerConfigVersion,
     pub blueprint: &'a SolutionBlueprint,
@@ -149,6 +150,24 @@ impl OrchestrationStateStore {
         expected_generation: Option<u64>,
         transition: SolutionInstallationTransition<'_>,
     ) -> anyhow::Result<SolutionInstallation> {
+        self.transition_solution_installation_checked(
+            input,
+            expected_generation,
+            transition,
+            |_| Ok(()),
+        )
+    }
+
+    /// Validate adapter support against the exact plan resolved from the
+    /// configuration in this transaction, before any installation intent is
+    /// loaded or written. The generic journal remains adapter-independent.
+    pub(crate) fn transition_solution_installation_checked(
+        &self,
+        input: SolutionInstallationInput<'_>,
+        expected_generation: Option<u64>,
+        transition: SolutionInstallationTransition<'_>,
+        validate_plan: impl FnOnce(&ResolvedPlan) -> anyhow::Result<()>,
+    ) -> anyhow::Result<SolutionInstallation> {
         let config_input = input.configuration;
         let context = config_input.verified_context;
         let scope = config_input.selected_scope;
@@ -165,6 +184,7 @@ impl OrchestrationStateStore {
                 ..config_input
             })?;
             let plan = resolve(input.blueprint, ResolutionInput {
+                host_facts_sha256: input.host_facts_sha256,
                 request: &prepared.request, verified_context: context, now_ms,
                 engine_version: input.engine_version, deployment_policy: &prepared.deployment_policy,
                 available_deployment_requirements: input.available_deployment_requirements,
@@ -174,6 +194,7 @@ impl OrchestrationStateStore {
             ensure!(composition == input.reviewed_composition
                 && plan.blueprint_sha256 == config.blueprint_sha256,
                 "solution preview is stale; resolve and review again");
+            validate_plan(&plan)?;
             let current = load(&transaction, context, scope)?;
             if let Some(current) = &current {
                 ensure!(current.composition_sha256 == composition

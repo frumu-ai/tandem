@@ -11,6 +11,9 @@ use tandem_enterprise_contract::{TenantSource, VerifiedTenantContext};
 /// CapabilityResolver readiness checks. Never deserialize this from a browser,
 /// model response, or solution pack. No network or wall clock access occurs here.
 pub struct ResolutionInput<'a> {
+    /// Digest of the host-owned source and provider routing snapshot. Callers
+    /// that install resources must supply it; None preserves pure legacy plans.
+    pub host_facts_sha256: Option<&'a str>,
     pub request: &'a InstallRequest,
     pub verified_context: &'a VerifiedTenantContext,
     pub now_ms: u64,
@@ -29,6 +32,9 @@ pub fn resolve(
     input: ResolutionInput<'_>,
 ) -> Result<ResolvedPlan, SolutionError> {
     validate_blueprint(blueprint)?;
+    if let Some(value) = input.host_facts_sha256 {
+        digest(value, "host_facts_sha256")?;
+    }
     let request = input.request;
     identifier(&request.instance_id, "instance_id")?;
     digest(
@@ -254,6 +260,7 @@ pub fn resolve(
         .cloned()
         .collect();
     Ok(ResolvedPlan {
+        host_facts_sha256: input.host_facts_sha256.map(str::to_owned),
         schema_version: SCHEMA_VERSION.into(),
         resolver_version: RESOLVER_VERSION.into(),
         engine_version: engine.to_string(),

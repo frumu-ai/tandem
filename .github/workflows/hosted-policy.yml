@@ -22,6 +22,8 @@ jobs:
         with:
           cache-profile: hosted-policy
           components: rustfmt
+      - name: Verify provider retry revocation and request isolation
+        run: cargo test -p tandem-providers --lib
       - name: Validate hosted policy contract
         run: cargo test -p tandem-enterprise-contract hosted_policy --lib
       - name: Verify global memory sharing and conservative schema upgrade
@@ -51,7 +53,5 @@ jobs:
         run: cargo test -p tandem-enterprise-server hosted_policy --lib
       - name: Verify native organization registry HTTP compatibility
         run: cargo test -p tandem-enterprise-server --test enterprise_http enterprise_org_unit
-      - name: Verify provider retry revocation and request isolation
-        run: cargo test -p tandem-providers --lib
       - name: Verify MCP revocation after readiness and before network dispatch
         run: cargo test -p tandem-runtime mcp --lib

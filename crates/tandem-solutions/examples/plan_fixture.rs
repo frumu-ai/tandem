@@ -53,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plan = resolve(
         &blueprint,
         ResolutionInput {
+            host_facts_sha256: None,
             request: &request,
             verified_context: &context,
             now_ms: 1500,

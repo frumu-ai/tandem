@@ -276,7 +276,7 @@ fn denial_audit_failure_response(error: &str) -> Response {
         .into_response()
 }
 
-async fn enrich_verified_context_with_org_unit_grants(
+pub(crate) async fn enrich_verified_context_with_org_unit_grants(
     state: &AppState,
     verified: &mut VerifiedTenantContext,
     hosted_memberships: Option<Vec<OrganizationUnitMembership>>,
