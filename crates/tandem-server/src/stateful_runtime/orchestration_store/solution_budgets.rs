@@ -104,6 +104,7 @@ pub(crate) struct RuntimeSolutionCharge {
 }
 
 pub(crate) struct RuntimeSolutionModel {
+    pub execution: super::SolutionRunExecution,
     pub configuration: super::CustomerConfigVersion,
     pub installation_generation: u64,
     pub model_class: String,
@@ -222,6 +223,13 @@ impl OrchestrationStateStore {
                 solution_installations::load(&transaction, input.verified, input.scope)?
                     .context("solution installation missing")?;
             if let Some(model) = model {
+                super::solution_execution::validate(
+                    &transaction,
+                    tenant,
+                    &model.execution,
+                    &intent.root_run_id,
+                    input.now_ms,
+                )?;
                 ensure!(
                     installation.generation == model.installation_generation
                         && installation.config_version == model.configuration

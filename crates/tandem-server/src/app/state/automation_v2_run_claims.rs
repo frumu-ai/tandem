@@ -43,38 +43,19 @@ fn claimable_queued_run_id(
         .map(|row| row.run_id.clone())
 }
 
-fn launch_claim_lifecycle_event_is_bookkeeping(event: &str) -> bool {
-    matches!(
-        event,
-        "run_execution_claimed" | "run_execution_claim_expired_requeued"
-    )
-}
-
-fn run_has_lifecycle_progress_since_claim(
-    run: &AutomationV2RunRecord,
-    claim: &AutomationRunExecutionClaim,
-) -> bool {
-    run.checkpoint.lifecycle_history.iter().any(|record| {
-        record.recorded_at_ms >= claim.claimed_at_ms
-            && !launch_claim_lifecycle_event_is_bookkeeping(&record.event)
-    })
-}
-
 fn run_has_launch_claim_without_progress(
     run: &AutomationV2RunRecord,
     now: u64,
     expired: bool,
 ) -> bool {
-    if run.status != AutomationRunStatus::Running
-        || !run.active_session_ids.is_empty()
-        || !run.active_instance_ids.is_empty()
-    {
+    if run.status != AutomationRunStatus::Running {
         return false;
     }
     let Some(claim) = run.execution_claim.as_ref() else {
         return false;
     };
-    claim.is_expired(now) == expired && !run_has_lifecycle_progress_since_claim(run, claim)
+    claim.is_expired(now) == expired
+        && !crate::automation_v2::run_claim_progress::run_has_execution_progress(run, claim)
 }
 
 fn run_has_expired_launch_claim_without_progress(run: &AutomationV2RunRecord, now: u64) -> bool {
