@@ -67,6 +67,33 @@ impl OrchestrationStateStore {
         link: &GoalRunLink,
         actor: &PrincipalRef,
     ) -> anyhow::Result<StartGoalOutcome> {
+        self.start_goal_inner(goal, root_run, link, actor, None, &|| 0)
+    }
+
+    /// Associate current installation facts in the same transaction as native
+    /// goal/root/link creation. Host-only; callers still authorize activation.
+    pub fn start_solution_goal(
+        &self,
+        goal: &LongRunningGoal,
+        root_run: &AutomationV2RunRecord,
+        link: &GoalRunLink,
+        actor: &PrincipalRef,
+        solution: super::SolutionGoalStart<'_>,
+        clock: impl Fn() -> u64,
+    ) -> anyhow::Result<StartGoalOutcome> {
+        self.start_goal_inner(goal, root_run, link, actor, Some(solution), &clock)
+    }
+
+    fn start_goal_inner(
+        &self,
+        goal: &LongRunningGoal,
+        root_run: &AutomationV2RunRecord,
+        link: &GoalRunLink,
+        actor: &PrincipalRef,
+        solution: Option<super::SolutionGoalStart<'_>>,
+        clock: &dyn Fn() -> u64,
+    ) -> anyhow::Result<StartGoalOutcome> {
+        super::solution_goals::reject_caller_binding(goal)?;
         if link.goal_id != goal.goal_id || link.run_id != root_run.run_id {
             bail!("goal start lineage must bind the goal to its root run");
         }
@@ -76,9 +103,30 @@ impl OrchestrationStateStore {
         if root_run.tenant_context != goal.tenant_context {
             bail!("root run must remain in the goal tenant scope");
         }
+        if solution.is_some()
+            && (goal.active_run_id.as_deref() != Some(root_run.run_id.as_str())
+                || goal.current_node_id.as_deref() != Some(link.orchestration_node_id.as_str())
+                || goal.orchestration_version != link.orchestration_version
+                || goal.hop_count != 0)
+        {
+            bail!("solution goal must start at its current orchestration root");
+        }
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // Waiting for the writer must not preserve an expired initiating
+            // timestamp. Ordinary goal creation does not use this clock.
+            let solution = solution.map(|input| super::SolutionGoalStart {
+                now_ms: clock(),
+                ..input
+            });
+            let bound;
+            let goal = if let Some(solution) = &solution {
+                bound = super::solution_goals::bind(&transaction, goal, solution, &root_run.run_id, actor)?;
+                &bound
+            } else {
+                goal
+            };
             let existing = transaction
                 .query_row(
                     "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
@@ -108,6 +156,9 @@ impl OrchestrationStateStore {
                         stored.orchestration_version
                     );
                 }
+                if !super::solution_goals::same(&stored, goal)? {
+                    bail!("goal start idempotency key is already bound to another solution authority");
+                }
                 let root_payload = transaction
                     .query_row(
                         "SELECT run_json FROM automation_runs WHERE run_id = ?1",
@@ -128,7 +179,16 @@ impl OrchestrationStateStore {
                 });
             }
 
-            upsert_goal(&transaction, goal)?;
+            if solution.is_some() {
+                let root_exists: bool = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM automation_runs WHERE run_id=?1)",
+                    [&root_run.run_id], |row| row.get(0),
+                )?;
+                if root_exists {
+                    bail!("solution goal root already belongs to an existing run");
+                }
+            }
+            super::upsert_goal_record(&transaction, goal, solution.is_some())?;
             upsert_automation_run(&transaction, root_run)?;
             transaction.execute(
                 "INSERT INTO goal_run_links

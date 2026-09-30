@@ -82,6 +82,50 @@ pub(crate) fn encode<T: Serialize>(
         .with_context(|| format!("protect {kind} record {id}"))
 }
 
+/// Host-issued authority must remain authenticated even when ordinary runtime
+/// records use supported standalone plaintext storage.
+pub(crate) fn encode_required<T: Serialize>(
+    tenant: &TenantContext,
+    kind: &str,
+    id: &str,
+    value: &T,
+) -> anyhow::Result<String> {
+    let plaintext = serde_json::to_string(&BoundRecord {
+        tenant_context: tenant.clone(),
+        kind: kind.to_string(),
+        id: id.to_string(),
+        payload: value,
+    })?;
+    crate::encrypted_file_store::encrypt_text_required(&plaintext, &context(tenant, kind, id))
+        .with_context(|| format!("protect required {kind} record {id}"))
+}
+
+pub(crate) fn decode_required<T: DeserializeOwned>(
+    tenant: &TenantContext,
+    kind: &str,
+    id: &str,
+    stored: &str,
+) -> anyhow::Result<T> {
+    anyhow::ensure!(
+        crate::encrypted_file_store::is_encrypted_payload(stored),
+        "required {kind} record {id} lacks an authenticated envelope"
+    );
+    let plaintext =
+        crate::encrypted_file_store::decrypt_text_required(stored, &context(tenant, kind, id))
+            .with_context(|| format!("unprotect required {kind} record {id}"))?;
+    let bound: BoundRecord<T> = serde_json::from_str(&plaintext)
+        .with_context(|| format!("decode required bound {kind} record {id}"))?;
+    anyhow::ensure!(
+        same_tenant_scope(&bound.tenant_context, tenant),
+        "protected {kind} record {id} tenant binding does not match"
+    );
+    anyhow::ensure!(
+        bound.kind == kind && bound.id == id,
+        "protected {kind} record {id} kind/id binding does not match"
+    );
+    Ok(bound.payload)
+}
+
 pub(crate) fn decode<T: DeserializeOwned>(
     tenant: &TenantContext,
     kind: &str,

@@ -223,12 +223,25 @@ impl OrchestrationStateStore {
                 solution_installations::load(&transaction, input.verified, input.scope)?
                     .context("solution installation missing")?;
             if let Some(model) = model {
-                super::solution_execution::validate(
+                let goal = super::solution_execution::validate(
                     &transaction,
                     tenant,
                     &model.execution,
                     &intent.root_run_id,
                     input.now_ms,
+                )?;
+                super::solution_goals::validate(
+                    &transaction,
+                    &goal,
+                    &super::SolutionGoalStart {
+                        verified: input.verified,
+                        scope: input.scope,
+                        configuration: &model.configuration,
+                        installation_generation: model.installation_generation,
+                        composition_sha256: input.composition_sha256,
+                        now_ms: input.now_ms,
+                    },
+                    &intent.root_run_id,
                 )?;
                 ensure!(
                     installation.generation == model.installation_generation
