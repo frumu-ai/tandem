@@ -95,6 +95,12 @@ async fn hosted_audit_append_reuses_dek_only_within_one_write() {
     let state = crate::test_support::test_state().await;
     let _env_lock = crate::test_support::TEST_STATE_ENV_LOCK.lock().await;
     let anchors = tempfile::tempdir().expect("external anchor directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(anchors.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private external anchor directory");
+    }
     let tenant_context = tenant();
     let decrypt_count = Arc::new(AtomicUsize::new(0));
     let factory_count = Arc::clone(&decrypt_count);
