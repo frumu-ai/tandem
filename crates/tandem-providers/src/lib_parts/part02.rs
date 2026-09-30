@@ -43,6 +43,7 @@ impl Provider for OpenAICompatibleProvider {
                 req = req.bearer_auth(api_key);
             }
 
+            dispatch_authority::revalidate().await?;
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
@@ -200,6 +201,7 @@ impl Provider for OpenAICompatibleProvider {
                 req = req.bearer_auth(api_key);
             }
 
+            dispatch_authority::revalidate().await?;
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
@@ -554,6 +556,7 @@ impl Provider for OpenAIResponsesProvider {
                 req = req.bearer_auth(api_key);
             }
 
+            dispatch_authority::revalidate().await?;
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
@@ -723,6 +726,7 @@ impl Provider for OpenAIResponsesProvider {
                 req = req.bearer_auth(api_key);
             }
 
+            dispatch_authority::revalidate().await?;
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
@@ -1274,6 +1278,7 @@ impl OpenAIResponsesProvider {
         if let Some(api_key) = &self.api_key {
             req = req.bearer_auth(api_key);
         }
+        dispatch_authority::revalidate().await?;
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
@@ -1383,6 +1388,7 @@ impl Provider for AnthropicProvider {
         if let Some(key) = &self.api_key {
             req = req.header("x-api-key", key);
         }
+        dispatch_authority::revalidate().await?;
         let value = read_provider_response_json_limited(req.send().await?).await?;
         let text = value["content"][0]["text"]
             .as_str()
@@ -1423,6 +1429,7 @@ impl Provider for AnthropicProvider {
             req = req.header("x-api-key", key);
         }
 
+        dispatch_authority::revalidate().await?;
         let resp = req.send().await?;
         let mut bytes = resp.bytes_stream();
         let stream = try_stream! {
@@ -1516,6 +1523,7 @@ impl Provider for CohereProvider {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
+        dispatch_authority::revalidate().await?;
         let value = read_provider_response_json_limited(req.send().await?).await?;
         let text = value["message"]["content"][0]["text"]
             .as_str()
