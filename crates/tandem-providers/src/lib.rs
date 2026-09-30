@@ -21,3 +21,7 @@ mod runtime_binding;
 pub use runtime_binding::{
     ProviderCredentialSource, ProviderRuntimeBinding, ProviderTransportBinding,
 };
+mod versioned_binding;
+pub use versioned_binding::{ProviderCredentialLocation, VersionedProviderRuntimeBinding};
+#[cfg(test)]
+mod versioned_binding_tests;

@@ -569,15 +569,7 @@ pub(crate) fn initialize_schema(connection: &mut Connection) -> anyhow::Result<(
         transaction.commit()?;
         version = 7;
     }
-    if version == 7 {
-        let transaction =
-            connection.transaction_with_behavior(super::TransactionBehavior::Immediate)?;
-        transaction.execute_batch(
-            crate::stateful_runtime::orchestration_store::solution_budget_records::SCHEMA_V8,
-        )?;
-        transaction.commit()?;
-        version = 8;
-    }
+    version = migrate_schema_v7_to_v8(connection, version)?;
     if version != crate::stateful_runtime::orchestration_store::SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {}",
@@ -585,6 +577,34 @@ pub(crate) fn initialize_schema(connection: &mut Connection) -> anyhow::Result<(
         );
     }
     Ok(())
+}
+
+/// The observed version may become stale while another process upgrades this
+/// schema. Recheck it after acquiring the schema-scoped writer lock, before
+/// executing the deliberately non-idempotent budget DDL.
+pub(crate) fn migrate_schema_v7_to_v8(
+    connection: &mut Connection,
+    observed_version: i64,
+) -> anyhow::Result<i64> {
+    use super::{Executor as _, ExecutorRaw as _};
+    if observed_version != 7 {
+        return Ok(observed_version);
+    }
+    let transaction =
+        connection.transaction_with_behavior(super::TransactionBehavior::Immediate)?;
+    let mut version: i64 = transaction.query_row(
+        "SELECT schema_version FROM schema_metadata LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    if version == 7 {
+        transaction.execute_batch(
+            crate::stateful_runtime::orchestration_store::solution_budget_records::SCHEMA_V8,
+        )?;
+        version = 8;
+    }
+    transaction.commit()?;
+    Ok(version)
 }
 
 const POSTGRES_SCHEMA_V5: &str = "

@@ -35,6 +35,17 @@ pub(super) async fn delete_auth(
         .await;
     let _persistence_guard = state.oauth.provider_credential_persistence_guard().await;
     let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
+    let mut persistence =
+        match tandem_core::provider_auth_mutation_in_dir(&provider_auth_security_dir).await {
+            Ok(persistence) => persistence,
+            Err(error) => {
+                return provider_auth_mutation_error_response(
+                    &normalized_id,
+                    "PROVIDER_AUTH_PERSISTENCE_FAILED",
+                    format!("failed to lock provider auth: {error}"),
+                );
+            }
+        };
     let snapshot = snapshot_api_key_mutation(
         &state,
         &provider_auth_security_dir,
@@ -46,11 +57,9 @@ pub(super) async fn delete_auth(
         return crate::http::host_authority::host_authorization_status(error).into_response();
     }
     credential_guard.advance_generation();
-    let persisted_removed = match tandem_core::delete_provider_auth_for_tenant_in_dir(
-        &provider_auth_security_dir,
-        &tenant_context,
-        &normalized_id,
-    ) {
+    let persistence_result = persistence.delete_for_tenant(&tenant_context, &normalized_id);
+    drop(persistence);
+    let persisted_removed = match persistence_result {
         Ok(removed) => removed,
         Err(error) => {
             rollback_api_key_mutation(
@@ -186,22 +195,13 @@ async fn restore_api_key_mutation(
     provider_id: &str,
     snapshot: &ApiKeyMutationSnapshot,
 ) -> anyhow::Result<()> {
+    let mut persistence = tandem_core::provider_auth_mutation_in_dir(security_dir).await?;
     let persistence_result = if let Some(token) = snapshot.persisted.as_deref() {
-        tandem_core::set_provider_auth_for_tenant_in_dir(
-            security_dir,
-            tenant_context,
-            provider_id,
-            token,
-        )
-        .map(|_| ())
+        persistence.set_for_tenant(tenant_context, provider_id, token).map(|_| ())
     } else {
-        tandem_core::delete_provider_auth_for_tenant_in_dir(
-            security_dir,
-            tenant_context,
-            provider_id,
-        )
-        .map(|_| ())
+        persistence.delete_for_tenant(tenant_context, provider_id).map(|_| ())
     };
+    drop(persistence);
 
     let runtime_result = if tenant_context.is_local_implicit() {
         let result = async {

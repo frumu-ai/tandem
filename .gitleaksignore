@@ -94,3 +94,8 @@ e64795105ba26d08348f26d8cbcc0d6d615976da:guide/src/content/docs/engine-authentic
 # credential. The test asserts it is absent from diagnostics and never sends it.
 # Current fixture uses a short placeholder. No rule/path-wide exclusion.
 92cc0f75ab9c01bb0d8f5c01271519b10b20b5cc:packages/tandem-control-panel/tests/doctor-readiness.test.mjs:tandem-token-assignment:29
+
+# Reviewed 2026-09-06: ordinary lifecycle documentation prose was interpreted
+# as a key assignment in a sentence about interrupted writes. No credential.
+# The sentence is reworded; retain only this exact historical fingerprint.
+56e6a1b011a45effe9153ac719bf3bbe97065007:docs/CREDENTIAL_LIFECYCLE.md:generic-api-key:39

@@ -8,7 +8,7 @@ const original = readFileSync(new URL("../packages/tandem-control-panel/docker/e
 test("OS, base-image and comment changes keep the published engine pin unchanged", () => {
   const changed = original
     .replace(/^FROM .+$/m, "FROM node:24-example@sha256:" + "a".repeat(64))
-    .replaceAll("20260904T000000Z", "20261001T000000Z")
+    .replaceAll("20260923T120000Z", "20261001T000000Z")
     .replaceAll("3.5.7-1~deb13u2", "3.5.8-1~deb13u1") + "\n# Reviewed OS maintenance\n";
   assert.equal(engineReleasePinChanged(original, changed), false);
 });

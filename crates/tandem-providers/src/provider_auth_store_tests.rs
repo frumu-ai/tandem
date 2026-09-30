@@ -241,6 +241,9 @@ fn cross_process_credential_mutation_worker() {
     let tenant = TenantContext::explicit(format!("org-{label}"), "workspace", None);
 
     match action.as_str() {
+        "malformed-keyring" => {
+            assert_malformed_optional_keyring_preserves_file_revision(&security_dir, &tenant)
+        }
         "set" => {
             set_provider_oauth_credential_for_tenant_in_dir(
                 &security_dir,
@@ -329,6 +332,69 @@ fn cross_process_credential_mutation_worker() {
             )
             .expect("refreshed keyring credential");
             assert_eq!(refreshed.access_token, "access-keyring-refreshed");
+            provider_credential_revision_for_tenant_in_dir(
+                &security_dir,
+                &tenant,
+                ProviderCredentialKind::Credential,
+                provider_id,
+            )
+            .expect("keychain-backed revision agrees with persisted material");
+            // A stale fallback with identical bytes is not proof that the
+            // recorded keychain account is still present.
+            let persisted_refreshed = credential_with_provider_id(
+                ProviderCredential::OAuth(refreshed),
+                scoped_provider_id.clone(),
+            );
+            save_credential_fallback_map_to_dir(
+                &security_dir,
+                &HashMap::from([(scoped_provider_id.clone(), persisted_refreshed.clone())]),
+            )
+            .expect("seed stale fallback");
+            let entry = credential_keyring_entry(&scoped_provider_id).unwrap();
+            entry.delete_password().unwrap();
+            assert!(
+                provider_credential_revision_for_tenant_in_dir(
+                    &security_dir,
+                    &tenant,
+                    ProviderCredentialKind::Credential,
+                    provider_id,
+                )
+                .is_err(),
+                "a deleted keychain binding cannot inherit stale fallback approval"
+            );
+            entry
+                .set_password(&serde_json::to_string(&persisted_refreshed).unwrap())
+                .unwrap();
+            assert_eq!(
+                set_provider_oauth_credential_for_tenant_in_dir(
+                    &security_dir,
+                    &tenant,
+                    provider_id,
+                    oauth_credential("keyring-reconnected"),
+                )
+                .expect("replace existing keychain credential"),
+                ProviderAuthBackend::Keychain
+            );
+            provider_credential_revision_for_tenant_in_dir(
+                &security_dir,
+                &tenant,
+                ProviderCredentialKind::Credential,
+                provider_id,
+            )
+            .expect("reconnected keychain revision");
+            assert!(delete_provider_credential_for_tenant_in_dir(
+                &security_dir,
+                &tenant,
+                provider_id
+            )
+            .expect("delete existing keychain credential"));
+            assert!(provider_credential_revision_for_tenant_in_dir(
+                &security_dir,
+                &tenant,
+                ProviderCredentialKind::Credential,
+                provider_id,
+            )
+            .is_err());
         }
         other => panic!("unknown credential worker action {other}"),
     }
@@ -361,6 +427,159 @@ fn keyring_backed_oauth_credential_can_be_refreshed_with_compare_and_set() {
 }
 
 #[test]
+fn malformed_optional_keyring_preserves_file_revision() {
+    let home = tempdir().expect("isolated credential home");
+    let dir = home.path().join("security");
+    let output = credential_worker_command(&dir, "malformed-keyring", "malformed-keyring")
+        .env("TANDEM_HOME", home.path())
+        .env("TANDEM_PROVIDER_AUTH_DISABLE_KEYRING", "0")
+        .output()
+        .expect("run isolated malformed-keyring worker");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(dir.join("provider_credentials_index.json").is_file());
+}
+
+fn assert_malformed_optional_keyring_preserves_file_revision(dir: &Path, tenant: &TenantContext) {
+    keyring::set_default_credential_builder(Box::new(SharedTestCredentialBuilder));
+    assert_eq!(provider_auth_security_dir(), dir);
+    let provider_id = "openai-codex";
+    let id = tenant_scoped_provider_id(tenant, provider_id);
+    let credential = oauth_credential("synthetic-fallback");
+    assert_eq!(
+        set_provider_oauth_credential_for_tenant_in_dir(
+            dir,
+            tenant,
+            provider_id,
+            credential.clone()
+        )
+        .unwrap(),
+        ProviderAuthBackend::File
+    );
+    let typed_revision = || {
+        provider_credential_revision_for_tenant_in_dir(
+            dir,
+            tenant,
+            ProviderCredentialKind::Credential,
+            provider_id,
+        )
+    };
+    let expected_revision = typed_revision().unwrap();
+    let index = std::fs::read(dir.join("provider_credentials_index.json")).unwrap();
+    let fallback = std::fs::read(dir.join("provider_credentials_fallback.json")).unwrap();
+    let entry = credential_keyring_entry(&id).unwrap();
+    let mut invalid = credential.clone();
+    invalid.access_token = " ".into();
+    let malformed = [
+        "synthetic-secret-not-json".to_string(),
+        "[]".to_string(),
+        serde_json::to_string(&ProviderCredential::OAuth(invalid)).unwrap(),
+    ];
+    for secret in &malformed {
+        entry.set_password(secret).unwrap();
+        assert_eq!(typed_revision().unwrap(), expected_revision);
+        assert_eq!(
+            load_provider_oauth_credential_for_tenant_in_dir(dir, tenant, provider_id)
+                .unwrap()
+                .access_token,
+            credential.access_token
+        );
+        assert_eq!(
+            std::fs::read(dir.join("provider_credentials_index.json")).unwrap(),
+            index
+        );
+        assert_eq!(
+            std::fs::read(dir.join("provider_credentials_fallback.json")).unwrap(),
+            fallback
+        );
+    }
+    entry
+        .set_password(
+            &serde_json::to_string(&ProviderCredential::OAuth(oauth_credential(
+                "synthetic-different",
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(
+        typed_revision().is_err(),
+        "valid keychain material must still take precedence"
+    );
+
+    assert_eq!(
+        set_provider_oauth_credential_for_tenant_in_dir(
+            dir,
+            tenant,
+            provider_id,
+            credential.clone()
+        )
+        .unwrap(),
+        ProviderAuthBackend::Keychain
+    );
+    typed_revision().unwrap();
+    save_credential_fallback_map_to_dir(
+        dir,
+        &HashMap::from([(
+            id.clone(),
+            credential_with_provider_id(ProviderCredential::OAuth(credential), id.clone()),
+        )]),
+    )
+    .unwrap();
+    for secret in &malformed {
+        entry.set_password(secret).unwrap();
+        let error =
+            typed_revision().expect_err("required keychain cannot inherit fallback approval");
+        assert!(!error.to_string().contains("synthetic"));
+    }
+
+    set_provider_auth_for_tenant_in_dir(dir, tenant, "synthetic-api-key", "synthetic-file-key")
+        .unwrap();
+    let api_revision = || {
+        provider_credential_revision_for_tenant(
+            tenant,
+            ProviderCredentialKind::ApiKey,
+            "synthetic-api-key",
+        )
+    };
+    let expected_revision = api_revision().unwrap();
+    let api_id = tenant_scoped_provider_id(tenant, "synthetic-api-key");
+    let api_entry = keyring_entry(&api_id).unwrap();
+    for secret in ["", " \t\n"] {
+        api_entry.set_password(secret).unwrap();
+        assert_eq!(api_revision().unwrap(), expected_revision);
+        assert_eq!(
+            load_provider_auth_for_tenant(tenant)["synthetic-api-key"],
+            "synthetic-file-key"
+        );
+    }
+    api_entry.set_password("synthetic-different-key").unwrap();
+    assert!(
+        api_revision().is_err(),
+        "valid API key cannot inherit file-backed approval"
+    );
+    assert_eq!(
+        set_provider_auth_for_tenant(tenant, "synthetic-api-key", "synthetic-keychain-key")
+            .unwrap(),
+        ProviderAuthBackend::Keychain
+    );
+    api_revision().unwrap();
+    save_fallback_map_to_dir(
+        dir,
+        &HashMap::from([(api_id, "synthetic-keychain-key".into())]),
+    )
+    .unwrap();
+    api_entry.set_password(" ").unwrap();
+    assert!(
+        api_revision().is_err(),
+        "required API-key keychain cannot fall back"
+    );
+}
+
+#[test]
 fn cross_process_tenant_writes_preserve_the_whole_credential_map() {
     const PROCESS_COUNT: usize = 12;
 
@@ -383,6 +602,13 @@ fn cross_process_tenant_writes_preserve_the_whole_credential_map() {
             load_provider_oauth_credential_for_tenant_in_dir(dir.path(), &tenant, "openai-codex")
                 .unwrap_or_else(|| panic!("credential for process {index}"));
         assert_eq!(stored.access_token, format!("access-{index}"));
+        provider_credential_revision_for_tenant_in_dir(
+            dir.path(),
+            &tenant,
+            ProviderCredentialKind::Credential,
+            "openai-codex",
+        )
+        .expect("cross-process OAuth revision survives whole-map writes");
     }
 }
 
