@@ -1,5 +1,10 @@
 #[async_trait]
 impl Provider for OpenAICompatibleProvider {
+    fn runtime_transport_binding(&self, auth: &ProviderAuthOverride) -> anyhow::Result<ProviderTransportBinding> {
+        anyhow::ensure!(matches!(auth, ProviderAuthOverride::Inherit), "provider does not support tenant-scoped authentication");
+        runtime_binding::transport(&format!("{}/chat/completions", self.base_url), ProviderProtocol::ChatCompletions, self.api_key.as_deref(), None, runtime_binding::inherited_source(self.api_key.as_deref()))
+    }
+    fn supports_attempt_accounting(&self) -> bool { true }
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
         Some(ProviderInstallationMetadata::network(&self.id, &self.base_url))
     }
@@ -23,17 +28,20 @@ impl Provider for OpenAICompatibleProvider {
             .unwrap_or(self.default_model.as_str());
         let url = format!("{}/chat/completions", self.base_url);
         let target = resolve_provider_request_target(&url, &self.id).await?;
+        let mut accepted_receipt = None;
         let mut response_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
         let mut last_error: Option<anyhow::Error> = None;
         let mut max_tokens = provider_max_tokens_for(&self.id);
         for attempt in 0..3 {
-            let mut req = target.client.post(target.url.clone()).json(&json!({
+            let mut body = json!({
                 "model": model,
                 "messages": [{"role":"user","content": prompt}],
                 "stream": false,
                 "max_tokens": max_tokens,
-            }));
+            });
+            attempt_accounting::bound_request(&mut body, ProviderProtocol::ChatCompletions)?;
+            let mut req = target.client.post(target.url.clone()).json(&body);
             if self.id == "openrouter" {
                 req = req
                     .header("HTTP-Referer", "https://tandem.ac")
@@ -44,6 +52,7 @@ impl Provider for OpenAICompatibleProvider {
             }
 
             dispatch_authority::revalidate().await?;
+            let attempt_receipt = attempt_accounting::before_send(&req, &self.id, model, ProviderProtocol::ChatCompletions).await?;
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
@@ -62,6 +71,7 @@ impl Provider for OpenAICompatibleProvider {
                         last_error = Some(openai_response_error(status, &text));
                         break;
                     }
+                    accepted_receipt = attempt_receipt;
                     response_opt = Some(resp);
                     break;
                 }
@@ -100,6 +110,7 @@ impl Provider for OpenAICompatibleProvider {
             );
         };
         let value = read_provider_response_json_limited(response).await?;
+        attempt_accounting::confirm_json(&accepted_receipt, &value, ProviderProtocol::ChatCompletions).await?;
 
         if let Some(detail) = extract_openai_error(&value) {
             anyhow::bail!(detail);
@@ -179,6 +190,7 @@ impl Provider for OpenAICompatibleProvider {
             body["tool_choice"] = json!(openai_tool_choice(&tool_mode));
         }
         apply_openai_chat_sampling(&mut body, &self.id, model, sampling);
+        attempt_accounting::bound_request(&mut body, ProviderProtocol::ChatCompletions)?;
         // A `max_tokens` override changes `body["max_tokens"]`; keep the local
         // value (used by the OpenRouter affordability retry below) in sync so
         // the "can only afford N" filter compares against the requested cap.
@@ -186,6 +198,7 @@ impl Provider for OpenAICompatibleProvider {
             max_tokens = requested as u32;
         }
 
+        let mut accepted_receipt = None;
         let mut resp_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
         let mut last_error: Option<anyhow::Error> = None;
@@ -202,6 +215,7 @@ impl Provider for OpenAICompatibleProvider {
             }
 
             dispatch_authority::revalidate().await?;
+            let attempt_receipt = attempt_accounting::before_send(&req, &self.id, model, ProviderProtocol::ChatCompletions).await?;
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
@@ -231,6 +245,7 @@ impl Provider for OpenAICompatibleProvider {
                         last_error = Some(openai_response_error(status, &text));
                         break;
                     }
+                    accepted_receipt = attempt_receipt;
                     resp_opt = Some(resp);
                     break;
                 }
@@ -299,6 +314,7 @@ impl Provider for OpenAICompatibleProvider {
             // BEFORE [DONE].  Defer the Done yield to [DONE] so we always capture it.
             let mut pending_finish_reason: Option<String> = None;
             let mut pending_usage: Option<TokenUsage> = None;
+            let mut confirmed_accounting_usage = attempt_accounting::StreamingUsage::default();
             while let Some(chunk) = bytes.next().await {
                 if cancel.is_cancelled() {
                     yield StreamChunk::Done {
@@ -320,6 +336,7 @@ impl Provider for OpenAICompatibleProvider {
                         }
                         let payload = line.trim_start_matches("data: ").trim();
                         if payload == "[DONE]" {
+                            confirmed_accounting_usage.confirm(&accepted_receipt).await?;
                             let finish_reason = pending_finish_reason
                                 .take()
                                 .unwrap_or_else(|| "stop".to_string());
@@ -340,6 +357,7 @@ impl Provider for OpenAICompatibleProvider {
 
                         // Capture usage from any chunk — the usage-only trailing chunk
                         // (choices:[]) arrives before [DONE] when include_usage is set.
+                        confirmed_accounting_usage.observe(&value, ProviderProtocol::ChatCompletions);
                         if let Some(u) = extract_usage(&value) {
                             pending_usage = Some(u);
                         }
@@ -405,6 +423,9 @@ impl Provider for OpenAICompatibleProvider {
             }
             // Stream ended without [DONE] — flush any pending finish.
             if let Some(reason) = pending_finish_reason.take() {
+                if !cancel.is_cancelled() {
+                    confirmed_accounting_usage.confirm(&accepted_receipt).await?;
+                }
                 yield StreamChunk::Done {
                     finish_reason: reason,
                     usage: pending_usage.take(),
@@ -479,6 +500,15 @@ fn codex_supported_models(context_window: usize) -> Vec<ModelInfo> {
 
 #[async_trait]
 impl Provider for OpenAIResponsesProvider {
+    fn runtime_transport_binding(&self, auth: &ProviderAuthOverride) -> anyhow::Result<ProviderTransportBinding> {
+        let (key, source) = match auth {
+            ProviderAuthOverride::Inherit => (self.api_key.as_deref(), runtime_binding::inherited_source(self.api_key.as_deref())),
+            ProviderAuthOverride::Bearer(token) => (Some(token.as_str()), ProviderCredentialSource::TenantBearer),
+            ProviderAuthOverride::Suppress => anyhow::bail!("tenant provider credential missing"),
+        };
+        runtime_binding::transport(&format!("{}/responses", self.base_url), ProviderProtocol::Responses, key, None, source)
+    }
+    fn supports_attempt_accounting(&self) -> bool { true }
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
         Some(ProviderInstallationMetadata::network(&self.id, &self.base_url))
     }
@@ -547,9 +577,11 @@ impl Provider for OpenAIResponsesProvider {
             body["include"] = json!(["reasoning.encrypted_content"]);
         }
 
+        let mut accepted_receipt = None;
         let mut response_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
         let mut last_error: Option<anyhow::Error> = None;
+        attempt_accounting::bound_request(&mut body, ProviderProtocol::Responses)?;
         for attempt in 0..3 {
             let mut req = self.client.post(url.clone()).json(&body);
             if let Some(api_key) = &self.api_key {
@@ -557,6 +589,7 @@ impl Provider for OpenAIResponsesProvider {
             }
 
             dispatch_authority::revalidate().await?;
+            let attempt_receipt = attempt_accounting::before_send(&req, &self.id, model, ProviderProtocol::Responses).await?;
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
@@ -570,6 +603,7 @@ impl Provider for OpenAIResponsesProvider {
                         last_error = Some(openai_response_error(status, &text));
                         break;
                     }
+                    accepted_receipt = attempt_receipt;
                     response_opt = Some(resp);
                     break;
                 }
@@ -609,6 +643,7 @@ impl Provider for OpenAIResponsesProvider {
         };
 
         let value = read_provider_response_json_limited(response).await?;
+        attempt_accounting::confirm_json(&accepted_receipt, &value, ProviderProtocol::Responses).await?;
         if let Some(detail) = extract_openai_error(&value) {
             anyhow::bail!(detail);
         }
@@ -717,9 +752,11 @@ impl Provider for OpenAIResponsesProvider {
             ProviderAuthOverride::Bearer(token) => Some(token.as_str()),
         };
 
+        let mut accepted_receipt = None;
         let mut resp_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
         let mut last_error: Option<anyhow::Error> = None;
+        attempt_accounting::bound_request(&mut body, ProviderProtocol::Responses)?;
         for attempt in 0..3 {
             let mut req = self.client.post(url.clone()).json(&body);
             if let Some(api_key) = runtime_bearer {
@@ -727,6 +764,7 @@ impl Provider for OpenAIResponsesProvider {
             }
 
             dispatch_authority::revalidate().await?;
+            let attempt_receipt = attempt_accounting::before_send(&req, &self.id, model, ProviderProtocol::Responses).await?;
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
@@ -737,6 +775,7 @@ impl Provider for OpenAIResponsesProvider {
                         last_error = Some(openai_response_error(status, &text));
                         break;
                     }
+                    accepted_receipt = attempt_receipt;
                     resp_opt = Some(resp);
                     break;
                 }
@@ -1102,6 +1141,7 @@ impl Provider for OpenAIResponsesProvider {
                                     finish_reason = "toolUse".to_string();
                                 }
                                 if !saw_completion {
+                                    attempt_accounting::confirm_json(&accepted_receipt, &value["response"], ProviderProtocol::Responses).await?;
                                     if let Some(output) = response.get("output").and_then(|v| v.as_array()) {
                                         for (index, item_value) in output.iter().enumerate() {
                                             let Some(item) = item_value.as_object() else {
@@ -1274,11 +1314,13 @@ impl OpenAIResponsesProvider {
             body["include"] = json!(["reasoning.encrypted_content"]);
         }
 
+        attempt_accounting::bound_request(&mut body, ProviderProtocol::Responses)?;
         let mut req = self.client.post(url).json(&body);
         if let Some(api_key) = &self.api_key {
             req = req.bearer_auth(api_key);
         }
         dispatch_authority::revalidate().await?;
+        let attempt_receipt = attempt_accounting::before_send(&req, &self.id, model, ProviderProtocol::Responses).await?;
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
@@ -1288,6 +1330,7 @@ impl OpenAIResponsesProvider {
             return Err(openai_response_error(status, &text));
         }
         let sse_text = read_provider_response_text_limited(resp).await?;
+        attempt_accounting::confirm_responses_sse(&attempt_receipt, &sse_text).await?;
         parse_openai_responses_sse_text(&sse_text)
     }
 }
@@ -1355,6 +1398,11 @@ struct CohereProvider {
 
 #[async_trait]
 impl Provider for AnthropicProvider {
+    fn runtime_transport_binding(&self, auth: &ProviderAuthOverride) -> anyhow::Result<ProviderTransportBinding> {
+        anyhow::ensure!(matches!(auth, ProviderAuthOverride::Inherit), "provider does not support tenant-scoped authentication");
+        runtime_binding::transport("https://api.anthropic.com/v1/messages", ProviderProtocol::Anthropic, None, self.api_key.as_deref(), runtime_binding::inherited_source(self.api_key.as_deref()))
+    }
+    fn supports_attempt_accounting(&self) -> bool { true }
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
         Some(ProviderInstallationMetadata::network("anthropic", "https://api.anthropic.com/v1/messages"))
     }
@@ -1376,20 +1424,23 @@ impl Provider for AnthropicProvider {
             .map(str::trim)
             .filter(|m| !m.is_empty())
             .unwrap_or(self.default_model.as_str());
-        let mut req = self
-            .client
+        let mut body = json!({
+            "model": model,
+            "max_tokens": 1024,
+            "messages": [{"role":"user","content": prompt}],
+        });
+        attempt_accounting::bound_request(&mut body, ProviderProtocol::Anthropic)?;
+        let mut req = self.client
             .post("https://api.anthropic.com/v1/messages")
             .header("anthropic-version", "2023-06-01")
-            .json(&json!({
-                "model": model,
-                "max_tokens": 1024,
-                "messages": [{"role":"user","content": prompt}],
-            }));
+            .json(&body);
         if let Some(key) = &self.api_key {
             req = req.header("x-api-key", key);
         }
         dispatch_authority::revalidate().await?;
+        let attempt_receipt = attempt_accounting::before_send(&req, "anthropic", model, ProviderProtocol::Anthropic).await?;
         let value = read_provider_response_json_limited(req.send().await?).await?;
+        attempt_accounting::confirm_json(&attempt_receipt, &value, ProviderProtocol::Anthropic).await?;
         let text = value["content"][0]["text"]
             .as_str()
             .unwrap_or("No completion content.")
@@ -1420,6 +1471,7 @@ impl Provider for AnthropicProvider {
                 .collect::<Vec<_>>(),
         });
         apply_anthropic_sampling(&mut body, model, sampling);
+        attempt_accounting::bound_request(&mut body, ProviderProtocol::Anthropic)?;
         let mut req = self
             .client
             .post("https://api.anthropic.com/v1/messages")
@@ -1430,10 +1482,13 @@ impl Provider for AnthropicProvider {
         }
 
         dispatch_authority::revalidate().await?;
+        let attempt_receipt = attempt_accounting::before_send(&req, "anthropic", model, ProviderProtocol::Anthropic).await?;
         let resp = req.send().await?;
         let mut bytes = resp.bytes_stream();
         let stream = try_stream! {
             let mut buffer = String::new();
+            let mut confirmed_usage = serde_json::json!({"usage": {}});
+            let mut confirmed_accounting_usage = attempt_accounting::StreamingUsage::default();
             while let Some(chunk) = bytes.next().await {
                 if cancel.is_cancelled() {
                     yield StreamChunk::Done {
@@ -1464,6 +1519,18 @@ impl Provider for AnthropicProvider {
                             continue;
                         };
                         match value.get("type").and_then(|v| v.as_str()).unwrap_or_default() {
+                            "message_start" => {
+                                if let Some(usage) = value.get("message").and_then(|message| message.get("usage")).and_then(|usage| usage.as_object()) {
+                                    confirmed_usage["usage"] = serde_json::Value::Object(usage.clone());
+                                }
+                            }
+                            "message_delta" => {
+                                if let Some(usage) = value.get("usage").and_then(|usage| usage.as_object()) {
+                                    let merged = confirmed_usage["usage"].as_object_mut().expect("usage accumulator object");
+                                    merged.extend(usage.clone());
+                                    confirmed_accounting_usage.observe(&confirmed_usage, ProviderProtocol::Anthropic);
+                                }
+                            }
                             "content_block_delta" => {
                                 if let Some(delta) = value.get("delta").and_then(|v| v.get("text")).and_then(|v| v.as_str()) {
                                     yield StreamChunk::TextDelta(delta.to_string());
@@ -1473,6 +1540,7 @@ impl Provider for AnthropicProvider {
                                 }
                             }
                             "message_stop" => {
+                                confirmed_accounting_usage.confirm(&attempt_receipt).await?;
                                 yield StreamChunk::Done {
                                     finish_reason: "stop".to_string(),
                                     usage: None,
@@ -1490,6 +1558,11 @@ impl Provider for AnthropicProvider {
 
 #[async_trait]
 impl Provider for CohereProvider {
+    fn runtime_transport_binding(&self, auth: &ProviderAuthOverride) -> anyhow::Result<ProviderTransportBinding> {
+        anyhow::ensure!(matches!(auth, ProviderAuthOverride::Inherit), "provider does not support tenant-scoped authentication");
+        runtime_binding::transport(&format!("{}/chat", self.base_url), ProviderProtocol::Cohere, self.api_key.as_deref(), None, runtime_binding::inherited_source(self.api_key.as_deref()))
+    }
+    fn supports_attempt_accounting(&self) -> bool { true }
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
         Some(ProviderInstallationMetadata::network("cohere", &self.base_url))
     }
@@ -1513,18 +1586,19 @@ impl Provider for CohereProvider {
             .unwrap_or(self.default_model.as_str());
         let target =
             resolve_provider_request_target(&format!("{}/chat", self.base_url), "cohere").await?;
-        let mut req = target
-            .client
-            .post(target.url)
-            .json(&json!({
-                "model": model,
-                "messages": [{"role":"user","content": prompt}],
-            }));
+        let mut body = json!({
+            "model": model,
+            "messages": [{"role":"user","content": prompt}],
+        });
+        attempt_accounting::bound_request(&mut body, ProviderProtocol::Cohere)?;
+        let mut req = target.client.post(target.url).json(&body);
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
         dispatch_authority::revalidate().await?;
+        let attempt_receipt = attempt_accounting::before_send(&req, "cohere", model, ProviderProtocol::Cohere).await?;
         let value = read_provider_response_json_limited(req.send().await?).await?;
+        attempt_accounting::confirm_json(&attempt_receipt, &value, ProviderProtocol::Cohere).await?;
         let text = value["message"]["content"][0]["text"]
             .as_str()
             .or_else(|| value["text"].as_str())

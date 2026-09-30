@@ -838,6 +838,17 @@ pub struct TokenUsage {
 }
 #[async_trait]
 pub trait Provider: Send + Sync {
+    /// Only adapters with admission on every actual send may run in a budget scope.
+    fn supports_attempt_accounting(&self) -> bool { false }
+
+    fn runtime_transport_binding(
+        &self,
+        _auth: &ProviderAuthOverride,
+    ) -> anyhow::Result<ProviderTransportBinding> {
+        anyhow::bail!("provider does not describe a current runtime binding")
+    }
+
+
     /// Unknown adapters remain usable by legacy callers, but cannot be
     /// approved for solution installation until they describe their route.
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
@@ -1087,17 +1098,26 @@ impl ProviderRegistry {
     }
 
     async fn auth_override_for_provider(&self, provider_id: &str) -> ProviderAuthOverride {
+        let tenant_context = PROVIDER_TENANT_CONTEXT.try_with(Clone::clone).ok();
+        self.auth_override_for_tenant(provider_id, tenant_context.as_ref()).await
+    }
+
+    async fn auth_override_for_tenant(
+        &self,
+        provider_id: &str,
+        tenant_context: Option<&TenantContext>,
+    ) -> ProviderAuthOverride {
         if !provider_id.eq_ignore_ascii_case("openai-codex") {
             return ProviderAuthOverride::Inherit;
         }
-        let Some(tenant_context) = PROVIDER_TENANT_CONTEXT.try_with(Clone::clone).ok() else {
+        let Some(tenant_context) = tenant_context else {
             return ProviderAuthOverride::Inherit;
         };
         if let Some(token) = self
             .tenant_bearer_tokens
             .read()
             .await
-            .get(&tenant_provider_auth_key(&tenant_context, provider_id))
+            .get(&tenant_provider_auth_key(tenant_context, provider_id))
             .cloned()
         {
             ProviderAuthOverride::Bearer(token)
@@ -1166,6 +1186,7 @@ impl ProviderRegistry {
         model_id: Option<&str>,
     ) -> anyhow::Result<String> {
         let provider = self.select_provider(provider_id).await?;
+        attempt_accounting::ensure_supported(provider.as_ref())?;
         let resolved_provider_id = provider.info().id;
         let auth_override = self
             .auth_override_for_provider(resolved_provider_id.as_str())
@@ -1225,6 +1246,7 @@ impl ProviderRegistry {
         model_id: Option<&str>,
     ) -> anyhow::Result<ResolvedProviderRoute> {
         let provider = self.select_provider(provider_id).await?;
+        attempt_accounting::ensure_supported(provider.as_ref())?;
         Ok(ResolvedProviderRoute {
             provider_id: provider.info().id,
             model_id: model_id.map(str::to_string),
@@ -1307,6 +1329,7 @@ impl ProviderRegistry {
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let provider = self.select_provider(provider_id).await?;
+        attempt_accounting::ensure_supported(provider.as_ref())?;
         let resolved_provider_id = provider.info().id;
         let auth_override = self
             .auth_override_for_provider(resolved_provider_id.as_str())

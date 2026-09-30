@@ -456,6 +456,24 @@ tokio::task_local! {
     static TEST_CRYPTO: ProtectedFileCrypto;
 }
 
+/// Capture protected storage context before a deferred blocking operation can
+/// outlive the task-local scope that created it.
+pub(crate) fn capture_protected_blocking<F, T>(operation: F) -> impl FnOnce() -> T + Send
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    #[cfg(test)]
+    let test_crypto = TEST_CRYPTO.try_with(Clone::clone).ok();
+    move || {
+        #[cfg(test)]
+        if let Some(crypto) = test_crypto {
+            return TEST_CRYPTO.sync_scope(crypto, operation);
+        }
+        operation()
+    }
+}
+
 /// Run synchronous protected storage off the async executor. Production uses
 /// its configured crypto provider as usual; tests carry their isolated crypto
 /// context into the blocking thread instead of silently falling back to env.
@@ -466,16 +484,7 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    #[cfg(test)]
-    let test_crypto = TEST_CRYPTO.try_with(Clone::clone).ok();
-    tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        if let Some(crypto) = test_crypto {
-            return TEST_CRYPTO.sync_scope(crypto, operation);
-        }
-        operation()
-    })
-    .await
+    tokio::task::spawn_blocking(capture_protected_blocking(operation)).await
 }
 
 #[cfg(test)]

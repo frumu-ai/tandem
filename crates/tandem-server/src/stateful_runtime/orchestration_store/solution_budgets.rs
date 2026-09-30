@@ -62,7 +62,19 @@ pub enum SolutionChargeStatus {
         tokens: u64,
         cost_microusd: u64,
         overrun: bool,
+        #[serde(default)]
+        cost_basis: SolutionChargeCostBasis,
     },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SolutionChargeCostBasis {
+    #[default]
+    Confirmed,
+    /// Confirmed token usage valued at the approved conservative input/output
+    /// rates. This is not a provider invoice or a hard billing guarantee.
+    ApprovedUpperBound,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +91,23 @@ pub struct SolutionBudgetReservationResult {
     pub reservation: SolutionChargeReservation,
     /// False means observe/reconcile the existing attempt; do not dispatch.
     pub newly_reserved: bool,
+}
+
+/// A nonserializable settlement capability minted only after a current, scoped
+/// reservation succeeds. It authorizes accounting for that attempt, never a new
+/// dispatch, and remains usable when the initiating user assertion expires.
+pub(crate) struct RuntimeSolutionCharge {
+    verified: VerifiedTenantContext,
+    scope: CustomerScope,
+    composition_sha256: String,
+    intent: SolutionChargeIntent,
+}
+
+pub(crate) struct RuntimeSolutionModel {
+    pub configuration: super::CustomerConfigVersion,
+    pub installation_generation: u64,
+    pub model_class: String,
+    pub binding: tandem_solutions::LockedModelBinding,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,10 +144,57 @@ fn key(prefix: &str, value: &str) -> String {
 }
 
 impl OrchestrationStateStore {
+    pub(crate) fn reserve_runtime_solution_charge(
+        &self,
+        input: SolutionBudgetInput<'_>,
+        intent: SolutionChargeIntent,
+        model: RuntimeSolutionModel,
+    ) -> anyhow::Result<(SolutionBudgetReservationResult, RuntimeSolutionCharge)> {
+        let ticket = RuntimeSolutionCharge {
+            verified: input.verified.clone(),
+            scope: input.scope.clone(),
+            composition_sha256: input.composition_sha256.into(),
+            intent: intent.clone(),
+        };
+        let reservation = self.reserve_solution_charge_inner(input, intent, Some(&model))?;
+        Ok((reservation, ticket))
+    }
+
+    pub(crate) fn settle_runtime_solution_charge(
+        &self,
+        ticket: &RuntimeSolutionCharge,
+        now_ms: u64,
+        actual_tokens: u64,
+        actual_cost_microusd: u64,
+        cost_basis: SolutionChargeCostBasis,
+    ) -> anyhow::Result<SolutionChargeReservation> {
+        self.settle_admitted_solution_charge(
+            SolutionBudgetInput {
+                verified: &ticket.verified,
+                scope: &ticket.scope,
+                composition_sha256: &ticket.composition_sha256,
+                now_ms,
+            },
+            &ticket.intent,
+            actual_tokens,
+            actual_cost_microusd,
+            cost_basis,
+        )
+    }
+
     pub fn reserve_solution_charge(
         &self,
         input: SolutionBudgetInput<'_>,
         intent: SolutionChargeIntent,
+    ) -> anyhow::Result<SolutionBudgetReservationResult> {
+        self.reserve_solution_charge_inner(input, intent, None)
+    }
+
+    fn reserve_solution_charge_inner(
+        &self,
+        input: SolutionBudgetInput<'_>,
+        intent: SolutionChargeIntent,
+        model: Option<&RuntimeSolutionModel>,
     ) -> anyhow::Result<SolutionBudgetReservationResult> {
         validate_customer_config_scope(input.verified, input.scope, input.now_ms)?;
         reference(&intent.reservation_id)?;
@@ -145,6 +221,14 @@ impl OrchestrationStateStore {
             let installation =
                 solution_installations::load(&transaction, input.verified, input.scope)?
                     .context("solution installation missing")?;
+            if let Some(model) = model {
+                ensure!(
+                    installation.generation == model.installation_generation
+                        && installation.config_version == model.configuration
+                        && installation.plan.models.get(&model.model_class) == Some(&model.binding),
+                    "reviewed runtime model or installation generation changed"
+                );
+            }
             ensure!(
                 installation.composition_sha256 == input.composition_sha256,
                 "solution composition changed before budget reservation"
@@ -297,6 +381,23 @@ impl OrchestrationStateStore {
         actual_cost_microusd: u64,
     ) -> anyhow::Result<SolutionChargeReservation> {
         validate_customer_config_scope(input.verified, input.scope, input.now_ms)?;
+        self.settle_admitted_solution_charge(
+            input,
+            intent,
+            actual_tokens,
+            actual_cost_microusd,
+            SolutionChargeCostBasis::Confirmed,
+        )
+    }
+
+    fn settle_admitted_solution_charge(
+        &self,
+        input: SolutionBudgetInput<'_>,
+        intent: &SolutionChargeIntent,
+        actual_tokens: u64,
+        actual_cost_microusd: u64,
+        cost_basis: SolutionChargeCostBasis,
+    ) -> anyhow::Result<SolutionChargeReservation> {
         let tenant = &input.verified.tenant_context;
         self.with_connection(|connection| {
             let transaction =
@@ -323,6 +424,7 @@ impl OrchestrationStateStore {
                 tokens: actual_tokens,
                 cost_microusd: actual_cost_microusd,
                 overrun,
+                cost_basis,
             };
             if reservation.status != SolutionChargeStatus::Reserved {
                 ensure!(
