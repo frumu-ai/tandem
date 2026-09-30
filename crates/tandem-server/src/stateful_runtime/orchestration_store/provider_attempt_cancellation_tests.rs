@@ -74,7 +74,7 @@ async fn assert_released_once(
     for key in [
         "global".into(),
         "day:0".into(),
-        format!("root:{}", sha256(b"actual-root")),
+        format!("root:{}", sha256(root_id(fixture).as_bytes())),
     ] {
         let row = protected(account(&reopened, fixture, &key)).await;
         for field in [
@@ -337,7 +337,7 @@ fn solution_budget_provider_cancelled_after_send_keeps_reservation() {
             protected(crate::encrypted_file_store::spawn_protected_blocking(move || reopened.initialize()))
                 .await.unwrap().unwrap();
             assert_eq!(protected(account(store, &fixture, "global")).await["outstanding"], 1);
-            let root = protected(account(store, &fixture, &format!("root:{}", sha256(b"actual-root")))).await;
+            let root = protected(account(store, &fixture, &format!("root:{}", sha256(root_id(&fixture).as_bytes())))).await;
             assert_eq!(root["reserved_tokens"], 30);
             assert_eq!(root["reserved_cost"], 30);
             assert_eq!(root["requests"], 1);
