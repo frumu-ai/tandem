@@ -7,6 +7,9 @@ use std::collections::{HashMap, HashSet};
 
 use tandem_channels::channel_registry::{find_channel, registered_channels, ChannelSpec};
 
+#[path = "channel_credential_purge.rs"]
+mod channel_credential_purge;
+
 fn parse_allowed_users(value: Option<&Value>) -> Vec<String> {
     let mut users = value
         .and_then(|v| v.as_array())
@@ -1516,9 +1519,7 @@ pub(super) async fn channels_put(
         .replace_project_value(project)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    for secret_id in credential_ids_to_purge {
-        let _ = tandem_core::delete_provider_auth(&secret_id);
-    }
+    channel_credential_purge::purge_selected(credential_ids_to_purge).await?;
     state
         .restart_channel_listeners()
         .await
@@ -1567,14 +1568,9 @@ pub(super) async fn channels_delete(
         .replace_project_value(project)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if let Some(secret_id) = tandem_core::channel_secret_store_id(spec.name) {
-        let _ = tandem_core::delete_provider_auth(&secret_id);
-    }
-    if spec.name == "slack" {
-        // Delete credentials only after the config removal commits, so a
-        // failed config write cannot leave the old live config credentialless.
-        tandem_core::purge_slack_channel_secrets();
-    }
+    // Delete credentials only after the config removal commits, so a
+    // failed config write cannot leave the old live config credentialless.
+    channel_credential_purge::purge_deleted(spec.name).await?;
     state
         .restart_channel_listeners()
         .await

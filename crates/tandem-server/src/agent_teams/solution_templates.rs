@@ -23,6 +23,29 @@ impl AgentTeamRuntime {
         resource_id: &str,
         owner: &SolutionTemplateOwner,
     ) -> anyhow::Result<String> {
+        self.observe_solution_template_checked(workspace_root, resource_id, owner, false)
+            .await
+    }
+
+    /// Text-adapter retries must reject receipts written before explicit
+    /// deny-all staging, even when the old journal fingerprint still matches.
+    pub(crate) async fn observe_tool_free_solution_template(
+        &self,
+        workspace_root: &str,
+        resource_id: &str,
+        owner: &SolutionTemplateOwner,
+    ) -> anyhow::Result<String> {
+        self.observe_solution_template_checked(workspace_root, resource_id, owner, true)
+            .await
+    }
+
+    async fn observe_solution_template_checked(
+        &self,
+        workspace_root: &str,
+        resource_id: &str,
+        owner: &SolutionTemplateOwner,
+        require_tool_free: bool,
+    ) -> anyhow::Result<String> {
         ensure!(
             resource_id.starts_with("solution-")
                 && resource_id
@@ -56,6 +79,19 @@ impl AgentTeamRuntime {
                     && observed.solution_owner.as_ref() == Some(&owner),
                 "solution template ownership or activation conflict"
             );
+            if require_tool_free {
+                ensure!(
+                    observed.capabilities.tool_allowlist.is_empty()
+                        && observed
+                            .capabilities
+                            .tool_denylist
+                            .iter()
+                            .any(|pattern| pattern.trim() == "*")
+                        && observed.default_budget.max_tool_calls == Some(0)
+                        && !observed.capabilities.net_scopes.enabled,
+                    "staged text template is not tool-free; explicit reconciliation required"
+                );
+            }
             Ok(sha256(&canonical_json(&observed)?))
         })
         .await?
@@ -213,6 +249,130 @@ mod tests {
             composition_sha256: "a".repeat(64),
         };
         (template, owner)
+    }
+
+    #[tokio::test]
+    async fn text_adapter_stages_native_deny_all_and_blocks_runtime_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_str().unwrap();
+        let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+        let (source, owner) = fixture();
+        // Omitted tool budgets are also bounded; zero in a pack fixture alone
+        // is not the adapter's enforcement policy.
+        let mut artifact = serde_json::to_value(&source).unwrap();
+        artifact["default_budget"]
+            .as_object_mut()
+            .unwrap()
+            .remove("max_tool_calls");
+        let template = crate::solution_installation::text_template_from_artifact(
+            &serde_json::to_vec(&artifact).unwrap(),
+        )
+        .unwrap();
+        let receipt = runtime
+            .stage_solution_template(workspace, template.clone(), owner.clone())
+            .await
+            .unwrap();
+        let observed = runtime
+            .get_template_for_workspace(workspace, &template.template_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!observed.enabled);
+        assert_eq!(observed.default_budget.max_tool_calls, Some(0));
+        assert_eq!(observed.capabilities.tool_denylist, vec!["*".to_owned()]);
+        assert!(!observed.capabilities.net_scopes.enabled);
+        assert_eq!(
+            runtime
+                .observe_tool_free_solution_template(workspace, &template.template_id, &owner)
+                .await
+                .unwrap(),
+            receipt
+        );
+        assert_eq!(
+            runtime
+                .stage_solution_template(workspace, template, owner)
+                .await
+                .unwrap(),
+            receipt
+        );
+        let state = crate::test_support::test_state().await;
+        let instance = tandem_orchestrator::AgentInstance {
+            instance_id: "text-policy-test".into(),
+            mission_id: "text-policy-test".into(),
+            parent_instance_id: None,
+            role: observed.role.clone(),
+            template_id: observed.template_id.clone(),
+            session_id: "text-policy-test".into(),
+            run_id: None,
+            status: tandem_orchestrator::AgentInstanceStatus::Running,
+            budget: observed.default_budget.clone(),
+            skill_hash: "unused".into(),
+            capabilities: observed.capabilities.clone(),
+            metadata: None,
+        };
+        for tool in [
+            "bash",
+            "read",
+            "write",
+            "webfetch",
+            "mcp.github.issues_list",
+            "mcp__github__issues_list",
+            "MCP.GITHUB.ISSUES_LIST",
+            "update-todo-list",
+        ] {
+            assert!(
+                super::super::evaluate_capability_deny(
+                    &state,
+                    &instance,
+                    tool,
+                    &serde_json::json!({}),
+                    &observed.capabilities,
+                    &instance.session_id,
+                    "message",
+                )
+                .await
+                .is_some(),
+                "{tool}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn text_adapter_retry_rejects_old_unsafe_and_partial_receipts() {
+        for missing_policy in ["deny_all", "zero_budget", "network_disabled"] {
+            let dir = tempfile::tempdir().unwrap();
+            let workspace = dir.path().to_str().unwrap();
+            let runtime = AgentTeamRuntime::new(dir.path().join("audit"));
+            let (mut template, owner) = fixture();
+            template.capabilities.tool_denylist = vec!["*".into()];
+            template.default_budget.max_tool_calls = Some(0);
+            match missing_policy {
+                "deny_all" => template.capabilities.tool_denylist.clear(),
+                "zero_budget" => template.default_budget.max_tool_calls = None,
+                "network_disabled" => template.capabilities.net_scopes.enabled = true,
+                _ => unreachable!(),
+            }
+            // Generic native staging/observation remain compatible, but an
+            // exact old receipt cannot satisfy the text adapter's retry gate.
+            let receipt = runtime
+                .stage_solution_template(workspace, template.clone(), owner.clone())
+                .await
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .observe_solution_template(workspace, &template.template_id, &owner)
+                    .await
+                    .unwrap(),
+                receipt
+            );
+            assert!(
+                runtime
+                    .observe_tool_free_solution_template(workspace, &template.template_id, &owner)
+                    .await
+                    .is_err(),
+                "{missing_policy}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -259,14 +259,6 @@ impl OrchestrationStateStore {
             let (global_generation, mut global) =
                 records::load::<Account>(&transaction, tenant, input.scope, "global")?
                     .unwrap_or_default();
-            ensure!(
-                !global.overrun,
-                "solution budget overrun requires reconciliation"
-            );
-            ensure!(
-                input.now_ms >= global.last_observed_ms,
-                "solution budget clock moved backwards"
-            );
             if let Some((_, reservation)) = existing {
                 ensure!(
                     reservation.intent == intent
@@ -279,6 +271,16 @@ impl OrchestrationStateStore {
                     newly_reserved: false,
                 });
             }
+            // An exact duplicate observes a prior admission; it cannot send
+            // again and must remain recoverable when new admissions are blocked.
+            ensure!(
+                !global.overrun,
+                "solution budget overrun requires reconciliation"
+            );
+            ensure!(
+                input.now_ms >= global.last_observed_ms,
+                "solution budget clock moved backwards"
+            );
             let day = input.now_ms / DAY_MS * DAY_MS;
             let day_key = format!("day:{day}");
             let root_key = key("root", &intent.root_run_id);
