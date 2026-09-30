@@ -218,7 +218,7 @@ pub struct ModelProfileResolutionInput<'a> {
     pub now_ms: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelProfileDecision {
     pub requested_class: String,
     pub selected_class: String,
