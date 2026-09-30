@@ -501,6 +501,7 @@ async fn dependency_revocation_failure_allows_only_exact_route_retry() {
             revoked_by.clone(),
             Some("temporary modify access".to_string()),
             &tenant,
+            || Ok(()),
         )
         .await
         .expect("grant modify access");

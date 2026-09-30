@@ -128,6 +128,36 @@ async fn corrupt_incident_monitor_posts_file_is_quarantined_not_discarded() {
 }
 
 #[tokio::test]
+async fn hosted_incident_retention_rechecks_policy_after_registry_lock() {
+    let mut state = test_state_with_path(tmp_resource_file("im-retention-policy"));
+    state.incident_monitor_posts_path = tmp_resource_file("im-retention-policy-posts");
+    state.incident_monitor_incidents_path = tmp_resource_file("im-retention-policy-incidents");
+    let mut stale = sample_post("stale-policy");
+    stale.updated_at_ms = 1;
+    let mut guard = state.incident_monitor_posts.write().await;
+    guard.insert(stale.post_id.clone(), stale);
+    let before = serde_json::to_value(&*guard).unwrap();
+    let prune = state.prune_incident_monitor_retention(7);
+    tokio::pin!(prune);
+    assert!(futures::poll!(prune.as_mut()).is_pending());
+    let temp = tempfile::tempdir().unwrap();
+    state.enterprise.hosted_policy.configure_test_source(
+        "org-a",
+        "dep-a",
+        temp.path().join("missing.json"),
+    );
+    drop(guard);
+    assert!(
+        prune.await.is_err(),
+        "policy loss must stop deletion after the lock wait"
+    );
+    assert_eq!(
+        serde_json::to_value(&*state.incident_monitor_posts.read().await).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
 async fn retention_prune_removes_stale_receipts_but_keeps_fresh() {
     // TAN-556: safety_defaults.retention_days must actually prune old receipts /
     // incidents instead of letting them accumulate unbounded.

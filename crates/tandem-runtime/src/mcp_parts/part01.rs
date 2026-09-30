@@ -151,6 +151,7 @@ pub struct McpRegistry {
     connections: Arc<RwLock<HashMap<String, McpConnection>>>,
     processes: Arc<Mutex<HashMap<String, Child>>>,
     credential_mutation_lock: Arc<Mutex<()>>,
+    oauth_refreshes: Arc<std::sync::Mutex<McpOAuthRefreshCoordinators>>,
     state_file: Arc<PathBuf>,
     oauth_security_dir: Arc<PathBuf>,
     standalone_private_endpoint_access: Arc<std::sync::atomic::AtomicBool>,
@@ -191,6 +192,11 @@ impl McpRegistry {
             .into_iter()
             .map(|(connection_id, mut connection)| {
                 connection.reset_transient_runtime_state();
+                if let Some(oauth) = connection.oauth.as_mut() {
+                    oauth.client_secret_value = oauth.client_secret_ref.as_ref().and_then(|secret_ref| {
+                        resolve_secret_ref_value(secret_ref, &connection.tenant_context)
+                    });
+                }
                 (connection_id, connection)
             })
             .collect::<HashMap<_, _>>();
@@ -228,6 +234,7 @@ impl McpRegistry {
             connections: Arc::new(RwLock::new(loaded_connections)),
             processes: Arc::new(Mutex::new(HashMap::new())),
             credential_mutation_lock: Arc::new(Mutex::new(())),
+            oauth_refreshes: Arc::new(std::sync::Mutex::new(HashMap::new())),
             state_file: Arc::new(state_file),
             oauth_security_dir: Arc::new(oauth_security_dir),
             standalone_private_endpoint_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -532,30 +539,10 @@ impl McpRegistry {
         name: &str,
         current_tenant: &TenantContext,
     ) -> bool {
-        let _credential_guard = self.credential_mutation_lock.lock().await;
-        let removed_server = {
-            let mut servers = self.servers.write().await;
-            servers.remove(name)
-        };
-        let Some(server) = removed_server else {
-            return false;
-        };
-        self.remove_connections_for_server(name).await;
-        delete_secret_header_refs(&server.secret_headers, current_tenant);
-        delete_oauth_secret_ref(server.oauth.as_ref(), current_tenant);
-        delete_oauth_credential(
-            name,
-            server.oauth.as_ref(),
-            current_tenant,
-            &self.oauth_security_dir,
-        );
-
-        if let Some(mut child) = self.processes.lock().await.remove(name) {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-        }
-        self.persist_state().await;
-        true
+        self.prepare_remove_for_tenant(name, current_tenant).await
+            .commit_checked(|| Ok::<(), std::convert::Infallible>(()))
+            .expect("trusted connector removal is infallible")
+            .finish().await
     }
 
     pub async fn connect(&self, name: &str) -> bool {
@@ -563,6 +550,11 @@ impl McpRegistry {
     }
 
     pub async fn connect_for_tenant(&self, name: &str, current_tenant: &TenantContext) -> bool {
+        self.connect_for_tenant_bound(name, current_tenant, None).await
+    }
+
+    pub(crate) async fn connect_for_tenant_bound(&self, name: &str, current_tenant: &TenantContext,
+        binding: Option<&mut McpToolDispatchBinding>) -> bool {
         let server = {
             let servers = self.servers.read().await;
             let Some(server) = servers.get(name) else {
@@ -587,7 +579,7 @@ impl McpRegistry {
         }
 
         if parse_remote_endpoint(&server.transport).is_some() {
-            return self.refresh_for_tenant(name, current_tenant).await.is_ok();
+            return self.refresh_for_tenant_bound(name, current_tenant, binding).await.is_ok();
         }
 
         let (tool_cache, tools_fetched_at_ms) = if current_tenant.is_local_implicit() {
@@ -621,6 +613,11 @@ impl McpRegistry {
         name: &str,
         current_tenant: &TenantContext,
     ) -> Result<Vec<McpRemoteTool>, String> {
+        self.refresh_for_tenant_bound(name, current_tenant, None).await
+    }
+
+    async fn refresh_for_tenant_bound(&self, name: &str, current_tenant: &TenantContext,
+        mut binding: Option<&mut McpToolDispatchBinding>) -> Result<Vec<McpRemoteTool>, String> {
         let server = {
             let servers = self.servers.read().await;
             let Some(server) = servers.get(name) else {
@@ -637,7 +634,7 @@ impl McpRegistry {
             .ok_or_else(|| "MCP refresh currently supports HTTP/S transports only".to_string())?;
 
         let _ = self
-            .ensure_oauth_bearer_token_fresh_for_tenant(name, current_tenant, false)
+            .ensure_oauth_bearer_token_fresh_bound(name, current_tenant, false, binding.as_deref_mut())
             .await;
         let server = {
             let servers = self.servers.read().await;
@@ -649,8 +646,9 @@ impl McpRegistry {
         let request_headers = self
             .effective_headers_for_current_tenant(name, &server, current_tenant)
             .await;
-        let endpoint_authorization =
+        let mut endpoint_authorization =
             McpEndpointAuthorization::for_registry(self, current_tenant);
+        endpoint_authorization.tool_dispatch = binding.as_deref().cloned();
         let discovery = self
             .discover_remote_tools(
                 name,
@@ -678,11 +676,12 @@ impl McpRegistry {
                 ));
             }
             Err(DiscoverRemoteToolsError::Message(err)) => {
-                if should_retry_mcp_oauth_refresh(&server, &err)
+                if should_retry_mcp_oauth_refresh(&server, self.oauth_config_for_tenant(name, &server, current_tenant).await.is_some(), &err)
                     && self
-                        .ensure_oauth_bearer_token_fresh_for_tenant(name, current_tenant, true)
+                        .ensure_oauth_bearer_token_fresh_bound(name, current_tenant, true, binding.as_deref_mut())
                         .await?
                 {
+                    endpoint_authorization.tool_dispatch = binding.as_deref().cloned();
                     let refreshed_server = {
                         let servers = self.servers.read().await;
                         servers
@@ -840,11 +839,16 @@ impl McpRegistry {
                 connection.credential_ref = None;
                 connection.secret_headers.clear();
                 connection.oauth = None;
+                connection.oauth_publication_pending = None;
                 connection.upstream_account = None;
                 connection.reset_transient_runtime_state();
                 connection.updated_at_ms = now_ms();
+                self.invalidate_oauth_refresh_connection(&connection_id);
                 (secret_headers, oauth)
             };
+            if let Some(oauth) = &oauth {
+                self.rotate_connection_generations_for_oauth_provider(&oauth.provider_id, current_tenant).await;
+            }
             delete_secret_header_refs(&secret_headers, current_tenant);
             delete_oauth_secret_ref(oauth.as_ref(), current_tenant);
             delete_oauth_credential(
@@ -866,6 +870,7 @@ impl McpRegistry {
         let Some(server) = servers.get_mut(name) else {
             return false;
         };
+        let cleared_provider = server.oauth.as_ref().map(|oauth| oauth.provider_id.clone());
         delete_secret_header_refs(&server.secret_headers, current_tenant);
         delete_oauth_secret_ref(server.oauth.as_ref(), current_tenant);
         delete_oauth_credential(
@@ -885,7 +890,11 @@ impl McpRegistry {
         server.tool_cache.clear();
         server.tools_fetched_at_ms = None;
         server.pending_auth_by_tool.clear();
+        self.invalidate_oauth_refresh_connection(&self.connection_id_for_tenant(name, current_tenant));
         drop(servers);
+        if let Some(provider) = cleared_provider {
+            self.rotate_connection_generations_for_oauth_provider(&provider, current_tenant).await;
+        }
         self.upsert_compatibility_connection_for_server(name, current_tenant)
             .await;
         self.persist_state().await;
@@ -1176,6 +1185,20 @@ impl McpRegistry {
         args: Value,
         current_tenant: &TenantContext,
     ) -> Result<ToolResult, String> {
+        self.call_tool_for_tenant_with_authority(server_name, tool_name, args, current_tenant, None).await
+    }
+
+    pub async fn call_tool_for_tenant_with_authority(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        args: Value,
+        current_tenant: &TenantContext,
+        request_authority: Option<crate::McpRequestAuthority>,
+    ) -> Result<ToolResult, String> {
+        if let Some(authority) = &request_authority {
+            authority.revalidate()?;
+        }
         if current_tenant.is_local_implicit()
             && self
                 .strict_tenant_enforcement
@@ -1185,12 +1208,25 @@ impl McpRegistry {
                 "ToolDenied {{ reason: TenantScope }}: blocked MCP tool `{server_name}.{tool_name}` because local-implicit tenant context is not permitted in hosted/enterprise mode."
             ));
         }
-        let server = {
+        let (server, _oauth_refresh_admission, connection_generation) = {
             let servers = self.servers.read().await;
             let Some(server) = servers.get(server_name) else {
                 return Err(format!("MCP server '{server_name}' not found"));
             };
-            server.clone()
+            let connections = self.connections.read().await;
+            let connection = connections.get(&self.connection_id_for_tenant(server_name, current_tenant));
+            let oauth = if current_tenant.is_local_implicit() {
+                server.oauth.as_ref()
+            } else {
+                connection.and_then(|row| row.oauth.as_ref())
+            };
+            // A delayed 401 can arrive after another call has refreshed. Retain
+            // its exact-successor receipt for this entire admitted tool call,
+            // not only while this call itself is exchanging a token.
+            let admission = oauth.map(|oauth| self.admit_oauth_refresh(
+                McpOAuthCredentialKey::new(current_tenant, &oauth.provider_id),
+            ));
+            (server.clone(), admission, connection.map(|row| row.connection_generation.clone()))
         };
         if !server.enabled {
             return Err(format!("MCP server '{server_name}' is disabled"));
@@ -1210,10 +1246,19 @@ impl McpRegistry {
             ));
         }
 
+        let mut dispatch_binding = McpToolDispatchBinding {
+            registry: self.clone(), server_name: server_name.into(), tool_name: tool_name.into(),
+            server_policy: server_dispatch_policy(&server), tenant: current_tenant.clone(),
+            connection_generation,
+            request_authority,
+        };
+        if !current_tenant.is_local_implicit() && dispatch_binding.connection_generation.is_none() {
+            return Err("MCP tenant connection is missing or was revoked before dispatch".into());
+        }
         // Single readiness gate (Invariant 2 of `docs/SPINE.md`): one
-        // attempt, no backoff — same shape as the previous inline check.
+        // attempt, no backoff. Recheck authority after its network waits.
         let server = match self
-            .ensure_ready_for_tenant(server_name, current_tenant, EnsureReadyPolicy::default())
+            .ensure_ready_for_tenant_bound(server_name, current_tenant, EnsureReadyPolicy::default(), Some(&mut dispatch_binding))
             .await
         {
             Ok(server) => server,
@@ -1237,7 +1282,7 @@ impl McpRegistry {
         let canonical_tool = canonical_tool_key(tool_name);
         let now = now_ms();
         let _ = self
-            .ensure_oauth_bearer_token_fresh_for_tenant(server_name, current_tenant, false)
+            .ensure_oauth_bearer_token_fresh_bound(server_name, current_tenant, false, Some(&mut dispatch_binding))
             .await;
         let server = {
             let servers = self.servers.read().await;
@@ -1288,8 +1333,9 @@ impl McpRegistry {
                 "arguments": normalized_args
             }
         });
-        let endpoint_authorization =
+        let mut endpoint_authorization =
             McpEndpointAuthorization::for_registry(self, current_tenant);
+        endpoint_authorization.tool_dispatch = Some(dispatch_binding);
         let (response, session_id) = match post_json_rpc_with_session(
             &endpoint,
             &request_headers,
@@ -1301,12 +1347,13 @@ impl McpRegistry {
         {
             Ok(result) => result,
             Err(error) => {
-                if should_retry_mcp_oauth_refresh(&server, &error)
+                if should_retry_mcp_oauth_refresh(&server, self.oauth_config_for_tenant(server_name, &server, current_tenant).await.is_some(), &error)
                     && self
-                        .ensure_oauth_bearer_token_fresh_for_tenant(
+                        .ensure_oauth_bearer_token_fresh_bound(
                             server_name,
                             current_tenant,
                             true,
+                            endpoint_authorization.tool_dispatch.as_mut(),
                         )
                         .await?
                 {
@@ -1621,91 +1668,6 @@ impl McpRegistry {
         let snapshot = self.servers.read().await.clone();
         let connections = self.connections.read().await.clone();
         persist_state_blocking(self.state_file.as_path(), &snapshot, &connections);
-    }
-
-    async fn ensure_oauth_bearer_token_fresh(
-        &self,
-        name: &str,
-        force: bool,
-    ) -> Result<bool, String> {
-        self.ensure_oauth_bearer_token_fresh_for_tenant(name, &local_tenant_context(), force)
-            .await
-    }
-
-    async fn ensure_oauth_bearer_token_fresh_for_tenant(
-        &self,
-        name: &str,
-        current_tenant: &TenantContext,
-        force: bool,
-    ) -> Result<bool, String> {
-        let server = {
-            let servers = self.servers.read().await;
-            servers.get(name).cloned()
-        }
-        .ok_or_else(|| format!("MCP server '{name}' not found"))?;
-        let Some(oauth) = self
-            .oauth_config_for_tenant(name, &server, current_tenant)
-            .await
-        else {
-            return Ok(false);
-        };
-        let credential = if current_tenant.is_local_implicit() {
-            tandem_core::load_provider_oauth_credential_in_dir(
-                &self.oauth_security_dir,
-                &oauth.provider_id,
-            )
-            .or_else(|| tandem_core::load_provider_oauth_credential(&oauth.provider_id))
-        } else {
-            tandem_core::load_provider_oauth_credential_for_tenant_in_dir(
-                &self.oauth_security_dir,
-                current_tenant,
-                &oauth.provider_id,
-            )
-            .or_else(|| {
-                tandem_core::load_provider_oauth_credential_for_tenant(
-                    current_tenant,
-                    &oauth.provider_id,
-                )
-            })
-        };
-        let Some(credential) = credential else {
-            return Ok(false);
-        };
-
-        let should_refresh = force
-            || credential.expires_at_ms <= now_ms().saturating_add(60_000)
-            || credential.access_token.trim().is_empty();
-        if !should_refresh {
-            return Ok(false);
-        }
-        let endpoint_authorization =
-            McpEndpointAuthorization::for_registry(self, current_tenant);
-
-        let refreshed = refresh_mcp_oauth_credential(
-            &oauth,
-            &credential,
-            &endpoint_authorization,
-        )
-        .await?;
-        self.set_bearer_token_for_tenant(name, &refreshed.access_token, current_tenant)
-            .await?;
-        if current_tenant.is_local_implicit() {
-            tandem_core::set_provider_oauth_credential_in_dir(
-                &self.oauth_security_dir,
-                &oauth.provider_id,
-                refreshed,
-            )
-            .map_err(|error| error.to_string())?;
-        } else {
-            tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
-                &self.oauth_security_dir,
-                current_tenant,
-                &oauth.provider_id,
-                refreshed,
-            )
-            .map_err(|error| error.to_string())?;
-        }
-        Ok(true)
     }
 }
 

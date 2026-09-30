@@ -634,9 +634,9 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn should_retry_mcp_oauth_refresh(server: &McpServer, error: &str) -> bool {
+fn should_retry_mcp_oauth_refresh(server: &McpServer, has_oauth: bool, error: &str) -> bool {
     server.auth_kind.trim().eq_ignore_ascii_case("oauth")
-        && server.oauth.is_some()
+        && has_oauth
         && (error.contains("HTTP 401")
             || error.contains("invalid_token")
             || error.to_ascii_lowercase().contains("unauthorized"))
@@ -651,6 +651,7 @@ struct McpRefreshTokenResponse {
 
 #[derive(Clone)]
 struct McpEndpointAuthorization {
+    tool_dispatch: Option<McpToolDispatchBinding>,
     local_implicit: bool,
     standalone_private_endpoint_access: Arc<std::sync::atomic::AtomicBool>,
     strict_tenant_enforcement: Arc<std::sync::atomic::AtomicBool>,
@@ -661,6 +662,7 @@ struct McpEndpointAuthorization {
 impl McpEndpointAuthorization {
     fn for_registry(registry: &McpRegistry, tenant: &TenantContext) -> Self {
         Self {
+            tool_dispatch: None,
             local_implicit: tenant.is_local_implicit(),
             standalone_private_endpoint_access: registry
                 .standalone_private_endpoint_access
@@ -866,6 +868,12 @@ async fn refresh_mcp_oauth_credential(
         )
         .header(ACCEPT, "application/json")
         .form(&params);
+    // DNS resolution above can outlive the initiating request's authority.
+    // Check again before sending refresh credentials, not only before saving
+    // the provider's response locally.
+    if let Some(binding) = &authorization.tool_dispatch {
+        binding.revalidate()?;
+    }
     target.ensure_authorized(authorization)?;
     let mut response = request
         .send()
@@ -971,6 +979,9 @@ async fn post_json_rpc_with_session(
         }
     }
     let request = req.json(&request);
+    if let Some(binding) = &authorization.tool_dispatch {
+        binding.revalidate()?;
+    }
     target.ensure_authorized(authorization)?;
     let mut response = request
         .send()

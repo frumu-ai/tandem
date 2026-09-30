@@ -297,6 +297,9 @@ pub(super) async fn ensure_context_run_dir(
     state: &AppState,
     run_id: &str,
 ) -> Result<(), StatusCode> {
+    if !super::context_run_authority::valid_context_run_id(run_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let run_dir = context_run_dir(state, run_id);
     tokio::fs::create_dir_all(&run_dir)
         .await
@@ -304,12 +307,7 @@ pub(super) async fn ensure_context_run_dir(
     Ok(())
 }
 
-pub(super) async fn load_context_run_state(
-    state: &AppState,
-    run_id: &str,
-) -> Result<ContextRunState, StatusCode> {
-    load_and_repair_context_run_state(state, run_id)
-}
+include!("projection_store.rs");
 
 fn write_string_atomically(path: &FsPath, payload: &str) -> Result<(), StatusCode> {
     if let Some(parent) = path.parent() {
@@ -323,19 +321,6 @@ fn write_string_atomically(path: &FsPath, payload: &str) -> Result<(), StatusCod
     ));
     std::fs::write(&tmp_path, payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     std::fs::rename(&tmp_path, path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-pub(super) async fn save_context_run_state(
-    state: &AppState,
-    run: &ContextRunState,
-) -> Result<(), StatusCode> {
-    ensure_context_run_dir(state, &run.run_id).await?;
-    let path = context_run_state_path(state, &run.run_id);
-    let payload =
-        serde_json::to_string_pretty(run).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    tokio::task::spawn_blocking(move || write_string_atomically(&path, &payload))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
 }
 
 pub(super) fn load_context_run_events_jsonl(
@@ -413,6 +398,9 @@ pub(super) fn decode_context_stream_cursor(raw: Option<&str>) -> ContextRunsStre
 }
 
 pub(super) fn load_context_run_workspace_sync(state: &AppState, run_id: &str) -> Option<String> {
+    if !super::context_run_authority::valid_context_run_id(run_id) {
+        return None;
+    }
     let path = context_run_state_path(state, run_id);
     let raw = std::fs::read_to_string(path).ok()?;
     let value = serde_json::from_str::<Value>(&raw).ok()?;
@@ -429,15 +417,26 @@ pub(super) fn load_context_run_state_sync(
     state: &AppState,
     run_id: &str,
 ) -> Result<ContextRunState, StatusCode> {
+    if !super::context_run_authority::valid_context_run_id(run_id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let path = context_run_state_path(state, run_id);
     let raw = std::fs::read_to_string(path).map_err(|_| StatusCode::NOT_FOUND)?;
-    serde_json::from_str::<ContextRunState>(&raw).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    let run = serde_json::from_str::<ContextRunState>(&raw)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if run.run_id != run_id {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(run)
 }
 
-pub(super) fn save_context_run_state_sync(
+fn save_context_run_state_unchecked_sync(
     state: &AppState,
     run: &ContextRunState,
 ) -> Result<(), StatusCode> {
+    if !super::context_run_authority::valid_context_run_id(&run.run_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let path = context_run_state_path(state, &run.run_id);
     let payload =
         serde_json::to_string_pretty(run).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -523,10 +522,11 @@ fn apply_context_run_event_record(run: &mut ContextRunState, event: &ContextRunE
     run.updated_at_ms = run.updated_at_ms.max(event.ts_ms);
 }
 
-fn load_and_repair_context_run_state(
+fn load_and_repair_context_run_state_locked(
     state: &AppState,
-    run_id: &str,
+    guard: &ContextRunProjectionGuard,
 ) -> Result<ContextRunState, StatusCode> {
+    let run_id = guard.run_id();
     let mut run = load_context_run_state_sync(state, run_id)?;
     let pending = load_context_run_events_jsonl(
         &context_run_events_path(state, run_id),
@@ -537,7 +537,7 @@ fn load_and_repair_context_run_state(
         for event in &pending {
             apply_context_run_event_record(&mut run, event);
         }
-        save_context_run_state_sync(state, &run)?;
+        save_context_run_state_with_projection_guard_sync(state, guard, &run)?;
     }
     Ok(run)
 }
@@ -555,9 +555,8 @@ impl ContextRunEngine {
         command_id: Option<String>,
         mut event_payload: Value,
     ) -> Result<ContextRunCommitResult, StatusCode> {
-        let lock = self.lock_for(run_id).await;
-        let _guard = lock.lock().await;
-        let mut run = load_and_repair_context_run_state(state, run_id)?;
+        let guard = self.projection_guard_for(run_id).await?;
+        let mut run = load_and_repair_context_run_state_locked(state, &guard)?;
         let now = crate::now_ms();
         let next_revision = run.revision.saturating_add(1);
         let next_event_seq = next_context_run_event_seq(state, run_id, &run);
@@ -592,7 +591,7 @@ impl ContextRunEngine {
             payload: event_payload,
         };
         append_context_run_event_record_sync(state, run_id, &event)?;
-        save_context_run_state_sync(state, &run)?;
+        save_context_run_state_with_projection_guard_sync(state, &guard, &run)?;
 
         if let Some(payload) = patch_payload.as_object_mut() {
             payload
@@ -650,9 +649,8 @@ impl ContextRunEngine {
         input: ContextRunEventAppendInput,
         command_id: Option<String>,
     ) -> Result<ContextRunCommitResult, StatusCode> {
-        let lock = self.lock_for(run_id).await;
-        let _guard = lock.lock().await;
-        let mut run = load_and_repair_context_run_state(state, run_id)?;
+        let guard = self.projection_guard_for(run_id).await?;
+        let mut run = load_and_repair_context_run_state_locked(state, &guard)?;
         let now = crate::now_ms();
         let next_revision = run.revision.saturating_add(1);
         let next_event_seq = next_context_run_event_seq(state, run_id, &run);
@@ -675,7 +673,7 @@ impl ContextRunEngine {
             payload: input.payload.clone(),
         };
         append_context_run_event_record_sync(state, run_id, &event)?;
-        save_context_run_state_sync(state, &run)?;
+        save_context_run_state_with_projection_guard_sync(state, &guard, &run)?;
         let blackboard = load_projected_context_blackboard(state, run_id);
         Ok(ContextRunCommitResult {
             run,
@@ -693,9 +691,8 @@ impl ContextRunEngine {
         input: ContextRunEventAppendInput,
         command_id: Option<String>,
     ) -> Result<ContextRunCommitResult, StatusCode> {
-        let lock = self.lock_for(run_id).await;
-        let _guard = lock.lock().await;
-        let current = load_and_repair_context_run_state(state, run_id)?;
+        let guard = self.projection_guard_for(run_id).await?;
+        let current = load_and_repair_context_run_state_locked(state, &guard)?;
         let now = crate::now_ms();
         let next_revision = current.revision.saturating_add(1);
         let next_event_seq = next_context_run_event_seq(state, run_id, &current);
@@ -716,7 +713,7 @@ impl ContextRunEngine {
             payload: input.payload.clone(),
         };
         append_context_run_event_record_sync(state, run_id, &event)?;
-        save_context_run_state_sync(state, &run)?;
+        save_context_run_state_with_projection_guard_sync(state, &guard, &run)?;
         let blackboard = load_projected_context_blackboard(state, run_id);
         Ok(ContextRunCommitResult {
             run,
@@ -733,9 +730,8 @@ impl ContextRunEngine {
         op: ContextBlackboardPatchOp,
         payload: Value,
     ) -> Result<ContextRunCommitResult, StatusCode> {
-        let lock = self.lock_for(run_id).await;
-        let _guard = lock.lock().await;
-        let mut run = load_and_repair_context_run_state(state, run_id)?;
+        let guard = self.projection_guard_for(run_id).await?;
+        let mut run = load_and_repair_context_run_state_locked(state, &guard)?;
         let now = crate::now_ms();
         let next_revision = run.revision.saturating_add(1);
         let next_event_seq = next_context_run_event_seq(state, run_id, &run);
@@ -764,7 +760,7 @@ impl ContextRunEngine {
             }),
         };
         append_context_run_event_record_sync(state, run_id, &event)?;
-        save_context_run_state_sync(state, &run)?;
+        save_context_run_state_with_projection_guard_sync(state, &guard, &run)?;
         let patch =
             append_context_blackboard_patch_record(state, run_id, next_event_seq, op, payload)?;
         let blackboard = load_projected_context_blackboard(state, run_id);
@@ -1474,9 +1470,23 @@ pub(super) async fn context_run_create_impl(
     tenant_context: TenantContext,
     input: ContextRunCreateInput,
 ) -> Result<Json<Value>, StatusCode> {
+    if input
+        .run_id
+        .as_deref()
+        .is_some_and(super::context_run_authority::reserved_projection_id)
+        || input
+            .run_type
+            .as_deref()
+            .is_some_and(super::context_run_authority::managed_projection_type)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let run_id = input
         .run_id
         .unwrap_or_else(|| format!("run-{}", Uuid::new_v4()));
+    if !super::context_run_authority::valid_context_run_id(&run_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     ensure_context_run_dir(&state, &run_id).await?;
     let run_path = context_run_state_path(&state, &run_id);
     if run_path.exists() {
@@ -1532,6 +1542,7 @@ pub(super) async fn context_run_create_impl(
 pub(super) async fn context_run_list(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Query(query): Query<ContextRunListQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let workspace_filter = query
@@ -1547,7 +1558,15 @@ pub(super) async fn context_run_list(
     let mut rows = Vec::<ContextRunState>::new();
     for candidate in list_context_run_state_candidates(&state).await? {
         if let Ok(run) = load_context_run_state(&state, &candidate.run_id).await {
-            if !super::tenant_matches(&tenant_context, &run.tenant_context) {
+            if !super::context_run_authority::context_run_visible(
+                &state,
+                &run,
+                &tenant_context,
+                verified.as_ref().map(|Extension(value)| value),
+                false,
+            )
+            .await
+            {
                 continue;
             }
             if let Some(workspace) = workspace_filter.as_deref() {
@@ -1625,6 +1644,17 @@ pub(super) async fn context_run_put(
     }
     if let Ok(existing) = load_context_run_state(&state, &run_id).await {
         ensure_context_run_tenant(&tenant_context, &existing)?;
+        if existing.run_type != run.run_type
+            && (super::context_run_authority::reserved_projection_id(&run_id)
+                || super::context_run_authority::managed_projection_type(&existing.run_type)
+                || super::context_run_authority::managed_projection_type(&run.run_type))
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    } else if super::context_run_authority::reserved_projection_id(&run_id)
+        || super::context_run_authority::managed_projection_type(&run.run_type)
+    {
+        return Err(StatusCode::BAD_REQUEST);
     }
     run.tenant_context = tenant_context;
     let status = run.status.clone();
@@ -1777,93 +1807,6 @@ pub(super) async fn context_run_todos_sync(
         "ok": true,
         "run": outcome.run
     })))
-}
-
-pub(super) fn context_driver_select_next_step(
-    run: &ContextRunState,
-) -> (Option<usize>, String, ContextRunStatus) {
-    if context_run_is_terminal(&run.status) {
-        return (
-            None,
-            format!(
-                "run is terminal (`{}`); no next step can be selected",
-                serde_json::to_string(&run.status).unwrap_or_else(|_| "\"terminal\"".to_string())
-            ),
-            run.status.clone(),
-        );
-    }
-    if let Some(step) = run
-        .steps
-        .iter()
-        .find(|step| matches!(step.status, ContextStepStatus::InProgress))
-    {
-        return (
-            None,
-            format!(
-                "step `{}` is already in_progress; keep current execution focus",
-                step.step_id
-            ),
-            ContextRunStatus::Running,
-        );
-    }
-    if let Some((idx, step)) = run
-        .steps
-        .iter()
-        .enumerate()
-        .find(|(_, step)| matches!(step.status, ContextStepStatus::Runnable))
-    {
-        return (
-            Some(idx),
-            format!(
-                "selected runnable step `{}` as next execution target",
-                step.step_id
-            ),
-            ContextRunStatus::Running,
-        );
-    }
-    if let Some((idx, step)) = run
-        .steps
-        .iter()
-        .enumerate()
-        .find(|(_, step)| matches!(step.status, ContextStepStatus::Pending))
-    {
-        return (
-            Some(idx),
-            format!(
-                "no runnable step available; promoted pending step `{}` for execution",
-                step.step_id
-            ),
-            ContextRunStatus::Running,
-        );
-    }
-    if !run.steps.is_empty()
-        && run
-            .steps
-            .iter()
-            .all(|step| matches!(step.status, ContextStepStatus::Done))
-    {
-        return (
-            None,
-            "all steps are done; marking run completed".to_string(),
-            ContextRunStatus::Completed,
-        );
-    }
-    if run
-        .steps
-        .iter()
-        .any(|step| matches!(step.status, ContextStepStatus::Failed))
-    {
-        return (
-            None,
-            "one or more steps failed and no runnable work remains; run is blocked".to_string(),
-            ContextRunStatus::Blocked,
-        );
-    }
-    (
-        None,
-        "no actionable steps found; run remains blocked".to_string(),
-        ContextRunStatus::Blocked,
-    )
 }
 
 pub(super) async fn context_run_driver_next(

@@ -194,8 +194,8 @@ impl<'a> GithubProjectsAdapter<'a> {
             self.verified_tenant_context.clone(),
             tandem_tools::ToolDispatchSource::new("coder_github_project_bind"),
         )
-            .await
-            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
         let (schema_snapshot, status_mapping, schema_fingerprint) =
             self.parse_project_schema(&result)?;
         Ok(CoderGithubProjectBinding {
@@ -238,8 +238,8 @@ impl<'a> GithubProjectsAdapter<'a> {
             self.verified_tenant_context.clone(),
             tandem_tools::ToolDispatchSource::new("coder_github_project_inbox"),
         )
-            .await
-            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
         let mut out = Vec::new();
         for candidate in tool_result_values(&result) {
             collect_project_items(&candidate, &mut out);
@@ -288,8 +288,8 @@ impl<'a> GithubProjectsAdapter<'a> {
             self.verified_tenant_context.clone(),
             tandem_tools::ToolDispatchSource::new("coder_github_project_status_sync"),
         )
-            .await
-            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
         Ok(())
     }
 }
@@ -872,6 +872,7 @@ async fn record_coder_external_action(
     metadata: Value,
 ) -> Option<ExternalActionRecord> {
     let action = ExternalActionRecord {
+        provenance: None,
         action_id: format!("external-action-{}", Uuid::new_v4().simple()),
         operation: operation.to_string(),
         status: "posted".to_string(),

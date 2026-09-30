@@ -3,6 +3,62 @@
 
 use serde_json::Value;
 
+/// Planner generation can persist a session and dispatch a provider before a
+/// draft is written. Keep its write grant live at each of those boundaries.
+pub(super) fn require_live_planner_write(
+    state: &crate::AppState,
+    tenant: &tandem_types::TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+) -> Result<(), &'static str> {
+    state
+        .enterprise
+        .hosted_policy
+        .with_current_policy(|policy| {
+            require_planner_write_under_policy(tenant, verified, policy)
+        })?
+}
+
+/// Evaluate against the snapshot whose read lock the caller holds through its
+/// storage commit. Do not reacquire the runtime lock from inside this helper.
+pub(super) fn require_planner_write_under_policy(
+    tenant: &tandem_types::TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    policy: Option<&tandem_enterprise_contract::hosted_policy::ValidatedHostedPolicy>,
+) -> Result<(), &'static str> {
+    use tandem_types::{AccessDecision, AccessPermission, DataClass};
+
+    // Standalone/local planning keeps its existing behavior. A configured but
+    // unsynchronized hosted policy is an error, not a local-mode fallback.
+    let Some(policy) = policy else {
+        if verified.is_some_and(|verified| verified.policy_version.is_some()) {
+            return Err("hosted_policy_source_unavailable");
+        }
+        return Ok(());
+    };
+    let verified = verified.ok_or("hosted_policy_identity_required")?;
+    let now = crate::now_ms();
+    if verified.is_expired_at(now)
+        || !super::tenant_matches(tenant, &verified.tenant_context)
+        || tenant.actor_id.as_deref() != Some(verified.human_actor.actor_id.as_str())
+    {
+        return Err("hosted_planner_identity_mismatch");
+    }
+    let projection = policy.project_identity(verified, now)?;
+    if projection
+        .evaluate_access(
+            &policy.deployment_resource(),
+            AccessPermission::HostedAutomationWrite,
+            DataClass::Internal,
+            now,
+        )
+        .decision
+        != AccessDecision::Allow
+    {
+        return Err("hosted_operation_permission_required");
+    }
+    Ok(())
+}
+
 pub(super) fn planner_test_override_payload(
     primary_env: &str,
     include_legacy: bool,

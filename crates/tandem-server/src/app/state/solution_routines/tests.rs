@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 use crate::app::state::{evaluate_routine_execution_policy, RoutineExecutionDecision};
 use crate::routines::types::RoutineRunStatus;
@@ -316,6 +319,166 @@ async fn solution_routine_rejects_conflicts_and_generic_activation() {
         .await
         .unwrap();
     assert_eq!(sha256(&bytes(&observed).unwrap()), receipt);
+}
+
+#[tokio::test]
+async fn checked_routine_mutations_preserve_staging_and_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = state(directory.path());
+    let (routine, owner) = fixture("org-a");
+    state
+        .stage_solution_routine(routine.clone(), owner.clone())
+        .await
+        .unwrap();
+    let staged = state
+        .get_routine_for_tenant(&routine.routine_id, &routine.tenant_context)
+        .await
+        .unwrap();
+    let staged_cache = bytes(&*state.routines.read().await).unwrap();
+    let staged_disk = tokio::fs::read(&state.routines_path).await.unwrap();
+
+    // Even an authorized generic caller cannot replace, activate or remove a
+    // staged resource, including by stripping its typed ownership metadata.
+    let mut replacement = staged.clone();
+    replacement.solution_owner = None;
+    replacement.status = RoutineStatus::Active;
+    assert!(matches!(
+        state.put_routine_checked(replacement, |_, _| true).await,
+        Err(RoutineStoreError::ManagedResource { .. })
+    ));
+    assert!(matches!(
+        state
+            .update_routine_for_tenant_checked(
+                &staged.routine_id,
+                &staged.tenant_context,
+                |_| true,
+                |row| {
+                    row.solution_owner = None;
+                    row.status = RoutineStatus::Active;
+                },
+            )
+            .await,
+        Err(RoutineStoreError::ManagedResource { .. })
+    ));
+    assert!(matches!(
+        state
+            .delete_routine_for_tenant_checked(
+                &staged.routine_id,
+                &staged.tenant_context,
+                |_| true,
+            )
+            .await,
+        Err(RoutineStoreError::ManagedResource { .. })
+    ));
+    assert_eq!(bytes(&*state.routines.read().await).unwrap(), staged_cache);
+    assert_eq!(
+        tokio::fs::read(&state.routines_path).await.unwrap(),
+        staged_disk
+    );
+
+    let mut manual = routine;
+    manual.routine_id = "manual-checked".into();
+    assert!(matches!(
+        state
+            .put_routine_checked(manual.clone(), |_, _| false)
+            .await,
+        Err(RoutineStoreError::AccessDenied)
+    ));
+    assert_eq!(bytes(&*state.routines.read().await).unwrap(), staged_cache);
+    assert_eq!(
+        tokio::fs::read(&state.routines_path).await.unwrap(),
+        staged_disk
+    );
+    let (manual, previous) = state
+        .put_routine_checked(manual, |_, _| true)
+        .await
+        .unwrap();
+    assert!(previous.is_none());
+    let manual_cache = bytes(&*state.routines.read().await).unwrap();
+    let manual_disk = tokio::fs::read(&state.routines_path).await.unwrap();
+
+    // Authorization does not let preparation manufacture typed ownership.
+    assert!(matches!(
+        state
+            .put_routine_checked(manual.clone(), |_, row| {
+                row.solution_owner = Some(owner.clone());
+                true
+            })
+            .await,
+        Err(RoutineStoreError::ManagedResource { .. })
+    ));
+    assert!(matches!(
+        state
+            .update_routine_for_tenant_checked(
+                &manual.routine_id,
+                &manual.tenant_context,
+                |_| true,
+                |row| row.solution_owner = Some(owner),
+            )
+            .await,
+        Err(RoutineStoreError::ManagedResource { .. })
+    ));
+    assert!(matches!(
+        state
+            .put_routine_checked(manual.clone(), |_, _| false)
+            .await,
+        Err(RoutineStoreError::AccessDenied)
+    ));
+    assert!(matches!(
+        state
+            .update_routine_for_tenant_checked(
+                &manual.routine_id,
+                &manual.tenant_context,
+                |_| false,
+                |_| panic!("unauthorized update must not run"),
+            )
+            .await,
+        Err(RoutineStoreError::AccessDenied)
+    ));
+    assert!(matches!(
+        state
+            .delete_routine_for_tenant_checked(&manual.routine_id, &manual.tenant_context, |_| {
+                false
+            },)
+            .await,
+        Err(RoutineStoreError::AccessDenied)
+    ));
+    assert_eq!(bytes(&*state.routines.read().await).unwrap(), manual_cache);
+    assert_eq!(
+        tokio::fs::read(&state.routines_path).await.unwrap(),
+        manual_disk
+    );
+
+    // Ordinary checked CRUD still works and returns the row needed by rollback.
+    let mut replacement = manual.clone();
+    replacement.name = "replacement".into();
+    let (_, previous) = state
+        .put_routine_checked(replacement, |_, _| true)
+        .await
+        .unwrap();
+    assert_eq!(bytes(&previous.unwrap()).unwrap(), bytes(&manual).unwrap());
+    let updated = state
+        .update_routine_for_tenant_checked(
+            &manual.routine_id,
+            &manual.tenant_context,
+            |_| true,
+            |row| row.name = "updated".into(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.name, "updated");
+    let deleted = state
+        .delete_routine_for_tenant_checked(&manual.routine_id, &manual.tenant_context, |_| true)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bytes(&deleted).unwrap(), bytes(&updated).unwrap());
+    assert_eq!(bytes(&*state.routines.read().await).unwrap(), staged_cache);
+    assert_eq!(
+        tokio::fs::read(&state.routines_path).await.unwrap(),
+        staged_disk
+    );
 }
 
 #[tokio::test]

@@ -99,6 +99,8 @@ The reuse flow is:
    - It does not arm a runnable automation yet.
    - Schedule data stays staged until the user applies the plan.
 
+For hosted deployments, ZIP pack preview (`POST /workflow-plans/import/pack/preview`) only accepts a ZIP previously exported by the same verified actor and requires its `plan_id` alongside the returned path. Hosted ZIP pack installation (`POST /workflow-plans/import/pack`) is temporarily unavailable until pack storage and reads are tenant-scoped; use the plan-bundle import flow above instead. Hosted pack export also rejects server filesystem `cover_image_path` values until managed cover uploads are available. Local installs retain their existing path-based behavior.
+
 Example response shape:
 
 ```json

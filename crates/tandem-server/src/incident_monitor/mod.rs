@@ -12,6 +12,54 @@ pub mod safety_context;
 pub mod service;
 pub mod source_readiness;
 
+#[derive(Debug)]
+pub(crate) struct HostedPolicyUnavailable;
+
+impl std::fmt::Display for HostedPolicyUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("incident_monitor_hosted_policy_unavailable")
+    }
+}
+
+impl std::error::Error for HostedPolicyUnavailable {}
+
+pub(crate) fn require_current_policy(state: &crate::AppState) -> anyhow::Result<()> {
+    if !state.enterprise.hosted_policy.is_ready() {
+        return Err(HostedPolicyUnavailable.into());
+    }
+    Ok(())
+}
+
+impl crate::AppState {
+    // New work must recheck policy after the registry wait. Existing setters
+    // remain available to durably record outcomes of already-admitted effects.
+    pub(crate) async fn put_incident_monitor_draft_with_current_policy(
+        &self,
+        draft: crate::IncidentMonitorDraftRecord,
+    ) -> anyhow::Result<crate::IncidentMonitorDraftRecord> {
+        {
+            let mut guard = self.incident_monitor_drafts.write().await;
+            require_current_policy(self)?;
+            guard.insert(draft.draft_id.clone(), draft.clone());
+        }
+        self.persist_incident_monitor_drafts().await?;
+        Ok(draft)
+    }
+
+    pub(crate) async fn put_incident_monitor_incident_with_current_policy(
+        &self,
+        incident: crate::IncidentMonitorIncidentRecord,
+    ) -> anyhow::Result<crate::IncidentMonitorIncidentRecord> {
+        {
+            let mut guard = self.incident_monitor_incidents.write().await;
+            require_current_policy(self)?;
+            guard.insert(incident.incident_id.clone(), incident.clone());
+        }
+        self.persist_incident_monitor_incidents().await?;
+        Ok(incident)
+    }
+}
+
 pub(crate) fn draft_tenant_context(
     draft: &crate::IncidentMonitorDraftRecord,
 ) -> tandem_types::TenantContext {
@@ -42,6 +90,7 @@ pub(crate) async fn dispatch_mcp_tool(
     args: serde_json::Value,
     operation: &str,
 ) -> anyhow::Result<tandem_types::ToolResult> {
+    require_current_policy(state)?;
     let mut source = tandem_tools::ToolDispatchSource::new("incident_monitor_destination")
         .request(format!("{}:{operation}", draft.draft_id));
     if let Some(run_id) = draft.triage_run_id.as_deref() {

@@ -148,11 +148,17 @@ async fn workflow_plan_apply_normalizes_mcp_server_prefixes_into_tool_allowlist(
     let apply_req = Request::builder()
         .method("POST")
         .uri("/workflow-plans/apply")
+        .extension(axum::extract::ConnectInfo(
+            "203.0.113.7:39731"
+                .parse::<std::net::SocketAddr>()
+                .expect("remote peer"),
+        ))
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
                 "plan_id": plan_id,
-                "creator_id": "control-panel"
+                "creator_id": "control-panel",
+                "pack_builder_export": {"enabled": true, "auto_apply": true}
             })
             .to_string(),
         ))
@@ -167,6 +173,11 @@ async fn workflow_plan_apply_normalizes_mcp_server_prefixes_into_tool_allowlist(
         .await
         .expect("apply body");
     let apply_payload: Value = serde_json::from_slice(&apply_body).expect("apply json");
+    assert_eq!(
+        apply_payload["pack_builder_export"]["status"],
+        "export_failed"
+    );
+    assert_eq!(apply_payload["pack_builder_export"]["http_status"], 403);
     let automation_id = apply_payload
         .get("automation")
         .and_then(|row| row.get("automation_id"))

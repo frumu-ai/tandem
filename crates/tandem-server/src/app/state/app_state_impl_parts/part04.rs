@@ -71,6 +71,11 @@ impl AppState {
         };
         let mut fired = Vec::new();
         let mut guard = self.automations_v2.write().await;
+        // Do not consume schedules if policy became unavailable while waiting
+        // for the mutation lock. Local, unconfigured deployments remain ready.
+        if !self.enterprise.hosted_policy.is_ready() {
+            return fired;
+        }
         for automation in guard.values_mut() {
             if automation.status != AutomationV2Status::Active {
                 continue;

@@ -9,5 +9,6 @@ pub enum RoutineStoreError {
     ManagedResource { message: String },
     InvalidRoutineId { routine_id: String },
     InvalidSchedule { detail: String },
+    AccessDenied,
     PersistFailed { message: String },
 }

@@ -509,8 +509,10 @@ pub(super) async fn automations_v2_run_backlog_task_requeue(
 pub(super) async fn automations_v2_events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<AutomationEventsQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let stream_tenant = tenant_context.clone();
     let ready = tokio_stream::once(Ok(Event::default().data(
         serde_json::to_string(&json!({
             "status": "ready",
@@ -553,7 +555,13 @@ pub(super) async fn automations_v2_events(
         }
         Err(_) => None,
     });
-    Sse::new(ready.chain(live)).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
+    Sse::new(guard_automation_events(
+        ready.chain(live),
+        state,
+        stream_tenant,
+        verified.map(|Extension(value)| value),
+    ))
+    .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
 }
 
 /// PATCH /automations/v2/runs/{run_id}/tasks/{node_id}/disposition

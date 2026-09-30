@@ -25,6 +25,53 @@ mod common;
 use common::{connector_body, connector_credential_ref_body, source_binding_body};
 
 #[tokio::test]
+async fn enterprise_org_unit_memberships_reject_forged_hosted_provenance() {
+    let state = test_state().await;
+    let app = build_router_with_extensions(state, &[apply_routes]);
+    let request = |path: &str, body: Value| {
+        Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .header("x-tandem-org-id", "clinic-co")
+            .header("x-tandem-workspace-id", "care-delivery")
+            .header("x-tandem-actor-id", "owner-user")
+            .body(Body::from(body.to_string()))
+            .expect("request")
+    };
+    let response = app
+        .clone()
+        .oneshot(request(
+            "/enterprise/org-units",
+            json!({
+                "unit_id": "doctors", "taxonomy_id": "clinical_role",
+                "display_name": "Doctors", "kind": "clinical_group"
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    for (source, expected) in [
+        ("hosted_control_plane", StatusCode::BAD_REQUEST),
+        ("direct", StatusCode::OK),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/enterprise/org-unit-memberships",
+                json!({
+                    "membership_id": "membership-doctor-user", "taxonomy_id": "clinical_role",
+                    "unit_id": "doctors", "member_kind": "human_user",
+                    "member_id": "doctor.user@example.com", "source": source
+                }),
+            ))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
 async fn enterprise_status_returns_public_safe_summary() {
     let state = test_state().await;
     let app = build_router_with_extensions(state.clone(), &[apply_routes]);
@@ -255,7 +302,7 @@ async fn enterprise_org_unit_memberships_create_update_and_filter_by_tenant() {
                 "unit_id": "doctors",
                 "member_kind": "human_user",
                 "member_id": "doctor.user@example.com",
-                "source": "hosted_control_plane"
+                "source": "direct"
             })
             .to_string(),
         ))
@@ -400,7 +447,7 @@ async fn enterprise_org_unit_access_grants_project_effective_scoped_grants() {
                 "unit_id": "doctors",
                 "member_kind": "human_user",
                 "member_id": "doctor.user@example.com",
-                "source": "hosted_control_plane"
+                "source": "direct"
             })
             .to_string(),
         ))

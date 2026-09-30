@@ -11,6 +11,17 @@ pub(super) async fn workflow_learning_candidate_promote(
     let Some(candidate) = state.get_workflow_learning_candidate(&candidate_id).await else {
         return Err(StatusCode::NOT_FOUND);
     };
+    if !workflow_learning_candidate_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &candidate,
+        true,
+    )
+    .await
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
     if candidate.kind != WorkflowLearningCandidateKind::MemoryFact {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -71,6 +82,17 @@ pub(super) async fn workflow_learning_candidate_promote(
                 grant_decision_id: input.approval_id.clone(),
             }
         };
+    if !workflow_learning_candidate_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &candidate,
+        true,
+    )
+    .await
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let source_memory_id = if let Some(memory_id) = candidate.source_memory_id.clone() {
         let authority_job_context = make_authority_job_context(
             &session_partition,
@@ -149,6 +171,17 @@ pub(super) async fn workflow_learning_candidate_promote(
         .await?;
         response.id
     };
+    if !workflow_learning_candidate_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &candidate,
+        true,
+    )
+    .await
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let promote_response = memory_promote_impl_with_verified(
         &state,
         &tenant_context,
@@ -190,6 +223,17 @@ pub(super) async fn workflow_learning_candidate_promote(
         Some(capability),
     )
     .await?;
+    if !workflow_learning_candidate_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &candidate,
+        true,
+    )
+    .await
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let updated = state
         .update_workflow_learning_candidate(&candidate_id, |candidate| {
             candidate.source_memory_id = Some(source_memory_id.clone());
@@ -250,8 +294,8 @@ async fn backfill_workflow_learning_source_memory_scope(
             id: memory_id.to_string(),
         }),
     )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
         tandem_memory::MemoryStoreReadResult::GlobalRecord(record) => record,
         _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -269,18 +313,23 @@ async fn backfill_workflow_learning_source_memory_scope(
     .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let updated = with_verified_memory_decrypt_principal(
         verified_tenant_context,
-        store.mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-            scope,
-            id: source.id.clone(),
-            visibility: source.visibility.clone(),
-            demoted: source.demoted,
-            metadata: Some(metadata),
-            provenance: source.provenance.clone(),
-        }),
+        store.mutate(
+            tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+                scope,
+                id: source.id.clone(),
+                visibility: source.visibility.clone(),
+                demoted: source.demoted,
+                metadata: Some(metadata),
+                provenance: source.provenance.clone(),
+            },
+        ),
     )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !matches!(
+        updated,
+        tandem_memory::MemoryStoreMutationResult::Changed(true)
+    ) {
         return Err(StatusCode::NOT_FOUND);
     }
     Ok(())
@@ -288,12 +337,25 @@ async fn backfill_workflow_learning_source_memory_scope(
 
 pub(super) async fn workflow_learning_candidate_spawn_revision(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(candidate_id): Path<String>,
     Json(input): Json<WorkflowLearningCandidateSpawnRevisionRequest>,
 ) -> impl IntoResponse {
     let Some(candidate) = state.get_workflow_learning_candidate(&candidate_id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if !workflow_learning_candidate_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &candidate,
+        true,
+    )
+    .await
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     if !matches!(
         candidate.kind,
         WorkflowLearningCandidateKind::PromptPatch | WorkflowLearningCandidateKind::GraphPatch
@@ -309,6 +371,14 @@ pub(super) async fn workflow_learning_candidate_spawn_revision(
     let Some(automation) = state.get_automation_v2(&candidate.workflow_id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if !tenant_context.is_local_implicit()
+        && candidate.source_binding.as_ref()
+            != Some(&WorkflowLearningCandidateSourceBinding::workflow(
+                &automation,
+            ))
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let metadata = automation.metadata.as_ref();
     let bundle = metadata
         .and_then(|value| value.get("plan_package_bundle").cloned())
@@ -329,6 +399,17 @@ pub(super) async fn workflow_learning_candidate_spawn_revision(
                 })
         });
     let Some(bundle) = bundle else {
+        if !workflow_learning_candidate_access(
+            &state,
+            &tenant_context,
+            verified_tenant_context.as_deref(),
+            &candidate,
+            true,
+        )
+        .await
+        {
+            return StatusCode::NOT_FOUND.into_response();
+        }
         let _ = state
             .update_workflow_learning_candidate(&candidate_id, |candidate| {
                 candidate.needs_plan_bundle = true;
@@ -376,8 +457,15 @@ pub(super) async fn workflow_learning_candidate_spawn_revision(
         &workspace_root,
         input.reviewer_id.as_deref().unwrap_or("workflow_learning"),
     );
-    let draft =
+    let imported_draft =
         crate::http::workflow_planner::workflow_plan_import_draft(&preview, &workspace_root);
+    let draft = match crate::http::workflow_planner::retag_workflow_plan_draft(
+        &imported_draft,
+        &format!("wfplan-{}", Uuid::new_v4()),
+    ) {
+        Ok(draft) => draft,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
     let now = crate::now_ms();
     let notes = format!(
         "Workflow learning candidate `{}` requested a `{}` revision.\n\nSummary:\n{}\n\nFingerprint:\n{}\n\nAffected runs:\n{}\n\nEvidence:\n{}\n\nConstraint:\nPreserve validated parts of the existing workflow and do not regress completion rate or validation pass rate.",
@@ -407,6 +495,12 @@ pub(super) async fn workflow_learning_candidate_spawn_revision(
         }),
         workspace_root: workspace_root.clone(),
         source_kind: "workflow_learning_revision".to_string(),
+        source_workflow: Some(
+            crate::http::workflow_planner::WorkflowPlannerSessionWorkflowSource {
+                workflow_id: automation.automation_id.clone(),
+                binding: WorkflowLearningCandidateSourceBinding::workflow(&automation),
+            },
+        ),
         source_bundle_digest: Some(preview.source_bundle_digest.clone()),
         source_pack_id: None,
         source_pack_version: None,
@@ -438,6 +532,17 @@ pub(super) async fn workflow_learning_candidate_spawn_revision(
         created_at_ms: now,
         updated_at_ms: now,
     };
+    if !workflow_learning_candidate_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &candidate,
+        true,
+    )
+    .await
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let stored = state
         .put_workflow_planner_session(session)
         .await
@@ -448,6 +553,17 @@ pub(super) async fn workflow_learning_candidate_spawn_revision(
     let baseline = state
         .workflow_learning_metrics_for_workflow(&candidate.workflow_id)
         .await;
+    if !workflow_learning_candidate_access(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &candidate,
+        true,
+    )
+    .await
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let updated = state
         .update_workflow_learning_candidate(&candidate_id, |candidate| {
             candidate.last_revision_session_id = Some(stored.session_id.clone());
@@ -568,7 +684,7 @@ pub(super) async fn memory_list(
                     offset: storage_offset,
                 }),
             )
-                .await
+            .await
             {
                 Ok(tandem_memory::MemoryStoreQueryResult::GlobalRecords(rows)) => rows,
                 _ => Vec::new(),
@@ -595,32 +711,32 @@ pub(super) async fn memory_list(
             storage_offset = storage_offset.saturating_add(STORAGE_PAGE_SIZE);
         }
         authorized_page
-        .into_iter()
-        .map(|row| {
-            json!({
-                "id": row.id,
-                "user_id": row.user_id,
-                "run_id": row.run_id,
-                "tier": memory_tier_for_visibility(&row.visibility),
-                "classification": memory_classification_label(row.metadata.as_ref()),
-                "kind": memory_kind_label(&row.source_type),
-                "source_type": row.source_type,
-                "content": row.content,
-                "artifact_refs": memory_artifact_refs(row.metadata.as_ref()),
-                "linkage": memory_linkage(&row),
-                "governance": memory_promotion_governance_payload(
-                    row.metadata.as_ref(),
-                    row.provenance.as_ref(),
-                ),
-                "metadata": row.metadata,
-                "provenance": row.provenance,
-                "created_at_ms": row.created_at_ms,
-                "updated_at_ms": row.updated_at_ms,
-                "visibility": row.visibility,
-                "demoted": row.demoted,
+            .into_iter()
+            .map(|row| {
+                json!({
+                    "id": row.id,
+                    "user_id": row.user_id,
+                    "run_id": row.run_id,
+                    "tier": memory_tier_for_visibility(&row.visibility),
+                    "classification": memory_classification_label(row.metadata.as_ref()),
+                    "kind": memory_kind_label(&row.source_type),
+                    "source_type": row.source_type,
+                    "content": row.content,
+                    "artifact_refs": memory_artifact_refs(row.metadata.as_ref()),
+                    "linkage": memory_linkage(&row),
+                    "governance": memory_promotion_governance_payload(
+                        row.metadata.as_ref(),
+                        row.provenance.as_ref(),
+                    ),
+                    "metadata": row.metadata,
+                    "provenance": row.provenance,
+                    "created_at_ms": row.created_at_ms,
+                    "updated_at_ms": row.updated_at_ms,
+                    "visibility": row.visibility,
+                    "demoted": row.demoted,
+                })
             })
-        })
-        .collect::<Vec<_>>()
+            .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
@@ -730,8 +846,8 @@ pub(super) async fn memory_delete(
             id: id.clone(),
         }),
     )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
         tandem_memory::MemoryStoreReadResult::GlobalRecord(record) => record,
         _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -805,10 +921,12 @@ pub(super) async fn memory_delete(
     )
     .await?;
     let deleted = match store
-        .mutate(tandem_memory::MemoryStoreMutationRequest::DeleteGlobalRecord {
-            scope,
-            id: id.clone(),
-        })
+        .mutate(
+            tandem_memory::MemoryStoreMutationRequest::DeleteGlobalRecord {
+                scope,
+                id: id.clone(),
+            },
+        )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {

@@ -6,16 +6,36 @@ use tandem_tools::{
     ToolDispatchReceiptPhase, ToolDispatchSource, ToolDispatchStatus,
 };
 
-#[derive(Debug)]
-struct EnginePreauthorizedDispatchPolicy(ToolDispatchDecision);
+pub(super) struct EnginePreauthorizedDispatchPolicy {
+    pub(super) decision: ToolDispatchDecision,
+    pub(super) authority: Option<Arc<dyn ToolPolicyHook>>,
+}
+
+pub(super) enum ProviderStreamPoll {
+    Chunk(Option<anyhow::Result<StreamChunk>>),
+    IdleTimeout,
+}
 
 #[async_trait::async_trait]
 impl ToolDispatchPolicy for EnginePreauthorizedDispatchPolicy {
+    async fn revalidate(&self, context: &ToolDispatchContext) -> anyhow::Result<()> {
+        if let Some(hook) = &self.authority {
+            hook.revalidate_session(context.verified_tenant_context.clone())
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn evaluate(
         &self,
-        _context: ToolDispatchPolicyContext,
+        context: ToolDispatchPolicyContext,
     ) -> anyhow::Result<ToolDispatchDecision> {
-        Ok(self.0.clone())
+        if let Some(hook) = &self.authority {
+            if let Some(decision) = hook.revalidate_dispatch(context).await? {
+                return Ok(decision);
+            }
+        }
+        Ok(self.decision.clone())
     }
 }
 
@@ -36,6 +56,69 @@ impl ToolDispatchLedger for EngineToolDispatchLedger {
 }
 
 impl EngineLoop {
+    async fn revalidate_active_provider_stream(
+        &self,
+        session_id: &str,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<()> {
+        if let Err(error) = self.revalidate_session_authority(session_id).await {
+            cancel.cancel();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// A provider's dispatch guard covers stream creation, not later polls.
+    /// Keep the `next` future pinned across periodic authority checks so an idle
+    /// stream is revoked promptly without resetting its poll or idle deadline.
+    pub(super) async fn poll_provider_stream_chunk(
+        &self,
+        session_id: &str,
+        stream: &mut std::pin::Pin<
+            Box<dyn futures::Stream<Item = anyhow::Result<StreamChunk>> + Send>,
+        >,
+        cancel: &CancellationToken,
+        idle_timeout: Option<Duration>,
+    ) -> anyhow::Result<ProviderStreamPoll> {
+        let next_chunk = stream.next();
+        tokio::pin!(next_chunk);
+        let idle_deadline = idle_timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+        loop {
+            tokio::select! {
+                chunk = &mut next_chunk => {
+                    self.revalidate_active_provider_stream(session_id, cancel).await?;
+                    return Ok(ProviderStreamPoll::Chunk(chunk));
+                }
+                _ = async {
+                    if let Some(deadline) = idle_deadline {
+                        tokio::time::sleep_until(deadline).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => return Ok(ProviderStreamPoll::IdleTimeout),
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                    self.revalidate_active_provider_stream(session_id, cancel).await?;
+                }
+            }
+        }
+    }
+
+    pub(super) async fn scope_provider_authority<F: std::future::Future>(
+        &self,
+        session_id: &str,
+        future: F,
+    ) -> F::Output {
+        let engine = self.clone();
+        let session_id = session_id.to_owned();
+        tandem_providers::ProviderDispatchAuthority::new(move || {
+            let engine = engine.clone();
+            let session_id = session_id.clone();
+            async move { engine.revalidate_session_authority(&session_id).await }
+        })
+        .scope(future)
+        .await
+    }
+
     pub(super) async fn record_tool_preflight_denial(
         &self,
         session_id: &str,
@@ -99,6 +182,7 @@ impl EngineLoop {
         &self,
         session_id: &str,
         message_id: &str,
+        run_id: Option<&str>,
         tool: &str,
         args: Value,
         preauthorized_decision: Option<ToolDispatchDecision>,
@@ -120,17 +204,20 @@ impl EngineLoop {
             .cloned()
             .unwrap_or_default();
         let tool_dispatch_ledger = self.tool_dispatch_ledger.read().await.clone();
+        let mut source = ToolDispatchSource::new("engine_loop")
+            .session(session_id)
+            .message(message_id);
+        if let Some(run_id) = run_id {
+            source = source.run(run_id);
+        }
         let mut dispatch_context = ToolDispatchContext::for_tenant("engine_loop", tenant_context)
-            .with_source(
-                ToolDispatchSource::new("engine_loop")
-                    .session(session_id)
-                    .message(message_id),
-            )
+            .with_source(source)
             .with_scope_allowlist(scope_allowlist)
-            .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy(
-                preauthorized_decision
+            .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy {
+                decision: preauthorized_decision
                     .unwrap_or_else(|| ToolDispatchDecision::allow_with_id("engine_preflight")),
-            )))
+                authority: self.tool_policy_hook.read().await.clone(),
+            }))
             .with_ledger(tool_dispatch_ledger);
         if let Some(verified_tenant_context) = verified_tenant_context {
             dispatch_context =
@@ -468,6 +555,25 @@ impl EngineLoop {
         self.cancellations.remove(session_id).await;
     }
 
+    pub(super) async fn revalidate_session_authority(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        if let Some(hook) = self.tool_policy_hook.read().await.clone() {
+            let verified = self
+                .storage
+                .get_session(session_id)
+                .await
+                .and_then(|session| session.verified_tenant_context);
+            if let Err(error) = hook.revalidate_session(verified).await {
+                self.mark_session_run_failed(session_id, &error.to_string())
+                    .await;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn workspace_override_active(&self, session_id: &str) -> bool {
         let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
         let mut overrides = self.workspace_overrides.write().await;
@@ -636,26 +742,31 @@ impl EngineLoop {
                 anyhow::bail!(reason);
             }
         };
-        let stream = match self
-            .providers
-            .stream_with_egress_permit(
-                &provider_egress_permit,
-                Some(route.provider_id.as_str()),
-                route.model_id.as_deref(),
-                messages,
-                ToolMode::None,
-                None,
-                sampling,
-                cancel.clone(),
+        self.revalidate_session_authority(session_id).await?;
+        let mut stream = match self
+            .scope_provider_authority(
+                session_id,
+                self.providers.stream_with_egress_permit(
+                    &provider_egress_permit,
+                    Some(route.provider_id.as_str()),
+                    route.model_id.as_deref(),
+                    messages,
+                    ToolMode::None,
+                    None,
+                    sampling,
+                    cancel.clone(),
+                ),
             )
             .await
         {
             Ok(stream) => stream,
             Err(_) => return Ok(None),
         };
-        tokio::pin!(stream);
         let mut completion = String::new();
-        while let Some(chunk) = stream.next().await {
+        while let ProviderStreamPoll::Chunk(Some(chunk)) = self
+            .poll_provider_stream_chunk(session_id, &mut stream, &cancel, None)
+            .await?
+        {
             if cancel.is_cancelled() {
                 return Ok(None);
             }

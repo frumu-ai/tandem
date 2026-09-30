@@ -12,6 +12,7 @@ fn tenant(org: &str, workspace: &str) -> TenantContext {
 
 fn action(action_id: &str, status: &str, error: Option<&str>) -> ExternalActionRecord {
     ExternalActionRecord {
+        provenance: None,
         action_id: action_id.to_string(),
         operation: "mock_external_action.send".to_string(),
         status: status.to_string(),

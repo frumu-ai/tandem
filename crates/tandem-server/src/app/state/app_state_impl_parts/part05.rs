@@ -1374,7 +1374,28 @@ impl AppState {
         detail: String,
         metadata: Value,
     ) -> Option<AutomationV2RunRecord> {
-        let current = self.get_automation_v2_run(run_id).await?;
+        self.requeue_automation_v2_run_from_stateful_wait_wake_matching(
+            run_id, None, wait_id, event_type, event_seq, detail, metadata,
+        ).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn requeue_automation_v2_run_from_stateful_wait_wake_matching(
+        &self,
+        run_id: &str,
+        expected: Option<&AutomationV2RunRecord>,
+        wait_id: &str,
+        event_type: &str,
+        event_seq: u64,
+        detail: String,
+        metadata: Value,
+    ) -> Option<AutomationV2RunRecord> {
+        // Startup supplies the snapshot used to establish lost-wake eligibility.
+        // Live callers retain their already-admitted wake completion semantics.
+        let current = match expected {
+            Some(run) => run.clone(),
+            None => self.get_automation_v2_run(run_id).await?,
+        };
         let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
             &self.runtime_events_path,
         );
@@ -1398,7 +1419,7 @@ impl AppState {
         let output_metadata = bounded_automation_wait_output_metadata(metadata.clone());
         let mut applied = false;
         let updated = self
-            .update_automation_v2_run(run_id, |row| {
+            .update_automation_v2_run_matching(run_id, expected, |row| {
                 if automation_run_is_terminal_status(&row.status)
                     || matches!(
                         row.status,
@@ -1613,7 +1634,45 @@ impl AppState {
         run_id: &str,
         update: impl FnOnce(&mut AutomationV2RunRecord),
     ) -> Option<AutomationV2RunRecord> {
+        self.update_automation_v2_run_matching(run_id, None, update).await
+    }
+
+    pub(super) async fn update_automation_v2_run_matching(
+        &self,
+        run_id: &str,
+        expected: Option<&AutomationV2RunRecord>,
+        update: impl FnOnce(&mut AutomationV2RunRecord),
+    ) -> Option<AutomationV2RunRecord> {
+        self.update_automation_v2_run_matching_if(run_id, expected, |run| {
+            update(run);
+            true
+        })
+        .await
+    }
+
+    /// The callback must leave the run unchanged when it returns `false`.
+    /// A rejected gate decision can then return the current row without
+    /// refreshing timestamps, scheduling, or persistence.
+    pub(crate) async fn update_automation_v2_run_if(
+        &self,
+        run_id: &str,
+        update: impl FnOnce(&mut AutomationV2RunRecord) -> bool,
+    ) -> Option<AutomationV2RunRecord> {
+        self.update_automation_v2_run_matching_if(run_id, None, update)
+            .await
+    }
+
+    async fn update_automation_v2_run_matching_if(
+        &self,
+        run_id: &str,
+        expected: Option<&AutomationV2RunRecord>,
+        update: impl FnOnce(&mut AutomationV2RunRecord) -> bool,
+    ) -> Option<AutomationV2RunRecord> {
         let mut guard = self.automation_v2_runs.write().await;
+        // Recovery must not resurrect a run removed since its snapshot.
+        if expected.is_some() && !guard.contains_key(run_id) {
+            return None;
+        }
         let check_time_ms = crate::now_ms();
         if !guard.contains_key(run_id) {
             drop(guard);
@@ -1636,9 +1695,19 @@ impl AppState {
             }
         }
         let run = guard.get_mut(run_id)?;
+        if let Some(expected) = expected {
+            if self.is_automation_scheduler_stopping()
+                || !self.enterprise.hosted_policy.is_ready()
+                || serde_json::to_value(&*run).ok()? != serde_json::to_value(expected).ok()?
+            {
+                return None;
+            }
+        }
         let previous_status = run.status.clone();
         let previous_gate = run.checkpoint.awaiting_gate.clone();
-        update(run);
+        if !update(run) {
+            return Some(run.clone());
+        }
         refresh_stale_running_detail(run);
         if run.status != AutomationRunStatus::Queued {
             run.scheduler = None;

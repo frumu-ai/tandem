@@ -352,6 +352,11 @@ impl OrchestrationStateStore {
                 }
                 _ => {}
             }
+            if existing.is_some_and(|stored| spec.updated_at_ms <= stored) {
+                bail!(
+                    "{DRAFT_CONCURRENCY_CONFLICT}: updated_at_ms must advance beyond the stored draft"
+                );
+            }
             transaction.execute(
                 "INSERT INTO orchestration_specs (
                     orchestration_id, version, org_id, workspace_id, deployment_id, deployment_key,
@@ -468,8 +473,8 @@ impl OrchestrationStateStore {
 
     /// Publish the draft as the next immutable version. The caller has already
     /// validated the graph and refreshed referenced definition hashes; this
-    /// method only guards the version sequence inside one transaction so two
-    /// concurrent publishes cannot both claim the same version number.
+    /// method verifies the live draft and guards the version sequence inside
+    /// one transaction so stale or concurrent publishes cannot commit.
     pub fn publish_orchestration_draft(
         &self,
         published: &OrchestrationSpec,
@@ -481,6 +486,9 @@ impl OrchestrationStateStore {
         if published.version == ORCHESTRATION_DRAFT_VERSION {
             bail!("published versions must be greater than the draft slot");
         }
+        let expected = expected_draft_updated_at_ms.ok_or_else(|| {
+            anyhow::anyhow!("{DRAFT_CONCURRENCY_CONFLICT}: publishing requires a draft revision")
+        })?;
         let payload = protected_records::encode(
             &published.tenant_context,
             "definition",
@@ -490,10 +498,9 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            if let Some(expected) = expected_draft_updated_at_ms {
-                let stored: Option<u64> = transaction
-                    .query_row(
-                        "SELECT updated_at_ms FROM orchestration_specs
+            let stored: Option<(u64, String)> = transaction
+                .query_row(
+                        "SELECT updated_at_ms, status FROM orchestration_specs
                          WHERE orchestration_id = ?1 AND version = ?2
                            AND org_id = ?3 AND workspace_id = ?4 AND deployment_key = ?5",
                         params![
@@ -507,15 +514,17 @@ impl OrchestrationStateStore {
                                 .as_deref()
                                 .unwrap_or(""),
                         ],
-                        |row| row.get(0),
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()?;
-                if stored != Some(expected) {
-                    bail!(
-                        "{DRAFT_CONCURRENCY_CONFLICT}: stored updated_at_ms {:?}, expected {expected}",
-                        stored
-                    );
-                }
+            if stored
+                .as_ref()
+                .is_none_or(|(updated_at_ms, status)| *updated_at_ms != expected || status != "draft")
+            {
+                bail!(
+                    "{DRAFT_CONCURRENCY_CONFLICT}: stored draft revision/status {:?}, expected ({expected}, draft)",
+                    stored
+                );
             }
             let latest: Option<u64> = transaction
                 .query_row(
@@ -598,7 +607,7 @@ impl OrchestrationStateStore {
         }
         draft.status = OrchestrationStatus::Archived;
         let expected = draft.updated_at_ms;
-        draft.updated_at_ms = now_ms;
+        draft.updated_at_ms = now_ms.max(expected.saturating_add(1));
         self.put_orchestration_draft(&draft, Some(expected))?;
         Ok(draft)
     }

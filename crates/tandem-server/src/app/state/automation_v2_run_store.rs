@@ -14,7 +14,11 @@ use crate::automation_v2::types::*;
 use crate::stateful_runtime::ensure_automation_run_definition_metadata;
 use crate::util::time::now_ms;
 
-use super::{sanitize_path_id, write_string_atomic};
+use super::sanitize_path_id;
+#[cfg(not(test))]
+use super::write_string_atomic;
+
+include!("automation_v2_run_read_authority.rs");
 
 pub(crate) const AUTOMATION_V2_RUNS_SCHEMA_VERSION: u32 = 1;
 
@@ -425,6 +429,54 @@ pub(crate) async fn write_automation_v2_run_history_shard(
     active_path: &Path,
     run: &AutomationV2RunRecord,
 ) -> anyhow::Result<PathBuf> {
+    write_automation_v2_run_history_shard_impl(
+        active_path,
+        run,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn write_automation_v2_run_history_shard_gated(
+    active_path: &Path,
+    run: &AutomationV2RunRecord,
+    gate: super::AtomicWriteTestGate,
+) -> anyhow::Result<PathBuf> {
+    write_automation_v2_run_history_shard_impl(active_path, run, Some(gate)).await
+}
+
+async fn write_automation_v2_run_history_shard_impl(
+    active_path: &Path,
+    run: &AutomationV2RunRecord,
+    #[cfg(test)] gate: Option<super::AtomicWriteTestGate>,
+) -> anyhow::Result<PathBuf> {
+    let active_path = active_path.to_owned();
+    let run = run.clone();
+    // The atomic writer joins blocking I/O. Keep its owned write guard in a
+    // non-caller-owned task so cancellation cannot release history authority
+    // while that blocking write is still completing.
+    tokio::spawn(async move {
+        let lock = automation_v2_run_history_lock(&active_path).await;
+        let _guard = lock.write_owned().await;
+        write_automation_v2_run_history_shard_locked(
+            &active_path,
+            &run,
+            #[cfg(test)]
+            gate,
+        )
+        .await
+    })
+    .await
+    .context("automation run history write task failed")?
+}
+
+async fn write_automation_v2_run_history_shard_locked(
+    active_path: &Path,
+    run: &AutomationV2RunRecord,
+    #[cfg(test)] gate: Option<super::AtomicWriteTestGate>,
+) -> anyhow::Result<PathBuf> {
     let path = automation_v2_run_history_shard_path(active_path, run);
     if automation_v2_run_is_nonterminal_recovered_context_run(run) {
         let _ = fs::remove_file(&path).await;
@@ -434,6 +486,9 @@ pub(crate) async fn write_automation_v2_run_history_shard(
         fs::create_dir_all(parent).await?;
     }
     let payload = serialize_automation_v2_run_shard(run)?;
+    #[cfg(test)]
+    super::write_string_atomic_impl(&path, &payload, gate).await?;
+    #[cfg(not(test))]
     write_string_atomic(&path, &payload).await?;
     Ok(path)
 }
@@ -442,6 +497,15 @@ pub(crate) async fn load_automation_v2_run_history_shard(
     active_path: &Path,
     run_id: &str,
 ) -> Option<AutomationV2RunRecord> {
+    let guard = automation_v2_run_history_read_guard(active_path).await;
+    load_automation_v2_run_history_shard_with_guard(&guard, run_id).await
+}
+
+pub(crate) async fn load_automation_v2_run_history_shard_with_guard(
+    guard: &AutomationV2RunHistoryReadGuard,
+    run_id: &str,
+) -> Option<AutomationV2RunRecord> {
+    let active_path = &guard.active_path;
     let root = automation_v2_run_history_root(active_path);
     let mut years = fs::read_dir(&root).await.ok()?;
     while let Ok(Some(year)) = years.next_entry().await {
@@ -459,9 +523,9 @@ pub(crate) async fn load_automation_v2_run_history_shard(
                 continue;
             }
             let raw = fs::read_to_string(&path).await.ok()?;
-            return parse_automation_v2_run_shard_file(&raw)
-                .ok()
-                .filter(|run| !automation_v2_run_is_nonterminal_recovered_context_run(run));
+            return parse_automation_v2_run_shard_file(&raw).ok().filter(|run| {
+                run.run_id == run_id && !automation_v2_run_is_nonterminal_recovered_context_run(run)
+            });
         }
     }
     None
@@ -470,6 +534,7 @@ pub(crate) async fn load_automation_v2_run_history_shard(
 pub(crate) async fn load_automation_v2_run_history_shards(
     active_path: &Path,
 ) -> Vec<AutomationV2RunRecord> {
+    let _guard = automation_v2_run_history_read_guard(active_path).await;
     let root = automation_v2_run_history_root(active_path);
     let mut runs = Vec::new();
     let Ok(mut years) = fs::read_dir(&root).await else {

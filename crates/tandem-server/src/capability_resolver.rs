@@ -183,6 +183,8 @@ pub struct CapabilityResolver {
     lock: Arc<Mutex<()>>,
 }
 
+type BindingWriteAuthorization = Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>;
+
 impl CapabilityResolver {
     pub fn new(root: PathBuf) -> Self {
         Self {
@@ -195,28 +197,74 @@ impl CapabilityResolver {
         self.read_bindings().await
     }
 
+    /// Trusted internal write. Request handlers must use the checked variant.
     pub async fn set_bindings(&self, file: CapabilityBindingsFile) -> anyhow::Result<()> {
+        self.set_bindings_checked(file, || Ok(())).await
+    }
+
+    pub(crate) async fn set_bindings_checked<F>(
+        &self,
+        file: CapabilityBindingsFile,
+        authorize: F,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn() -> anyhow::Result<()> + Send + Sync + 'static,
+    {
+        let authorize: BindingWriteAuthorization = Arc::new(authorize);
+        authorize()?;
         let _guard = self.lock.lock().await;
-        self.write_bindings_locked(file).await?;
+        authorize()?;
+        self.write_bindings_locked_checked(file, authorize).await?;
         Ok(())
     }
 
+    /// Trusted internal built-in repair. Request handlers must use the checked variant.
     pub async fn refresh_builtin_bindings(
         &self,
     ) -> anyhow::Result<CapabilityBindingsRefreshResult> {
+        self.refresh_builtin_bindings_checked(|| Ok(())).await
+    }
+
+    pub(crate) async fn refresh_builtin_bindings_checked<F>(
+        &self,
+        authorize: F,
+    ) -> anyhow::Result<CapabilityBindingsRefreshResult>
+    where
+        F: Fn() -> anyhow::Result<()> + Send + Sync + 'static,
+    {
+        let authorize: BindingWriteAuthorization = Arc::new(authorize);
+        authorize()?;
         let _guard = self.lock.lock().await;
-        let existing = self.read_bindings_locked().await?;
+        authorize()?;
+        let existing = self.read_raw_bindings_locked().await?;
+        let missing = existing.is_none();
+        let existing = existing.unwrap_or_default();
         let (merged, summary, changed) = merge_builtin_bindings(existing);
-        if changed {
-            self.write_bindings_locked(merged.clone()).await?;
+        if changed || missing {
+            self.write_bindings_locked_checked(merged.clone(), authorize)
+                .await?;
         }
         Ok(summary)
     }
 
+    /// Trusted internal write. Request handlers must use the checked variant.
     pub async fn reset_to_builtin_bindings(
         &self,
     ) -> anyhow::Result<CapabilityBindingsRefreshResult> {
+        self.reset_to_builtin_bindings_checked(|| Ok(())).await
+    }
+
+    pub(crate) async fn reset_to_builtin_bindings_checked<F>(
+        &self,
+        authorize: F,
+    ) -> anyhow::Result<CapabilityBindingsRefreshResult>
+    where
+        F: Fn() -> anyhow::Result<()> + Send + Sync + 'static,
+    {
+        let authorize: BindingWriteAuthorization = Arc::new(authorize);
+        authorize()?;
         let _guard = self.lock.lock().await;
+        authorize()?;
         let file = CapabilityBindingsFile::default();
         let summary = CapabilityBindingsRefreshResult {
             added_count: file.bindings.len(),
@@ -228,11 +276,15 @@ impl CapabilityResolver {
                 .unwrap_or_else(|| BUILTIN_CAPABILITY_BINDINGS_VERSION.to_string()),
             last_merged_at_ms: file.last_merged_at_ms,
         };
-        self.write_bindings_locked(file).await?;
+        self.write_bindings_locked_checked(file, authorize).await?;
         Ok(summary)
     }
 
-    async fn write_bindings_locked(&self, mut file: CapabilityBindingsFile) -> anyhow::Result<()> {
+    async fn write_bindings_locked_checked(
+        &self,
+        mut file: CapabilityBindingsFile,
+        authorize: BindingWriteAuthorization,
+    ) -> anyhow::Result<()> {
         validate_bindings(&file)?;
         if file.builtin_version.is_none() {
             file.builtin_version = Some(BUILTIN_CAPABILITY_BINDINGS_VERSION.to_string());
@@ -240,11 +292,20 @@ impl CapabilityResolver {
         if file.last_merged_at_ms.is_none() {
             file.last_merged_at_ms = Some(now_ms());
         }
-        if let Some(parent) = self.bindings_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
         let payload = serde_json::to_string_pretty(&file)?;
-        tokio::fs::write(&self.bindings_path, format!("{}\n", payload)).await?;
+        let path = self.bindings_path.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            // No await or further queueing may separate this current-policy
+            // check from the process-wide file write.
+            authorize()?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            authorize()?;
+            std::fs::write(path, format!("{}\n", payload))?;
+            Ok(())
+        })
+        .await??;
         Ok(())
     }
 
@@ -414,18 +475,19 @@ impl CapabilityResolver {
     }
 
     async fn read_bindings_locked(&self) -> anyhow::Result<CapabilityBindingsFile> {
-        if !self.bindings_path.exists() {
-            let default = CapabilityBindingsFile::default();
-            self.write_bindings_locked(default.clone()).await?;
-            return Ok(default);
-        }
-        let raw = tokio::fs::read_to_string(&self.bindings_path).await?;
-        let parsed = serde_json::from_str::<CapabilityBindingsFile>(&raw)?;
-        let (merged, _, changed) = merge_builtin_bindings(parsed);
-        if changed {
-            self.write_bindings_locked(merged.clone()).await?;
-        }
-        Ok(merged)
+        // Read callers include hosted viewers. Expose built-ins in memory, but
+        // leave persistence to an explicitly authorized mutation.
+        let file = self.read_raw_bindings_locked().await?.unwrap_or_default();
+        Ok(merge_builtin_bindings(file).0)
+    }
+
+    async fn read_raw_bindings_locked(&self) -> anyhow::Result<Option<CapabilityBindingsFile>> {
+        let raw = match tokio::fs::read_to_string(&self.bindings_path).await {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Some(serde_json::from_str(&raw)?))
     }
 }
 
@@ -1085,6 +1147,10 @@ fn binding_matches_available(
             })
         })
 }
+
+#[cfg(test)]
+#[path = "capability_resolver_auth_tests.rs"]
+mod auth_tests;
 
 #[cfg(test)]
 mod tests {

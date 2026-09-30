@@ -20,6 +20,10 @@ pub(crate) struct WorkflowPlannerHost<'a> {
     pub(crate) state: &'a AppState,
     pub(crate) tenant_context: tandem_types::TenantContext,
     pub(crate) verified_tenant_context: Option<tandem_types::VerifiedTenantContext>,
+    pub(crate) draft_binding: Option<super::workflow_planner::WorkflowPlanDraftAccessBinding>,
+    pub(crate) new_draft_only: bool,
+    #[cfg(test)]
+    pub(crate) session_write_test_gate: Option<std::sync::Arc<tokio::sync::Barrier>>,
 }
 
 impl<'a> WorkflowPlannerHost<'a> {
@@ -32,7 +36,33 @@ impl<'a> WorkflowPlannerHost<'a> {
             state,
             tenant_context: tenant_context.clone(),
             verified_tenant_context: verified_tenant_context.cloned(),
+            draft_binding: None,
+            new_draft_only: false,
+            #[cfg(test)]
+            session_write_test_gate: None,
         }
+    }
+
+    pub(crate) fn new_draft(
+        state: &'a AppState,
+        tenant_context: &tandem_types::TenantContext,
+        verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
+    ) -> Self {
+        let mut host = Self::new(state, tenant_context, verified_tenant_context);
+        host.new_draft_only = true;
+        host
+    }
+
+    pub(crate) fn for_session(
+        state: &'a AppState,
+        tenant_context: &tandem_types::TenantContext,
+        verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
+        draft_binding: super::workflow_planner::WorkflowPlanDraftAccessBinding,
+    ) -> Self {
+        let mut host = Self::new(state, tenant_context, verified_tenant_context);
+        host.draft_binding = Some(draft_binding);
+        host.new_draft_only = true;
+        host
     }
 
     pub(crate) fn local(state: &'a AppState) -> Self {
@@ -40,8 +70,31 @@ impl<'a> WorkflowPlannerHost<'a> {
             state,
             tenant_context: tandem_types::TenantContext::local_implicit(),
             verified_tenant_context: None,
+            draft_binding: None,
+            new_draft_only: false,
+            #[cfg(test)]
+            session_write_test_gate: None,
         }
     }
+}
+
+fn commit_planner_session_write(
+    state: &AppState,
+    tenant: &tandem_types::TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    commit: &mut dyn FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    state
+        .enterprise
+        .hosted_policy
+        .with_current_policy(|policy| {
+            super::workflow_planner_policy::require_planner_write_under_policy(
+                tenant, verified, policy,
+            )
+            .map_err(anyhow::Error::msg)?;
+            commit()
+        })
+        .map_err(anyhow::Error::msg)?
 }
 
 pub(crate) async fn resolve_workspace_root(
@@ -392,6 +445,12 @@ pub(crate) async fn build_workflow_plan(
     >,
     String,
 > {
+    super::workflow_planner_policy::require_live_planner_write(
+        state,
+        tenant_context,
+        verified_tenant_context,
+    )
+    .map_err(str::to_string)?;
     let plan_id = format!("wfplan-{}", uuid::Uuid::new_v4());
     let planner_version = "v1".to_string();
 
@@ -464,18 +523,33 @@ impl<'a> PlannerModelRegistry for WorkflowPlannerHost<'a> {
 impl<'a> PlanStore for WorkflowPlannerHost<'a> {
     async fn get_draft(&self, plan_id: &str) -> Result<Option<Value>, String> {
         self.state
-            .get_workflow_plan_draft(plan_id)
+            .get_workflow_plan_draft_scoped(
+                plan_id,
+                &self.tenant_context,
+                self.verified_tenant_context.as_ref(),
+            )
             .await
             .map(serde_json::to_value)
             .transpose()
             .map_err(|error| truncate_text(&error.to_string(), 500))
     }
 
-    async fn put_draft(&self, _plan_id: &str, draft: Value) -> Result<(), String> {
+    async fn put_draft(&self, plan_id: &str, draft: Value) -> Result<(), String> {
         let draft: crate::WorkflowPlanDraftRecord = serde_json::from_value(draft)
             .map_err(|error| truncate_text(&error.to_string(), 500))?;
-        self.state.put_workflow_plan_draft(draft).await;
-        Ok(())
+        if draft.current_plan.plan_id != plan_id {
+            return Err("workflow plan draft ID changed".to_string());
+        }
+        self.state
+            .put_workflow_plan_draft_scoped(
+                draft,
+                &self.tenant_context,
+                self.verified_tenant_context.as_ref(),
+                self.draft_binding.as_ref(),
+                self.new_draft_only,
+            )
+            .await
+            .map_err(|error| truncate_text(&error.to_string(), 500))
     }
 }
 
@@ -534,14 +608,30 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
         title: &str,
         workspace_root: &str,
     ) -> Result<String, String> {
+        super::workflow_planner_policy::require_live_planner_write(
+            self.state,
+            &self.tenant_context,
+            self.verified_tenant_context.as_ref(),
+        )
+        .map_err(str::to_string)?;
         let mut session = Session::new(Some(title.to_string()), Some(workspace_root.to_string()));
         let session_id = session.id.clone();
         session.workspace_root = Some(workspace_root.to_string());
         session.tenant_context = self.tenant_context.clone();
         session.verified_tenant_context = self.verified_tenant_context.clone();
+        #[cfg(test)]
+        if let Some(gate) = &self.session_write_test_gate {
+            gate.wait().await;
+            gate.wait().await;
+        }
+        let state = (*self.state).clone();
+        let tenant = self.tenant_context.clone();
+        let verified = self.verified_tenant_context.clone();
         self.state
             .storage
-            .save_session(session)
+            .save_session_with_commit_guard(session, move |commit| {
+                commit_planner_session_write(&state, &tenant, verified.as_ref(), commit)
+            })
             .await
             .map_err(|error| truncate_text(&error.to_string(), 500))?;
         Ok(session_id)
@@ -552,9 +642,17 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
         session_id: &str,
         prompt: &str,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(gate) = &self.session_write_test_gate {
+            gate.wait().await;
+            gate.wait().await;
+        }
+        let state = (*self.state).clone();
+        let tenant = self.tenant_context.clone();
+        let verified = self.verified_tenant_context.clone();
         self.state
             .storage
-            .append_message(
+            .append_message_with_commit_guard(
                 session_id,
                 Message::new(
                     MessageRole::User,
@@ -562,6 +660,9 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
                         text: prompt.to_string(),
                     }],
                 ),
+                move |commit| {
+                    commit_planner_session_write(&state, &tenant, verified.as_ref(), commit)
+                },
             )
             .await
             .map_err(|error| truncate_text(&error.to_string(), 500))
@@ -572,9 +673,17 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
         session_id: &str,
         response: &str,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(gate) = &self.session_write_test_gate {
+            gate.wait().await;
+            gate.wait().await;
+        }
+        let state = (*self.state).clone();
+        let tenant = self.tenant_context.clone();
+        let verified = self.verified_tenant_context.clone();
         self.state
             .storage
-            .append_message(
+            .append_message_with_commit_guard(
                 session_id,
                 Message::new(
                     MessageRole::Assistant,
@@ -582,6 +691,9 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
                         text: response.to_string(),
                     }],
                 ),
+                move |commit| {
+                    commit_planner_session_write(&state, &tenant, verified.as_ref(), commit)
+                },
             )
             .await
             .map_err(|error| truncate_text(&error.to_string(), 500))

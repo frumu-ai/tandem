@@ -58,7 +58,11 @@ async fn discovery_store_persists_decisions() {
     };
 
     let response = store
-        .discover_for_goal(goal.clone(), "tenant_abc".to_string())
+        .discover_for_goal(
+            goal.clone(),
+            "tenant_abc".to_string(),
+            Some("actor-a".to_string()),
+        )
         .await;
 
     assert!(response.request_id.starts_with("gcl_"));
@@ -82,12 +86,22 @@ async fn tenant_isolation_in_store() {
     };
 
     store
-        .discover_for_goal(goal.clone(), "tenant_1".to_string())
+        .discover_for_goal(
+            goal.clone(),
+            "tenant_1".to_string(),
+            Some("actor-a".to_string()),
+        )
         .await;
     store
-        .discover_for_goal(goal.clone(), "tenant_1".to_string())
+        .discover_for_goal(
+            goal.clone(),
+            "tenant_1".to_string(),
+            Some("actor-b".to_string()),
+        )
         .await;
-    store.discover_for_goal(goal, "tenant_2".to_string()).await;
+    store
+        .discover_for_goal(goal, "tenant_2".to_string(), Some("actor-a".to_string()))
+        .await;
 
     let t1_decisions = store.list_for_tenant("tenant_1").await;
     let t2_decisions = store.list_for_tenant("tenant_2").await;

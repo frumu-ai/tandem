@@ -748,6 +748,7 @@ pub(super) async fn get_incident_monitor_config(
 
 pub(super) async fn patch_incident_monitor_config(
     State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<IncidentMonitorConfigInput>,
 ) -> Response {
     let Some(config) = input.incident_monitor else {
@@ -760,10 +761,13 @@ pub(super) async fn patch_incident_monitor_config(
         )
             .into_response();
     };
-    match state.put_incident_monitor_config(config).await {
+    match put_authorized_incident_monitor_config(&state, verified.as_deref(), config).await {
         Ok(saved) => {
             emit_incident_monitor_config_audit(&state, &saved).await;
             Json(json!({ "incident_monitor": saved })).into_response()
+        }
+        Err(error) if error.is::<IncidentMonitorConfigDenied>() => {
+            StatusCode::FORBIDDEN.into_response()
         }
         Err(error) => (
             StatusCode::BAD_REQUEST,
@@ -1039,11 +1043,17 @@ pub(super) async fn bulk_delete_incident_monitor_posts(
     }
 }
 
-pub(super) async fn pause_incident_monitor(State(state): State<AppState>) -> Response {
+pub(super) async fn pause_incident_monitor(
+    State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Response {
     let mut config = state.incident_monitor_config().await;
     config.paused = true;
-    match state.put_incident_monitor_config(config).await {
+    match put_authorized_incident_monitor_config(&state, verified.as_deref(), config).await {
         Ok(saved) => Json(json!({ "ok": true, "incident_monitor": saved })).into_response(),
+        Err(error) if error.is::<IncidentMonitorConfigDenied>() => {
+            StatusCode::FORBIDDEN.into_response()
+        }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -1056,11 +1066,17 @@ pub(super) async fn pause_incident_monitor(State(state): State<AppState>) -> Res
     }
 }
 
-pub(super) async fn resume_incident_monitor(State(state): State<AppState>) -> Response {
+pub(super) async fn resume_incident_monitor(
+    State(state): State<AppState>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Response {
     let mut config = state.incident_monitor_config().await;
     config.paused = false;
-    match state.put_incident_monitor_config(config).await {
+    match put_authorized_incident_monitor_config(&state, verified.as_deref(), config).await {
         Ok(saved) => Json(json!({ "ok": true, "incident_monitor": saved })).into_response(),
+        Err(error) if error.is::<IncidentMonitorConfigDenied>() => {
+            StatusCode::FORBIDDEN.into_response()
+        }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -1509,10 +1525,23 @@ pub(super) async fn report_incident_monitor_intake(
     }
 }
 
-pub(super) async fn list_incident_monitor_intake_keys(State(state): State<AppState>) -> Response {
-    let keys = state
-        .list_incident_monitor_intake_keys()
+pub(super) async fn list_incident_monitor_intake_keys(
+    State(state): State<AppState>,
+    verified: Option<Extension<VerifiedTenantContext>>,
+) -> Response {
+    if require_incident_monitor_intake_key_admin(&state, verified.as_deref()).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let keys = match state
+        .list_incident_monitor_intake_keys_checked(|| {
+            require_incident_monitor_intake_key_admin(&state, verified.as_deref())
+        })
         .await
+    {
+        Ok(keys) => keys,
+        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    };
+    let keys = keys
         .into_iter()
         .map(|mut key| {
             key.key_hash = "[redacted]".to_string();
@@ -1524,8 +1553,12 @@ pub(super) async fn list_incident_monitor_intake_keys(State(state): State<AppSta
 
 pub(super) async fn create_incident_monitor_intake_key(
     State(state): State<AppState>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<IncidentMonitorCreateIntakeKeyInput>,
 ) -> Response {
+    if require_incident_monitor_intake_key_admin(&state, verified.as_deref()).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let project_id = input.project_id.trim().to_string();
     let name = input.name.trim().to_string();
     let config = state.incident_monitor_config().await;
@@ -1578,11 +1611,19 @@ pub(super) async fn create_incident_monitor_intake_key(
         created_at_ms: Some(crate::now_ms()),
         last_used_at_ms: None,
     };
-    match state.put_incident_monitor_intake_key(key.clone()).await {
+    match state
+        .put_incident_monitor_intake_key_checked(key, || {
+            require_incident_monitor_intake_key_admin(&state, verified.as_deref())
+        })
+        .await
+    {
         Ok(mut key) => {
             emit_incident_monitor_intake_key_audit(&state, "incident_monitor.intake_key.created", &key).await;
             key.key_hash = "[redacted]".to_string();
             Json(json!({ "key": key, "raw_key": raw_key })).into_response()
+        }
+        Err(error) if error.is::<IncidentMonitorIntakeKeyDenied>() => {
+            StatusCode::FORBIDDEN.into_response()
         }
         Err(error) => (
             StatusCode::BAD_REQUEST,
@@ -1598,25 +1639,34 @@ pub(super) async fn create_incident_monitor_intake_key(
 
 pub(super) async fn disable_incident_monitor_intake_key(
     State(state): State<AppState>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(mut key) = state.incident_monitor_intake_keys.read().await.get(&id).cloned() else {
-        return (
+    if require_incident_monitor_intake_key_admin(&state, verified.as_deref()).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match state
+        .disable_incident_monitor_intake_key_checked(&id, || {
+            require_incident_monitor_intake_key_admin(&state, verified.as_deref())
+        })
+        .await
+    {
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({
                 "error": "Incident Monitor intake key not found",
                 "code": "INCIDENT_MONITOR_INTAKE_KEY_NOT_FOUND",
             })),
         )
-            .into_response();
-    };
-    key.enabled = false;
-    match state.put_incident_monitor_intake_key(key.clone()).await {
-        Ok(mut key) => {
+            .into_response(),
+        Ok(Some(mut key)) => {
             emit_incident_monitor_intake_key_audit(&state, "incident_monitor.intake_key.disabled", &key)
                 .await;
             key.key_hash = "[redacted]".to_string();
             Json(json!({ "key": key })).into_response()
+        }
+        Err(error) if error.is::<IncidentMonitorIntakeKeyDenied>() => {
+            StatusCode::FORBIDDEN.into_response()
         }
         Err(error) => (
             StatusCode::BAD_REQUEST,

@@ -155,6 +155,26 @@ pub trait SpawnAgentHook: Send + Sync {
 }
 
 pub trait ToolPolicyHook: Send + Sync {
+    /// Cheap final authority check after waits/approvals, also used for model
+    /// dispatch. Do not create approval requests or repeat the full audit hook.
+    fn revalidate_session(
+        &self,
+        _verified: Option<VerifiedTenantContext>,
+    ) -> BoxFuture<'static, anyhow::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Called for every governed dispatch, including children of `batch`.
+    /// Server implementations can deny a canonical tool whose authority was
+    /// not carried by the exact prompt run. The default preserves non-server
+    /// engine embedders that do not require this additional host boundary.
+    fn revalidate_dispatch(
+        &self,
+        _context: tandem_tools::ToolDispatchPolicyContext,
+    ) -> BoxFuture<'static, anyhow::Result<Option<tandem_tools::ToolDispatchDecision>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn evaluate_tool(
         &self,
         ctx: ToolPolicyContext,

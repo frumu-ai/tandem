@@ -364,7 +364,23 @@ impl Storage {
             })
     }
 
-    pub async fn save_session(&self, mut session: Session) -> anyhow::Result<()> {
+    pub async fn save_session(&self, session: Session) -> anyhow::Result<()> {
+        self.save_session_with_commit_guard(session, |commit| commit())
+            .await
+    }
+
+    /// Run a synchronous authority guard after SQLite's write lock is acquired,
+    /// keeping that guard active through the session transaction commit.
+    /// The guard must invoke and return the commit continuation directly: a
+    /// successful SQLite commit cannot be rolled back by a later guard error.
+    pub async fn save_session_with_commit_guard<G>(
+        &self,
+        mut session: Session,
+        guard: G,
+    ) -> anyhow::Result<()>
+    where
+        G: FnOnce(&mut dyn FnMut() -> anyhow::Result<()>) -> anyhow::Result<()> + Send + 'static,
+    {
         if session.workspace_root.is_none() {
             session.workspace_root = normalize_workspace_path(&session.directory);
         }
@@ -389,7 +405,24 @@ impl Storage {
                 session.time.updated = Utc::now();
             }
         }
-        self.run_blocking(move |repository| repository.save_session(&session)).await
+        self.run_blocking(move |repository| {
+            repository.save_session_with_commit_guard(&session, guard)
+        })
+        .await
+    }
+
+    /// Update only authority on the current stored header, preserving concurrent
+    /// title/message changes and refusing a deleted or differently owned session.
+    pub async fn update_session_authority(
+        &self,
+        session_id: &str,
+        expected_tenant: TenantContext,
+        authority: Option<tandem_types::VerifiedTenantContext>,
+    ) -> anyhow::Result<bool> {
+        let session_id = session_id.to_string();
+        self.run_blocking(move |repository| {
+            repository.update_session_authority(&session_id, &expected_tenant, authority)
+        }).await
     }
 
     pub async fn repair_sessions_from_file_store(&self) -> anyhow::Result<SessionRepairStats> {
@@ -462,8 +495,46 @@ impl Storage {
     }
 
     pub async fn append_message(&self, session_id: &str, message: Message) -> anyhow::Result<()> {
+        self.append_message_with_commit_guard(session_id, message, |commit| commit())
+            .await
+    }
+
+    /// Run a synchronous authority guard after SQLite's write lock is acquired,
+    /// keeping that guard active through the message transaction commit.
+    /// The guard must invoke and return the commit continuation directly: a
+    /// successful SQLite commit cannot be rolled back by a later guard error.
+    pub async fn append_message_with_commit_guard<G>(
+        &self,
+        session_id: &str,
+        message: Message,
+        guard: G,
+    ) -> anyhow::Result<()>
+    where
+        G: FnOnce(&mut dyn FnMut() -> anyhow::Result<()>) -> anyhow::Result<()> + Send + 'static,
+    {
         let session_id = session_id.to_string();
-        self.run_blocking(move |repository| repository.append_message(&session_id, &message)).await
+        self.run_blocking(move |repository| {
+            repository.append_message_with_commit_guard(&session_id, &message, guard)
+        })
+        .await
+    }
+
+    /// Append a batch under one SQLite transaction and one authority guard.
+    /// Either every message is committed in order or none is persisted.
+    pub async fn append_messages_with_commit_guard<G>(
+        &self,
+        session_id: &str,
+        messages: Vec<Message>,
+        guard: G,
+    ) -> anyhow::Result<()>
+    where
+        G: FnOnce(&mut dyn FnMut() -> anyhow::Result<()>) -> anyhow::Result<()> + Send + 'static,
+    {
+        let session_id = session_id.to_string();
+        self.run_blocking(move |repository| {
+            repository.append_messages_with_commit_guard(&session_id, &messages, guard)
+        })
+        .await
     }
 
     pub async fn append_message_part(
@@ -648,7 +719,29 @@ impl Storage {
         tenant_context: &TenantContext,
         expected_session_id: Option<&str>,
     ) -> anyhow::Result<Option<QuestionRequest>> {
+        self.decide_question_for_tenant_checked(
+            request_id,
+            tenant_context,
+            expected_session_id,
+            std::future::ready(Ok(())),
+        )
+        .await
+    }
+
+    /// Run an authority check after the question writer lock is acquired and
+    /// retain its guard across the SQLite delete/commit.
+    pub async fn decide_question_for_tenant_checked<G, F>(
+        &self,
+        request_id: &str,
+        tenant_context: &TenantContext,
+        expected_session_id: Option<&str>,
+        authorize: F,
+    ) -> anyhow::Result<Option<QuestionRequest>>
+    where
+        F: std::future::Future<Output = anyhow::Result<G>>,
+    {
         let _write_guard = self.question_write_lock.lock().await;
+        let _authority_guard = authorize.await?;
         let Some(request) = self
             .get_question_request_for_tenant(request_id, tenant_context, expected_session_id)
             .await?

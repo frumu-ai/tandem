@@ -161,6 +161,8 @@ pub(super) async fn context_run_mutation_checkpoint_rollback_history(
 
 pub(super) async fn context_run_mutation_checkpoint_rollback_execute(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(run_id): Path<String>,
     Json(request): Json<MutationCheckpointRollbackExecuteRequest>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -172,6 +174,25 @@ pub(super) async fn context_run_mutation_checkpoint_rollback_execute(
     }
 
     let run = super::context_runs::load_context_run_state(&state, &run_id).await?;
+    let verified = verified.as_ref().map(|Extension(value)| value);
+    if !super::context_run_authority::context_run_visible(
+        &state,
+        &run,
+        &tenant_context,
+        verified,
+        true,
+    )
+    .await
+        || super::event_stream_authority::current_context(
+            &state,
+            &tenant_context,
+            verified,
+            Some(tandem_types::AccessPermission::HostedAdmin),
+        )
+        .is_err()
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let policy_ack = request.policy_ack.as_deref().unwrap_or_default();
     if policy_ack != "allow_rollback_execution" {
         let blocked_event = build_rollback_execution_blocked_event(
@@ -250,6 +271,35 @@ pub(super) async fn context_run_mutation_checkpoint_rollback_execute(
         })));
     }
 
+    // Re-read the owner and workspace after preparing the rollback plan. A
+    // concurrent run update or policy revocation must not redirect the files
+    // affected by a previously authorized preview.
+    let current_run = super::context_runs::load_context_run_state(&state, &run_id).await?;
+    if current_run.revision != run.revision
+        || current_run.tenant_context != run.tenant_context
+        || current_run.run_type != run.run_type
+        || current_run.workspace.canonical_path != run.workspace.canonical_path
+    {
+        return Err(StatusCode::CONFLICT);
+    }
+    if !super::context_run_authority::context_run_visible(
+        &state,
+        &current_run,
+        &tenant_context,
+        verified,
+        true,
+    )
+    .await
+        || super::event_stream_authority::current_context(
+            &state,
+            &tenant_context,
+            verified,
+            Some(tandem_types::AccessPermission::HostedAdmin),
+        )
+        .is_err()
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let workspace_root = std::path::PathBuf::from(&run.workspace.canonical_path);
     let mut applied_steps = Vec::new();
     let mut applied_operation_count = 0usize;

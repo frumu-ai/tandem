@@ -357,6 +357,144 @@ fn goal_start_rolls_back_and_restarts_at_each_write_boundary() {
     }
 }
 
+#[cfg(feature = "storage-sqlite")]
+#[test]
+fn goal_start_rechecks_authority_after_waiting_for_writer_lock() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    };
+    use std::time::Duration;
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store = open_store(directory.path());
+    let lock = rusqlite::Connection::open(paths(directory.path()).database_path)
+        .expect("open competing SQLite connection");
+    lock.execute_batch("BEGIN IMMEDIATE")
+        .expect("hold SQLite writer lock");
+
+    let permitted = Arc::new(AtomicBool::new(true));
+    let worker_permitted = permitted.clone();
+    let worker_store = store.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (checked_tx, checked_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).expect("signal start");
+        worker_store.start_goal_with_commit_guard(
+            &goal(),
+            &run(),
+            &link(),
+            &PrincipalRef::human_user("tester"),
+            |commit| {
+                checked_tx.send(()).expect("signal authority check");
+                if !worker_permitted.load(Ordering::SeqCst) {
+                    anyhow::bail!("start grant revoked during writer-lock wait");
+                }
+                commit()
+            },
+        )
+    });
+    started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker began start");
+    assert!(
+        matches!(
+            checked_rx.recv_timeout(Duration::from_millis(150)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "authorization must not run before the writer lock is acquired"
+    );
+    permitted.store(false, Ordering::SeqCst);
+    lock.execute_batch("ROLLBACK")
+        .expect("release SQLite writer lock");
+    checked_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("authority was rechecked after lock acquisition");
+    assert!(worker.join().expect("goal-start worker").is_err());
+    assert_eq!(table_count(&store, "long_running_goals"), 0);
+    assert_eq!(table_count(&store, "automation_runs"), 0);
+
+    permitted.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        store
+            .start_goal_with_commit_guard(
+                &goal(),
+                &run(),
+                &link(),
+                &PrincipalRef::human_user("tester"),
+                |commit| {
+                    assert!(permitted.load(Ordering::SeqCst));
+                    commit()
+                },
+            )
+            .expect("authorized goal start"),
+        super::goal_lifecycle::StartGoalOutcome::Created { .. }
+    ));
+}
+
+#[cfg(feature = "storage-sqlite")]
+#[test]
+fn goal_start_replay_survives_source_revocation_during_writer_lock_wait() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    };
+    use std::time::Duration;
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store = open_store(directory.path());
+    assert!(matches!(
+        store
+            .start_goal(
+                &goal(),
+                &run(),
+                &link(),
+                &PrincipalRef::human_user("tester")
+            )
+            .expect("original authorized start"),
+        StartGoalOutcome::Created { .. }
+    ));
+    let lock = rusqlite::Connection::open(paths(directory.path()).database_path)
+        .expect("open competing SQLite connection");
+    lock.execute_batch("BEGIN IMMEDIATE")
+        .expect("hold SQLite writer lock");
+
+    let source_execute = Arc::new(AtomicBool::new(true));
+    let worker_execute = source_execute.clone();
+    let worker_store = store.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).expect("signal replay start");
+        worker_store.start_goal_with_commit_guard(
+            &goal(),
+            &run(),
+            &link(),
+            &PrincipalRef::human_user("tester"),
+            |commit| {
+                if !worker_execute.load(Ordering::SeqCst) {
+                    anyhow::bail!("source Execute was revoked");
+                }
+                commit()
+            },
+        )
+    });
+    started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker began replay");
+    source_execute.store(false, Ordering::SeqCst);
+    lock.execute_batch("ROLLBACK")
+        .expect("release SQLite writer lock");
+    assert!(matches!(
+        worker
+            .join()
+            .expect("replay worker")
+            .expect("read-only replay does not need source Execute"),
+        StartGoalOutcome::AlreadyStarted { .. }
+    ));
+    assert_eq!(table_count(&store, "long_running_goals"), 1);
+    assert_eq!(table_count(&store, "automation_runs"), 1);
+}
+
 #[test]
 fn event_append_failure_has_no_restart_visible_partial_write() {
     let directory = tempfile::tempdir().expect("tempdir");

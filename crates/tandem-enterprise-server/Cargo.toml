@@ -31,6 +31,9 @@ tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version =
 tandem-memory = { path = "../tandem-memory", version = "0.7.2" }
 tandem-server = { path = "../tandem-server", version = "0.7.2", default-features = false, features = ["storage-sqlite"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 serial_test = "3"
 tower = "0.5"

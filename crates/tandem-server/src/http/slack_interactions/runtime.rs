@@ -996,13 +996,19 @@ async fn get_or_create_governed_slack_session(
     // security profile, not the Slack caller. Apply them through the internal
     // seam after the public session route has rejected caller-authored hosted
     // rules, and bind them to this exact session.
-    super::super::sessions::apply_session_permission_rules(
+    if let Err(status) = super::super::sessions::apply_session_permission_rules(
         state,
         &verified.tenant_context,
         &session_id,
         Some(build_channel_session_permissions(security_profile)),
     )
-    .await;
+    .await
+    {
+        // A retry must not reuse a session whose required profile never
+        // installed. This session was allocated by this invocation only.
+        state.storage.delete_session(&session_id).await?;
+        anyhow::bail!("channel session permission rules failed with {status}");
+    }
     Ok(session_id)
 }
 

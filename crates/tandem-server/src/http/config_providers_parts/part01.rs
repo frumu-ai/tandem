@@ -167,12 +167,9 @@ pub(super) async fn patch_config(
         Err(status) => return status.into_response(),
     };
     let updates_openai_codex_default = config_patch_updates_openai_codex_default(&normalized_input);
-    if let Err(error) = validate_provider_origin_patch(
-        &state,
-        &normalized_input,
-        allow_standalone_private_endpoint,
-    )
-    .await
+    if let Err(error) =
+        validate_provider_origin_patch(&state, &normalized_input, allow_standalone_private_endpoint)
+            .await
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -261,12 +258,9 @@ pub(super) async fn global_config_patch(
         Ok(authorized) => authorized,
         Err(status) => return status.into_response(),
     };
-    if let Err(error) = validate_provider_origin_patch(
-        &state,
-        &normalized_input,
-        allow_standalone_private_endpoint,
-    )
-    .await
+    if let Err(error) =
+        validate_provider_origin_patch(&state, &normalized_input, allow_standalone_private_endpoint)
+            .await
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -281,11 +275,7 @@ pub(super) async fn global_config_patch(
     if let Err(error) = grant.revalidate(&state, &effect) {
         return crate::http::host_authority::host_authorization_status(error).into_response();
     }
-    let effective = match state
-        .config
-        .patch_global(normalized_input)
-        .await
-    {
+    let effective = match state.config.patch_global(normalized_input).await {
         Ok(effective) => effective,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -311,7 +301,10 @@ async fn validate_provider_origin_patch(
     };
     let current = state.config.get_effective_value().await;
     for (provider_id, provider_patch) in provider_root {
-        let Some(origin_value) = provider_patch.as_object().and_then(|entry| entry.get("url")) else {
+        let Some(origin_value) = provider_patch
+            .as_object()
+            .and_then(|entry| entry.get("url"))
+        else {
             continue;
         };
         let configured_origin = origin_value
@@ -320,14 +313,13 @@ async fn validate_provider_origin_patch(
             .filter(|value| !value.is_empty())
             .map(str::to_string);
         let default_origin = canonical_provider_origin(provider_id);
-        let requested_origin = configured_origin
-            .as_deref()
-            .or(default_origin)
-            .ok_or_else(|| {
-                format!(
-                    "provider `{provider_id}` must declare a non-empty HTTPS origin"
-                )
-            })?;
+        let requested_origin =
+            configured_origin
+                .as_deref()
+                .or(default_origin)
+                .ok_or_else(|| {
+                    format!("provider `{provider_id}` must declare a non-empty HTTPS origin")
+                })?;
         if let Some(existing) = provider_config_value(&current, provider_id) {
             let existing_origin = existing
                 .get("url")
@@ -345,9 +337,9 @@ async fn validate_provider_origin_patch(
         }
         let local_provider = allow_standalone_private_endpoint
             && matches!(
-            provider_id.trim().to_ascii_lowercase().as_str(),
-            "ollama" | "llama_cpp" | "llama.cpp"
-        );
+                provider_id.trim().to_ascii_lowercase().as_str(),
+                "ollama" | "llama_cpp" | "llama.cpp"
+            );
         let validation = if local_provider {
             crate::outbound_http::resolve_standalone_provider_url(requested_origin).await
         } else {
@@ -669,8 +661,20 @@ pub(super) async fn list_providers_legacy(
 pub(super) async fn provider_auth(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
-) -> Json<Value> {
-    let _ = refresh_openai_codex_oauth_if_needed(&state, &tenant_context).await;
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Result<Json<Value>, StatusCode> {
+    super::require_current_hosted_permission(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        tandem_types::AccessPermission::HostedUse,
+    )?;
+    let _ = refresh_openai_codex_oauth_if_needed_for_request(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+    )
+    .await;
     let cfg = state.config.get_effective_value().await;
     let providers_cfg = cfg
         .get("providers")
@@ -803,7 +807,13 @@ pub(super) async fn provider_auth(
         providers.insert(provider_id, payload);
     }
 
-    Json(json!({ "providers": providers }))
+    super::require_current_hosted_permission(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        tandem_types::AccessPermission::HostedUse,
+    )?;
+    Ok(Json(json!({ "providers": providers })))
 }
 
 pub(super) async fn provider_oauth_authorize(
@@ -908,38 +918,63 @@ pub(super) async fn provider_oauth_authorize(
 pub(super) async fn provider_oauth_status(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
     Query(query): Query<ProviderOAuthStatusQuery>,
-) -> Json<Value> {
+) -> Result<Json<Value>, StatusCode> {
+    super::require_current_hosted_permission(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        tandem_types::AccessPermission::HostedUse,
+    )?;
     let provider_id = canonical_provider_id(&id);
     if provider_id != OPENAI_CODEX_PROVIDER_ID {
-        return Json(json!({
+        return Ok(Json(json!({
             "ok": false,
             "error": format!("oauth is not supported for provider `{provider_id}`"),
-        }));
+        })));
     }
 
-    let _ = refresh_openai_codex_oauth_if_needed(&state, &tenant_context).await;
+    let _ = refresh_openai_codex_oauth_if_needed_for_request(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+    )
+    .await;
+    super::require_current_hosted_permission(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        tandem_types::AccessPermission::HostedUse,
+    )?;
 
     if let Some(session_id) = query.session_id.as_deref() {
-        if let Some(session) = state.oauth.provider_sessions().read().await.get(session_id) {
+        let sessions = state.oauth.provider_sessions().read().await;
+        super::require_current_hosted_permission(
+            &state,
+            &tenant_context,
+            verified.as_deref(),
+            tandem_types::AccessPermission::HostedUse,
+        )?;
+        if let Some(session) = sessions.get(session_id) {
             if session.tenant_context != tenant_context {
-                return Json(json!({
+                return Ok(Json(json!({
                     "ok": true,
                     "status": "missing",
                     "connected": false,
                     "local_session_available": tenant_context.is_local_implicit()
                         && tandem_core::load_openai_codex_cli_oauth_credential().is_some(),
-                }));
+                })));
             }
-            return Json(json!({
+            return Ok(Json(json!({
                 "ok": true,
                 "session_id": session.session_id,
                 "status": session.status,
                 "error": session.error,
                 "email": session.email,
                 "expires_at_ms": session.expires_at_ms,
-            }));
+            })));
         }
     }
 
@@ -951,7 +986,7 @@ pub(super) async fn provider_oauth_status(
         )
         .remove(OPENAI_CODEX_PROVIDER_ID)
     {
-        return Json(json!({
+        return Ok(Json(json!({
             "ok": true,
             "status": if oauth.expires_at_ms <= crate::now_ms() { "reauth_required" } else { "connected" },
             "connected": oauth.expires_at_ms > crate::now_ms(),
@@ -962,16 +997,16 @@ pub(super) async fn provider_oauth_status(
             "expires_at_ms": oauth.expires_at_ms,
             "local_session_available": tenant_context.is_local_implicit()
                 && tandem_core::load_openai_codex_cli_oauth_credential().is_some(),
-        }));
+        })));
     }
 
-    Json(json!({
+    Ok(Json(json!({
         "ok": true,
         "status": "missing",
         "connected": false,
         "local_session_available": tenant_context.is_local_implicit()
             && tandem_core::load_openai_codex_cli_oauth_credential().is_some(),
-    }))
+    })))
 }
 
 pub(super) async fn provider_oauth_callback_get(
@@ -1610,13 +1645,7 @@ pub(super) async fn provider_oauth_session_import(
     }
     let import_digest = format!(
         "{:x}",
-        Sha256::digest(
-            input
-                .auth_json
-                .as_deref()
-                .unwrap_or_default()
-                .as_bytes()
-        )
+        Sha256::digest(input.auth_json.as_deref().unwrap_or_default().as_bytes())
     );
     let (grant, effect) = match crate::http::host_authority::authorize_administrative_effect(
         &state,

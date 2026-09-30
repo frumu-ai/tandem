@@ -57,6 +57,7 @@ use prompt_context::{
 };
 use prompt_helpers::*;
 use prompt_runtime::*;
+use tool_execution::ProviderStreamPoll;
 use tool_output::*;
 use tool_parsing::*;
 use types::{EngineToolProgressSink, StreamedToolCall, WritePathRecoveryMode};
@@ -1484,10 +1485,12 @@ impl EngineLoop {
                 obj.insert("tool_calls".to_string(), Value::Array(governed_calls));
             }
         }
+        self.revalidate_session_authority(session_id).await?;
         let result = match self
             .execute_tool_with_timeout(
                 session_id,
                 message_id,
+                run_id,
                 &tool,
                 args,
                 preauthorized_dispatch_decision,

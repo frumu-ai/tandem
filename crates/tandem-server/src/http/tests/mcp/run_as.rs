@@ -4,6 +4,90 @@
 use super::*;
 
 #[tokio::test]
+async fn hosted_policy_direct_mcp_requires_execution_grant() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
+    state
+        .mcp
+        .add_or_update("notion".into(), endpoint, HashMap::new(), true)
+        .await;
+    let tenant = tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "dep-a",
+        Some("dep-a".into()),
+        "alice",
+    );
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "alice-union-token", &tenant)
+        .await
+        .unwrap();
+    state
+        .mcp
+        .refresh_for_tenant("notion", &tenant)
+        .await
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("policy.json");
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", path.clone());
+    for (version, role) in [(1, "viewer"), (2, "member")] {
+        let now = crate::now_ms();
+        let capabilities = tandem_enterprise_contract::hosted_policy::role_capabilities(role);
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "schema_version": 1, "policy_version": version,
+                "organization_id": "org-a", "deployment_id": "dep-a",
+                "generated_at": chrono::DateTime::from_timestamp_millis(now as i64).unwrap(),
+                "users": [{"id":"alice", "email":null, "username":null, "role":role,
+                    "capabilities":capabilities, "is_active":true, "email_verified":true}],
+                "org_units":[], "org_unit_memberships":[], "deployment_grants":[]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        state.reload_hosted_policy().await.unwrap();
+        // Deliberately retain an otherwise valid generic tool grant: it must
+        // not substitute for hosted execution permission at direct dispatch.
+        let mut verified = verified_mcp_execute_context(
+            &tenant,
+            tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
+            "hosted-direct-mcp",
+        );
+        verified.policy_version = Some(version);
+        verified.issued_at_ms = now;
+        verified.expires_at_ms = now + 60_000;
+        verified.roles = vec![format!("hosted:role:{role}")];
+        verified.capabilities = capabilities.iter().map(|value| value.to_string()).collect();
+        let result = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
+            &state, "notion", "alice_search",
+            json!({"query":"roadmap", "__phase_tool_authority": {
+                "phase":"interactive", "allowed_tools":["mcp.notion.alice_search"], "run_id":"hosted-direct-mcp"
+            }}), &tenant, Some(&verified)
+        ).await;
+        if role == "viewer" {
+            let error =
+                result.expect_err("viewer must not dispatch MCP despite generic tool grant");
+            assert!(
+                error.contains("hosted_operation_permission_required"),
+                "{error}"
+            );
+        } else {
+            assert!(result.is_ok(), "{result:?}");
+        }
+    }
+    server.abort();
+}
+
+#[tokio::test]
 async fn mcp_run_as_interactive_call_uses_current_actor_connection() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;

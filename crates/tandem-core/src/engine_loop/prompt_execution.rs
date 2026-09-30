@@ -1074,24 +1074,28 @@ impl EngineLoop {
                     streamed_tool_calls.clear();
                     provider_usage = None;
                     accepted_tool_calls_in_cycle = 0;
+                    self.revalidate_session_authority(&session_id).await?;
                     let stream_result = tokio::time::timeout(
                         provider_connect_timeout,
-                        self.providers.stream_with_egress_permit(
-                            &provider_egress_permit,
-                            Some(provider_id.as_str()),
-                            Some(model_id_value.as_str()),
-                            messages.clone(),
-                            provider_tool_mode_for_selected_tools(
-                                &requested_tool_mode,
-                                tool_schemas.len(),
+                        self.scope_provider_authority(
+                            &session_id,
+                            self.providers.stream_with_egress_permit(
+                                &provider_egress_permit,
+                                Some(provider_id.as_str()),
+                                Some(model_id_value.as_str()),
+                                messages.clone(),
+                                provider_tool_mode_for_selected_tools(
+                                    &requested_tool_mode,
+                                    tool_schemas.len(),
+                                ),
+                                if tool_schemas.is_empty() {
+                                    None
+                                } else {
+                                    Some(tool_schemas.clone())
+                                },
+                                sampling,
+                                cancel.clone(),
                             ),
-                            if tool_schemas.is_empty() {
-                                None
-                            } else {
-                                Some(tool_schemas.clone())
-                            },
-                            sampling,
-                            cancel.clone(),
                         ),
                     )
                     .await
@@ -1102,7 +1106,7 @@ impl EngineLoop {
                         )
                     })
                     .and_then(|result| result);
-                    let stream = match stream_result {
+                    let mut stream = match stream_result {
                         Ok(stream) => stream,
                         Err(err) => {
                             let error_text = err.to_string();
@@ -1168,17 +1172,22 @@ impl EngineLoop {
                             return Err(err);
                         }
                     };
-                    tokio::pin!(stream);
                     loop {
-                        let next_chunk_result =
-                            tokio::time::timeout(provider_idle_timeout, stream.next())
-                                .await
-                                .map_err(|_| {
-                                    anyhow::anyhow!(
-                                        "provider stream idle timeout after {} ms",
-                                        provider_idle_timeout.as_millis()
-                                    )
-                                });
+                        let next_chunk_result = match self
+                            .poll_provider_stream_chunk(
+                                &session_id,
+                                &mut stream,
+                                &cancel,
+                                Some(provider_idle_timeout),
+                            )
+                            .await?
+                        {
+                            ProviderStreamPoll::Chunk(chunk) => Ok(chunk),
+                            ProviderStreamPoll::IdleTimeout => Err(anyhow::anyhow!(
+                                "provider stream idle timeout after {} ms",
+                                provider_idle_timeout.as_millis()
+                            )),
+                        };
                         let next_chunk = match next_chunk_result {
                             Ok(next_chunk) => next_chunk,
                             Err(err) => {
@@ -1752,6 +1761,10 @@ impl EngineLoop {
             ));
             self.cancellations.remove(&session_id).await;
             return Ok(());
+        }
+        if let Err(error) = self.revalidate_session_authority(&session_id).await {
+            cancel.cancel();
+            return Err(error);
         }
         let assistant = Message::new(
             MessageRole::Assistant,

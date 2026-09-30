@@ -55,6 +55,48 @@ fn normalize_routine(mut routine: RoutineSpec) -> Result<RoutineSpec, RoutineSto
 }
 
 impl AppState {
+    /// Recheck the live hosted grant and persisted owner at the routine-store
+    /// write boundary. Standalone deployments retain their local behavior.
+    pub(crate) fn legacy_routine_write_allowed(
+        &self,
+        tenant: &TenantContext,
+        verified: Option<&tandem_types::VerifiedTenantContext>,
+        existing: Option<&RoutineSpec>,
+    ) -> bool {
+        if matches!(self.enterprise.hosted_policy.current(), Ok(None)) {
+            return true;
+        }
+        let Some(verified) = verified else {
+            return false;
+        };
+        let actor_id = verified.human_actor.actor_id.trim();
+        if actor_id.is_empty()
+            || verified.is_expired_at(crate::now_ms())
+            || tenant.org_id != verified.tenant_context.org_id
+            || tenant.workspace_id != verified.tenant_context.workspace_id
+            || tenant.deployment_id != verified.tenant_context.deployment_id
+            || tenant.actor_id.as_deref() != Some(actor_id)
+            || self
+                .enterprise
+                .hosted_policy
+                .authorize_permission(Some(verified), AccessPermission::HostedAutomationWrite)
+                .is_err()
+        {
+            return false;
+        }
+        let Some(existing) = existing else {
+            return true;
+        };
+        if tenant.org_id != existing.tenant_context.org_id
+            || tenant.workspace_id != existing.tenant_context.workspace_id
+            || tenant.deployment_id != existing.tenant_context.deployment_id
+        {
+            return false;
+        }
+        self.authorize_current_hosted_admin(verified).is_ok()
+            || existing.tenant_context.actor_id.as_deref() == Some(actor_id)
+    }
+
     pub async fn load_routines(&self) -> anyhow::Result<()> {
         let _operation = self.routine_persistence.lock().await;
         let Some(raw) = read_state_file_with_legacy(&self.routines_path, "routines.json").await?
@@ -183,14 +225,40 @@ impl AppState {
         &self,
         routine: RoutineSpec,
     ) -> Result<RoutineSpec, RoutineStoreError> {
+        self.put_routine_checked(routine, |_, _| true)
+            .await
+            .map(|(stored, _)| stored)
+    }
+
+    /// Check an HTTP caller's authority against the row being replaced while
+    /// holding the same lock used for the write. Internal callers retain the
+    /// `put_routine` API without hosted caller checks for scheduler and rollback
+    /// operations, but solution resources still require their lifecycle.
+    pub async fn put_routine_checked<F>(
+        &self,
+        routine: RoutineSpec,
+        prepare: F,
+    ) -> Result<(RoutineSpec, Option<RoutineSpec>), RoutineStoreError>
+    where
+        F: FnOnce(Option<&RoutineSpec>, &mut RoutineSpec) -> bool,
+    {
         solution_routines::require_unmanaged(&routine)?;
-        let routine = normalize_routine(routine)?;
+        let mut routine = normalize_routine(routine)?;
         let identity = RoutineIdentity::new(&routine.routine_id, &routine.tenant_context);
         let storage_key = identity.storage_key();
         let _operation = self.routine_persistence.lock().await;
-        if let Some(existing) = self.routines.read().await.get(&storage_key) {
+        let previous = self.routines.read().await.get(&storage_key).cloned();
+        if !prepare(previous.as_ref(), &mut routine)
+            || RoutineIdentity::new(&routine.routine_id, &routine.tenant_context) != identity
+        {
+            return Err(RoutineStoreError::AccessDenied);
+        }
+        if let Some(existing) = previous.as_ref() {
             solution_routines::require_unmanaged(existing)?;
         }
+        // Preparation may preserve persisted metadata, but it cannot turn a
+        // generic write into installation-owned resource materialization.
+        solution_routines::require_unmanaged(&routine)?;
         let previous = self
             .routines
             .write()
@@ -207,7 +275,7 @@ impl AppState {
                 message: error.to_string(),
             });
         }
-        Ok(routine)
+        Ok((routine, previous))
     }
 
     pub async fn update_routine_for_tenant<F>(
@@ -219,12 +287,30 @@ impl AppState {
     where
         F: FnOnce(&mut RoutineSpec),
     {
+        self.update_routine_for_tenant_checked(routine_id, tenant_context, |_| true, update)
+            .await
+    }
+
+    pub async fn update_routine_for_tenant_checked<F, P>(
+        &self,
+        routine_id: &str,
+        tenant_context: &TenantContext,
+        authorized: P,
+        update: F,
+    ) -> Result<Option<RoutineSpec>, RoutineStoreError>
+    where
+        F: FnOnce(&mut RoutineSpec),
+        P: FnOnce(&RoutineSpec) -> bool,
+    {
         let identity = RoutineIdentity::new(routine_id, tenant_context);
         let storage_key = identity.storage_key();
         let _operation = self.routine_persistence.lock().await;
         let Some(previous) = self.routines.read().await.get(&storage_key).cloned() else {
             return Ok(None);
         };
+        if !authorized(&previous) {
+            return Err(RoutineStoreError::AccessDenied);
+        }
         solution_routines::require_unmanaged(&previous)?;
         let mut routine = previous.clone();
         update(&mut routine);
@@ -323,10 +409,26 @@ impl AppState {
         routine_id: &str,
         tenant_context: &TenantContext,
     ) -> Result<Option<RoutineSpec>, RoutineStoreError> {
+        self.delete_routine_for_tenant_checked(routine_id, tenant_context, |_| true)
+            .await
+    }
+
+    pub async fn delete_routine_for_tenant_checked<P>(
+        &self,
+        routine_id: &str,
+        tenant_context: &TenantContext,
+        authorized: P,
+    ) -> Result<Option<RoutineSpec>, RoutineStoreError>
+    where
+        P: FnOnce(&RoutineSpec) -> bool,
+    {
         let identity = RoutineIdentity::new(routine_id, tenant_context);
         let storage_key = identity.storage_key();
         let _operation = self.routine_persistence.lock().await;
         if let Some(existing) = self.routines.read().await.get(&storage_key) {
+            if !authorized(existing) {
+                return Err(RoutineStoreError::AccessDenied);
+            }
             solution_routines::require_unmanaged(existing)?;
         }
         let removed = self.routines.write().await.remove(&storage_key);
@@ -346,6 +448,11 @@ impl AppState {
         let _operation = self.routine_persistence.lock().await;
         let mut plans = Vec::new();
         let mut guard = self.routines.write().await;
+        // Admission must follow lock acquisition: an outage while waiting must
+        // leave due occurrences available for the next healthy scheduler tick.
+        if !self.enterprise.hosted_policy.is_ready() {
+            return plans;
+        }
         for routine in guard.values_mut() {
             if routine.status != RoutineStatus::Active || routine.installation_disabled() {
                 continue;
@@ -578,6 +685,11 @@ impl AppState {
     pub async fn claim_next_queued_routine_run(&self) -> Option<RoutineRunRecord> {
         let routines = self.routines.read().await.clone();
         let mut guard = self.routine_runs.write().await;
+        // The policy can become unavailable while this task waits for the lock.
+        // Local callers without a hosted source retain their existing behavior.
+        if !self.enterprise.hosted_policy.is_ready() {
+            return None;
+        }
         let mut blocked = false;
         for row in guard.values_mut().filter(|row| row.status == RoutineRunStatus::Queued) {
             let identity = RoutineIdentity::new(&row.routine_id, &row.tenant_context);

@@ -801,6 +801,7 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
     let idempotency_key = "feedback-idempotency-key";
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "external-action-feedback".to_string(),
             operation: "provider.issue.update".to_string(),
             status: "posted".to_string(),

@@ -480,6 +480,19 @@ export function classifyRoute(route) {
   }
 
   if (
+    routePath === "/workflow-plans/sessions" ||
+    routePath.startsWith("/workflow-plans/sessions/")
+  ) {
+    return {
+      ingress_policy: "runtime_auth_gate",
+      authorization_policy: "tenant_resource_owner_or_scoped_grant",
+      capability: "resource.owner_or_grant",
+      resolver: "tenant_resource_from_state",
+      policy_origin: "tenant.resource",
+    };
+  }
+
+  if (
     method === "POST" &&
     /^\/channels\/(?:slack|discord|telegram)\/interactions$/.test(routePath)
   ) {

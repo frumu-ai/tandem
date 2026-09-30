@@ -139,6 +139,8 @@ pub struct ToolDispatchPolicyContext {
     pub args: Value,
     pub tenant_context: TenantContext,
     pub verified_tenant_context: Option<VerifiedTenantContext>,
+    /// Derived from the HTTP peer and forwarding headers by the server, never tool args.
+    pub direct_loopback_http_request: bool,
     pub source: ToolDispatchSource,
     pub scope_allowlist: Vec<String>,
     pub schema: Option<ToolSchema>,
@@ -214,6 +216,12 @@ impl std::error::Error for ToolDispatchBlocked {}
 
 #[async_trait]
 pub trait ToolDispatchPolicy: Send + Sync {
+    /// Recheck mutable authority after receipts/approvals, immediately before
+    /// dispatch. Implementations must not create another approval request.
+    async fn revalidate(&self, _context: &ToolDispatchContext) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn evaluate(
         &self,
         context: ToolDispatchPolicyContext,
@@ -369,6 +377,7 @@ impl ToolDispatchLedger for NoopToolDispatchLedger {
 pub struct ToolDispatchContext {
     pub tenant_context: TenantContext,
     pub verified_tenant_context: Option<VerifiedTenantContext>,
+    pub direct_loopback_http_request: bool,
     pub source: ToolDispatchSource,
     pub scope_allowlist: Vec<String>,
     pub policy: Arc<dyn ToolDispatchPolicy>,
@@ -384,6 +393,7 @@ impl ToolDispatchContext {
         Self {
             tenant_context,
             verified_tenant_context: None,
+            direct_loopback_http_request: false,
             source: ToolDispatchSource::new(source),
             scope_allowlist: Vec::new(),
             policy: Arc::new(DenyAllToolDispatchPolicy),
@@ -401,6 +411,11 @@ impl ToolDispatchContext {
         verified_tenant_context: VerifiedTenantContext,
     ) -> Self {
         self.verified_tenant_context = Some(verified_tenant_context);
+        self
+    }
+
+    pub fn with_direct_loopback_http_request(mut self, direct_loopback: bool) -> Self {
+        self.direct_loopback_http_request = direct_loopback;
         self
     }
 
@@ -584,6 +599,7 @@ impl GovernedToolDispatcher {
             args: args.clone(),
             tenant_context: context.tenant_context.clone(),
             verified_tenant_context: context.verified_tenant_context.clone(),
+            direct_loopback_http_request: context.direct_loopback_http_request,
             source: context.source.clone(),
             scope_allowlist: context.scope_allowlist.clone(),
             schema,
@@ -706,7 +722,9 @@ impl GovernedToolDispatcher {
         })
         .await?;
 
-        let result = if canonical_tool.as_deref() == Some("batch") || name == "batch" {
+        let result = if let Err(error) = context.policy.revalidate(&context).await {
+            Err(error.context("tool authority revoked before dispatch"))
+        } else if canonical_tool.as_deref() == Some("batch") || name == "batch" {
             self.execute_governed_batch(args, context.clone(), cancel, progress)
                 .await
         } else {

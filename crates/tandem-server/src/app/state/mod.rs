@@ -116,7 +116,9 @@ mod automation_webhook_store_files;
 mod automation_webhook_verification;
 pub mod channel_user_capabilities;
 pub mod enterprise_state;
+mod external_action_provenance;
 mod idempotency;
+mod incident_monitor_intake_keys;
 mod oauth_state;
 mod prompt_context_blocks;
 mod prompt_context_hook;
@@ -245,6 +247,14 @@ pub struct AppState {
     pub workflow_plans: Arc<RwLock<std::collections::HashMap<String, WorkflowPlan>>>,
     pub workflow_plan_drafts:
         Arc<RwLock<std::collections::HashMap<String, WorkflowPlanDraftRecord>>>,
+    pub(crate) workflow_plan_draft_authority: Arc<
+        RwLock<
+            std::collections::HashMap<
+                String,
+                crate::http::workflow_planner::WorkflowPlanDraftAuthority,
+            >,
+        >,
+    >,
     pub workflow_planner_sessions: Arc<
         RwLock<
             std::collections::HashMap<
@@ -283,6 +293,9 @@ pub struct AppState {
     pub incident_monitor_log_evidence_dir: PathBuf,
     pub incident_monitor_intake_keys:
         Arc<RwLock<std::collections::HashMap<String, IncidentMonitorProjectIntakeKey>>>,
+    pub(crate) incident_monitor_intake_keys_persistence: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) incident_monitor_intake_keys_pending:
+        Arc<std::sync::Mutex<Option<incident_monitor_intake_keys::IntakeKeyPublicationBatch>>>,
     pub incident_monitor_intake_keys_path: PathBuf,
     pub external_actions: Arc<RwLock<std::collections::HashMap<String, ExternalActionRecord>>>,
     pub policy_decisions: Arc<RwLock<std::collections::HashMap<String, PolicyDecisionRecord>>>,
@@ -391,6 +404,14 @@ impl ServerToolDispatchComposition {
 
 #[async_trait::async_trait]
 impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
+    async fn revalidate(&self, context: &ToolDispatchContext) -> anyhow::Result<()> {
+        self.state
+            .enterprise
+            .hosted_policy
+            .authorize(context.verified_tenant_context.as_ref())
+            .map_err(anyhow::Error::msg)
+    }
+
     async fn evaluate(
         &self,
         context: ToolDispatchPolicyContext,
@@ -401,6 +422,33 @@ impl ToolDispatchPolicy for AppStateToolDispatchPolicy {
             .canonical_tool
             .clone()
             .unwrap_or_else(|| context.requested_tool.clone());
+        // Pack Builder stages and installs into process-wide pack, connector,
+        // and automation stores without hosted object provenance. Canonical
+        // matching also covers tool aliases and nested batch dispatch. Only
+        // the guarded Pack Builder helper and a direct local generic HTTP
+        // request may dispatch this process-wide tool. Automation preflight,
+        // workflow, and other autonomous sources cannot inherit local_implicit
+        // tenancy as authority. The generic route's locality comes from the
+        // server's peer/forwarding-header check, not tool arguments.
+        let local_pack_builder_source = match context.source.kind.as_str() {
+            "pack_builder" => true,
+            "http_global_tool" => context.direct_loopback_http_request,
+            _ => false,
+        };
+        if dispatch_tool == "pack_builder"
+            && (!context.tenant_context.is_local_implicit()
+                || context.verified_tenant_context.is_some()
+                || !matches!(self.state.enterprise.hosted_policy.current(), Ok(None))
+                || !crate::http::host_authority::standalone_local_runtime_posture(
+                    &self.state,
+                    &context.tenant_context,
+                )
+                || !local_pack_builder_source)
+        {
+            return Ok(ToolDispatchDecision::deny(
+                "pack_builder requires the local single-user runtime",
+            ));
+        }
         let Some(runtime) = self.state.runtime.get() else {
             return Ok(ToolDispatchDecision::deny(
                 "server runtime permissions are not initialized",
@@ -542,6 +590,17 @@ pub struct StatusIndexUpdate {
     pub value: Value,
 }
 
+#[derive(Debug)]
+pub(crate) struct WorkflowHookAdminDenied;
+
+impl std::fmt::Display for WorkflowHookAdminDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("workflow hook hosted admin required")
+    }
+}
+
+impl std::error::Error for WorkflowHookAdminDenied {}
+
 include!("app_state_impl_parts/part01.rs");
 include!("app_state_impl_parts/part17.rs");
 include!("app_state_impl_parts/part11.rs");
@@ -551,9 +610,11 @@ include!("app_state_impl_parts/part13.rs");
 include!("app_state_impl_parts/part15.rs");
 include!("app_state_impl_parts/part16.rs");
 include!("app_state_impl_parts/part02.rs");
+include!("app_state_impl_parts/part21.rs");
 include!("app_state_impl_parts/part19.rs");
 include!("app_state_impl_parts/part10.rs");
 include!("app_state_impl_parts/part03.rs");
+include!("app_state_impl_parts/part20.rs");
 include!("app_state_impl_parts/part05.rs");
 include!("app_state_impl_parts/part04.rs");
 pub(crate) mod governance;
@@ -1057,22 +1118,67 @@ async fn archive_automation_v2_aggregate_file(active_path: &Path) -> anyhow::Res
 }
 
 async fn write_string_atomic(path: &Path, payload: &str) -> anyhow::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("state.json");
-    let temp_path = parent.join(format!(
-        ".{file_name}.tmp-{}-{}",
-        std::process::id(),
-        now_ms()
-    ));
-    fs::write(&temp_path, payload).await?;
-    if let Err(error) = fs::rename(&temp_path, path).await {
-        let _ = fs::remove_file(&temp_path).await;
-        return Err(error.into());
-    }
-    Ok(())
+    write_string_atomic_impl(
+        path,
+        payload,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) struct AtomicWriteTestGate {
+    pub(crate) started: tokio::sync::oneshot::Sender<()>,
+    pub(crate) resume: tokio::sync::oneshot::Receiver<()>,
+}
+
+async fn write_string_atomic_impl(
+    path: &Path,
+    payload: &str,
+    #[cfg(test)] gate: Option<AtomicWriteTestGate>,
+) -> anyhow::Result<()> {
+    let path = path.to_path_buf();
+    let payload = payload.to_owned();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        use std::io::Write;
+
+        #[cfg(test)]
+        if let Some(gate) = gate {
+            let _ = gate.started.send(());
+            let _ = gate.resume.blocking_recv();
+        }
+
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("state.json");
+        let temp_path = parent.join(format!(".{file_name}.tmp-{}", uuid::Uuid::new_v4()));
+        let result = (|| -> anyhow::Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temp_path)?;
+            file.write_all(payload.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&temp_path, &path)?;
+            #[cfg(unix)]
+            std::fs::File::open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+        result
+    })
+    .await?
 }
 
 async fn read_state_file_with_legacy(

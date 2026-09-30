@@ -104,6 +104,32 @@ pub(super) async fn unregister_mcp_bridge_tools_for_server(state: &AppState, nam
     state.tools.unregister_by_prefix(&prefix).await
 }
 
+pub(super) async fn delete_mcp_server_checked<E>(
+    state: &AppState,
+    name: &str,
+    tenant: &tandem_types::TenantContext,
+    authorize: impl FnOnce() -> Result<(), E>,
+) -> Result<(bool, usize), E> {
+    let _write_guard = MCP_BRIDGE_REGISTRY_LOCK.write().await;
+    let removal = state.mcp.prepare_remove_for_tenant(name, tenant).await;
+    let prefix = format!("mcp.{}.", mcp_namespace_segment(name));
+    let mut completion = None;
+    let removed_tools = state
+        .tools
+        .unregister_by_prefix_checked(&prefix, || {
+            // Both tool maps and all runtime deletion locks are now held. Check
+            // the exact grant once, immediately before the coordinated mutation.
+            completion = Some(removal.commit_checked(authorize)?);
+            Ok(())
+        })
+        .await?;
+    let removed = completion
+        .expect("successful checked removal produced cleanup")
+        .finish()
+        .await;
+    Ok((removed, removed_tools))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{sync::Arc, time::Duration};
@@ -214,5 +240,65 @@ mod tests {
         assert!(error
             .to_string()
             .contains("is no longer registered after connector resync"));
+    }
+
+    #[tokio::test]
+    async fn mcp_delete_rechecks_after_bridge_wait_and_preserves_denied_state() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let state = crate::test_support::test_state().await;
+        let name = "checked_delete_test";
+        let tenant = tandem_types::TenantContext::local_implicit();
+        state
+            .mcp
+            .add_or_update(
+                name.into(),
+                "https://example.invalid/mcp".into(),
+                Default::default(),
+                true,
+            )
+            .await;
+        let schema = ToolSchema::new("mcp.checked_delete_test.get", "test", json!({}));
+        state
+            .tools
+            .register_tool(schema.name.clone(), Arc::new(CurrentBridgeTool { schema }))
+            .await;
+        let held = super::MCP_BRIDGE_REGISTRY_LOCK.read().await;
+        let allowed = AtomicBool::new(true);
+        let deletion = super::delete_mcp_server_checked(&state, name, &tenant, || {
+            if allowed.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err("revoked")
+            }
+        });
+        tokio::pin!(deletion);
+        let first_poll = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(std::future::Future::poll(deletion.as_mut(), cx))
+        })
+        .await;
+        assert!(first_poll.is_pending());
+        allowed.store(false, Ordering::SeqCst);
+        drop(held);
+        assert_eq!(deletion.await, Err("revoked"));
+        assert!(state.mcp.list().await.contains_key(name));
+        assert!(state
+            .tools
+            .list()
+            .await
+            .iter()
+            .any(|tool| tool.name == "mcp.checked_delete_test.get"));
+        assert_eq!(
+            super::delete_mcp_server_checked(&state, name, &tenant, || Ok::<(), &str>(()))
+                .await
+                .unwrap(),
+            (true, 1)
+        );
+        assert!(!state.mcp.list().await.contains_key(name));
+        assert!(!state
+            .tools
+            .list()
+            .await
+            .iter()
+            .any(|tool| tool.name == "mcp.checked_delete_test.get"));
     }
 }

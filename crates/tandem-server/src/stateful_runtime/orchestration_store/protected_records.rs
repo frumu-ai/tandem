@@ -35,7 +35,12 @@ pub(crate) fn tenant_from_scope(
     if org_id == "local" && workspace_id == "local" && deployment_id.is_none() {
         TenantContext::local_implicit()
     } else {
-        TenantContext::explicit(org_id, workspace_id, deployment_id)
+        // `explicit` accepts an actor ID, not a deployment ID. Store rows are
+        // actor-independent, but their deployment is part of the protected
+        // record binding and must survive scoped decode.
+        let mut tenant = TenantContext::explicit(org_id, workspace_id, None);
+        tenant.deployment_id = deployment_id;
+        tenant
     }
 }
 

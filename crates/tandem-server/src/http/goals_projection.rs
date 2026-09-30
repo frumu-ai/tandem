@@ -59,10 +59,27 @@ pub(super) async fn get_goal_projection(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
     Query(query): Query<GoalProjectionQuery>,
 ) -> Response {
-    match build_projection(&state, &tenant, &principal, &goal_id, query).await {
+    let store = match super::goals_api::goal_store(&state) {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let goal = match super::goals_api::load_visible_goal(
+        &state,
+        &store,
+        &tenant,
+        verified.as_deref(),
+        &goal_id,
+    )
+    .await
+    {
+        Ok(goal) => goal,
+        Err(response) => return response,
+    };
+    match build_projection(&state, &tenant, &principal, &goal_id, query, Some(goal)).await {
         Ok(projection) => Json(projection).into_response(),
         Err(response) => response,
     }
@@ -92,14 +109,6 @@ pub(super) async fn dispatch_goal_action(
         );
     }
 
-    let store = match super::goals_api::goal_store(&state) {
-        Ok(store) => store,
-        Err(response) => return response,
-    };
-    let goal = match super::goals_api::load_tenant_goal(&store, &tenant, &goal_id) {
-        Ok(goal) => goal,
-        Err(response) => return response,
-    };
     let verified = verified_tenant.as_deref();
     let actor = super::goals_api::effective_actor(&principal, verified);
     let approval_action = (action_id.starts_with("handoff:") || action_id.starts_with("approval:"))
@@ -113,13 +122,21 @@ pub(super) async fn dispatch_goal_action(
         None
     };
     if let Err(response) =
-        super::goals_api::require_goal_authority(&tenant, verified, required_capability)
+        super::goals_api::require_goal_authority(&state, &tenant, verified, required_capability)
     {
         return response;
     }
+    let store = match super::goals_api::goal_store(&state) {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let goal = match super::goals_api::load_tenant_goal(&store, &tenant, &goal_id) {
+        Ok(goal) => goal,
+        Err(response) => return response,
+    };
     if !approval_action && !wait_resolution_action {
         if let Err(response) =
-            super::goals_api::require_goal_owner(&tenant, verified, &goal, &actor)
+            super::goals_api::require_goal_owner(&state, &tenant, verified, &goal, &actor)
         {
             return response;
         }
@@ -511,6 +528,7 @@ async fn action_response(
         principal,
         goal_id,
         GoalProjectionQuery::default(),
+        None,
     )
     .await
     {
@@ -531,9 +549,16 @@ async fn build_projection(
     principal: &RequestPrincipal,
     goal_id: &str,
     query: GoalProjectionQuery,
+    authorized_goal: Option<LongRunningGoal>,
 ) -> Result<Value, Response> {
     let store = super::goals_api::goal_store(state)?;
-    let live_goal = super::goals_api::load_tenant_goal(&store, tenant, goal_id)?;
+    // GET supplies an actor-authorized goal. Action responses are reached only
+    // after the owner or named reviewer mutation check above, so reviewers
+    // retain their existing full response contract without a second GET gate.
+    let live_goal = match authorized_goal {
+        Some(goal) => goal,
+        None => super::goals_api::load_tenant_goal(&store, tenant, goal_id)?,
+    };
     let (retained_from_cursor, live_cursor) = store
         .goal_event_cursor_bounds_for_tenant(tenant, goal_id)
         .map_err(|error| super::goals_api::goal_error_response(&error))?

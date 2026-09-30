@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path as StdPath, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
-use tokio_stream::{wrappers::BroadcastStream, StreamExt};
+use tokio_stream::StreamExt;
 
 use super::*;
 use crate::action_authorization::{
@@ -545,9 +545,49 @@ pub(crate) fn sanitize_relative_subpath(raw: Option<&str>) -> Result<PathBuf, St
     Ok(candidate)
 }
 
+fn authorize_storage_inventory_read(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    locality: super::host_authority::RequestLocality,
+) -> Result<(), StatusCode> {
+    match state
+        .enterprise
+        .hosted_policy
+        .current()
+        .map_err(|_| StatusCode::FORBIDDEN)?
+    {
+        Some(_) => {
+            let verified = verified.ok_or(StatusCode::FORBIDDEN)?;
+            let actor = verified.human_actor.actor_id.trim();
+            if actor.is_empty()
+                || verified.is_expired_at(crate::now_ms())
+                || !tenant_matches(tenant, &verified.tenant_context)
+                || tenant.actor_id.as_deref() != Some(actor)
+            {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            state
+                .authorize_current_hosted_admin(verified)
+                .map_err(|_| StatusCode::FORBIDDEN)
+        }
+        None => {
+            if !locality.is_direct_loopback() || verified.is_some() || !tenant.is_local_implicit() {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            super::host_authority::require_loopback_local_operator(state, tenant, None)
+        }
+    }
+}
+
 pub(super) async fn global_storage_files(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(locality): Extension<super::host_authority::RequestLocality>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Query(query): Query<StorageFilesQuery>,
 ) -> Result<Json<Value>, StatusCode> {
+    authorize_storage_inventory_read(&state, &tenant, verified.as_deref(), locality)?;
     let root = resolve_storage_list_root();
     let rel = sanitize_relative_subpath(query.path.as_deref())?;
     let base = if rel.as_os_str().is_empty() {
@@ -599,6 +639,9 @@ pub(super) async fn global_storage_files(
         }
     }
 
+    // A policy replacement can occur on another thread during the filesystem
+    // walk. Do not return the inventory under a revoked hosted admin grant.
+    authorize_storage_inventory_read(&state, &tenant, verified.as_deref(), locality)?;
     Ok(Json(json!({
         "root": root.to_string_lossy(),
         "base": base.to_string_lossy(),
@@ -615,10 +658,10 @@ pub(super) fn event_visible_to_tenant(event: &EngineEvent, request_tenant: &Tena
 fn sse_stream(
     state: AppState,
     request_tenant: TenantContext,
+    verified: Option<tandem_types::VerifiedTenantContext>,
     filter: EventFilterQuery,
 ) -> impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>
 {
-    let rx = state.event_bus.subscribe();
     let initial = tokio_stream::once(Ok(axum::response::sse::Event::default().data(
         serde_json::to_string(&EngineEvent::new("server.connected", json!({}))).unwrap_or_default(),
     )));
@@ -633,50 +676,61 @@ fn sse_stream(
         ))
         .unwrap_or_default(),
     )));
-    let live = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event) => {
-            if !event_matches_filter(&event, &filter) {
-                return None;
-            }
-            if !event_visible_to_tenant(&event, &request_tenant) {
-                return None;
-            }
-            let normalized = if let Some(run_id) = filter.run_id.as_deref() {
-                let session_hint = filter
-                    .session_id
-                    .as_deref()
-                    .or_else(|| {
-                        event
-                            .properties
-                            .get("sessionID")
-                            .or_else(|| event.properties.get("sessionId"))
-                            .and_then(|v| v.as_str())
-                    })
-                    .unwrap_or_default()
-                    .to_string();
-                let tenant_context = event_tenant_context(&event);
-                normalize_run_event(event, &session_hint, run_id, &tenant_context)
-            } else {
-                event
-            };
-            let payload = serde_json::to_string(&normalized).unwrap_or_default();
-            let payload = truncate_for_stream(&payload, 16_000);
-            Some(Ok(axum::response::sse::Event::default().data(payload)))
+    let live = super::event_stream_authority::subscribe(
+        state.clone(),
+        request_tenant.clone(),
+        verified.clone(),
+    )
+    .filter_map(move |event| {
+        if !event_matches_filter(&event, &filter) {
+            return None;
         }
-        Err(_) => None,
+        let normalized = if let Some(run_id) = filter.run_id.as_deref() {
+            let session_hint = filter
+                .session_id
+                .as_deref()
+                .or_else(|| {
+                    event
+                        .properties
+                        .get("sessionID")
+                        .or_else(|| event.properties.get("sessionId"))
+                        .and_then(|v| v.as_str())
+                })
+                .unwrap_or_default()
+                .to_string();
+            let tenant_context = event_tenant_context(&event);
+            normalize_run_event(event, &session_hint, run_id, &tenant_context)
+        } else {
+            event
+        };
+        let payload = serde_json::to_string(&normalized).unwrap_or_default();
+        let payload = truncate_for_stream(&payload, 16_000);
+        Some(Ok(axum::response::sse::Event::default().data(payload)))
     });
-    initial.chain(ready).chain(live)
+    super::event_stream_authority::guard(
+        initial.chain(ready).chain(live),
+        state,
+        request_tenant,
+        verified,
+        None,
+    )
 }
 
 pub(super) async fn events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Query(filter): Query<EventFilterQuery>,
 ) -> axum::response::Sse<
     impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
 > {
-    axum::response::Sse::new(sse_stream(state, tenant_context, filter))
-        .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10)))
+    axum::response::Sse::new(sse_stream(
+        state,
+        tenant_context,
+        verified.map(|Extension(value)| value),
+        filter,
+    ))
+    .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10)))
 }
 
 fn event_matches_filter(event: &EngineEvent, filter: &EventFilterQuery) -> bool {
@@ -767,6 +821,7 @@ pub(super) async fn execute_tool(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
+    request_locality: Option<Extension<super::host_authority::RequestLocality>>,
     Json(input): Json<ToolExecutionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let mut args = input.args.unwrap_or_else(|| json!({}));
@@ -779,12 +834,16 @@ pub(super) async fn execute_tool(
             );
         }
     }
-    let mut dispatch_context = state.untrusted_tool_dispatch_context(
-        tandem_tools::ToolDispatchSource::new("http_global_tool")
-            .request(Uuid::new_v4().to_string()),
-        tenant_context,
-        crate::config::channels::normalize_allowed_tools(input.scope_allowlist),
-    );
+    let mut dispatch_context = state
+        .untrusted_tool_dispatch_context(
+            tandem_tools::ToolDispatchSource::new("http_global_tool")
+                .request(Uuid::new_v4().to_string()),
+            tenant_context,
+            crate::config::channels::normalize_allowed_tools(input.scope_allowlist),
+        )
+        .with_direct_loopback_http_request(
+            request_locality.is_some_and(|value| value.0.is_direct_loopback()),
+        );
     if let Some(verified_tenant_context) = verified_tenant_context {
         dispatch_context = dispatch_context.with_verified_tenant_context(verified_tenant_context);
     }
@@ -926,25 +985,26 @@ pub(super) async fn instance_dispose() -> Json<Value> {
 pub(super) async fn run_events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Some(session_id) = state.run_registry.session_for_run(&id).await {
-        let Some(session) = state.storage.get_session(&session_id).await else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        if ensure_same_tenant(&tenant_context, &session.tenant_context).is_err() {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-    } else if let Ok(run) = super::context_runs::load_context_run_state(&state, &id).await {
-        if ensure_same_tenant(&tenant_context, &run.tenant_context).is_err() {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-    } else {
+    let verified = verified.map(|Extension(value)| value);
+    let Some(resource) =
+        super::context_run_authority::resolve_run_stream_resource(&state, &id).await
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !super::context_run_authority::run_stream_resource_visible(
+        &state,
+        &tenant_context,
+        verified.as_ref(),
+        &resource,
+    )
+    .await
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let rx = state.event_bus.subscribe();
-    let stream_tenant = tenant_context.clone();
     let stream_run_id = id.clone();
     let initial = tokio_stream::once(Ok::<_, std::convert::Infallible>(
         axum::response::sse::Event::default().data(
@@ -955,25 +1015,32 @@ pub(super) async fn run_events(
             .unwrap_or_default(),
         ),
     ));
-    let live = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event) => {
-            let event_run = event
-                .properties
-                .get("runID")
-                .or_else(|| event.properties.get("run_id"))
-                .and_then(|v| v.as_str());
-            if event_run == Some(stream_run_id.as_str())
-                && event_visible_to_tenant(&event, &stream_tenant)
-            {
-                let payload = serde_json::to_string(&event).unwrap_or_default();
-                Some(Ok(axum::response::sse::Event::default().data(payload)))
-            } else {
-                None
-            }
+    let live = super::event_stream_authority::subscribe(
+        state.clone(),
+        tenant_context.clone(),
+        verified.clone(),
+    )
+    .filter_map(move |event| {
+        let event_run = event
+            .properties
+            .get("runID")
+            .or_else(|| event.properties.get("run_id"))
+            .and_then(|v| v.as_str());
+        if event_run == Some(stream_run_id.as_str()) {
+            let payload = serde_json::to_string(&event).unwrap_or_default();
+            Some(Ok(axum::response::sse::Event::default().data(payload)))
+        } else {
+            None
         }
-        Err(_) => None,
     });
-    axum::response::Sse::new(initial.chain(live))
+    let stream = super::event_stream_authority::guard_run(
+        initial.chain(live),
+        state,
+        tenant_context,
+        verified,
+        resource,
+    );
+    axum::response::Sse::new(stream)
         .keep_alive(
             axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(10)),
         )
@@ -983,19 +1050,37 @@ pub(super) async fn run_events(
 pub(super) async fn list_projects(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
-) -> Json<Value> {
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Result<Json<Value>, StatusCode> {
+    super::require_current_hosted_permission(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        tandem_types::AccessPermission::HostedUse,
+    )?;
     let sessions = state
         .storage
         .list_sessions_scoped(tandem_core::SessionListScope::Global)
         .await;
     let mut directories = sessions
         .iter()
-        .filter(|s| tenant_matches(&tenant_context, &s.tenant_context))
+        .filter(|s| {
+            super::sessions_actor_scope::session_visible_to_actor(
+                &tenant_context,
+                &s.tenant_context,
+            )
+        })
         .map(|s| s.directory.clone())
         .collect::<Vec<_>>();
     directories.sort();
     directories.dedup();
-    Json(json!(directories))
+    super::require_current_hosted_permission(
+        &state,
+        &tenant_context,
+        verified.as_deref(),
+        tandem_types::AccessPermission::HostedUse,
+    )?;
+    Ok(Json(json!(directories)))
 }
 
 pub(super) async fn push_log(

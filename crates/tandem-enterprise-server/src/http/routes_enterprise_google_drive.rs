@@ -34,9 +34,9 @@ use super::routes_enterprise::{
     bad_request, connector_for_tenant, emit_source_binding_cache_invalidation_required,
     enterprise_ingestion_job_key, internal_error, invalidate_response_cache_for_source_binding,
     memory_tenant_scope, persist_enterprise_ingestion_jobs,
-    persist_enterprise_ingestion_quarantines, require_enterprise_admin, serialize_data_class,
-    source_binding_for_tenant, storage_base, validate_enterprise_id, EnterpriseAdminResponseBase,
-    EnterpriseResult,
+    persist_enterprise_ingestion_quarantines, require_current_enterprise_admin,
+    require_enterprise_admin, serialize_data_class, source_binding_for_tenant, storage_base,
+    validate_enterprise_id, EnterpriseAdminResponseBase, EnterpriseResult,
 };
 
 #[derive(Debug, Serialize)]
@@ -321,7 +321,12 @@ async fn run_google_drive_import_operation(
             finished_at_ms: Some(now_ms()),
             quarantine_id: None,
         };
-        record_enterprise_ingestion_job(&state, completed_job.clone()).await?;
+        record_enterprise_ingestion_job(
+            &state,
+            completed_job.clone(),
+            Some((&request_principal, verified_tenant_context.as_deref())),
+        )
+        .await?;
         return Ok(Json(EnterpriseGoogleDriveImportResponse {
             base: storage_base(tenant_context, request_principal),
             binding_id: binding.binding_id,
@@ -373,7 +378,16 @@ async fn run_google_drive_import_operation(
         finished_at_ms: None,
         quarantine_id: None,
     };
-    record_enterprise_ingestion_job(&state, running_job).await?;
+    if let Err(error) = record_enterprise_ingestion_job(
+        &state,
+        running_job.clone(),
+        Some((&request_principal, verified_tenant_context.as_deref())),
+    )
+    .await
+    {
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        return Err(error);
+    }
 
     let import_request = MemoryImportRequest {
         root_path: temp_dir.display().to_string(),
@@ -386,6 +400,26 @@ async fn run_google_drive_import_operation(
         sync_deletes: effective_sync_deletes,
         import_namespace: Some(format!("google-drive-{}", binding.binding_id)),
     };
+    // The import and any required quarantine/final job status form one admitted
+    // operation. Recheck after staging, before its first indexed-content write.
+    if let Err(error) = require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    ) {
+        let _ = record_enterprise_ingestion_job(
+            &state,
+            IngestionJob {
+                state: IngestionJobState::Skipped,
+                finished_at_ms: Some(now_ms()),
+                ..running_job
+            },
+            None,
+        )
+        .await;
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        return Err(error);
+    }
     let stats = match import_files(
         &memory_manager,
         &import_request,
@@ -465,7 +499,7 @@ async fn run_google_drive_import_operation(
         finished_at_ms: Some(now_ms()),
         quarantine_id,
     };
-    record_enterprise_ingestion_job(&state, completed_job.clone()).await?;
+    record_enterprise_ingestion_job(&state, completed_job.clone(), None).await?;
     emit_source_binding_cache_invalidation_required(
         &state,
         &tenant_context,
@@ -577,8 +611,12 @@ fn memory_import_source_binding_from_enterprise(
 async fn record_enterprise_ingestion_job(
     state: &AppState,
     job: IngestionJob,
+    authority: Option<(&RequestPrincipal, Option<&VerifiedTenantContext>)>,
 ) -> Result<(), (StatusCode, Json<Value>)> {
     let mut registry = state.enterprise.ingestion_jobs.write().await;
+    if let Some((request_principal, verified)) = authority {
+        require_current_enterprise_admin(state, request_principal, verified)?;
+    }
     let key = enterprise_ingestion_job_key(&job);
     registry.insert(key, job);
     persist_enterprise_ingestion_jobs(&state.enterprise.ingestion_jobs_path, &registry).await

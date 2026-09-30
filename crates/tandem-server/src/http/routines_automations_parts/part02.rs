@@ -107,12 +107,10 @@ fn hosted_context_admin(verified: Option<&VerifiedTenantContext>) -> bool {
                 | "workspace:admin"
                 | "organization:admin"
         )
-    }) || verified.capabilities.iter().any(|capability| {
-        matches!(
-            capability.as_str(),
-            "hosted.owner" | "hosted.admin" | "automation.write" | "automation.share"
-        )
-    })
+    }) || verified
+        .capabilities
+        .iter()
+        .any(|capability| matches!(capability.as_str(), "hosted.owner" | "hosted.admin"))
 }
 
 fn hosted_context_actor_id(verified: Option<&VerifiedTenantContext>) -> Option<&str> {
@@ -141,8 +139,21 @@ fn automation_v2_access_owner(automation: &AutomationV2Spec) -> Option<&str> {
     automation_v2_access_metadata(automation)
         .and_then(|metadata| metadata.get("owner_principal"))
         .and_then(Value::as_object)
+        .filter(|owner| {
+            owner
+                .get("kind")
+                .is_none_or(|kind| kind.as_str() == Some("human_user"))
+        })
         .and_then(|owner| owner.get("id"))
         .and_then(Value::as_str)
+}
+
+pub(crate) fn automation_v2_object_owner(automation: &AutomationV2Spec) -> Option<String> {
+    if automation_v2_access_metadata(automation).is_some() {
+        automation_v2_access_owner(automation).map(ToOwned::to_owned)
+    } else {
+        automation.tenant_context().actor_id
+    }
 }
 
 fn automation_v2_access_audiences(automation: &AutomationV2Spec) -> Vec<String> {
@@ -162,7 +173,7 @@ pub(super) fn automation_v2_visible_to_context(
     automation: &AutomationV2Spec,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
-    if verified.is_none() || automation_v2_access_metadata(automation).is_none() {
+    if verified.is_none() {
         return true;
     }
     if hosted_context_admin(verified) {
@@ -171,8 +182,11 @@ pub(super) fn automation_v2_visible_to_context(
     let Some(actor_id) = hosted_context_actor_id(verified) else {
         return false;
     };
-    if automation_v2_access_owner(automation) == Some(actor_id) {
+    if automation_v2_object_owner(automation).as_deref() == Some(actor_id) {
         return true;
+    }
+    if automation_v2_access_metadata(automation).is_none() {
+        return false;
     }
     match automation_v2_access_visibility(automation).unwrap_or("private") {
         "org" => true,
@@ -204,11 +218,12 @@ fn ensure_automation_v2_owner_or_admin(
     automation: &AutomationV2Spec,
     verified: Option<&VerifiedTenantContext>,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    if verified.is_none() || automation_v2_access_metadata(automation).is_none() {
+    if verified.is_none() {
         return Ok(());
     }
     let actor_id = hosted_context_actor_id(verified);
-    if hosted_context_admin(verified) || actor_id == automation_v2_access_owner(automation) {
+    let owner = automation_v2_object_owner(automation);
+    if hosted_context_admin(verified) || actor_id == owner.as_deref() {
         Ok(())
     } else {
         Err((
@@ -305,10 +320,8 @@ fn apply_automation_v2_share_metadata(
         .or_else(|| automation_v2_access_owner(automation))
         .unwrap_or("unknown")
         .to_string();
-    let owner_id = automation_v2_access_owner(automation)
-        .or_else(|| hosted_context_actor_id(verified))
-        .unwrap_or(&automation.creator_id)
-        .to_string();
+    let owner_id =
+        automation_v2_object_owner(automation).unwrap_or_else(|| automation.creator_id.clone());
     let audience = input.audience_principals.unwrap_or_default();
     let mut obj = automation
         .metadata
@@ -334,6 +347,7 @@ fn apply_automation_v2_share_metadata(
 pub(super) async fn automations_patch(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
     Json(input): Json<AutomationPatchInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -379,79 +393,85 @@ pub(super) async fn automations_patch(
                 })),
             )
         })?;
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let updated = state
-        .update_routine_for_tenant(&id, &tenant_context, move |routine| {
-            if let Some(name) = input.name {
-                routine.name = name;
-            }
-            if let Some(status) = input.status {
-                routine.status = status;
-            }
-            if let Some(schedule) = input.schedule {
-                routine.schedule = schedule;
-            }
-            if let Some(timezone) = input.timezone {
-                routine.timezone = timezone;
-            }
-            if let Some(misfire_policy) = input.misfire_policy {
-                routine.misfire_policy = misfire_policy;
-            }
-            if let Some(next_fire_at_ms) = input.next_fire_at_ms {
-                routine.next_fire_at_ms = Some(next_fire_at_ms);
-            }
-            if let Some(output_targets) = input.output_targets {
-                routine.output_targets = output_targets;
-            }
-            if let Some(model_policy) = input.model_policy {
-                let mut args = routine.args.as_object().cloned().unwrap_or_default();
-                if model_policy.as_object().is_some_and(|obj| obj.is_empty()) {
-                    args.remove("model_policy");
-                } else {
-                    args.insert("model_policy".to_string(), model_policy);
+        .update_routine_for_tenant_checked(
+            &id,
+            &tenant_context,
+            |routine| state.legacy_routine_write_allowed(&tenant_context, verified, Some(routine)),
+            move |routine| {
+                if let Some(name) = input.name {
+                    routine.name = name;
                 }
-                routine.args = Value::Object(args);
-            }
-            if let Some(policy) = input.policy {
-                if let Some(allowed) = policy.tool.run_allowlist {
-                    routine.allowed_tools = allowed;
+                if let Some(status) = input.status {
+                    routine.status = status;
                 }
-                if let Some(external_allowed) = policy.tool.external_integrations_allowed {
-                    routine.external_integrations_allowed = external_allowed;
+                if let Some(schedule) = input.schedule {
+                    routine.schedule = schedule;
                 }
-                if let Some(requires_approval) = policy.approval.requires_approval {
-                    routine.requires_approval = requires_approval;
+                if let Some(timezone) = input.timezone {
+                    routine.timezone = timezone;
                 }
-                if let Some(orchestrator_only) = policy.tool.orchestrator_only_tool_calls {
+                if let Some(misfire_policy) = input.misfire_policy {
+                    routine.misfire_policy = misfire_policy;
+                }
+                if let Some(next_fire_at_ms) = input.next_fire_at_ms {
+                    routine.next_fire_at_ms = Some(next_fire_at_ms);
+                }
+                if let Some(output_targets) = input.output_targets {
+                    routine.output_targets = output_targets;
+                }
+                if let Some(model_policy) = input.model_policy {
                     let mut args = routine.args.as_object().cloned().unwrap_or_default();
-                    args.insert(
-                        "orchestrator_only_tool_calls".to_string(),
-                        Value::Bool(orchestrator_only),
-                    );
+                    if model_policy.as_object().is_some_and(|obj| obj.is_empty()) {
+                        args.remove("model_policy");
+                    } else {
+                        args.insert("model_policy".to_string(), model_policy);
+                    }
                     routine.args = Value::Object(args);
                 }
-            }
-            if let Some(normalized_mode) = normalized_mode {
-                let mut args = routine.args.as_object().cloned().unwrap_or_default();
-                args.insert("mode".to_string(), Value::String(normalized_mode));
-                routine.args = Value::Object(args);
-            }
-            if let Some(mission) = input.mission {
-                let mut args = routine.args.as_object().cloned().unwrap_or_default();
-                if let Some(objective) = mission.objective {
-                    args.insert("prompt".to_string(), Value::String(objective));
+                if let Some(policy) = input.policy {
+                    if let Some(allowed) = policy.tool.run_allowlist {
+                        routine.allowed_tools = allowed;
+                    }
+                    if let Some(external_allowed) = policy.tool.external_integrations_allowed {
+                        routine.external_integrations_allowed = external_allowed;
+                    }
+                    if let Some(requires_approval) = policy.approval.requires_approval {
+                        routine.requires_approval = requires_approval;
+                    }
+                    if let Some(orchestrator_only) = policy.tool.orchestrator_only_tool_calls {
+                        let mut args = routine.args.as_object().cloned().unwrap_or_default();
+                        args.insert(
+                            "orchestrator_only_tool_calls".to_string(),
+                            Value::Bool(orchestrator_only),
+                        );
+                        routine.args = Value::Object(args);
+                    }
                 }
-                if let Some(success_criteria) = mission.success_criteria {
-                    args.insert("success_criteria".to_string(), json!(success_criteria));
+                if let Some(normalized_mode) = normalized_mode {
+                    let mut args = routine.args.as_object().cloned().unwrap_or_default();
+                    args.insert("mode".to_string(), Value::String(normalized_mode));
+                    routine.args = Value::Object(args);
                 }
-                if let Some(briefing) = mission.briefing {
-                    args.insert("briefing".to_string(), Value::String(briefing));
+                if let Some(mission) = input.mission {
+                    let mut args = routine.args.as_object().cloned().unwrap_or_default();
+                    if let Some(objective) = mission.objective {
+                        args.insert("prompt".to_string(), Value::String(objective));
+                    }
+                    if let Some(success_criteria) = mission.success_criteria {
+                        args.insert("success_criteria".to_string(), json!(success_criteria));
+                    }
+                    if let Some(briefing) = mission.briefing {
+                        args.insert("briefing".to_string(), Value::String(briefing));
+                    }
+                    if let Some(entrypoint) = mission.entrypoint_compat {
+                        routine.entrypoint = entrypoint;
+                    }
+                    routine.args = Value::Object(args);
                 }
-                if let Some(entrypoint) = mission.entrypoint_compat {
-                    routine.entrypoint = entrypoint;
-                }
-                routine.args = Value::Object(args);
-            }
-        })
+            },
+        )
         .await
         .map_err(routine_error_response)?
         .ok_or_else(|| {
@@ -472,10 +492,14 @@ pub(super) async fn automations_patch(
 pub(super) async fn automations_delete(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let deleted = state
-        .delete_routine_for_tenant(&id, &tenant_context)
+        .delete_routine_for_tenant_checked(&id, &tenant_context, |routine| {
+            state.legacy_routine_write_allowed(&tenant_context, verified, Some(routine))
+        })
         .await
         .map_err(routine_error_response)?
         .ok_or_else(|| {
@@ -938,13 +962,20 @@ fn automations_sse_stream(
 pub(super) async fn automations_events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<AutomationEventsQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    Sse::new(automations_sse_stream(
-        state,
+    let stream = automations_sse_stream(
+        state.clone(),
         query.automation_id,
         query.run_id,
+        tenant_context.clone(),
+    );
+    Sse::new(guard_automation_events(
+        stream,
+        state,
         tenant_context,
+        verified.map(|Extension(value)| value),
     ))
     .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
 }
@@ -1205,15 +1236,28 @@ pub(super) async fn automations_v2_create(
         automation.metadata.as_ref(),
     )
     .await?;
-    let stored = state.put_automation_v2(automation).await.map_err(|error| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": error.to_string(),
-                "code": "AUTOMATION_V2_CREATE_FAILED",
-            })),
-        )
-    })?;
+    let stored = state
+        .put_automation_v2_checked(automation, |existing| {
+            if existing.is_some() {
+                anyhow::bail!("automation id already exists");
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| {
+            let conflict = error.to_string() == "automation id already exists";
+            (
+                if conflict {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": if conflict { "AUTOMATION_V2_ID_CONFLICT" } else { "AUTOMATION_V2_CREATE_FAILED" },
+                })),
+            )
+        })?;
     let _ = state
         .set_automation_governance_provenance(&stored.automation_id, provenance.clone())
         .await;
@@ -1315,7 +1359,9 @@ pub(super) async fn automations_v2_patch(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
+        state
+            .can_mutate_automation(&id, &actor, false, &tenant_context)
+            .await,
     )
     .await?;
     let previous_declared_capabilities = governance.declared_capabilities.clone();
@@ -1366,7 +1412,16 @@ pub(super) async fn automations_v2_patch(
         input.metadata.or_else(|| current_metadata),
         input.capabilities,
     )?;
-    automation.set_tenant_context(&tenant_context);
+    automation.set_tenant_context(&before.tenant_context());
+    if automation_v2_object_owner(&automation) != automation_v2_object_owner(&before) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Automation owner cannot be changed by patch",
+                "code": "AUTOMATION_V2_OWNER_IMMUTABLE",
+            })),
+        ));
+    }
     automation.stamp_enterprise_scope_metadata();
     if let Some(scope_policy) = input.scope_policy {
         automation.scope_policy = Some(scope_policy);
@@ -1489,7 +1544,9 @@ pub(super) async fn automations_v2_share(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
+        state
+            .can_mutate_automation(&id, &actor, false, &tenant_context)
+            .await,
     )
     .await?;
     apply_automation_v2_share_metadata(&mut automation, input, verified)?;
@@ -1549,7 +1606,9 @@ pub(super) async fn automations_v2_delete(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, true, &tenant_context).await,
+        state
+            .can_mutate_automation(&id, &actor, true, &tenant_context)
+            .await,
     )
     .await?;
     let deleted = state
@@ -1614,7 +1673,9 @@ pub(super) async fn automations_v2_run_now(
         &tenant_context,
         &id,
         &actor,
-        state.can_mutate_automation(&id, &actor, false, &tenant_context).await,
+        state
+            .can_mutate_automation(&id, &actor, false, &tenant_context)
+            .await,
     )
     .await?;
     let dry_run = input.dry_run;

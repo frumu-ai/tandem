@@ -7,6 +7,9 @@ use serde_json::Value;
 use serial_test::serial;
 use tandem_types::{AuthorityChain, HumanActor, OrganizationUnitState, TenantSource};
 
+#[path = "tests/middleware_hosted_session_tests.rs"]
+mod hosted_session_tests;
+
 #[test]
 fn resolve_enterprise_request_context_defaults_to_local_tenant() {
     let headers = HeaderMap::new();
@@ -1175,7 +1178,7 @@ fn test_claims(issued_at_ms: u64, expires_at_ms: u64) -> TenantContextAssertionC
     )
 }
 
-fn sign_test_context_assertion(
+pub(super) fn sign_test_context_assertion(
     signing_key: &ed25519_dalek::SigningKey,
     kid: &str,
     claims: TenantContextAssertionClaims,
