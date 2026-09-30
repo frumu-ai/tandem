@@ -437,14 +437,16 @@ pub fn resolve_model_profile(
             .checked_add(1)
             .ok_or_else(|| blocked("model_route_limit", &class))?;
         if evaluations > limits.max_route_evaluations {
-            return Err(blocked("model_route_limit", &class));
+            last_error = blocked("model_route_limit", &class);
+            continue;
         }
         let deadline = input
             .started_at_ms
             .checked_add(limits.max_latency_ms)
             .ok_or_else(|| blocked("model_latency_limit", &class))?;
         if input.now_ms >= deadline {
-            return Err(blocked("model_latency_limit", &class));
+            last_error = blocked("model_latency_limit", &class);
+            continue;
         }
         evaluated.push(class.clone());
         let route = input

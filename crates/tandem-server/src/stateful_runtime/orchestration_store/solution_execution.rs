@@ -103,7 +103,10 @@ pub(super) fn validate(
             && claim.lease_epoch == execution.lease_epoch
             && active.execution_claim_epoch == execution.lease_epoch
             && claim.claimed_at_ms <= now_ms
-            && !claim.is_expired(now_ms),
+            && (!claim.is_expired(now_ms)
+                || crate::automation_v2::run_claim_progress::run_has_execution_progress(
+                    &active, claim,
+                )),
         "solution execution claim expired or changed"
     );
     let mut current = link(executor, tenant, &execution.run_id)?;

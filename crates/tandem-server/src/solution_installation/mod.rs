@@ -9,6 +9,8 @@ pub(crate) use model_accounts::scope_model_account_observation;
 pub use model_accounts::SolutionModelAccount;
 mod staging;
 pub use staging::SolutionStagingRequest;
+#[cfg(test)]
+pub(crate) use staging::{text_template_from_artifact, validate_staging_plan};
 
 use anyhow::ensure;
 use serde::{Deserialize, Serialize};

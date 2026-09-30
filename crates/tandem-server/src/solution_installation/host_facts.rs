@@ -2,13 +2,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{ensure, Context};
 use serde::{Deserialize, Serialize};
-use tandem_enterprise_contract::{AccessDecision, AccessPermission, VerifiedTenantContext};
+use tandem_enterprise_contract::{
+    AccessDecision, AccessPermission, OrganizationUnit, VerifiedTenantContext,
+};
 use tandem_solutions::{
     canonical_json, sha256, validate_customer_config_scope, ConnectorBinding, Constraints,
     CustomerConfigInput, CustomerScope, ModelBinding,
 };
 
 use crate::AppState;
+
+#[cfg(test)]
+#[path = "host_facts_tests.rs"]
+mod tests;
 
 /// This section is read only from the existing operator ConfigStore. It is
 /// never accepted as an API argument or inside customer configuration.
@@ -65,6 +71,17 @@ impl HostFacts {
             approved_projects: &self.projects,
         }
     }
+}
+
+fn approved_org_units(
+    context: &VerifiedTenantContext,
+    units: &[OrganizationUnit],
+) -> BTreeSet<String> {
+    units
+        .iter()
+        .filter(|unit| unit.state.is_active() && context.org_units.contains(&unit.unit_id))
+        .map(|unit| unit.unit_id.clone())
+        .collect()
 }
 
 impl AppState {
@@ -138,8 +155,8 @@ impl AppState {
             // including its reviewed revision and actual loaded credential.
             // Unrelated denied bindings are omitted; the resolver will reject
             // a selected binding that is absent. Metadata alone grants nothing.
-            if binding.account.is_some()
-                && self
+            if binding.account.is_some() {
+                if self
                     .authorize_solution_model_account_binding(
                         verified,
                         scope,
@@ -148,8 +165,23 @@ impl AppState {
                     )
                     .await
                     .is_err()
-            {
-                continue;
+                {
+                    continue;
+                }
+                // Credential lookup can wait while the registry is reloaded.
+                // Do not combine its current account authorization with an old
+                // route or model catalog from the initiating snapshot.
+                let current_providers = self.providers.installation_models().await;
+                let current_matches: Vec<_> = current_providers
+                    .iter()
+                    .filter(|(current, _)| current.id == binding.provider_id)
+                    .collect();
+                if current_matches.len() != 1
+                    || current_matches[0].1.as_ref() != Some(metadata)
+                    || canonical_json(&current_matches[0].0)? != canonical_json(info)?
+                {
+                    continue;
+                }
             }
             models.insert(
                 binding_id.clone(),
@@ -167,12 +199,10 @@ impl AppState {
             .enterprise_org_unit_view(tenant)
             .await
             .map_err(anyhow::Error::msg)?;
-        let units: BTreeSet<_> = view
-            .units
-            .iter()
-            .filter(|unit| unit.state.is_active())
-            .map(|unit| unit.unit_id.clone())
-            .collect();
+        // A deployment admin is not automatically a member of every unit.
+        // Only the caller's currently projected active memberships can bind
+        // department-shared solution memory.
+        let units = approved_org_units(&context, &view.units);
         let mut references = BTreeSet::from([format!("profile-ref:{}", scope.org_id)]);
         let mut projects = BTreeSet::new();
         let mut sources = BTreeMap::new();

@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
+
 use anyhow::{ensure, Context};
 use serde::Deserialize;
-use tandem_enterprise_contract::{AccessPermission, VerifiedTenantContext};
+use tandem_enterprise_contract::{AccessPermission, TenantContext, VerifiedTenantContext};
 use tandem_orchestrator::{AgentTemplate, SolutionTemplateOwner};
-use tandem_solutions::{ComponentKind, CustomerScope};
+use tandem_solutions::{ComponentKind, CustomerScope, ResolvedPlan, SolutionBlueprint};
 
 use crate::stateful_runtime::orchestration_store::{
     CustomerConfigVersion, OrchestrationStateStore, SolutionComponentProgress,
@@ -31,6 +33,78 @@ enum Transition {
         attempt: String,
         fingerprint: String,
     },
+}
+
+pub(crate) fn validate_staging_plan(
+    plan: &ResolvedPlan,
+    blueprint: &SolutionBlueprint,
+    artifacts: &BTreeMap<String, Vec<u8>>,
+    tenant: &TenantContext,
+) -> anyhow::Result<()> {
+    // Only selected components need an adapter; an unselected optional entry
+    // must not prevent the supported text installation from beginning.
+    for (id, component) in &plan.components {
+        let artifact = artifacts
+            .get(id)
+            .context("signed component artifact missing")?;
+        match component.kind {
+            ComponentKind::AgentTemplate => {
+                text_template_from_artifact(artifact)?;
+                let classes = &blueprint.components[id].model_classes;
+                ensure!(
+                    classes.len() <= 1,
+                    "text adapter requires one default model class"
+                );
+                for class in classes {
+                    ensure!(
+                        plan.models.contains_key(class),
+                        "reviewed model binding missing"
+                    );
+                }
+            }
+            ComponentKind::Routine => {
+                text_routine_from_artifact(artifact, &component.resource_id, tenant)?;
+            }
+            _ => anyhow::bail!(
+                "selected component requires an installation adapter that is not available"
+            ),
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn text_template_from_artifact(artifact: &[u8]) -> anyhow::Result<AgentTemplate> {
+    let mut template: AgentTemplate = serde_json::from_slice(artifact)?;
+    ensure!(
+        template.solution_owner.is_none(),
+        "artifact must not supply installation ownership"
+    );
+    ensure!(
+        template.capabilities.tool_allowlist.is_empty()
+            && !template.capabilities.net_scopes.enabled,
+        "text agent requests unsupported capabilities"
+    );
+    // Native empty allowlists are unrestricted. Persist an explicit denial,
+    // including MCP aliases, instead of interpreting emptiness as tool-free.
+    template.capabilities.tool_denylist = vec!["*".into()];
+    template.default_budget.max_tool_calls = Some(0);
+    Ok(template)
+}
+
+fn text_routine_from_artifact(
+    artifact: &[u8],
+    resource_id: &str,
+    tenant: &TenantContext,
+) -> anyhow::Result<crate::routines::types::RoutineSpec> {
+    let routine = crate::solution_routine_from_artifact(artifact, resource_id, tenant)
+        .map_err(|error| anyhow::anyhow!("routine artifact rejected: {error:?}"))?;
+    ensure!(
+        routine.allowed_tools.is_empty()
+            && routine.output_targets.is_empty()
+            && !routine.external_integrations_allowed,
+        "text routine requests unsupported external effects"
+    );
+    Ok(routine)
 }
 
 impl AppState {
@@ -72,7 +146,7 @@ impl AppState {
                     resource_sha256: fingerprint,
                 },
             };
-            store.transition_solution_installation(
+            store.transition_solution_installation_checked(
                 SolutionInstallationInput {
                     host_facts_sha256: Some(&facts.digest),
                     configuration: facts.configuration(&request.scope),
@@ -86,6 +160,14 @@ impl AppState {
                 },
                 expected_generation,
                 transition,
+                |plan| {
+                    validate_staging_plan(
+                        plan,
+                        &pack.blueprint,
+                        &pack.artifacts,
+                        &facts.context.tenant_context,
+                    )
+                },
             )
         })
         .await?
@@ -109,13 +191,6 @@ impl AppState {
                 Transition::Begin,
             )
             .await?;
-        ensure!(
-            journal.plan.components.values().all(|component| matches!(
-                component.kind,
-                ComponentKind::AgentTemplate | ComponentKind::Routine
-            )),
-            "selected component requires an installation adapter that is not available"
-        );
         let workspace = self.workspace_index.snapshot().await.root;
         for component in journal.plan.install_order.clone() {
             let attempt = match &journal.components[&component] {
@@ -184,21 +259,14 @@ impl AppState {
                 ComponentKind::AgentTemplate => {
                     if already_staged {
                         self.agent_teams
-                            .observe_solution_template(
+                            .observe_tool_free_solution_template(
                                 &workspace,
                                 &locked.resource_id,
                                 &template_owner,
                             )
                             .await?
                     } else {
-                        let mut template: AgentTemplate = serde_json::from_slice(artifact)?;
-                        // The first text adapter is deliberately tool-free. A
-                        // future capability adapter must validate real grants.
-                        ensure!(
-                            template.capabilities.tool_allowlist.is_empty()
-                                && !template.capabilities.net_scopes.enabled,
-                            "text agent requests unsupported capabilities"
-                        );
+                        let mut template = text_template_from_artifact(artifact)?;
                         template.template_id = locked.resource_id.clone();
                         template.default_budget.max_tokens = Some(
                             template
@@ -245,18 +313,8 @@ impl AppState {
                         )
                         .await
                     } else {
-                        let mut routine = crate::solution_routine_from_artifact(
-                            artifact,
-                            &locked.resource_id,
-                            tenant,
-                        )
-                        .map_err(|error| anyhow::anyhow!("routine artifact rejected: {error:?}"))?;
-                        ensure!(
-                            routine.allowed_tools.is_empty()
-                                && routine.output_targets.is_empty()
-                                && !routine.external_integrations_allowed,
-                            "text routine requests unsupported external effects"
-                        );
+                        let mut routine =
+                            text_routine_from_artifact(artifact, &locked.resource_id, tenant)?;
                         routine.timezone = self
                             .solution_configuration_timezone(verified, &request)
                             .await?;

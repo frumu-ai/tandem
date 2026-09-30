@@ -5,7 +5,7 @@ Automation V2 run and execution claim. An arbitrary `root_run_id` in a trusted
 callback is no longer sufficient for runtime admission.
 
 Inside the budget writer transaction, the adapter reads the existing protected
-run, goal and goal-run links. It requires a running run with an unexpired claim
+run, goal and goal-run links. It requires a running run with a current claim
 matching the executor, claim ID and lease epoch; an active goal naming this run
 and orchestration node; a current deadline; and a complete parent chain to the
 claimed hop-zero root in the same tenant and goal version. Missing, cyclic,
@@ -25,9 +25,14 @@ dispatch settles the reservation at zero. Settlement for an already dispatched
 request remains possible after its goal pauses or identity expires; unknown
 usage remains reserved under the existing ledger rules.
 
-All goal children use the same protected hop-zero accounting root. Claim renewal
-with the same claim ID and epoch remains valid; takeover, claim expiration,
-paused/cancelled/finished goals and old active runs cannot continue spending.
+All goal children use the same protected hop-zero accounting root. The native
+claim lease is a launch timeout: an expired claim without started-work evidence
+cannot admit a provider attempt. A matching claim remains current after launch
+expiry when its protected run has active sessions/instances or non-bookkeeping
+lifecycle progress since claiming, using the same predicate as native abandoned
+launch reclamation. This does not create a heartbeat or extend claim ownership.
+Takeover, changed claims/epochs, paused/cancelled/finished goals, expired goal
+deadlines and old active runs cannot continue spending.
 The existing solution ledger enforces its root, daily and concurrent request
 ceilings. Existing goal policy still controls orchestration transitions.
 
