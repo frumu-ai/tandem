@@ -157,11 +157,18 @@ fn current_material(
         match entry.map(|entry| entry.get_password()) {
             Some(Ok(secret)) => {
                 let value = match kind {
-                    ProviderCredentialKind::ApiKey => json!(secret),
+                    ProviderCredentialKind::ApiKey => Ok(json!(secret)),
                     ProviderCredentialKind::Credential => serde_json::from_str(&secret)
-                        .map_err(|_| anyhow::anyhow!("invalid keychain credential"))?,
-                };
-                return normalize_material(kind, id, value).map(|value| (Some(value), true));
+                        .map_err(|_| anyhow::anyhow!("invalid keychain credential")),
+                }
+                .and_then(|value| normalize_material(kind, id, value));
+                match value {
+                    Ok(value) => return Ok((Some(value), true)),
+                    Err(error) if require_keychain => return Err(error),
+                    // Compatibility readers skip malformed optional keychain
+                    // values. A valid keychain value still takes precedence.
+                    Err(_) => {}
+                }
             }
             Some(Err(keyring::Error::NoEntry)) => {}
             _ if require_keychain => anyhow::bail!("credential keychain unavailable"),

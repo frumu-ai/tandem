@@ -6,6 +6,7 @@ pub mod executor;
 pub mod governance;
 pub mod mcp_policy;
 pub(crate) mod retry_backoff_queue;
+pub(crate) mod run_claim_progress;
 pub mod run_mutability;
 pub(crate) mod schema_validation_pause;
 pub mod types;

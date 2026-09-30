@@ -1,7 +1,10 @@
 use super::*;
 use crate::stateful_runtime::backend::{params, Executor, TransactionBehavior};
 use crate::stateful_runtime::orchestration_store::protected_records;
-use tandem_automation::{AutomationV2RunRecord, GoalRunLink, LongRunningGoal};
+use tandem_automation::{
+    AutomationLifecycleRecord, AutomationRunStatus, AutomationV2RunRecord, GoalRunLink,
+    LongRunningGoal,
+};
 
 pub(super) fn root_id(fixture: &BudgetFixture) -> String {
     format!(
@@ -92,6 +95,299 @@ fn seed_child(store: &OrchestrationStateStore, fixture: &BudgetFixture) -> Strin
         Ok(())
     }).unwrap();
     child_id
+}
+
+fn expired_execution_run(
+    store: &OrchestrationStateStore,
+    fixture: &BudgetFixture,
+) -> AutomationV2RunRecord {
+    let mut run = store
+        .get_automation_run(&root_id(fixture))
+        .unwrap()
+        .unwrap();
+    run.execution_claim.as_mut().unwrap().lease_expires_at_ms = 1500;
+    run.active_session_ids.clear();
+    run.latest_session_id = None;
+    run.active_instance_ids.clear();
+    run.checkpoint.lifecycle_history.clear();
+    run
+}
+
+fn record_execution_progress(run: &mut AutomationV2RunRecord, event: &str, recorded_at_ms: u64) {
+    run.checkpoint
+        .lifecycle_history
+        .push(AutomationLifecycleRecord {
+            event: event.into(),
+            recorded_at_ms,
+            reason: None,
+            stop_kind: None,
+            metadata: None,
+        });
+}
+
+fn assert_expired_started_claim_sends(progress: &str) {
+    encrypted(|| {
+        for_each_backend(|backend, store| {
+            let fixture = network_fixture(store, &format!("expired-started-{progress}"));
+            let approved = approval(&fixture, store);
+            let mut run = expired_execution_run(store, &fixture);
+            match progress {
+                "active-session" => {
+                    run.active_session_ids.push("current-session".into());
+                    run.latest_session_id = Some("current-session".into());
+                }
+                "active-instance" => run.active_instance_ids.push("current-instance".into()),
+                "lifecycle-progress" => {
+                    let claimed_at_ms = run.execution_claim.as_ref().unwrap().claimed_at_ms;
+                    // Progress at the exact claim timestamp is current; no live
+                    // session/instance handle is necessary between work nodes.
+                    record_execution_progress(&mut run, "node_started", claimed_at_ms);
+                }
+                _ => unreachable!(),
+            }
+            let claim = run.execution_claim.clone();
+            assert!(claim.as_ref().unwrap().is_expired(1500));
+            store.upsert_automation_runs([&run]).unwrap();
+            runtime().block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let registry = registry(listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    let (mut socket, _) =
+                        tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    assert_eq!(request(&mut socket).await["max_tokens"], 10);
+                    reply(&mut socket, true).await;
+                    listener
+                });
+                let policy = policy(store, &registry, approved, Arc::new(AtomicU64::new(1500)));
+                assert_eq!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        complete(&registry, policy),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                    "ok",
+                    "{backend}/{progress}"
+                );
+                let listener = server.await.unwrap();
+                let root = account(
+                    store,
+                    &fixture,
+                    &format!("root:{}", sha256(root_id(&fixture).as_bytes())),
+                )
+                .await;
+                assert_eq!(root["requests"], 1, "{backend}/{progress}");
+                assert_eq!(root["committed_tokens"], 5, "{backend}/{progress}");
+                assert_eq!(root["committed_cost"], 5, "{backend}/{progress}");
+                assert_eq!(root["reserved_tokens"], 0, "{backend}/{progress}");
+                assert_eq!(root["reserved_cost"], 0, "{backend}/{progress}");
+                assert_eq!(account(store, &fixture, "global").await["outstanding"], 0);
+                assert!(tokio::time::timeout(
+                    std::time::Duration::from_millis(30),
+                    listener.accept(),
+                )
+                .await
+                .is_err());
+            });
+            // Admission did not hide a lease renewal or replace the claim.
+            assert_eq!(
+                store
+                    .get_automation_run(&root_id(&fixture))
+                    .unwrap()
+                    .unwrap()
+                    .execution_claim,
+                claim,
+                "{backend}/{progress}"
+            );
+        })
+    });
+}
+
+#[test]
+#[serial]
+fn solution_budget_provider_expired_started_claim_with_active_session_sends() {
+    assert_expired_started_claim_sends("active-session");
+}
+
+#[test]
+#[serial]
+fn solution_budget_provider_expired_started_claim_with_active_instance_sends() {
+    assert_expired_started_claim_sends("active-instance");
+}
+
+#[test]
+#[serial]
+fn solution_budget_provider_expired_started_claim_with_lifecycle_progress_sends() {
+    assert_expired_started_claim_sends("lifecycle-progress");
+}
+
+#[test]
+#[serial]
+fn solution_budget_provider_expired_claim_requires_current_non_bookkeeping_progress() {
+    encrypted(|| {
+        for_each_backend(|backend, store| {
+            for fault in [
+                "no-progress",
+                "claim-bookkeeping",
+                "requeue-bookkeeping",
+                "preclaim-progress",
+            ] {
+                let fixture = network_fixture(store, &format!("expired-unstarted-{fault}"));
+                let approved = approval(&fixture, store);
+                let mut run = expired_execution_run(store, &fixture);
+                match fault {
+                    "no-progress" => {}
+                    "claim-bookkeeping" => {
+                        record_execution_progress(&mut run, "run_execution_claimed", 1500);
+                    }
+                    "requeue-bookkeeping" => {
+                        record_execution_progress(
+                            &mut run,
+                            "run_execution_claim_expired_requeued",
+                            1500,
+                        );
+                    }
+                    "preclaim-progress" => {
+                        let claimed_at_ms = run.execution_claim.as_ref().unwrap().claimed_at_ms;
+                        record_execution_progress(&mut run, "node_started", claimed_at_ms - 1);
+                    }
+                    _ => unreachable!(),
+                }
+                store.upsert_automation_runs([&run]).unwrap();
+                runtime().block_on(async {
+                    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let registry = registry(listener.local_addr().unwrap());
+                    let policy = policy(store, &registry, approved, Arc::new(AtomicU64::new(1500)));
+                    assert!(
+                        complete(&registry, policy).await.is_err(),
+                        "{backend}/{fault}"
+                    );
+                    assert!(account_row(store, &fixture, "global").await.is_none());
+                    assert!(tokio::time::timeout(
+                        std::time::Duration::from_millis(30),
+                        listener.accept(),
+                    )
+                    .await
+                    .is_err());
+                });
+            }
+        })
+    });
+}
+
+#[test]
+#[serial]
+fn solution_budget_provider_expired_started_claim_cannot_survive_authority_changes() {
+    encrypted(|| {
+        for_each_backend(|backend, store| {
+            for after_reservation in [false, true] {
+                for fault in ["claim", "epoch", "paused", "completed", "goal-current"] {
+                    let phase = if after_reservation {
+                        "final"
+                    } else {
+                        "initial"
+                    };
+                    let fixture =
+                        network_fixture(store, &format!("expired-changed-{phase}-{fault}"));
+                    let approved = approval(&fixture, store);
+                    let mut run = expired_execution_run(store, &fixture);
+                    record_execution_progress(&mut run, "node_started", 1000);
+                    store.upsert_automation_runs([&run]).unwrap();
+                    let mut goal = store.get_goal(&goal_id(&fixture)).unwrap().unwrap();
+                    match fault {
+                        "claim" => {
+                            run.execution_claim.as_mut().unwrap().claim_id =
+                                "replacement-claim".into();
+                        }
+                        "epoch" => {
+                            run.execution_claim.as_mut().unwrap().lease_epoch = 2;
+                            run.execution_claim_epoch = 2;
+                        }
+                        "paused" => run.status = AutomationRunStatus::Paused,
+                        "completed" => {
+                            run.status = AutomationRunStatus::Completed;
+                            run.finished_at_ms = Some(1500);
+                        }
+                        "goal-current" => goal.active_run_id = Some("different-current-run".into()),
+                        _ => unreachable!(),
+                    }
+                    if !after_reservation {
+                        store.put_goal(&goal).unwrap();
+                        store.upsert_automation_runs([&run]).unwrap();
+                    }
+                    runtime().block_on(async {
+                        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                        let registry = registry(listener.local_addr().unwrap());
+                        let registry_for_auth = registry.clone();
+                        let mutator = store.clone();
+                        let calls = Arc::new(AtomicUsize::new(0));
+                        let calls_for_auth = calls.clone();
+                        let policy = store
+                            .solution_provider_attempt_policy(
+                                10,
+                                4096,
+                                move |_| {
+                                    let current_registry = registry_for_auth.clone();
+                                    let approved = approved.clone();
+                                    let run = run.clone();
+                                    let goal = goal.clone();
+                                    let mutator = mutator.clone();
+                                    let second = calls_for_auth.fetch_add(1, Ordering::SeqCst) == 1;
+                                    async move {
+                                        if after_reservation && second {
+                                            crate::encrypted_file_store::spawn_protected_blocking(
+                                                move || {
+                                                    mutator.put_goal(&goal)?;
+                                                    mutator.upsert_automation_runs([&run])
+                                                },
+                                            )
+                                            .await??;
+                                        }
+                                        current(&approved, &current_registry).await
+                                    }
+                                },
+                                || 1500,
+                            )
+                            .unwrap();
+                        assert!(
+                            complete(&registry, policy).await.is_err(),
+                            "{backend}/{phase}/{fault}"
+                        );
+                        assert_eq!(
+                            calls.load(Ordering::SeqCst),
+                            if after_reservation { 2 } else { 1 }
+                        );
+                        if after_reservation {
+                            let root = account(
+                                store,
+                                &fixture,
+                                &format!("root:{}", sha256(root_id(&fixture).as_bytes())),
+                            )
+                            .await;
+                            assert_eq!(root["requests"], 1, "{backend}/{phase}/{fault}");
+                            assert_eq!(root["committed_tokens"], 0, "{backend}/{phase}/{fault}");
+                            assert_eq!(root["committed_cost"], 0, "{backend}/{phase}/{fault}");
+                            assert_eq!(root["reserved_tokens"], 0, "{backend}/{phase}/{fault}");
+                            assert_eq!(root["reserved_cost"], 0, "{backend}/{phase}/{fault}");
+                            assert_eq!(account(store, &fixture, "global").await["outstanding"], 0);
+                        } else {
+                            assert!(account_row(store, &fixture, "global").await.is_none());
+                        }
+                        assert!(tokio::time::timeout(
+                            std::time::Duration::from_millis(30),
+                            listener.accept(),
+                        )
+                        .await
+                        .is_err());
+                    });
+                }
+            }
+        })
+    });
 }
 
 #[test]

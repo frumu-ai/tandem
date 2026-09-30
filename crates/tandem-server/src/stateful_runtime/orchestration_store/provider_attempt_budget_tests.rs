@@ -3,6 +3,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tandem_providers::{AppConfig, ProviderAuthRecovery, ProviderConfig, ProviderRegistry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[path = "provider_attempt_cancellation_tests.rs"]
+mod cancellation;
+
 fn network_fixture(store: &OrchestrationStateStore, name: &str) -> BudgetFixture {
     let mut installation = InstallationFixture::new("a");
     installation.customer.config.scope.instance_id = name.into();
@@ -238,9 +241,18 @@ async fn account_row(
     let key = key.to_string();
     crate::encrypted_file_store::spawn_protected_blocking(move || {
         store.with_connection(|connection| {
-            crate::stateful_runtime::orchestration_store::solution_budget_records::load::<
-                serde_json::Value,
-            >(connection, &tenant, &scope, &key)
+            // Cancellation cleanup commits on another connection. Read the
+            // current row and immutable history under the same writer lock so
+            // a legitimate settlement cannot split this diagnostic snapshot.
+            let transaction = connection.transaction_with_behavior(
+                crate::stateful_runtime::backend::TransactionBehavior::Immediate,
+            )?;
+            let record =
+                crate::stateful_runtime::orchestration_store::solution_budget_records::load::<
+                    serde_json::Value,
+                >(&transaction, &tenant, &scope, &key)?;
+            transaction.commit()?;
+            Ok(record)
         })
     })
     .await
