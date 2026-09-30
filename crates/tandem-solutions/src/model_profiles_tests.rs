@@ -128,6 +128,18 @@ impl Fixture {
     }
 }
 
+fn unavailable_primary_with_sibling_fallbacks() -> Fixture {
+    let mut f = Fixture::new();
+    f.routes
+        .get_mut("binding-economy")
+        .unwrap()
+        .available_until_ms = None;
+    f.catalog.profiles.get_mut("economy").unwrap().fallbacks =
+        vec!["reasoning".into(), "offline".into()];
+    f.catalog.profiles.get_mut("reasoning").unwrap().fallbacks = vec!["offline".into()];
+    f
+}
+
 #[test]
 fn model_profile_default_is_vendor_independent_and_current_binding_is_versioned() {
     let mut f = Fixture::new();
@@ -382,6 +394,125 @@ fn model_profile_graph_can_consider_a_shared_fallback_under_distinct_narrowing_p
         result.evaluated_classes,
         ["economy", "reasoning", "offline", "offline"]
     );
+}
+
+#[test]
+fn model_profile_path_evaluation_limit_does_not_abort_sibling_search() {
+    for previous_evaluations in [0, 2, 3] {
+        let mut f = unavailable_primary_with_sibling_fallbacks();
+        f.catalog
+            .profiles
+            .get_mut("reasoning")
+            .unwrap()
+            .limits
+            .max_route_evaluations = 1;
+        let mut input = f.input();
+        input.previous_evaluations = previous_evaluations;
+        let result = resolve_model_profile(input).unwrap();
+        assert_eq!(result.selected_class, "offline");
+        assert_eq!(result.selected_path, ["economy", "offline"]);
+        assert_eq!(result.evaluated_classes, ["economy", "offline"]);
+        assert_eq!(result.effective_limits, f.limits);
+        assert_eq!(result.deadline_ms, 1100);
+        assert_eq!(
+            result.route_evaluations,
+            previous_evaluations + 3,
+            "the rejected branch and prior evaluations still consume the shared count"
+        );
+    }
+}
+
+#[test]
+fn model_profile_sibling_search_does_not_reset_exhausted_evaluation_caps() {
+    for ceiling in ["siblings", "inherited", "previous"] {
+        let mut f = unavailable_primary_with_sibling_fallbacks();
+        f.catalog
+            .profiles
+            .get_mut("reasoning")
+            .unwrap()
+            .limits
+            .max_route_evaluations = 1;
+        match ceiling {
+            "siblings" => {
+                f.catalog
+                    .profiles
+                    .get_mut("offline")
+                    .unwrap()
+                    .limits
+                    .max_route_evaluations = 2;
+            }
+            "inherited" => f.limits.max_route_evaluations = 1,
+            "previous" => {}
+            _ => unreachable!(),
+        }
+        let mut input = f.input();
+        if ceiling == "previous" {
+            input.previous_evaluations = 4;
+        }
+        assert_eq!(
+            resolve_model_profile(input).unwrap_err().code,
+            "model_route_limit",
+            "{ceiling}"
+        );
+    }
+}
+
+#[test]
+fn model_profile_path_latency_expiry_does_not_abort_sibling_search() {
+    for now_ms in [109, 110, 111] {
+        let mut f = unavailable_primary_with_sibling_fallbacks();
+        f.catalog
+            .profiles
+            .get_mut("reasoning")
+            .unwrap()
+            .limits
+            .max_latency_ms = 10;
+        let mut input = f.input();
+        input.now_ms = now_ms;
+        let result = resolve_model_profile(input).unwrap();
+        let mut expected_limits = f.limits.clone();
+        if now_ms < 110 {
+            assert_eq!(result.selected_class, "reasoning");
+            assert_eq!(result.selected_path, ["economy", "reasoning"]);
+            assert_eq!(result.evaluated_classes, ["economy", "reasoning"]);
+            assert_eq!(result.route_evaluations, 2);
+            assert_eq!(result.deadline_ms, 110);
+            expected_limits.max_latency_ms = 10;
+        } else {
+            assert_eq!(result.selected_class, "offline");
+            assert_eq!(result.selected_path, ["economy", "offline"]);
+            assert_eq!(result.evaluated_classes, ["economy", "offline"]);
+            assert_eq!(result.route_evaluations, 3);
+            assert_eq!(result.deadline_ms, 1100);
+        }
+        assert_eq!(result.effective_limits, expected_limits);
+    }
+}
+
+#[test]
+fn model_profile_sibling_search_does_not_extend_expired_deadlines() {
+    for ceiling in ["siblings", "inherited"] {
+        let mut f = unavailable_primary_with_sibling_fallbacks();
+        if ceiling == "siblings" {
+            for class in ["reasoning", "offline"] {
+                f.catalog
+                    .profiles
+                    .get_mut(class)
+                    .unwrap()
+                    .limits
+                    .max_latency_ms = 10;
+            }
+        } else {
+            f.limits.max_latency_ms = 10;
+        }
+        let mut input = f.input();
+        input.now_ms = 110;
+        assert_eq!(
+            resolve_model_profile(input).unwrap_err().code,
+            "model_latency_limit",
+            "{ceiling}"
+        );
+    }
 }
 
 #[test]
