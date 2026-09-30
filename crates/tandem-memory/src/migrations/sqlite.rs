@@ -127,11 +127,34 @@ fn record_migration(tx: &Transaction<'_>, migration: &LogicalMigration) -> Memor
 fn translate(tx: &Transaction<'_>, migration: &LogicalMigration) -> MemoryResult<()> {
     match migration.version {
         PRIVATE_OWNER_MIGRATION_VERSION => migrate_private_owner_scope(tx),
+        6 => migrate_global_sharing(tx),
         version => Err(MemoryError::InvalidConfig(format!(
             "no SQLite translator for executable memory migration {version} ('{}')",
             migration.name
         ))),
     }
+}
+
+fn migrate_global_sharing(tx: &Transaction<'_>) -> MemoryResult<()> {
+    // Default old rows to unshared; metadata cannot establish whether their
+    // existing department was explicitly selected or automatically stamped.
+    if !table_columns(tx, "memory_records")?.contains("tenant_shared") {
+        tx.execute(
+            "ALTER TABLE memory_records ADD COLUMN tenant_shared INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    tx.execute("DROP INDEX IF EXISTS idx_memory_records_dedup", [])?;
+    tx.execute(
+        "CREATE UNIQUE INDEX idx_memory_records_dedup
+         ON memory_records(tenant_org_id, tenant_workspace_id,
+             IFNULL(tenant_deployment_id, ''), user_id, source_type, content_hash,
+             run_id, IFNULL(session_id, ''), IFNULL(message_id, ''),
+             IFNULL(tool_name, ''), IFNULL(owner_org_unit_id, ''), private,
+             IFNULL(owner_subject, ''), tenant_shared)",
+        [],
+    )?;
+    Ok(())
 }
 
 fn migrate_private_owner_scope(tx: &Transaction<'_>) -> MemoryResult<()> {

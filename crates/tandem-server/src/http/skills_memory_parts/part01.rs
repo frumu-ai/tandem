@@ -1566,7 +1566,11 @@ fn memory_metadata_with_owner_org_unit(
     let Some(owner_org_unit_id) = owner_org_unit_id else {
         return metadata;
     };
-    if tandem_memory::types::owner_org_unit_id_from_metadata(metadata.as_ref()).is_some() {
+    // Explicit department ownership always wins. An explicitly tenant-shared
+    // record without a department keeps its independent private-owner boundary.
+    if tandem_memory::types::owner_org_unit_id_from_metadata(metadata.as_ref()).is_some()
+        || tandem_memory::types::tenant_shared_from_metadata(metadata.as_ref())
+    {
         return metadata;
     }
     let mut metadata = metadata.unwrap_or_else(|| json!({}));

@@ -1397,6 +1397,7 @@ impl MemoryDatabase {
         let owner_org_unit_id = owner_org_unit_id_from_metadata(record.metadata.as_ref());
         let owner_subject = crate::types::owner_subject_from_metadata(record.metadata.as_ref());
         let private = owner_subject.is_some();
+        let tenant_shared = crate::types::tenant_shared_from_metadata(record.metadata.as_ref());
 
         let existing: Option<String> = conn
             .query_row(
@@ -1414,6 +1415,7 @@ impl MemoryDatabase {
                    AND IFNULL(owner_org_unit_id, '') = IFNULL(?11, '')
                    AND private = ?12
                    AND IFNULL(owner_subject, '') = IFNULL(?13, '')
+                   AND tenant_shared = ?14
                  LIMIT 1",
                 params![
                     tenant_org_id,
@@ -1428,7 +1430,8 @@ impl MemoryDatabase {
                     record.tool_name,
                     owner_org_unit_id,
                     i64::from(private),
-                    owner_subject.as_deref()
+                    owner_subject.as_deref(),
+                    i64::from(tenant_shared)
                 ],
                 |row| row.get(0),
             )
@@ -1458,12 +1461,12 @@ impl MemoryDatabase {
                 user_id, source_type, content, content_hash, run_id, session_id, message_id, tool_name,
                 project_tag, channel_tag, host_tag, metadata, provenance, redaction_status, redaction_count,
                 visibility, demoted, score_boost, created_at_ms, updated_at_ms, expires_at_ms, owner_org_unit_id,
-                private, owner_subject
+                private, owner_subject, tenant_shared
             ) VALUES (
                 ?1, ?2, ?3, ?4,
                 ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
             )",
             params![
                 record.id,
@@ -1494,6 +1497,7 @@ impl MemoryDatabase {
                 owner_org_unit_id,
                 i64::from(private),
                 owner_subject,
+                i64::from(tenant_shared),
             ],
         )?;
 
@@ -1776,11 +1780,13 @@ impl MemoryDatabase {
     ) -> MemoryResult<bool> {
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
+        let tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
         let metadata = metadata.map(ToString::to_string).unwrap_or_default();
         let provenance = provenance.map(ToString::to_string).unwrap_or_default();
         let changed = conn.execute(
             "UPDATE memory_records
-             SET visibility = ?2, demoted = ?3, metadata = ?4, provenance = ?5, updated_at_ms = ?6
+             SET visibility = ?2, demoted = ?3, metadata = ?4, provenance = ?5, updated_at_ms = ?6,
+                 tenant_shared = ?7
              WHERE id = ?1",
             params![
                 id,
@@ -1789,6 +1795,7 @@ impl MemoryDatabase {
                 metadata,
                 provenance,
                 now_ms,
+                i64::from(tenant_shared),
             ],
         )?;
         Ok(changed > 0)
@@ -1814,12 +1821,13 @@ impl MemoryDatabase {
         let owner_org_unit_id = owner_org_unit_id_from_metadata(metadata);
         let owner_subject = crate::types::owner_subject_from_metadata(metadata);
         let private = owner_subject.is_some();
+        let tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
         let metadata = metadata.map(ToString::to_string).unwrap_or_default();
         let provenance = provenance.map(ToString::to_string).unwrap_or_default();
         let changed = conn.execute(
             "UPDATE memory_records
              SET visibility = ?5, demoted = ?6, metadata = ?7, provenance = ?8, updated_at_ms = ?9,
-                 owner_org_unit_id = ?10, private = ?11, owner_subject = ?12
+                 owner_org_unit_id = ?10, private = ?11, owner_subject = ?12, tenant_shared = ?13
              WHERE id = ?1
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
@@ -1837,6 +1845,7 @@ impl MemoryDatabase {
                 owner_org_unit_id,
                 i64::from(private),
                 owner_subject,
+                i64::from(tenant_shared),
             ],
         )?;
         Ok(changed > 0)
