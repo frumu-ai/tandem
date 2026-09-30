@@ -2,13 +2,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{ensure, Context};
 use serde::{Deserialize, Serialize};
-use tandem_enterprise_contract::{AccessDecision, AccessPermission, VerifiedTenantContext};
+use tandem_enterprise_contract::{
+    AccessDecision, AccessPermission, OrganizationUnit, VerifiedTenantContext,
+};
 use tandem_solutions::{
     canonical_json, sha256, validate_customer_config_scope, ConnectorBinding, Constraints,
     CustomerConfigInput, CustomerScope, ModelBinding,
 };
 
 use crate::AppState;
+
+#[cfg(test)]
+#[path = "host_facts_tests.rs"]
+mod tests;
 
 /// This section is read only from the existing operator ConfigStore. It is
 /// never accepted as an API argument or inside customer configuration.
@@ -61,6 +67,17 @@ impl HostFacts {
             approved_projects: &self.projects,
         }
     }
+}
+
+fn approved_org_units(
+    context: &VerifiedTenantContext,
+    units: &[OrganizationUnit],
+) -> BTreeSet<String> {
+    units
+        .iter()
+        .filter(|unit| unit.state.is_active() && context.org_units.contains(&unit.unit_id))
+        .map(|unit| unit.unit_id.clone())
+        .collect()
 }
 
 impl AppState {
@@ -146,12 +163,10 @@ impl AppState {
             .enterprise_org_unit_view(tenant)
             .await
             .map_err(anyhow::Error::msg)?;
-        let units: BTreeSet<_> = view
-            .units
-            .iter()
-            .filter(|unit| unit.state.is_active())
-            .map(|unit| unit.unit_id.clone())
-            .collect();
+        // A deployment admin is not automatically a member of every unit.
+        // Only the caller's currently projected active memberships can bind
+        // department-shared solution memory.
+        let units = approved_org_units(&context, &view.units);
         let mut references = BTreeSet::from([format!("profile-ref:{}", scope.org_id)]);
         let mut projects = BTreeSet::new();
         let mut sources = BTreeMap::new();
