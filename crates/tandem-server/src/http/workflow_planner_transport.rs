@@ -693,6 +693,7 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
+    #[serial_test::serial(data_boundary_env)]
     async fn planner_transport_isolates_hosted_codex_auth_from_local_and_other_tenants() {
         let state = crate::test_support::test_state().await;
         let tenant_a = TenantContext::explicit("planner-org-a", "planner-workspace-a", None);

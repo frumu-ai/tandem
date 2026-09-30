@@ -90,7 +90,7 @@ pub enum SolutionInstallationTransition<'a> {
     },
 }
 
-fn load(
+pub(super) fn load(
     executor: &impl Executor,
     context: &VerifiedTenantContext,
     scope: &CustomerScope,

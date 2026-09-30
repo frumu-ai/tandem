@@ -22,6 +22,8 @@ mod goal_lifecycle;
 mod migration;
 pub(crate) mod protected_records;
 mod runtime_records;
+pub(crate) mod solution_budget_records;
+mod solution_budgets;
 pub(crate) mod solution_installations;
 mod transfer;
 mod transition;
@@ -33,6 +35,10 @@ pub use goal_control::{GoalCancellationResult, GoalControlOutcome};
 pub use goal_lifecycle::{GoalEventRow, GoalPauseOutcome, GoalResumeOutcome, StartGoalOutcome};
 pub use migration::{
     LegacyImportContext, LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport,
+};
+pub use solution_budgets::{
+    SolutionBudgetInput, SolutionBudgetReservationResult, SolutionChargeIntent, SolutionChargeKind,
+    SolutionChargeReservation, SolutionChargeStatus, SolutionRunBudget,
 };
 pub use solution_installations::{
     SolutionComponentProgress, SolutionInstallation, SolutionInstallationInput,
@@ -47,7 +53,7 @@ pub use transition::{
     WorkflowCompletionResult,
 };
 
-pub(crate) const SCHEMA_VERSION: i64 = 7;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationStorePaths {
@@ -1217,6 +1223,10 @@ fn initialize_schema(connection: &mut rusqlite::Connection) -> anyhow::Result<()
     if version == 6 {
         solution_installations::migrate_sqlite(connection)?;
         version = 7;
+    }
+    if version == 7 {
+        solution_budget_records::migrate_sqlite(connection)?;
+        version = 8;
     }
     if version != SCHEMA_VERSION {
         bail!(

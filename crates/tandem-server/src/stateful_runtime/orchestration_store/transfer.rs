@@ -1014,6 +1014,10 @@ mod tests {
             super::super::solution_installation_tests::seed_protected_installation_for_transfer(
                 &source,
             );
+        let budget =
+            super::super::solution_installation_tests::budget_tests::seed_budget_for_transfer(
+                &source,
+            );
 
         let request = StatefulBackendMigrationRequest {
             source_paths: source_paths.clone(),
@@ -1069,6 +1073,10 @@ mod tests {
         super::super::solution_installation_tests::assert_protected_installation_after_transfer(
             &round_trip,
             &installation,
+        );
+        super::super::solution_installation_tests::budget_tests::assert_budget_after_transfer(
+            &round_trip,
+            &budget,
         );
         round_trip
             .with_connection(|connection| {
