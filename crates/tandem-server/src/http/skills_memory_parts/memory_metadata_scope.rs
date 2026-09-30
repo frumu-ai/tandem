@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 /// Stamp the collector's active department (`owner_org_unit_id`) into a record's
 /// metadata so it flows into the first-class column via `put_global_memory_record`
 /// (TAN-645/646). A department already present in the metadata — client-supplied
