@@ -1,5 +1,9 @@
 #[async_trait]
 impl Provider for OpenAICompatibleProvider {
+    fn runtime_transport_binding(&self, auth: &ProviderAuthOverride) -> anyhow::Result<ProviderTransportBinding> {
+        anyhow::ensure!(matches!(auth, ProviderAuthOverride::Inherit), "provider does not support tenant-scoped authentication");
+        runtime_binding::transport(&format!("{}/chat/completions", self.base_url), ProviderProtocol::ChatCompletions, self.api_key.as_deref(), None, runtime_binding::inherited_source(self.api_key.as_deref()))
+    }
     fn supports_attempt_accounting(&self) -> bool { true }
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
         Some(ProviderInstallationMetadata::network(&self.id, &self.base_url))
@@ -496,6 +500,14 @@ fn codex_supported_models(context_window: usize) -> Vec<ModelInfo> {
 
 #[async_trait]
 impl Provider for OpenAIResponsesProvider {
+    fn runtime_transport_binding(&self, auth: &ProviderAuthOverride) -> anyhow::Result<ProviderTransportBinding> {
+        let (key, source) = match auth {
+            ProviderAuthOverride::Inherit => (self.api_key.as_deref(), runtime_binding::inherited_source(self.api_key.as_deref())),
+            ProviderAuthOverride::Bearer(token) => (Some(token.as_str()), ProviderCredentialSource::TenantBearer),
+            ProviderAuthOverride::Suppress => anyhow::bail!("tenant provider credential missing"),
+        };
+        runtime_binding::transport(&format!("{}/responses", self.base_url), ProviderProtocol::Responses, key, None, source)
+    }
     fn supports_attempt_accounting(&self) -> bool { true }
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
         Some(ProviderInstallationMetadata::network(&self.id, &self.base_url))
@@ -1386,6 +1398,10 @@ struct CohereProvider {
 
 #[async_trait]
 impl Provider for AnthropicProvider {
+    fn runtime_transport_binding(&self, auth: &ProviderAuthOverride) -> anyhow::Result<ProviderTransportBinding> {
+        anyhow::ensure!(matches!(auth, ProviderAuthOverride::Inherit), "provider does not support tenant-scoped authentication");
+        runtime_binding::transport("https://api.anthropic.com/v1/messages", ProviderProtocol::Anthropic, None, self.api_key.as_deref(), runtime_binding::inherited_source(self.api_key.as_deref()))
+    }
     fn supports_attempt_accounting(&self) -> bool { true }
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
         Some(ProviderInstallationMetadata::network("anthropic", "https://api.anthropic.com/v1/messages"))
@@ -1542,6 +1558,10 @@ impl Provider for AnthropicProvider {
 
 #[async_trait]
 impl Provider for CohereProvider {
+    fn runtime_transport_binding(&self, auth: &ProviderAuthOverride) -> anyhow::Result<ProviderTransportBinding> {
+        anyhow::ensure!(matches!(auth, ProviderAuthOverride::Inherit), "provider does not support tenant-scoped authentication");
+        runtime_binding::transport(&format!("{}/chat", self.base_url), ProviderProtocol::Cohere, self.api_key.as_deref(), None, runtime_binding::inherited_source(self.api_key.as_deref()))
+    }
     fn supports_attempt_accounting(&self) -> bool { true }
     fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
         Some(ProviderInstallationMetadata::network("cohere", &self.base_url))
