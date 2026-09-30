@@ -155,8 +155,8 @@ impl AppState {
             // including its reviewed revision and actual loaded credential.
             // Unrelated denied bindings are omitted; the resolver will reject
             // a selected binding that is absent. Metadata alone grants nothing.
-            if binding.account.is_some()
-                && self
+            if binding.account.is_some() {
+                if self
                     .authorize_solution_model_account_binding(
                         verified,
                         scope,
@@ -165,8 +165,23 @@ impl AppState {
                     )
                     .await
                     .is_err()
-            {
-                continue;
+                {
+                    continue;
+                }
+                // Credential lookup can wait while the registry is reloaded.
+                // Do not combine its current account authorization with an old
+                // route or model catalog from the initiating snapshot.
+                let current_providers = self.providers.installation_models().await;
+                let current_matches: Vec<_> = current_providers
+                    .iter()
+                    .filter(|(current, _)| current.id == binding.provider_id)
+                    .collect();
+                if current_matches.len() != 1
+                    || current_matches[0].1.as_ref() != Some(metadata)
+                    || canonical_json(&current_matches[0].0)? != canonical_json(info)?
+                {
+                    continue;
+                }
             }
             models.insert(
                 binding_id.clone(),

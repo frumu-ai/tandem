@@ -44,6 +44,44 @@ async fn configure(fixture: &mut Fixture, revision: &str, token: &str) {
     fixture.state.runtime = Arc::new(std::sync::OnceLock::from(runtime));
 }
 
+async fn install_network_solution(f: &mut Fixture) -> EnvGuard {
+    // A separately signed synthetic pack explicitly permits this HTTP
+    // provider. The shipped local-only diagnostic fixture is unchanged.
+    let mut entries = fixture();
+    let (_, source) = entries
+        .iter_mut()
+        .find(|(path, _)| path == "solution.json")
+        .unwrap();
+    let mut blueprint: serde_json::Value = serde_json::from_str(source).unwrap();
+    blueprint["constraints"]["allowed_providers"] = serde_json::json!(["llama_cpp"]);
+    blueprint["constraints"]["allow_network_egress"] = true.into();
+    *source = serde_json::to_string(&blueprint).unwrap();
+    let archive = f.root.path().join("model-solution.zip");
+    let key = signed(&archive, &entries);
+    let keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+    f.state.pack_manager = Arc::new(PackManager::new(f.root.path().join("model-packs")));
+    f.state
+        .pack_manager
+        .install(request(&archive))
+        .await
+        .unwrap();
+    f.configuration.configuration.constraints.allowed_providers =
+        std::collections::BTreeSet::from(["llama_cpp".into()]);
+    f.configuration
+        .configuration
+        .constraints
+        .allow_network_egress = true;
+    keys
+}
+
+fn registry_configuration(url: &str, model: &str) -> tandem_providers::AppConfig {
+    serde_json::from_value(serde_json::json!({
+        "default_provider": "llama_cpp", "providers": {"llama_cpp": {
+            "url": url, "api_key": TOKEN, "default_model": model}}
+    }))
+    .unwrap()
+}
+
 async fn grant(fixture: &Fixture, id: &str, unit: &str) {
     fixture
         .state
@@ -272,6 +310,200 @@ async fn solution_service_model_account_revokes_while_credential_lookup_waits() 
 
 #[tokio::test]
 #[serial_test::serial(pack_signature_env)]
+async fn solution_service_model_account_preview_rechecks_registry_after_an_earlier_account_wait() {
+    for change in ["unchanged", "endpoint", "model-catalog"] {
+        let mut f = Fixture::new().await;
+        f.state.memory_db_path = f.root.path().join("memory.sqlite");
+        let revision = stored_key(&f, TOKEN).await;
+        configure(&mut f, &revision, TOKEN).await;
+        let _keys = install_network_solution(&mut f).await;
+        grant(&f, "model-eng", "eng").await;
+
+        // Host facts iterate a BTreeMap. The earlier, otherwise identical
+        // account waits first, leaving the selected account to authorize only
+        // after the registry reload. Changing the selected account's own route
+        // during its lookup would exercise an existing credential-reader guard
+        // instead of the stale installation snapshot being tested here.
+        let mut cli = f.state.config.get_layers_value().await["cli"].clone();
+        let blocker = cli["solution_installation"]["models"][BINDING].clone();
+        cli["solution_installation"]["models"]["a.blocker"] = blocker;
+        let mut runtime = f.state.runtime.wait().clone();
+        runtime.config = tandem_core::ConfigStore::new(
+            f.root.path().join("blocked-model-config.json"),
+            Some(cli),
+        )
+        .await
+        .unwrap();
+        f.state.runtime = Arc::new(std::sync::OnceLock::from(runtime));
+
+        let baseline = f
+            .state
+            .preview_solution_configuration(&f.verified, &f.configuration)
+            .await
+            .unwrap();
+        assert_eq!(
+            baseline.plan.models["economy"].binding.model,
+            "synthetic-model"
+        );
+        let baseline_digest = baseline.plan.host_facts_sha256.clone().unwrap();
+        let initial_account = f
+            .state
+            .authorize_solution_model_account(
+                &f.verified,
+                &f.configuration.configuration.scope,
+                BINDING,
+            )
+            .await
+            .unwrap();
+        let initial_providers = f.state.providers.installation_models().await;
+        let initial_provider = initial_providers
+            .iter()
+            .find(|(info, _)| info.id == "llama_cpp")
+            .unwrap();
+        let initial_metadata = initial_provider.1.as_ref().unwrap();
+
+        let directory =
+            crate::http::config_providers::provider_auth_security_dir_for_state(&f.state);
+        let guard = tandem_providers::provider_auth_mutation_in_dir(&directory)
+            .await
+            .unwrap();
+        let observed = Arc::new(tokio::sync::Notify::new());
+        let preview = crate::solution_installation::scope_model_account_observation(
+            observed.clone(),
+            f.state
+                .preview_solution_configuration(&f.verified, &f.configuration),
+        );
+        tokio::pin!(preview);
+        tokio::select! {
+            result = &mut preview => panic!("preview completed while credential lock held (successful={})", result.is_ok()),
+            _ = observed.notified() => {},
+            _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => panic!("earlier account grant check was not reached"),
+        }
+        let (url, model) = match change {
+            "unchanged" => ("http://127.0.0.1:9/v1", "synthetic-model"),
+            "endpoint" => ("http://127.0.0.1:10/v1", "synthetic-model"),
+            "model-catalog" => ("http://127.0.0.1:9/v1", "replacement-model"),
+            _ => unreachable!(),
+        };
+        f.state
+            .providers
+            .reload(registry_configuration(url, model))
+            .await;
+        drop(guard);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), &mut preview)
+            .await
+            .expect("blocked preview did not finish after lock release");
+        let current_providers = f.state.providers.installation_models().await;
+        let current_provider = current_providers
+            .iter()
+            .find(|(info, _)| info.id == "llama_cpp")
+            .unwrap();
+        let current_metadata = current_provider.1.as_ref().unwrap();
+        if change == "unchanged" {
+            let unchanged = result.unwrap();
+            assert_eq!(unchanged.plan.host_facts_sha256, Some(baseline_digest));
+            assert_eq!(unchanged.composition_sha256, baseline.composition_sha256);
+            continue;
+        }
+        let denied = result
+            .err()
+            .expect("stale installation facts must be omitted");
+        assert!(
+            denied.to_string().contains("model_binding_unapproved"),
+            "{change}: {denied}"
+        );
+
+        if change == "endpoint" {
+            // The selected account itself can authorize the NEW runtime route;
+            // only the old installation snapshot must prevent this preview.
+            assert_ne!(
+                initial_metadata.routing_sha256,
+                current_metadata.routing_sha256
+            );
+            assert_eq!(
+                serde_json::to_value(&initial_provider.0).unwrap(),
+                serde_json::to_value(&current_provider.0).unwrap(),
+            );
+            let current_account = f
+                .state
+                .authorize_solution_model_account(
+                    &f.verified,
+                    &f.configuration.configuration.scope,
+                    BINDING,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                current_account.binding.revision,
+                initial_account.binding.revision
+            );
+            assert_ne!(
+                current_account.binding.runtime.endpoint_sha256,
+                initial_account.binding.runtime.endpoint_sha256,
+            );
+            let retried = f
+                .state
+                .preview_solution_configuration(&f.verified, &f.configuration)
+                .await
+                .unwrap();
+            assert_ne!(
+                retried.plan.host_facts_sha256.as_ref(),
+                Some(&baseline_digest)
+            );
+            assert_ne!(retried.composition_sha256, baseline.composition_sha256);
+            let stable = f
+                .state
+                .preview_solution_configuration(&f.verified, &f.configuration)
+                .await
+                .unwrap();
+            assert_eq!(
+                stable.plan.host_facts_sha256,
+                retried.plan.host_facts_sha256
+            );
+            assert_eq!(stable.composition_sha256, retried.composition_sha256);
+        } else {
+            // Catalog removal at an identical endpoint is also fail-closed.
+            // This is an availability control, not a substitute for the route
+            // race above: the credential reader already checks model presence.
+            assert_eq!(initial_metadata, current_metadata);
+            assert_ne!(
+                serde_json::to_value(&initial_provider.0).unwrap(),
+                serde_json::to_value(&current_provider.0).unwrap(),
+            );
+            assert!(!current_provider
+                .0
+                .models
+                .iter()
+                .any(|row| row.id == "synthetic-model"));
+            let unavailable = f
+                .state
+                .preview_solution_configuration(&f.verified, &f.configuration)
+                .await
+                .err()
+                .expect("removed selected model must remain unapproved on retry");
+            assert!(unavailable.to_string().contains("model_binding_unapproved"));
+        }
+        // Restoring just the registry route/catalog reproduces the original
+        // host and composition digests; no customer/account facts were changed.
+        f.state
+            .providers
+            .reload(registry_configuration(
+                "http://127.0.0.1:9/v1",
+                "synthetic-model",
+            ))
+            .await;
+        let restored = f
+            .state
+            .preview_solution_configuration(&f.verified, &f.configuration)
+            .await
+            .unwrap();
+        assert_eq!(restored.plan.host_facts_sha256, Some(baseline_digest));
+        assert_eq!(restored.composition_sha256, baseline.composition_sha256);
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
 async fn solution_service_model_account_preview_and_stage_require_current_account() {
     crate::encrypted_file_store::with_test_crypto_provider(
         tandem_memory::MemoryCryptoProvider::local_key([0x39; 32]),
@@ -282,32 +514,7 @@ async fn solution_service_model_account_preview_and_stage_require_current_accoun
             let revision = stored_key(&f, TOKEN).await;
             configure(&mut f, &revision, TOKEN).await;
 
-            // A separately signed synthetic pack explicitly permits this HTTP
-            // provider. The shipped local-only diagnostic fixture is unchanged.
-            let mut entries = fixture();
-            let (_, source) = entries
-                .iter_mut()
-                .find(|(path, _)| path == "solution.json")
-                .unwrap();
-            let mut blueprint: serde_json::Value = serde_json::from_str(source).unwrap();
-            blueprint["constraints"]["allowed_providers"] = serde_json::json!(["llama_cpp"]);
-            blueprint["constraints"]["allow_network_egress"] = true.into();
-            *source = serde_json::to_string(&blueprint).unwrap();
-            let archive = f.root.path().join("model-solution.zip");
-            let key = signed(&archive, &entries);
-            let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
-            f.state.pack_manager = Arc::new(PackManager::new(f.root.path().join("model-packs")));
-            f.state
-                .pack_manager
-                .install(request(&archive))
-                .await
-                .unwrap();
-            f.configuration.configuration.constraints.allowed_providers =
-                std::collections::BTreeSet::from(["llama_cpp".into()]);
-            f.configuration
-                .configuration
-                .constraints
-                .allow_network_egress = true;
+            let _keys = install_network_solution(&mut f).await;
 
             let denied = f
                 .state
