@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::{ensure, Context};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tandem_types::TenantContext;
 
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
 
 /// Explicit storage scope. Tenant service credentials are scoped to the existing
 /// organization/workspace/deployment key, not to an individual human actor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderCredentialLocation {
     HostService,

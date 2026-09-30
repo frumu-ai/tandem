@@ -36,6 +36,10 @@ pub(super) struct HostModel {
     /// Local echo is a diagnostic, never an implicit production fallback.
     #[serde(default)]
     pub allow_test_provider: bool,
+    /// Optional runtime account-use binding. Existing installation metadata
+    /// alone must never authorize access to a provider credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<super::model_accounts::HostAccountBinding>,
 }
 
 pub(super) struct HostFacts {
@@ -146,6 +150,38 @@ impl AppState {
                 model.id == binding.model_id && model.provider_id == binding.provider_id
             }) {
                 continue;
+            }
+            // A configured account must be usable by this current installer,
+            // including its reviewed revision and actual loaded credential.
+            // Unrelated denied bindings are omitted; the resolver will reject
+            // a selected binding that is absent. Metadata alone grants nothing.
+            if binding.account.is_some() {
+                if self
+                    .authorize_solution_model_account_binding(
+                        verified,
+                        scope,
+                        binding_id,
+                        binding.clone(),
+                    )
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                // Credential lookup can wait while the registry is reloaded.
+                // Do not combine its current account authorization with an old
+                // route or model catalog from the initiating snapshot.
+                let current_providers = self.providers.installation_models().await;
+                let current_matches: Vec<_> = current_providers
+                    .iter()
+                    .filter(|(current, _)| current.id == binding.provider_id)
+                    .collect();
+                if current_matches.len() != 1
+                    || current_matches[0].1.as_ref() != Some(metadata)
+                    || canonical_json(&current_matches[0].0)? != canonical_json(info)?
+                {
+                    continue;
+                }
             }
             models.insert(
                 binding_id.clone(),
