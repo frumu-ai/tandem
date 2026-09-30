@@ -3,6 +3,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tandem_providers::{AppConfig, ProviderAuthRecovery, ProviderConfig, ProviderRegistry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[path = "provider_attempt_cancellation_tests.rs"]
+mod cancellation;
+
 fn network_fixture(store: &OrchestrationStateStore, name: &str) -> BudgetFixture {
     let mut installation = InstallationFixture::new("a");
     installation.customer.config.scope.instance_id = name.into();
