@@ -113,7 +113,7 @@ pub(super) fn bind(
     // arbitrary metadata persisted by older servers before this key was reserved.
     metadata.insert(
         KEY.into(),
-        serde_json::Value::String(protected_records::encode(
+        serde_json::Value::String(protected_records::encode_required(
             &goal.tenant_context,
             RECORD_KIND,
             &goal.goal_id,
@@ -150,7 +150,12 @@ fn read(goal: &LongRunningGoal) -> anyhow::Result<Option<Binding>> {
                 crate::encrypted_file_store::is_encrypted_payload(raw),
                 "solution goal association requires an authenticated envelope"
             );
-            protected_records::decode(&goal.tenant_context, RECORD_KIND, &goal.goal_id, raw)
+            protected_records::decode_required(
+                &goal.tenant_context,
+                RECORD_KIND,
+                &goal.goal_id,
+                raw,
+            )
         })
         .transpose()
 }

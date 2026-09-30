@@ -15,8 +15,11 @@ start returns the existing records; replaying
 another installation or actor under that goal ID fails. No additional root
 registry, storage schema or secret store is introduced.
 
-The association is an authenticated envelope inside the existing encrypted goal
-record. Its record kind and goal ID are authenticated through the existing
+The association is an authenticated envelope inside the existing protected goal
+record. It uses required encryption and decryption even when ordinary standalone
+runtime records use the supported plaintext provider. The existing local-key
+fallback seals that inner record; hosted-required encryption still fails closed
+without its configured provider. Its record kind and goal ID use the existing
 protected-record subsystem. This additional provenance matters because older
 goal APIs accepted arbitrary metadata: plaintext metadata, even inside a valid
 encrypted outer goal, cannot assert host approval. Copying an envelope from a
