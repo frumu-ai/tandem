@@ -1,7 +1,14 @@
 //! Optional trusted admission at actual adapter sends. This is deliberately
-//! separate from repeatable policy revalidation and never refunds on Drop.
+//! separate from repeatable policy revalidation. Only an owned, undispatched
+//! receipt may clean up on Drop; unknown outcomes after send remain reserved.
 
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Mutex,
+    },
+};
 
 use anyhow::{ensure, Context};
 use futures::future::BoxFuture;
@@ -40,15 +47,48 @@ pub struct ConfirmedProviderUsage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderAttemptOutcome {
     Usage(ConfirmedProviderUsage),
-    /// Authority changed while durable admission was pending. The adapter has
-    /// not called send; this is the only automatic zero-charge reconciliation.
+    /// The adapter has not called send, so zero-charge reconciliation is safe.
     NotDispatched,
+}
+
+struct PresendCleanup {
+    phase: AtomicU8,
+    cleanup: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
+}
+
+const PENDING: u8 = 0;
+const CANCELLED: u8 = 1;
+const DISPATCHED: u8 = 2;
+
+impl PresendCleanup {
+    fn disarm(&self) {
+        self.cleanup
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+    }
+}
+
+impl Drop for PresendCleanup {
+    fn drop(&mut self) {
+        // The shared state drops only after the final receipt owner. A receipt
+        // clone being dropped must not release another owner's pending send.
+        if let Some(cleanup) = self
+            .cleanup
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+        {
+            cleanup();
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct ProviderAttemptReceipt {
     confirm:
         Arc<dyn Fn(ProviderAttemptOutcome) -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>,
+    presend: Option<Arc<PresendCleanup>>,
 }
 
 impl ProviderAttemptReceipt {
@@ -59,7 +99,64 @@ impl ProviderAttemptReceipt {
     {
         Self {
             confirm: Arc::new(move |usage| Box::pin(confirm(usage))),
+            presend: None,
         }
+    }
+
+    /// The host must construct this while it still owns the new durable claim,
+    /// before handing the blocking worker's output to an awaitable consumer.
+    /// Cleanup must schedule nonblocking, idempotent zero settlement and retain
+    /// the claim if settlement fails. It runs only for the last presend owner.
+    pub fn with_presend_cleanup<F, Fut, Cleanup>(confirm: F, cleanup: Cleanup) -> Self
+    where
+        F: Fn(ProviderAttemptOutcome) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+        Cleanup: FnOnce() + Send + 'static,
+    {
+        let mut receipt = Self::new(confirm);
+        receipt.presend = Some(Arc::new(PresendCleanup {
+            phase: AtomicU8::new(PENDING),
+            cleanup: Mutex::new(Some(Box::new(cleanup))),
+        }));
+        receipt
+    }
+
+    /// Explicit denial still waits for durable zero settlement. Cancellation
+    /// during that await leaves the presend cleanup armed for an idempotent retry.
+    pub async fn confirm_not_dispatched(&self) -> anyhow::Result<()> {
+        if let Some(state) = &self.presend {
+            // Claim cancellation before awaiting storage: another shared owner
+            // must not dispatch after this zero settlement has started.
+            let phase = state.phase.compare_exchange(
+                PENDING,
+                CANCELLED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            ensure!(
+                matches!(phase, Ok(PENDING) | Err(CANCELLED)),
+                "dispatched provider attempt cannot settle as undispatched"
+            );
+        }
+        (self.confirm)(ProviderAttemptOutcome::NotDispatched).await?;
+        if let Some(state) = &self.presend {
+            state.disarm();
+        }
+        Ok(())
+    }
+
+    fn mark_dispatched(&self) -> anyhow::Result<()> {
+        if let Some(state) = &self.presend {
+            ensure!(
+                state
+                    .phase
+                    .compare_exchange(PENDING, DISPATCHED, Ordering::SeqCst, Ordering::SeqCst,)
+                    .is_ok(),
+                "provider attempt is no longer pending dispatch"
+            );
+            state.disarm();
+        }
+        Ok(())
     }
 
     pub(crate) async fn confirm(&self, usage: ConfirmedProviderUsage) -> anyhow::Result<()> {
@@ -228,9 +325,12 @@ pub(crate) async fn before_send(
     };
     let receipt = (policy.admit)(attempt).await?;
     if let Err(error) = crate::dispatch_authority::revalidate().await {
-        (receipt.confirm)(ProviderAttemptOutcome::NotDispatched).await?;
+        receipt.confirm_not_dispatched().await?;
         return Err(error);
     }
+    // Every caller immediately polls req.send(): no await or cancellation point
+    // may intervene after this conservative transition to an unknown outcome.
+    receipt.mark_dispatched()?;
     Ok(Some(receipt))
 }
 
@@ -375,4 +475,125 @@ pub(crate) async fn confirm_json(
         receipt.confirm(usage).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod presend_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    fn tracked(cleanups: &Arc<AtomicUsize>) -> ProviderAttemptReceipt {
+        let cleanups = cleanups.clone();
+        ProviderAttemptReceipt::with_presend_cleanup(
+            |_| async { Ok(()) },
+            move || {
+                cleanups.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+    }
+
+    #[test]
+    fn presend_cleanup_waits_for_last_shared_receipt() {
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let receipt = tracked(&cleanups);
+        let shared = receipt.clone();
+        drop(receipt);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 0);
+        drop(shared);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn presend_dispatched_receipt_never_zero_settles_or_cleans_up() {
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let receipt = tracked(&cleanups);
+        let shared = receipt.clone();
+        receipt.mark_dispatched().unwrap();
+        assert!(shared.confirm_not_dispatched().await.is_err());
+        assert!(
+            shared.mark_dispatched().is_err(),
+            "one claim cannot authorize two sends"
+        );
+        drop(receipt);
+        drop(shared);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn presend_successful_zero_settlement_disarms_cleanup() {
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let receipt = tracked(&cleanups);
+        receipt.confirm_not_dispatched().await.unwrap();
+        receipt.confirm_not_dispatched().await.unwrap();
+        assert!(receipt.mark_dispatched().is_err());
+        drop(receipt);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn presend_cancelled_zero_settlement_blocks_shared_dispatch_and_cleans_up() {
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let cleanup_count = cleanups.clone();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let signal = started.clone();
+        let receipt = ProviderAttemptReceipt::with_presend_cleanup(
+            move |_| {
+                let signal = signal.clone();
+                async move {
+                    signal.notify_one();
+                    std::future::pending::<anyhow::Result<()>>().await
+                }
+            },
+            move || {
+                cleanup_count.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        let shared = receipt.clone();
+        {
+            let confirming = shared.confirm_not_dispatched();
+            tokio::pin!(confirming);
+            tokio::select! {
+                result = &mut confirming => panic!("settlement returned: {result:?}"),
+                _ = started.notified() => {},
+            }
+            assert!(
+                receipt.mark_dispatched().is_err(),
+                "zero settlement claims cancellation before awaiting"
+            );
+        }
+        drop(shared);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 0);
+        drop(receipt);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn presend_failed_zero_settlement_keeps_cleanup_armed() {
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let cleanup_count = cleanups.clone();
+        let receipt = ProviderAttemptReceipt::with_presend_cleanup(
+            |_| async { anyhow::bail!("synthetic storage failure") },
+            move || {
+                cleanup_count.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert!(receipt.confirm_not_dispatched().await.is_err());
+        assert!(receipt.mark_dispatched().is_err());
+        drop(receipt);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn presend_plain_receipt_retains_legacy_drop_and_confirmation_semantics() {
+        let confirmations = Arc::new(AtomicUsize::new(0));
+        let count = confirmations.clone();
+        let receipt = ProviderAttemptReceipt::new(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        });
+        receipt.confirm_not_dispatched().await.unwrap();
+        receipt.mark_dispatched().unwrap();
+        drop(receipt);
+        assert_eq!(confirmations.load(Ordering::SeqCst), 1);
+    }
 }
