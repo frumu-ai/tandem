@@ -177,6 +177,87 @@ impl InstallationFixture {
 
 #[test]
 #[serial]
+fn current_staged_installation_read_is_generation_bound_on_each_backend() {
+    for_each_backend(|_, store| {
+        let fixture = InstallationFixture::new("a");
+        let (config, digest) = fixture.seed(store);
+        let read = |generation| {
+            store.current_staged_solution_installation(
+                &fixture.customer.context,
+                &fixture.customer.config.scope,
+                generation,
+                &digest,
+                1500,
+            )
+        };
+        assert!(read(1).is_err(), "missing installation must fail closed");
+        let mut current = store
+            .transition_solution_installation(
+                fixture.input(&config, &digest),
+                None,
+                SolutionInstallationTransition::Begin,
+            )
+            .unwrap();
+        assert!(
+            read(current.generation).is_err(),
+            "pending components are not staged"
+        );
+        for (component, attempt) in [("central-brain", "first"), ("review-notes", "second")] {
+            let claimed = store
+                .transition_solution_installation(
+                    fixture.input(&config, &digest),
+                    Some(current.generation),
+                    SolutionInstallationTransition::Claim {
+                        component_id: component,
+                        attempt_id: attempt,
+                    },
+                )
+                .unwrap();
+            assert!(
+                read(claimed.generation).is_err(),
+                "claimed component is not staged"
+            );
+            current = store
+                .transition_solution_installation(
+                    fixture.input(&config, &digest),
+                    Some(claimed.generation),
+                    SolutionInstallationTransition::RecordStaged {
+                        component_id: component,
+                        attempt_id: attempt,
+                        resource_sha256: &tandem_solutions::sha256(&fixture.artifacts[component]),
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(read(current.generation).unwrap(), current);
+        assert!(
+            read(current.generation - 1).is_err(),
+            "stale generation must fail closed"
+        );
+        assert!(store
+            .current_staged_solution_installation(
+                &fixture.customer.context,
+                &fixture.customer.config.scope,
+                current.generation,
+                &"b".repeat(64),
+                1500,
+            )
+            .is_err());
+        let mut changed = fixture.customer.config.clone();
+        changed.timezone = "UTC".into();
+        fixture
+            .customer
+            .save(store, &changed, Some(&config.version))
+            .unwrap();
+        assert!(
+            read(current.generation).is_err(),
+            "new customer revision invalidates the staged read"
+        );
+    });
+}
+
+#[test]
+#[serial]
 fn solution_installation_resume_requires_reconciliation_and_keeps_dependency_order() {
     for_each_backend(|_, store| {
         let fixture = InstallationFixture::new("a");

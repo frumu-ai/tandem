@@ -1,6 +1,7 @@
 use super::solution_tests::{fixture, fixture_with_profile, request, signed};
 use super::tests::EnvGuard;
 use super::*;
+use crate::solution_installation::model_profile_catalog::catalog_from_installation;
 use crate::solution_installation::{SolutionConfigurationRequest, SolutionStagingRequest};
 use crate::stateful_runtime::orchestration_store::{
     OrchestrationStateStore, SolutionComponentProgress,
@@ -245,6 +246,208 @@ async fn solution_service_signed_model_profile_stages_and_replays_without_activa
             let template: tandem_orchestrator::AgentTemplate =
                 serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
             assert!(!template.enabled);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_service_catalog_loader_keeps_current_staged_v1_after_v2_install() {
+    crate::encrypted_file_store::with_test_crypto_provider(
+        tandem_memory::MemoryCryptoProvider::local_key([0x45; 32]),
+        None,
+        async {
+            let fixture = Fixture::new_with_entries(fixture_with_profile()).await;
+            let request = fixture.review_and_save().await;
+            assert!(fixture
+                .state
+                .load_current_staged_model_profile_catalog(
+                    &fixture.verified,
+                    &request.scope,
+                    1,
+                    &request.reviewed_composition,
+                )
+                .await
+                .is_err());
+            let staged = fixture
+                .state
+                .stage_solution_installation(&fixture.verified, request.clone())
+                .await
+                .unwrap();
+            let loaded = fixture
+                .state
+                .load_current_staged_model_profile_catalog(
+                    &fixture.verified,
+                    &request.scope,
+                    staged.generation,
+                    &staged.composition_sha256,
+                )
+                .await
+                .unwrap();
+            assert_eq!(loaded.solution, staged.plan.solution);
+            assert_eq!(loaded.solution.version, "0.1.0");
+            assert_eq!(loaded.blueprint_sha256, staged.plan.blueprint_sha256);
+            assert_eq!(loaded.config_version, staged.config_version);
+            assert_eq!(loaded.installation_generation, staged.generation);
+            assert_eq!(loaded.composition_sha256, staged.composition_sha256);
+            assert_eq!(loaded.component_id, "text-profile");
+            assert_eq!(loaded.catalog.default_class, "economy");
+            let catalog_bytes = tandem_solutions::canonical_json(&loaded.catalog).unwrap();
+            let expected_catalog_sha256 = tandem_solutions::sha256(&catalog_bytes);
+            assert_eq!(loaded.catalog_sha256, expected_catalog_sha256);
+            assert_eq!(
+                loaded.artifact_sha256,
+                staged.plan.components["text-profile"].artifact.sha256
+            );
+
+            let mut upgraded = fixture_with_profile();
+            for (path, body) in &mut upgraded {
+                if path == MARKER_FILE || path == "solution.json" {
+                    *body = body.replace("0.1.0", "0.2.0");
+                }
+            }
+            let archive = fixture.root.path().join("profile-v2.zip");
+            signed(&archive, &upgraded);
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            fixture
+                .state
+                .pack_manager
+                .install(super::solution_tests::request(&archive))
+                .await
+                .unwrap();
+            assert_eq!(
+                fixture
+                    .state
+                    .pack_manager
+                    .solution_artifacts("tandem.company-brain")
+                    .await
+                    .unwrap()
+                    .blueprint
+                    .solution
+                    .version,
+                "0.2.0"
+            );
+            assert_eq!(
+                fixture
+                    .state
+                    .load_current_staged_model_profile_catalog(
+                        &fixture.verified,
+                        &request.scope,
+                        staged.generation,
+                        &staged.composition_sha256,
+                    )
+                    .await
+                    .unwrap()
+                    .solution
+                    .version,
+                "0.1.0"
+            );
+            assert!(fixture
+                .state
+                .load_current_staged_model_profile_catalog(
+                    &fixture.verified,
+                    &request.scope,
+                    staged.generation + 1,
+                    &staged.composition_sha256,
+                )
+                .await
+                .is_err());
+            assert!(fixture
+                .state
+                .load_current_staged_model_profile_catalog(
+                    &fixture.verified,
+                    &request.scope,
+                    staged.generation,
+                    &"a".repeat(64),
+                )
+                .await
+                .is_err());
+
+            let signed_pack = fixture
+                .state
+                .pack_manager
+                .solution_artifacts_exact("tandem.company-brain", "0.1.0")
+                .await
+                .unwrap();
+            let newer_pack = fixture
+                .state
+                .pack_manager
+                .solution_artifacts_exact("tandem.company-brain", "0.2.0")
+                .await
+                .unwrap();
+            assert!(catalog_from_installation(&staged, &newer_pack).is_err());
+            let mut missing = staged.clone();
+            missing.components.remove("text-profile");
+            assert!(catalog_from_installation(&missing, &signed_pack).is_err());
+            let mut claimed = staged.clone();
+            claimed.components.insert(
+                "text-profile".into(),
+                SolutionComponentProgress::Claimed {
+                    attempt_id: "pending".into(),
+                },
+            );
+            assert!(catalog_from_installation(&claimed, &signed_pack).is_err());
+            let mut bad_receipt = staged.clone();
+            if let SolutionComponentProgress::Staged {
+                resource_sha256, ..
+            } = bad_receipt.components.get_mut("text-profile").unwrap()
+            {
+                *resource_sha256 = "b".repeat(64);
+            }
+            assert!(catalog_from_installation(&bad_receipt, &signed_pack).is_err());
+            let mut bad_blueprint = staged.clone();
+            bad_blueprint.plan.blueprint_sha256 = "b".repeat(64);
+            assert!(catalog_from_installation(&bad_blueprint, &signed_pack).is_err());
+            let mut bad_artifact = staged.clone();
+            bad_artifact
+                .plan
+                .components
+                .get_mut("text-profile")
+                .unwrap()
+                .artifact
+                .sha256 = "b".repeat(64);
+            assert!(catalog_from_installation(&bad_artifact, &signed_pack).is_err());
+
+            let path = fixture
+                .root
+                .path()
+                .join("packs")
+                .join("tandem.company-brain/0.1.0/model-profiles/text-default.json");
+            let original = std::fs::read(&path).unwrap();
+            std::fs::write(&path, b"tampered catalog").unwrap();
+            assert!(fixture
+                .state
+                .load_current_staged_model_profile_catalog(
+                    &fixture.verified,
+                    &request.scope,
+                    staged.generation,
+                    &staged.composition_sha256,
+                )
+                .await
+                .is_err());
+            std::fs::write(&path, original).unwrap();
+            assert!(fixture
+                .state
+                .load_current_staged_model_profile_catalog(
+                    &fixture.verified,
+                    &request.scope,
+                    staged.generation,
+                    &staged.composition_sha256,
+                )
+                .await
+                .is_ok());
+            fixture.policy(2, false).await;
+            assert!(fixture
+                .state
+                .load_current_staged_model_profile_catalog(
+                    &fixture.verified,
+                    &request.scope,
+                    staged.generation,
+                    &staged.composition_sha256,
+                )
+                .await
+                .is_err());
         },
     )
     .await;

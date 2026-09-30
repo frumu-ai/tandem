@@ -72,6 +72,115 @@ pub(super) fn request(path: &Path) -> PackInstallRequest {
     }
 }
 
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_pack_exact_artifacts_keep_the_reviewed_version_after_upgrade() {
+    let root = tempfile::tempdir().unwrap();
+    let first = root.path().join("profile-v1.zip");
+    let entries = fixture_with_profile();
+    let key = signed(&first, &entries);
+    let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+    let manager = PackManager::new(root.path().join("packs"));
+    manager.install(request(&first)).await.unwrap();
+    let v1 = manager
+        .solution_artifacts_exact("tandem.company-brain", "0.1.0")
+        .await
+        .unwrap();
+
+    let mut upgraded = entries;
+    for (path, body) in &mut upgraded {
+        if path == MARKER_FILE || path == "solution.json" {
+            *body = body.replace("0.1.0", "0.2.0");
+        }
+    }
+    let second = root.path().join("profile-v2.zip");
+    signed(&second, &upgraded);
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    manager.install(request(&second)).await.unwrap();
+    assert_eq!(
+        manager
+            .solution_artifacts("tandem.company-brain")
+            .await
+            .unwrap()
+            .blueprint
+            .solution
+            .version,
+        "0.2.0"
+    );
+    assert_eq!(
+        manager
+            .solution_artifacts_exact("tandem.company-brain", "0.1.0")
+            .await
+            .unwrap()
+            .blueprint,
+        v1.blueprint
+    );
+    assert_eq!(
+        manager
+            .solution_artifacts_exact("tandem.company-brain", "0.2.0")
+            .await
+            .unwrap()
+            .blueprint
+            .solution
+            .version,
+        "0.2.0"
+    );
+    assert!(manager
+        .solution_artifacts_exact("tandem.company-brain", "0.3.0")
+        .await
+        .is_err());
+    assert!(manager
+        .solution_artifacts_exact("profile-v1", "0.1.0")
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+#[serial_test::serial(pack_signature_env)]
+async fn solution_pack_exact_artifacts_ignore_other_types_but_reject_solution_ambiguity() {
+    let root = tempfile::tempdir().unwrap();
+    let first = root.path().join("solution.zip");
+    let entries = fixture_with_profile();
+    let key = signed(&first, &entries);
+    let _keys = EnvGuard::set("TANDEM_PACK_TRUSTED_PUBLIC_KEYS", &key);
+    let manager = PackManager::new(root.path().join("packs"));
+    manager.install(request(&first)).await.unwrap();
+    let expected = manager
+        .solution_artifacts_exact("tandem.company-brain", "0.1.0")
+        .await
+        .unwrap();
+
+    let other = root.path().join("workflow.zip");
+    signed(&other, &[
+        (MARKER_FILE.into(), "name: unrelated-workflow\nversion: 0.1.0\ntype: workflow\npack_id: tandem.company-brain\n".into()),
+        ("README.md".into(), "Unrelated signed workflow fixture".into()),
+    ]);
+    let installed = manager.install(request(&other)).await.unwrap();
+    assert_eq!(installed.pack_type, "workflow");
+    assert_eq!(installed.pack_id, "tandem.company-brain");
+    let observed = manager
+        .solution_artifacts_exact("tandem.company-brain", "0.1.0")
+        .await
+        .unwrap();
+    assert_eq!(observed.blueprint, expected.blueprint);
+    assert_eq!(observed.artifacts, expected.artifacts);
+
+    let mut duplicate = entries;
+    let mut manifest: serde_yaml::Value = serde_yaml::from_str(&duplicate[0].1).unwrap();
+    manifest["name"] = serde_yaml::Value::String("duplicate-company-brain".into());
+    duplicate[0].1 = serde_yaml::to_string(&manifest).unwrap();
+    let second = root.path().join("duplicate-solution.zip");
+    signed(&second, &duplicate);
+    manager.install(request(&second)).await.unwrap();
+    let error = manager
+        .solution_artifacts_exact("tandem.company-brain", "0.1.0")
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("ambiguous installed solution identity"));
+}
+
 fn export_request(name: &str) -> PackExportRequest {
     PackExportRequest {
         pack_id: Some("tandem.company-brain".into()),

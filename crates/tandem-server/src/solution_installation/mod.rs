@@ -7,6 +7,7 @@ mod model_accounts;
 #[cfg(test)]
 pub(crate) use model_accounts::scope_model_account_observation;
 pub use model_accounts::SolutionModelAccount;
+pub(crate) mod model_profile_catalog;
 mod staging;
 pub use staging::SolutionStagingRequest;
 

@@ -144,6 +144,43 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| load(connection, context, scope))
     }
 
+    /// Read the current protected installation and configuration together.
+    /// This is only a staged-content observation, never runtime activation.
+    pub fn current_staged_solution_installation(
+        &self,
+        context: &VerifiedTenantContext,
+        scope: &CustomerScope,
+        expected_generation: u64,
+        expected_composition: &str,
+        now_ms: u64,
+    ) -> anyhow::Result<SolutionInstallation> {
+        validate_customer_config_scope(context, scope, now_ms)?;
+        self.with_connection(|connection| {
+            // Reuse the transition writer lock so the journal and customer
+            // revision cannot change between these two protected reads.
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let installation = load(&transaction, context, scope)?
+                .ok_or_else(|| anyhow::anyhow!("solution installation missing"))?;
+            ensure!(
+                installation.all_components_staged()
+                    && installation.generation == expected_generation
+                    && installation.composition_sha256 == expected_composition,
+                "solution installation is not the current fully staged composition"
+            );
+            let configuration =
+                customer_configs::load(&transaction, &context.tenant_context, scope)?
+                    .ok_or_else(|| anyhow::anyhow!("solution customer configuration missing"))?;
+            ensure!(
+                configuration.version == installation.config_version
+                    && configuration.blueprint_sha256 == installation.plan.blueprint_sha256,
+                "solution installation configuration changed"
+            );
+            transaction.commit()?;
+            Ok(installation)
+        })
+    }
+
     pub fn transition_solution_installation(
         &self,
         input: SolutionInstallationInput<'_>,
