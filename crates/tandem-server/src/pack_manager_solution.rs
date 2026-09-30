@@ -299,10 +299,9 @@ impl PackManager {
         version: &str,
     ) -> anyhow::Result<SolutionPackArtifacts> {
         let index = self.read_index().await?;
-        let mut records = index
-            .packs
-            .iter()
-            .filter(|record| record.pack_id == pack_id && record.version == version);
+        let mut records = index.packs.iter().filter(|record| {
+            record.pack_type == "solution" && record.pack_id == pack_id && record.version == version
+        });
         let record = records.next().ok_or_else(|| anyhow!("pack not found"))?;
         ensure!(
             records.next().is_none(),
