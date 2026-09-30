@@ -12,6 +12,20 @@ const EXPECTED_DEPLOYMENT_ASSETS = new Set([
 ]);
 const PINNED_NODE_BASE =
   "node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0";
+const PINNED_OS_INPUTS = [
+  "snapshot.debian.org/archive/debian/20260923T120000Z",
+  "snapshot.debian.org/archive/debian-security/20260923T120000Z",
+  "apt-get -y --no-install-recommends upgrade",
+  "ca-certificates=20250419",
+  "curl=8.14.1-2+deb13u5",
+  "libssl3t64=3.5.7-1~deb13u2",
+  "openssl=3.5.7-1~deb13u2",
+  "openssl-provider-legacy=3.5.7-1~deb13u2",
+];
+
+function missingPinnedOsInputs(source) {
+  return PINNED_OS_INPUTS.filter((marker) => !source.includes(marker));
+}
 const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
 const SEMVER_PRERELEASE_IDENTIFIER =
   "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
@@ -106,16 +120,8 @@ export async function verifyContainerHardening(
     if (/@latest\b|ENGINE_VERSION=latest\b/.test(source)) {
       errors.push(`${name} contains a floating latest dependency`);
     }
-    for (const marker of [
-      "snapshot.debian.org/archive/debian/20260904T000000Z",
-      "snapshot.debian.org/archive/debian-security/20260904T000000Z",
-      "ca-certificates=20250419",
-      "curl=8.14.1-2+deb13u4",
-      "libssl3t64=3.5.7-1~deb13u2",
-      "openssl=3.5.7-1~deb13u2",
-      "openssl-provider-legacy=3.5.7-1~deb13u2",
-    ]) {
-      if (!source.includes(marker)) errors.push(`${name} is missing immutable OS input ${marker}`);
+    for (const marker of missingPinnedOsInputs(source)) {
+      errors.push(`${name} is missing immutable OS input ${marker}`);
     }
   }
 
@@ -246,6 +252,21 @@ export async function verifyContainerHardening(
 }
 
 function selfTest() {
+  const pinnedOsSource = PINNED_OS_INPUTS.join("\n");
+  if (missingPinnedOsInputs(pinnedOsSource).length) {
+    throw new Error("container hardening self-test rejected the pinned OS inputs");
+  }
+  for (const marker of PINNED_OS_INPUTS) {
+    if (!missingPinnedOsInputs(pinnedOsSource.replace(marker, "")).includes(marker)) {
+      throw new Error(`container hardening self-test accepted missing OS input ${marker}`);
+    }
+  }
+  const staleOsSource = pinnedOsSource
+    .replaceAll("20260923T120000Z", "20260904T000000Z")
+    .replace("curl=8.14.1-2+deb13u5", "curl=8.14.1-2+deb13u4");
+  if (missingPinnedOsInputs(staleOsSource).length !== 3) {
+    throw new Error("container hardening self-test accepted the vulnerable OS snapshot");
+  }
   const expected = [
     ["Dockerfile.production", ""],
     ["ops/Containerfile", ""],
