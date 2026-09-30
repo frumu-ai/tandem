@@ -7,6 +7,9 @@ use futures::StreamExt;
 use tandem_types::{AuthorityChain, HumanActor, TenantContextAssertionClaims};
 use tower::ServiceExt;
 
+#[path = "hosted_event_stream_tests/buffered_context.rs"]
+mod buffered_context;
+
 fn stream_tenant(actor: &str) -> TenantContext {
     TenantContext::explicit_user_workspace("org-a", "dep-a", Some("dep-a".into()), actor)
 }

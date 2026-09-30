@@ -176,6 +176,13 @@ impl SessionRepository {
         self.with_connection(|connection| load_session(connection, session_id))
     }
 
+    pub(crate) fn session_owner_read_guard(
+        &self,
+        session_ids: &[String],
+    ) -> Result<super::SessionOwnerReadGuard> {
+        super::SessionOwnerReadGuard::acquire(self.open_connection()?, session_ids)
+    }
+
     pub(crate) fn save_session(&self, session: &Session) -> Result<()> {
         self.save_session_with_commit_guard(session, |commit| commit())
     }
@@ -728,7 +735,12 @@ impl SessionRepository {
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T>,
     ) -> Result<T> {
-        let mut connection = Connection::open(&self.database_path).with_context(|| {
+        let mut connection = self.open_connection()?;
+        operation(&mut connection)
+    }
+
+    fn open_connection(&self) -> Result<Connection> {
+        let connection = Connection::open(&self.database_path).with_context(|| {
             format!(
                 "failed to open session store {}",
                 self.database_path.display()
@@ -736,7 +748,7 @@ impl SessionRepository {
         })?;
         connection.busy_timeout(Duration::from_secs(30))?;
         connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;")?;
-        operation(&mut connection)
+        Ok(connection)
     }
 }
 

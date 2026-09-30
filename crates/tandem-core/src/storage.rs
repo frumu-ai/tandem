@@ -20,6 +20,26 @@ use crate::{
 #[path = "session_repository.rs"]
 mod session_repository;
 
+#[path = "session_owner_read_guard.rs"]
+mod session_owner_read_guard;
+pub use session_owner_read_guard::SessionOwnerReadGuard;
+
+impl Storage {
+    /// Read only the requested session owners and keep ownership changes
+    /// serialized until the returned guard is dropped. Acquire external
+    /// authority locks before awaiting this guard, never in the reverse order.
+    pub async fn session_owner_read_guard(
+        &self,
+        session_ids: Vec<String>,
+    ) -> anyhow::Result<SessionOwnerReadGuard> {
+        if session_ids.is_empty() {
+            return Ok(SessionOwnerReadGuard::empty());
+        }
+        self.run_blocking(move |repository| repository.session_owner_read_guard(&session_ids))
+            .await
+    }
+}
+
 include!("storage_parts/part01.rs");
 include!("storage_parts/part02.rs");
 

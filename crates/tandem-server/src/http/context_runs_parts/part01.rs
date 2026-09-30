@@ -307,41 +307,7 @@ pub(super) async fn ensure_context_run_dir(
     Ok(())
 }
 
-pub(super) async fn load_context_run_state(
-    state: &AppState,
-    run_id: &str,
-) -> Result<ContextRunState, StatusCode> {
-    let run = load_and_repair_context_run_state(state, run_id)?;
-    // Older routine projections were written with a local tenant even when
-    // their canonical routine run was hosted. Rebind only projections that
-    // carry the runtime's marker, under the same lock as event mutations.
-    if run.run_type != "routine"
-        || run.source_client.as_deref() != Some("routine_runtime")
-        || run.tenant_context != TenantContext::local_implicit()
-    {
-        return Ok(run);
-    }
-    let Some(native_id) = run_id.strip_prefix("routine-") else {
-        return Ok(run);
-    };
-    let Some(canonical) = state.get_routine_run(native_id).await else {
-        return Ok(run);
-    };
-    if canonical.tenant_context == run.tenant_context {
-        return Ok(run);
-    }
-    let lock = context_run_engine().lock_for(run_id).await;
-    let _guard = lock.lock().await;
-    let mut current = load_and_repair_context_run_state(state, run_id)?;
-    if current.run_type == "routine"
-        && current.source_client.as_deref() == Some("routine_runtime")
-        && current.tenant_context == TenantContext::local_implicit()
-    {
-        current.tenant_context = canonical.tenant_context;
-        save_context_run_state_sync(state, &current)?;
-    }
-    Ok(current)
-}
+include!("projection_store.rs");
 
 fn write_string_atomically(path: &FsPath, payload: &str) -> Result<(), StatusCode> {
     if let Some(parent) = path.parent() {
@@ -355,19 +321,6 @@ fn write_string_atomically(path: &FsPath, payload: &str) -> Result<(), StatusCod
     ));
     std::fs::write(&tmp_path, payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     std::fs::rename(&tmp_path, path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-pub(super) async fn save_context_run_state(
-    state: &AppState,
-    run: &ContextRunState,
-) -> Result<(), StatusCode> {
-    ensure_context_run_dir(state, &run.run_id).await?;
-    let path = context_run_state_path(state, &run.run_id);
-    let payload =
-        serde_json::to_string_pretty(run).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    tokio::task::spawn_blocking(move || write_string_atomically(&path, &payload))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
 }
 
 pub(super) fn load_context_run_events_jsonl(
@@ -477,7 +430,7 @@ pub(super) fn load_context_run_state_sync(
     Ok(run)
 }
 
-pub(super) fn save_context_run_state_sync(
+fn save_context_run_state_unchecked_sync(
     state: &AppState,
     run: &ContextRunState,
 ) -> Result<(), StatusCode> {
@@ -569,10 +522,11 @@ fn apply_context_run_event_record(run: &mut ContextRunState, event: &ContextRunE
     run.updated_at_ms = run.updated_at_ms.max(event.ts_ms);
 }
 
-fn load_and_repair_context_run_state(
+fn load_and_repair_context_run_state_locked(
     state: &AppState,
-    run_id: &str,
+    guard: &ContextRunProjectionGuard,
 ) -> Result<ContextRunState, StatusCode> {
+    let run_id = guard.run_id();
     let mut run = load_context_run_state_sync(state, run_id)?;
     let pending = load_context_run_events_jsonl(
         &context_run_events_path(state, run_id),
@@ -583,7 +537,7 @@ fn load_and_repair_context_run_state(
         for event in &pending {
             apply_context_run_event_record(&mut run, event);
         }
-        save_context_run_state_sync(state, &run)?;
+        save_context_run_state_with_projection_guard_sync(state, guard, &run)?;
     }
     Ok(run)
 }
@@ -601,9 +555,8 @@ impl ContextRunEngine {
         command_id: Option<String>,
         mut event_payload: Value,
     ) -> Result<ContextRunCommitResult, StatusCode> {
-        let lock = self.lock_for(run_id).await;
-        let _guard = lock.lock().await;
-        let mut run = load_and_repair_context_run_state(state, run_id)?;
+        let guard = self.projection_guard_for(run_id).await?;
+        let mut run = load_and_repair_context_run_state_locked(state, &guard)?;
         let now = crate::now_ms();
         let next_revision = run.revision.saturating_add(1);
         let next_event_seq = next_context_run_event_seq(state, run_id, &run);
@@ -638,7 +591,7 @@ impl ContextRunEngine {
             payload: event_payload,
         };
         append_context_run_event_record_sync(state, run_id, &event)?;
-        save_context_run_state_sync(state, &run)?;
+        save_context_run_state_with_projection_guard_sync(state, &guard, &run)?;
 
         if let Some(payload) = patch_payload.as_object_mut() {
             payload
@@ -696,9 +649,8 @@ impl ContextRunEngine {
         input: ContextRunEventAppendInput,
         command_id: Option<String>,
     ) -> Result<ContextRunCommitResult, StatusCode> {
-        let lock = self.lock_for(run_id).await;
-        let _guard = lock.lock().await;
-        let mut run = load_and_repair_context_run_state(state, run_id)?;
+        let guard = self.projection_guard_for(run_id).await?;
+        let mut run = load_and_repair_context_run_state_locked(state, &guard)?;
         let now = crate::now_ms();
         let next_revision = run.revision.saturating_add(1);
         let next_event_seq = next_context_run_event_seq(state, run_id, &run);
@@ -721,7 +673,7 @@ impl ContextRunEngine {
             payload: input.payload.clone(),
         };
         append_context_run_event_record_sync(state, run_id, &event)?;
-        save_context_run_state_sync(state, &run)?;
+        save_context_run_state_with_projection_guard_sync(state, &guard, &run)?;
         let blackboard = load_projected_context_blackboard(state, run_id);
         Ok(ContextRunCommitResult {
             run,
@@ -739,9 +691,8 @@ impl ContextRunEngine {
         input: ContextRunEventAppendInput,
         command_id: Option<String>,
     ) -> Result<ContextRunCommitResult, StatusCode> {
-        let lock = self.lock_for(run_id).await;
-        let _guard = lock.lock().await;
-        let current = load_and_repair_context_run_state(state, run_id)?;
+        let guard = self.projection_guard_for(run_id).await?;
+        let current = load_and_repair_context_run_state_locked(state, &guard)?;
         let now = crate::now_ms();
         let next_revision = current.revision.saturating_add(1);
         let next_event_seq = next_context_run_event_seq(state, run_id, &current);
@@ -762,7 +713,7 @@ impl ContextRunEngine {
             payload: input.payload.clone(),
         };
         append_context_run_event_record_sync(state, run_id, &event)?;
-        save_context_run_state_sync(state, &run)?;
+        save_context_run_state_with_projection_guard_sync(state, &guard, &run)?;
         let blackboard = load_projected_context_blackboard(state, run_id);
         Ok(ContextRunCommitResult {
             run,
@@ -779,9 +730,8 @@ impl ContextRunEngine {
         op: ContextBlackboardPatchOp,
         payload: Value,
     ) -> Result<ContextRunCommitResult, StatusCode> {
-        let lock = self.lock_for(run_id).await;
-        let _guard = lock.lock().await;
-        let mut run = load_and_repair_context_run_state(state, run_id)?;
+        let guard = self.projection_guard_for(run_id).await?;
+        let mut run = load_and_repair_context_run_state_locked(state, &guard)?;
         let now = crate::now_ms();
         let next_revision = run.revision.saturating_add(1);
         let next_event_seq = next_context_run_event_seq(state, run_id, &run);
@@ -810,7 +760,7 @@ impl ContextRunEngine {
             }),
         };
         append_context_run_event_record_sync(state, run_id, &event)?;
-        save_context_run_state_sync(state, &run)?;
+        save_context_run_state_with_projection_guard_sync(state, &guard, &run)?;
         let patch =
             append_context_blackboard_patch_record(state, run_id, next_event_seq, op, payload)?;
         let blackboard = load_projected_context_blackboard(state, run_id);

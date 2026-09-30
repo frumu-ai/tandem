@@ -230,6 +230,313 @@ pub(super) async fn context_run_visible(
     owner() && current_context(state, tenant, verified, Some(permission)).is_ok()
 }
 
+// Native discovery may await before publication locks are taken. It is never
+// authority for the frame: every binding below is read again under its actual
+// owning projection/history/native locks at the publication boundary.
+enum ResolvedContextReadSource {
+    Session(String),
+    Automation {
+        native_id: String,
+        sources: crate::app::state::AutomationV2RunReadSources,
+    },
+    Workflow(String),
+    Routine(String),
+    Interactive,
+}
+
+struct ResolvedContextRead {
+    run_id: String,
+    run_type: String,
+    source: ResolvedContextReadSource,
+}
+
+async fn discover_context_read(state: &AppState, run_id: &str) -> Option<()> {
+    let run = super::context_runs::load_context_run_state(state, run_id)
+        .await
+        .ok()?;
+    match run.run_type.as_str() {
+        "session" => {
+            let native_id = run.run_id.strip_prefix("session-")?;
+            state.storage.get_session(native_id).await?;
+        }
+        "automation_v2" | "incident_monitor_triage" => {
+            let native_id = run.run_id.strip_prefix("automation-v2-")?;
+            state.get_automation_v2_run(native_id).await?;
+        }
+        "workflow" => {
+            let native_id = run.run_id.strip_prefix("workflow-")?;
+            state.get_workflow_run(native_id).await?;
+        }
+        "routine" => {
+            let native_id = run.run_id.strip_prefix("routine-")?;
+            state.get_routine_run(native_id).await?;
+        }
+        _ if reserved_projection_id(&run.run_id) => return None,
+        _ => {}
+    }
+    Some(())
+}
+
+/// Revalidate the entire batch at one synchronous frame-construction boundary.
+/// Locks are held through `publish`, including ready JSON and SSE conversion.
+/// Ordinary contention is awaited, never interpreted as revoked authority.
+pub(super) async fn with_current_context_run_reads<T>(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    run_ids: &[String],
+    publish: impl FnOnce(Vec<String>) -> T,
+    #[cfg(test)] progress: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
+) -> T {
+    for run_id in run_ids {
+        let _ = discover_context_read(state, run_id).await;
+        #[cfg(test)]
+        if let Some(progress) = progress {
+            let _ = progress.send(run_id.clone());
+        }
+    }
+
+    // Manual workflow creation holds publication through native creation
+    // and projection sync. Publication therefore precedes engine locks.
+    let _publication = state.enterprise.hosted_policy.lock_publication().await;
+
+    // Projection ownership is mutable too. Take its existing per-run
+    // engine locks in a stable order before native guards: context task
+    // mutations already use projection -> native lookup.
+    let mut projection_ids = run_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    projection_ids.sort_unstable();
+    projection_ids.dedup();
+    let mut projection_guards = Vec::new();
+    for run_id in projection_ids {
+        if let Ok(guard) = super::context_runs::context_run_projection_guard_for(run_id).await {
+            projection_guards.push(guard);
+        }
+    }
+
+    // Repair pending payload.run replacements and legacy routine owners
+    // while holding the same engine tokens used by all four commits and
+    // ordinary snapshot saves. Never re-enter the engine lock for repair.
+    let mut projections = Vec::new();
+    // Lock ordering must not reorder the Ready frame's subscriptions.
+    for run_id in run_ids {
+        let Some(guard) = projection_guards
+            .iter()
+            .find(|guard| guard.run_id() == run_id)
+        else {
+            continue;
+        };
+        if let Ok(run) =
+            super::context_runs::load_context_run_state_with_projection_guard(state, guard).await
+        {
+            projections.push(run);
+        }
+    }
+
+    // History precedes native maps: native persistence releases those
+    // maps before awaiting its history writer. Retain the path-bound
+    // history read guard through frame construction, and finish fresh
+    // recovery reads before taking native guards. A queued writer cannot
+    // force a re-lock or turn ordinary contention into denial.
+    let history_guard =
+        crate::app::state::automation_v2_run_history_read_guard(&state.automation_v2_runs_path)
+            .await;
+    let mut resolved = Vec::new();
+    for run in projections {
+        let source = match run.run_type.as_str() {
+            "session" => run
+                .run_id
+                .strip_prefix("session-")
+                .map(|id| ResolvedContextReadSource::Session(id.to_owned())),
+            "automation_v2" | "incident_monitor_triage" => {
+                if let Some(id) = run.run_id.strip_prefix("automation-v2-") {
+                    crate::app::state::load_automation_v2_run_read_sources(
+                        state,
+                        &history_guard,
+                        id,
+                    )
+                    .await
+                    .map(|sources| ResolvedContextReadSource::Automation {
+                        native_id: id.to_owned(),
+                        sources,
+                    })
+                } else {
+                    None
+                }
+            }
+            "workflow" => run
+                .run_id
+                .strip_prefix("workflow-")
+                .map(|id| ResolvedContextReadSource::Workflow(id.to_owned())),
+            "routine" => run
+                .run_id
+                .strip_prefix("routine-")
+                .map(|id| ResolvedContextReadSource::Routine(id.to_owned())),
+            _ if reserved_projection_id(&run.run_id) => None,
+            _ => Some(ResolvedContextReadSource::Interactive),
+        };
+        if let Some(source) = source {
+            resolved.push(ResolvedContextRead {
+                run_id: run.run_id,
+                run_type: run.run_type,
+                source,
+            });
+        }
+    }
+
+    // Native persistence takes automation runs before automation specs.
+    // Preserve that ordering even for readers: queued writers make a
+    // read/read inversion capable of deadlocking with Tokio's RwLock.
+    let automation_runs = state.automation_v2_runs.read().await;
+    let workflow_runs = state.workflow_runs.read().await;
+    let routine_runs = state.routine_runs.read().await;
+
+    // Match the established external-commit authority lock order.
+    let automations = state.automations_v2.read().await;
+    let memberships = state.enterprise.org_unit_memberships.read().await;
+    let access_grants = state.enterprise.org_unit_access_grants.read().await;
+    let cross_tenant_grants = state.enterprise.cross_tenant_grants.read().await;
+
+    let session_ids = resolved
+        .iter()
+        .filter_map(|resource| match &resource.source {
+            ResolvedContextReadSource::Session(id) => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    // Acquire SQLite last: ownership is mutable even in independent
+    // Storage instances. An empty session batch opens no DB transaction.
+    let session_owners = state.storage.session_owner_read_guard(session_ids).await;
+    if let Err(error) = &session_owners {
+        tracing::error!(%error, "failed to stabilize stream session ownership");
+    }
+
+    // Finish all potentially blocking projection reads before the first
+    // current expiry/ACL decision. The engine guards retain their binding.
+    let current_rows = resolved
+        .iter()
+        .filter_map(|resource| {
+            super::context_runs::load_context_run_state_sync(state, &resource.run_id)
+                .ok()
+                .map(|run| (resource, run))
+        })
+        .collect::<Vec<_>>();
+
+    // No awaits, filesystem reads or live store re-locking from here
+    // through publication of the complete batch.
+    let current_ids = current_rows
+        .iter()
+        .filter(|(resource, run)| {
+            if run.run_type != resource.run_type || !tenant_matches(tenant, &run.tenant_context) {
+                return false;
+            }
+            let owner = || {
+                super::sessions_actor_scope::session_visible_to_actor(tenant, &run.tenant_context)
+            };
+            match &resource.source {
+                ResolvedContextReadSource::Session(id) => session_owners
+                    .as_ref()
+                    .ok()
+                    .and_then(|owners| owners.tenant_context(id))
+                    .is_some_and(|native_tenant| {
+                        *native_tenant == run.tenant_context
+                            && current_context(state, tenant, verified, None).is_ok()
+                            && super::sessions_actor_scope::session_visible_to_actor(
+                                tenant,
+                                native_tenant,
+                            )
+                    }),
+                ResolvedContextReadSource::Automation { native_id, sources } => {
+                    let Some(record) = crate::app::state::current_automation_v2_run_read_source(
+                        native_id,
+                        automation_runs.get(native_id),
+                        sources,
+                    ) else {
+                        return false;
+                    };
+                    if record.run_id != *native_id || record.tenant_context != run.tenant_context {
+                        return false;
+                    }
+                    let Some(spec) = automations
+                        .get(&record.automation_id)
+                        .or(record.automation_snapshot.as_ref())
+                    else {
+                        return false;
+                    };
+                    if !tenant_matches(tenant, &spec.tenant_context()) {
+                        return false;
+                    }
+                    match current_context(
+                        state,
+                        tenant,
+                        verified,
+                        Some(AccessPermission::HostedAutomationRead),
+                    ) {
+                        Ok(Some(_)) => {
+                            super::automation_object_authority::can_read_with_held_grants(
+                                state,
+                                tenant,
+                                verified,
+                                spec,
+                                &memberships,
+                                &access_grants,
+                                &cross_tenant_grants,
+                            )
+                        }
+                        Ok(None) => owner(),
+                        Err(_) => false,
+                    }
+                }
+                ResolvedContextReadSource::Workflow(id) => {
+                    let Some(record) = workflow_runs.get(id) else {
+                        return false;
+                    };
+                    if record.run_id != *id || record.tenant_context != run.tenant_context {
+                        return false;
+                    }
+                    let Ok(current) = current_context(
+                        state,
+                        tenant,
+                        verified,
+                        Some(AccessPermission::HostedWorkflowRead),
+                    ) else {
+                        return false;
+                    };
+                    let actor = current
+                        .as_ref()
+                        .map(|value| value.human_actor.actor_id.as_str())
+                        .or(tenant.actor_id.as_deref())
+                        .unwrap_or_default();
+                    super::workflows::workflow_run_visible_to_caller(
+                        record,
+                        tenant,
+                        &RequestPrincipal::authenticated_user(actor, "context-run"),
+                        current.as_ref(),
+                    )
+                }
+                ResolvedContextReadSource::Routine(id) => {
+                    routine_runs.get(id).is_some_and(|record| {
+                        record.run_id == *id && record.tenant_context == run.tenant_context
+                    }) && current_context(
+                        state,
+                        tenant,
+                        verified,
+                        Some(AccessPermission::HostedAutomationRead),
+                    )
+                    .is_ok()
+                        && owner()
+                }
+                ResolvedContextReadSource::Interactive => {
+                    !reserved_projection_id(&run.run_id)
+                        && current_context(state, tenant, verified, None).is_ok()
+                        && owner()
+                }
+            }
+        })
+        .map(|(resource, _)| resource.run_id.clone())
+        .collect();
+    publish(current_ids)
+}
+
 // All by-ID context routes, including ledger, checkpoint rollback and other
 // handlers that did not previously consult tenant context, enter here. Lists
 // and multiplex streams still need per-row checks in their own handlers.

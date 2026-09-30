@@ -1118,10 +1118,36 @@ async fn archive_automation_v2_aggregate_file(active_path: &Path) -> anyhow::Res
 }
 
 async fn write_string_atomic(path: &Path, payload: &str) -> anyhow::Result<()> {
+    write_string_atomic_impl(
+        path,
+        payload,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) struct AtomicWriteTestGate {
+    pub(crate) started: tokio::sync::oneshot::Sender<()>,
+    pub(crate) resume: tokio::sync::oneshot::Receiver<()>,
+}
+
+async fn write_string_atomic_impl(
+    path: &Path,
+    payload: &str,
+    #[cfg(test)] gate: Option<AtomicWriteTestGate>,
+) -> anyhow::Result<()> {
     let path = path.to_path_buf();
     let payload = payload.to_owned();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         use std::io::Write;
+
+        #[cfg(test)]
+        if let Some(gate) = gate {
+            let _ = gate.started.send(());
+            let _ = gate.resume.blocking_recv();
+        }
 
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent)?;

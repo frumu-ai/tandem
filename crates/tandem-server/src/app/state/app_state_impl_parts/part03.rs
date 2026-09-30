@@ -1440,35 +1440,12 @@ impl AppState {
             .filter(|run| !automation_v2_run_is_nonterminal_recovered_context_run(run));
         let history =
             load_automation_v2_run_history_shard(&self.automation_v2_runs_path, run_id).await;
-        match (hot, history) {
-            (Some(hot), Some(history)) => {
-                let history_has_pending_gate = history
-                    .checkpoint
-                    .awaiting_gate
-                    .as_ref()
-                    .is_some_and(|gate| {
-                        !Self::automation_run_is_terminal(&hot.status)
-                            && hot.checkpoint.awaiting_gate.is_none()
-                            && !crate::app::state::automation_gate_has_settled_decision(
-                                &hot,
-                                &gate.node_id,
-                            )
-                    });
-                let history_has_more_detail = history.checkpoint.node_outputs.len()
-                    > hot.checkpoint.node_outputs.len()
-                    || (hot.runtime_context.is_none() && history.runtime_context.is_some())
-                    || (hot.automation_snapshot.is_none() && history.automation_snapshot.is_some());
-                if history_has_pending_gate || history_has_more_detail {
-                    Some(history)
-                } else {
-                    Some(hot)
-                }
-            }
-            (Some(hot), None) => Some(hot),
-            (None, Some(history)) => Some(history),
-            (None, None) => {
-                automation_v2_context_recovery::get_recovered_automation_v2_run(self, run_id).await
-            }
+        if let Some(run) = select_automation_v2_run_source(run_id, hot, history) {
+            Some(run)
+        } else {
+            automation_v2_context_recovery::get_recovered_automation_v2_run(self, run_id)
+                .await
+                .filter(|run| run.run_id == run_id)
         }
     }
 

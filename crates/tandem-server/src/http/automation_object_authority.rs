@@ -10,6 +10,8 @@ use tandem_types::{
     ResourceRef, TenantContext, VerifiedTenantContext,
 };
 
+use std::collections::HashMap;
+
 use crate::{AppState, AutomationV2Spec};
 
 #[derive(Clone, Copy)]
@@ -17,6 +19,15 @@ enum ObjectAccess {
     Read,
     Write,
     Execute,
+}
+
+enum GrantView<'a> {
+    Live,
+    Held {
+        memberships: &'a HashMap<String, tandem_types::OrganizationUnitMembership>,
+        access_grants: &'a HashMap<String, tandem_types::OrganizationUnitAccessGrant>,
+        cross_tenant_grants: &'a HashMap<String, tandem_types::CrossTenantGrantRecord>,
+    },
 }
 
 pub(super) fn can_read(
@@ -32,6 +43,34 @@ pub(super) fn can_read(
         automation,
         AccessPermission::HostedAutomationRead,
         ObjectAccess::Read,
+        GrantView::Live,
+    )
+}
+
+/// Evaluate a read with current grant registries held through frame creation.
+/// A queued writer must not turn an already-held read guard into a denial by
+/// causing a second `try_read` of the same registry to fail.
+pub(super) fn can_read_with_held_grants(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    automation: &AutomationV2Spec,
+    memberships: &HashMap<String, tandem_types::OrganizationUnitMembership>,
+    access_grants: &HashMap<String, tandem_types::OrganizationUnitAccessGrant>,
+    cross_tenant_grants: &HashMap<String, tandem_types::CrossTenantGrantRecord>,
+) -> bool {
+    allowed(
+        state,
+        tenant,
+        verified,
+        automation,
+        AccessPermission::HostedAutomationRead,
+        ObjectAccess::Read,
+        GrantView::Held {
+            memberships,
+            access_grants,
+            cross_tenant_grants,
+        },
     )
 }
 
@@ -48,6 +87,7 @@ pub(super) fn can_write(
         automation,
         AccessPermission::HostedAutomationWrite,
         ObjectAccess::Write,
+        GrantView::Live,
     )
 }
 
@@ -64,6 +104,7 @@ pub(super) fn can_execute(
         automation,
         AccessPermission::HostedAutomationExecute,
         ObjectAccess::Execute,
+        GrantView::Live,
     )
 }
 
@@ -74,6 +115,7 @@ fn allowed(
     automation: &AutomationV2Spec,
     operation: AccessPermission,
     object_access: ObjectAccess,
+    grant_view: GrantView<'_>,
 ) -> bool {
     let source_tenant = automation.tenant_context();
     if !super::tenant_matches(tenant, &source_tenant) {
@@ -168,16 +210,45 @@ fn allowed(
             });
         }
     }
-    let current_grant = try_enrich_current_org_unit_grants(
-        state,
-        &mut current,
-        current_memberships.clone(),
-    )
-        && super::cross_tenant_grants::try_enrich_verified_context_with_inbound_cross_tenant_grants(
-            state,
-            &mut current,
-        )
-        && scoped_grant(&current, tenant, automation, object_access, now);
+    let grant_ready = match grant_view {
+        GrantView::Live => {
+            try_enrich_current_org_unit_grants(state, &mut current, current_memberships.clone())
+                && super::cross_tenant_grants::try_enrich_verified_context_with_inbound_cross_tenant_grants(
+                    state,
+                    &mut current,
+                )
+        }
+        GrantView::Held {
+            memberships,
+            access_grants,
+            cross_tenant_grants,
+        } => {
+            if current.strict_projection.is_some() {
+                let hosted = current_memberships.is_some();
+                let memberships = current_memberships
+                    .clone()
+                    .unwrap_or_else(|| memberships.values().cloned().collect());
+                super::middleware::project_org_unit_grants_into_verified_context(
+                    &mut current,
+                    memberships.iter(),
+                    access_grants
+                        .values()
+                        .filter(|grant| !hosted || super::middleware::local_hosted_data_grant(grant)),
+                    crate::now_ms(),
+                );
+                if !current.tenant_context.is_local_implicit() {
+                    super::cross_tenant_grants::project_inbound_cross_tenant_grants(
+                        &mut current,
+                        cross_tenant_grants.values(),
+                        crate::now_ms(),
+                    );
+                }
+            }
+            true
+        }
+    };
+    let current_grant =
+        grant_ready && scoped_grant(&current, tenant, automation, object_access, now);
     if current_grant {
         return true;
     }
