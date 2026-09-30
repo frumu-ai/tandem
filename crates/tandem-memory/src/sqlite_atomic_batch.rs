@@ -334,6 +334,7 @@ fn put_global_record(
     let owner_org_unit_id = owner_org_unit_id_from_metadata(record.metadata.as_ref());
     let owner_subject = owner_subject_from_metadata(record.metadata.as_ref());
     let private = owner_subject.is_some();
+    let tenant_shared = crate::types::tenant_shared_from_metadata(record.metadata.as_ref());
 
     let existing: Option<String> = conn
         .query_row(
@@ -351,6 +352,7 @@ fn put_global_record(
                AND IFNULL(owner_org_unit_id, '') = IFNULL(?11, '')
                AND private = ?12
                AND IFNULL(owner_subject, '') = IFNULL(?13, '')
+               AND tenant_shared = ?14
              LIMIT 1",
             params![
                 tenant_org_id,
@@ -366,6 +368,7 @@ fn put_global_record(
                 owner_org_unit_id,
                 i64::from(private),
                 owner_subject.as_deref(),
+                i64::from(tenant_shared),
             ],
             |row| row.get(0),
         )
@@ -396,12 +399,12 @@ fn put_global_record(
             user_id, source_type, content, content_hash, run_id, session_id, message_id, tool_name,
             project_tag, channel_tag, host_tag, metadata, provenance, redaction_status, redaction_count,
             visibility, demoted, score_boost, created_at_ms, updated_at_ms, expires_at_ms, owner_org_unit_id,
-            private, owner_subject
+            private, owner_subject, tenant_shared
         ) VALUES (
             ?1, ?2, ?3, ?4,
             ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
             ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
         )",
         params![
             record.id,
@@ -432,6 +435,7 @@ fn put_global_record(
             owner_org_unit_id,
             i64::from(private),
             owner_subject,
+            i64::from(tenant_shared),
         ],
     )
     .map_err(store_database_error)?;
@@ -457,6 +461,7 @@ fn update_global_record_context(
     let next_owner_org_unit_id = owner_org_unit_id_from_metadata(metadata);
     let next_owner_subject = owner_subject_from_metadata(metadata);
     let next_private = next_owner_subject.is_some();
+    let next_tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
     let metadata = metadata.map(ToString::to_string).unwrap_or_default();
     let provenance = provenance.map(ToString::to_string).unwrap_or_default();
     let changed = conn
@@ -464,12 +469,12 @@ fn update_global_record_context(
             "UPDATE memory_records
              SET visibility = ?7, demoted = ?8, metadata = ?9, provenance = ?10,
                  updated_at_ms = ?11, owner_org_unit_id = ?12, private = ?13,
-                 owner_subject = ?14
+                 owner_subject = ?14, tenant_shared = ?15
              WHERE id = ?1
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
                AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')
-               AND (?5 IS NULL OR owner_org_unit_id = ?5)
+               AND (?5 IS NULL OR owner_org_unit_id = ?5 OR (owner_org_unit_id IS NULL AND tenant_shared = 1))
                AND (private = 0 OR owner_subject = ?6)",
             params![
                 id,
@@ -486,6 +491,7 @@ fn update_global_record_context(
                 next_owner_org_unit_id,
                 i64::from(next_private),
                 next_owner_subject,
+                i64::from(next_tenant_shared),
             ],
         )
         .map_err(store_database_error)?;
@@ -504,7 +510,7 @@ fn delete_global_record(
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
                AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')
-               AND (?5 IS NULL OR owner_org_unit_id = ?5)
+               AND (?5 IS NULL OR owner_org_unit_id = ?5 OR (owner_org_unit_id IS NULL AND tenant_shared = 1))
                AND (private = 0 OR owner_subject = ?6)",
             params![
                 id,

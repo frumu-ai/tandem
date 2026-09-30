@@ -359,7 +359,7 @@ impl PostgresMemoryStore {
                                 data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id FROM tandem_memory_global_records
                          WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3
                            AND tenant_deployment_id=$4
-                           AND ($5::text IS NULL OR owner_org_unit_id=$5)
+                           AND ($5::text IS NULL OR owner_org_unit_id=$5 OR (owner_org_unit_id IS NULL AND tenant_shared=true))
                            AND ($6::boolean OR private=false OR owner_subject=$7)",
                         &[
                             &id,
@@ -977,9 +977,9 @@ impl PostgresMemoryStore {
                 "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
                     data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id FROM tandem_memory_global_records
              WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
-               AND (owner_subject=$4 OR (private=false AND owner_org_unit_id IS NOT NULL)
+               AND (owner_subject=$4 OR (private=false AND (owner_org_unit_id IS NOT NULL OR tenant_shared=true))
                     OR (owner_subject IS NULL AND owner_org_unit_id IS NULL AND user_id=$5))
-               AND ($6::text IS NULL OR owner_org_unit_id=$6)
+               AND ($6::text IS NULL OR owner_org_unit_id=$6 OR (owner_org_unit_id IS NULL AND tenant_shared=true))
                AND ($7::boolean OR demoted=false)
                AND (expires_at_ms IS NULL OR expires_at_ms>$8)
                AND ($9::text IS NULL OR project_tag=$9)
