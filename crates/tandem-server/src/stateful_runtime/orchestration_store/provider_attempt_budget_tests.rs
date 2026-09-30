@@ -495,3 +495,144 @@ fn solution_budget_provider_price_ceilings_round_up_and_reject_overflow() {
     price.request_microusd = u64::MAX;
     assert!(price.cost(0, 1).is_err());
 }
+
+#[test]
+#[serial]
+fn solution_budget_provider_binds_persisted_revision_to_loaded_material_after_reservation() {
+    use tandem_providers::{ProviderCredentialKind, ProviderCredentialLocation};
+    encrypted(|| {
+        for_each_backend(|_, store| {
+            for variant in ["allowed", "stale-loaded", "reconnected"] {
+                let fixture = network_fixture(store, &format!("provider-version-{variant}"));
+                let approved = approval(&fixture, store);
+                let security = tempfile::tempdir().unwrap();
+                tandem_providers::set_provider_auth_for_tenant_in_dir(
+                    security.path(),
+                    &tandem_types::TenantContext::local_implicit(),
+                    "llama_cpp",
+                    "synthetic-a",
+                )
+                .unwrap();
+                runtime().block_on(async {
+                    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let registry = ProviderRegistry::new(configuration(
+                        listener.local_addr().unwrap(),
+                        Some("synthetic-a"),
+                    ));
+                    let reviewed = registry
+                        .versioned_runtime_binding_for_tenant_in_dir(
+                            security.path(),
+                            &approved.verified.tenant_context,
+                            "llama_cpp",
+                            "synthetic-model",
+                            ProviderCredentialKind::ApiKey,
+                            ProviderCredentialLocation::HostService,
+                        )
+                        .await
+                        .unwrap();
+                    let expected_revision = reviewed.revision.authorization_revision;
+                    let checks = Arc::new(AtomicUsize::new(0));
+                    let count = checks.clone();
+                    let path = security.path().to_path_buf();
+                    let providers = registry.clone();
+                    let policy = store
+                        .solution_provider_attempt_policy(
+                            10,
+                            4096,
+                            move |_attempt| {
+                                let mut approved = approved.clone();
+                                let expected_revision = expected_revision.clone();
+                                let path = path.clone();
+                                let providers = providers.clone();
+                                let recheck = count.fetch_add(1, Ordering::SeqCst) == 1;
+                                async move {
+                                    if recheck && variant != "allowed" {
+                                        let mut mutation =
+                                            tandem_providers::provider_auth_mutation_in_dir(&path)
+                                                .await?;
+                                        let local = tandem_types::TenantContext::local_implicit();
+                                        mutation.set_for_tenant(
+                                            &local,
+                                            "llama_cpp",
+                                            "synthetic-b",
+                                        )?;
+                                        if variant == "reconnected" {
+                                            mutation.set_for_tenant(
+                                                &local,
+                                                "llama_cpp",
+                                                "synthetic-a",
+                                            )?;
+                                        }
+                                    }
+                                    let current = providers
+                                        .versioned_runtime_binding_for_tenant_in_dir(
+                                            &path,
+                                            &approved.verified.tenant_context,
+                                            &approved.provider_id,
+                                            &approved.model_id,
+                                            ProviderCredentialKind::ApiKey,
+                                            ProviderCredentialLocation::HostService,
+                                        )
+                                        .await?;
+                                    anyhow::ensure!(
+                                        current.revision.authorization_revision
+                                            == expected_revision,
+                                        "credential authorization revision changed after review"
+                                    );
+                                    approved.route_revision =
+                                        sha256(&tandem_solutions::canonical_json(&(
+                                            &approved.route_revision,
+                                            &expected_revision,
+                                        ))?);
+                                    approved.endpoint_sha256 = current.runtime.endpoint_sha256;
+                                    approved.credential_sha256 = current.runtime.credential_sha256;
+                                    Ok(approved)
+                                }
+                            },
+                            || 1500,
+                        )
+                        .unwrap();
+                    let listener = if variant == "allowed" {
+                        let server = tokio::spawn(async move {
+                            let (mut socket, _) = listener.accept().await.unwrap();
+                            request(&mut socket).await;
+                            reply(&mut socket, true).await;
+                            listener
+                        });
+                        assert_eq!(complete(&registry, policy).await.unwrap(), "ok");
+                        tokio::time::timeout(std::time::Duration::from_secs(3), server)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                    } else {
+                        let error = complete(&registry, policy).await.unwrap_err().to_string();
+                        assert!(
+                            error.contains(if variant == "reconnected" {
+                                "authorization revision changed"
+                            } else {
+                                "loaded runtime credential differs"
+                            }),
+                            "{error}"
+                        );
+                        listener
+                    };
+                    assert_eq!(checks.load(Ordering::SeqCst), 2);
+                    assert_eq!(account(store, &fixture, "global").await["outstanding"], 0);
+                    let root =
+                        account(store, &fixture, &format!("root:{}", sha256(b"actual-root"))).await;
+                    assert_eq!(root["requests"], 1);
+                    assert_eq!(
+                        root["committed_cost"],
+                        if variant == "allowed" { 5 } else { 0 }
+                    );
+                    assert!(tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        listener.accept()
+                    )
+                    .await
+                    .is_err());
+                });
+            }
+        });
+    });
+}
