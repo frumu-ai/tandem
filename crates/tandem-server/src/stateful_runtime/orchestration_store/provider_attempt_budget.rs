@@ -17,34 +17,13 @@ use super::{
     SolutionChargeKind, SolutionRunBudget,
 };
 
-/// Current host-approved upper rates in integer micro-USD per million tokens.
-/// Input rates must cover every supported input category, including cache writes
-/// and reads. These are accounting ceilings, not a provider invoice/guarantee.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApprovedModelPrice {
-    pub input_microusd_per_million: u64,
-    pub output_microusd_per_million: u64,
-    pub request_microusd: u64,
-    pub valid_until_ms: u64,
-}
+pub use tandem_solutions::ModelProfilePrice as ApprovedModelPrice;
 
-impl ApprovedModelPrice {
-    pub fn cost(&self, input: u64, output: u64) -> anyhow::Result<u64> {
-        fn tokens(count: u64, rate: u64) -> anyhow::Result<u64> {
-            let rounded = u128::from(count)
-                .checked_mul(u128::from(rate))
-                .and_then(|value| value.checked_add(999_999))
-                .context("model price overflow")?
-                / 1_000_000;
-            u64::try_from(rounded).context("model price overflow")
-        }
-        let input_cost = tokens(input, self.input_microusd_per_million)?;
-        let output_cost = tokens(output, self.output_microusd_per_million)?;
-        self.request_microusd
-            .checked_add(input_cost)
-            .and_then(|value| value.checked_add(output_cost))
-            .context("model price overflow")
-    }
+// A deterministic stand-in for a reservation worker waiting on a database
+// writer. Kept task-local so cancellation tests cannot affect other admissions.
+#[cfg(test)]
+tokio::task_local! {
+    pub(super) static BEFORE_RESERVATION: Arc<dyn Fn() + Send + Sync>;
 }
 
 /// Produced by a trusted current model/root authorization callback, never HTTP
@@ -149,7 +128,16 @@ impl OrchestrationStateStore {
                     };
                     let admission_store = store.clone();
                     let reviewed = approval.clone();
-                    let ticket = crate::encrypted_file_store::spawn_protected_blocking(move || {
+                    let receipt_store = store.clone();
+                    let receipt_price = price.clone();
+                    let receipt_clock = clock.clone();
+                    #[cfg(test)]
+                    let before_reservation = BEFORE_RESERVATION.try_with(Clone::clone).ok();
+                    let receipt = crate::encrypted_file_store::spawn_protected_blocking(move || {
+                        #[cfg(test)]
+                        if let Some(before_reservation) = before_reservation {
+                            before_reservation();
+                        }
                         let (result, ticket) = admission_store.reserve_runtime_solution_charge(
                             SolutionBudgetInput {
                                 verified: &approval.verified,
@@ -169,10 +157,65 @@ impl OrchestrationStateStore {
                             result.newly_reserved,
                             "provider attempt already exists; reconcile instead of sending"
                         );
-                        Ok::<_, anyhow::Error>(ticket)
+                        // Ownership starts in this worker, before its output can
+                        // be lost to cancellation of the awaiting admission.
+                        let ticket = Arc::new(ticket);
+                        let cleanup_store = receipt_store.clone();
+                        let cleanup_ticket = ticket.clone();
+                        let cleanup_clock = receipt_clock.clone();
+                        let cleanup = crate::encrypted_file_store::capture_protected_blocking(
+                            move || {
+                                if let Err(error) = cleanup_store.settle_runtime_solution_charge(
+                                    &cleanup_ticket,
+                                    cleanup_clock(),
+                                    0,
+                                    0,
+                                    SolutionChargeCostBasis::Confirmed,
+                                ) {
+                                    tracing::warn!(%error, "undispatched provider attempt cleanup failed; reservation remains held");
+                                }
+                            },
+                        );
+                        Ok::<_, anyhow::Error>(ProviderAttemptReceipt::with_presend_cleanup(
+                            move |outcome| {
+                                let store = receipt_store.clone();
+                                let ticket = ticket.clone();
+                                let price = receipt_price.clone();
+                                let now_ms = receipt_clock();
+                                async move {
+                                    let (tokens, cost, basis) = match outcome {
+                                        ProviderAttemptOutcome::NotDispatched => {
+                                            (0, 0, SolutionChargeCostBasis::Confirmed)
+                                        }
+                                        ProviderAttemptOutcome::Usage(usage) => (
+                                            usage.total_tokens,
+                                            price.cost(usage.input_tokens, usage.output_tokens)?,
+                                            SolutionChargeCostBasis::ApprovedUpperBound,
+                                        ),
+                                    };
+                                    crate::encrypted_file_store::spawn_protected_blocking(move || {
+                                        store.settle_runtime_solution_charge(
+                                            &ticket, now_ms, tokens, cost, basis,
+                                        )
+                                    })
+                                    .await??;
+                                    Ok(())
+                                }
+                            },
+                            move || {
+                                // Dropping a future must never block its async
+                                // executor on a protected database writer, nor
+                                // lose the ticket to a shutting-down Tokio pool.
+                                if let Err(error) = std::thread::Builder::new()
+                                    .name("tandem-presend-settlement".into())
+                                    .spawn(cleanup)
+                                {
+                                    tracing::warn!(%error, "undispatched provider cleanup could not start; reservation remains held");
+                                }
+                            },
+                        ))
                     })
                     .await??;
-                    let ticket = Arc::new(ticket);
                     // Reservation can wait for another database writer. Recheck
                     // current model/account/root authorization after it completes.
                     // No send has happened, so this denial may reconcile at zero.
@@ -195,46 +238,10 @@ impl OrchestrationStateStore {
                     }
                     .await;
                     if let Err(error) = rechecked {
-                        let refund_store = store.clone();
-                        let refund_ticket = ticket.clone();
-                        let now_ms = clock();
-                        crate::encrypted_file_store::spawn_protected_blocking(move || {
-                            refund_store.settle_runtime_solution_charge(
-                                &refund_ticket,
-                                now_ms,
-                                0,
-                                0,
-                                SolutionChargeCostBasis::Confirmed,
-                            )
-                        })
-                        .await??;
+                        receipt.confirm_not_dispatched().await?;
                         return Err(error);
                     }
-                    Ok(ProviderAttemptReceipt::new(move |outcome| {
-                        let store = store.clone();
-                        let ticket = ticket.clone();
-                        let price = price.clone();
-                        let now_ms = clock();
-                        async move {
-                            let (tokens, cost, basis) = match outcome {
-                                ProviderAttemptOutcome::NotDispatched => {
-                                    (0, 0, SolutionChargeCostBasis::Confirmed)
-                                }
-                                ProviderAttemptOutcome::Usage(usage) => (
-                                    usage.total_tokens,
-                                    price.cost(usage.input_tokens, usage.output_tokens)?,
-                                    SolutionChargeCostBasis::ApprovedUpperBound,
-                                ),
-                            };
-                            crate::encrypted_file_store::spawn_protected_blocking(move || {
-                                store.settle_runtime_solution_charge(
-                                    &ticket, now_ms, tokens, cost, basis,
-                                )
-                            })
-                            .await??;
-                            Ok(())
-                        }
-                    }))
+                    Ok(receipt)
                 }
             },
         )

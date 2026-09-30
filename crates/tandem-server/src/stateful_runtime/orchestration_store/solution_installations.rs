@@ -150,6 +150,24 @@ impl OrchestrationStateStore {
         expected_generation: Option<u64>,
         transition: SolutionInstallationTransition<'_>,
     ) -> anyhow::Result<SolutionInstallation> {
+        self.transition_solution_installation_checked(
+            input,
+            expected_generation,
+            transition,
+            |_| Ok(()),
+        )
+    }
+
+    /// Validate adapter support against the exact plan resolved from the
+    /// configuration in this transaction, before any installation intent is
+    /// loaded or written. The generic journal remains adapter-independent.
+    pub(crate) fn transition_solution_installation_checked(
+        &self,
+        input: SolutionInstallationInput<'_>,
+        expected_generation: Option<u64>,
+        transition: SolutionInstallationTransition<'_>,
+        validate_plan: impl FnOnce(&ResolvedPlan) -> anyhow::Result<()>,
+    ) -> anyhow::Result<SolutionInstallation> {
         let config_input = input.configuration;
         let context = config_input.verified_context;
         let scope = config_input.selected_scope;
@@ -176,6 +194,7 @@ impl OrchestrationStateStore {
             ensure!(composition == input.reviewed_composition
                 && plan.blueprint_sha256 == config.blueprint_sha256,
                 "solution preview is stale; resolve and review again");
+            validate_plan(&plan)?;
             let current = load(&transaction, context, scope)?;
             if let Some(current) = &current {
                 ensure!(current.composition_sha256 == composition
