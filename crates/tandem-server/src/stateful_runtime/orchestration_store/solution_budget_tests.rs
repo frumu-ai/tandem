@@ -1,6 +1,10 @@
 use super::*;
 use std::sync::{Arc, Barrier};
 
+#[cfg(feature = "storage-postgres")]
+#[path = "solution_budget_migration_tests.rs"]
+mod migration_tests;
+
 struct BudgetFixture {
     installation: InstallationFixture,
     digest: String,
@@ -307,6 +311,107 @@ fn solution_budget_unknown_price_overrun_and_foreign_scope_fail_closed() {
                 }
             );
         })
+    });
+}
+
+#[test]
+#[serial]
+fn solution_budget_duplicate_recovery_does_not_apply_new_admission_guards() {
+    encrypted(|| {
+        for_each_backend(|_, store| {
+            let fixture = BudgetFixture::new(store, "a", "duplicate-recovery", 4);
+            let pending = BudgetFixture::charge("pending", "root-a", 30, 10);
+            let settled = BudgetFixture::charge("overrun", "root-b", 20, 10);
+            let reserved = store
+                .reserve_solution_charge(fixture.input(1500), pending.clone())
+                .unwrap()
+                .reservation;
+            store
+                .reserve_solution_charge(fixture.input(2000), settled.clone())
+                .unwrap();
+            let snapshot = || {
+                store
+                    .with_connection(|connection| {
+                        let mut query = connection.prepare(
+                            "SELECT 'current',record_key,generation,record_json FROM solution_budget_records
+                             UNION ALL
+                             SELECT 'history',record_key,generation,record_json FROM solution_budget_versions
+                             ORDER BY 1,2,3",
+                        )?;
+                        let rows = query
+                            .query_map([], |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, u64>(2)?,
+                                    row.get::<_, String>(3)?,
+                                ))
+                            })?
+                            .collect::<crate::stateful_runtime::backend::Result<Vec<_>>>()?;
+                        Ok(rows)
+                    })
+                    .unwrap()
+            };
+            let before = snapshot();
+            let duplicate = store
+                .reserve_solution_charge(fixture.input(1500), pending.clone())
+                .unwrap();
+            assert!(!duplicate.newly_reserved);
+            assert_eq!(duplicate.reservation, reserved);
+            assert!(store
+                .reserve_solution_charge(
+                    fixture.input(1500),
+                    BudgetFixture::charge("new-backwards", "root-c", 1, 1),
+                )
+                .is_err());
+            assert_eq!(snapshot(), before, "observation cannot mutate accounting");
+
+            let overrun = store
+                .settle_solution_charge(fixture.input(2001), &settled, 10, 120)
+                .unwrap();
+            store.initialize().unwrap();
+            let before = snapshot();
+            for (intent, expected) in [(pending.clone(), reserved), (settled.clone(), overrun)] {
+                let duplicate = store
+                    .reserve_solution_charge(fixture.input(1500), intent)
+                    .unwrap();
+                assert!(!duplicate.newly_reserved);
+                assert_eq!(duplicate.reservation, expected);
+            }
+            assert!(store
+                .reserve_solution_charge(
+                    fixture.input(2002),
+                    BudgetFixture::charge("new-after-overrun", "root-c", 0, 0),
+                )
+                .is_err());
+            let mut changed_root = pending.clone();
+            changed_root.root_run_id = "other-root".into();
+            let mut changed_kind = pending.clone();
+            changed_kind.kind = SolutionChargeKind::Retry;
+            let mut changed_route = pending.clone();
+            changed_route.route_revision = sha256(b"changed-route");
+            let mut changed_limits = pending.clone();
+            changed_limits.run_budget.max_requests += 1;
+            for altered in [changed_root, changed_kind, changed_route, changed_limits] {
+                assert!(store
+                    .reserve_solution_charge(fixture.input(2002), altered)
+                    .is_err());
+            }
+            assert_eq!(
+                snapshot(),
+                before,
+                "duplicates must preserve all rows and history"
+            );
+            let reconciled = store
+                .settle_solution_charge(fixture.input(2002), &pending, 5, 15)
+                .unwrap();
+            assert_eq!(
+                store
+                    .settle_solution_charge(fixture.input(2002), &pending, 5, 15)
+                    .unwrap(),
+                reconciled,
+            );
+        });
     });
 }
 
