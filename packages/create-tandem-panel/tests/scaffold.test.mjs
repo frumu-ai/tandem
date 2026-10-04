@@ -61,7 +61,7 @@ test("generated doctor is read-only and reports stopped, unready and ready engin
   const generated = await runCli(["my-panel"], root);
   assert.equal(generated.code, 0, generated.stderr);
   const panel = path.join(root, "my-panel");
-  await mkdir(path.join(panel, "dist"));
+  await mkdir(path.join(panel, "dist"), { recursive: true });
   const engine = path.join(panel, "node_modules/@frumu/tandem/bin");
   await mkdir(engine, { recursive: true });
   await writeFile(path.join(engine, "tandem-engine.js"), "throw new Error('doctor must not start engine');\n");

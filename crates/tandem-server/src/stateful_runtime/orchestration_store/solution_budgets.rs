@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Atomic accounting, not dispatch authority. The existing authorized runtime
 //! must resolve current model/price limits and an authoritative root run before
 //! calling this store. A duplicate reservation never authorizes a second send.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::solution_tests::{fixture, fixture_with_profile, request, signed};
 use super::tests::EnvGuard;
 use super::*;

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use axum::{
     extract::{Extension, State},
     http::StatusCode,
@@ -106,12 +109,15 @@ mod tests {
     async fn solution_preview_requires_verified_identity_before_pack_lookup() {
         let state = tandem_server::test_support::test_state().await;
         let request = json!({"pack_selector": "private-pack", "configuration": {
-            "schema_version": "1", "scope": {"org_id": "org-a", "workspace_id": "dep-a",
+            "schema_version": "1", "solution_id": "tandem.company-brain",
+            "scope": {"org_id": "org-a", "workspace_id": "dep-a",
                 "deployment_id": "dep-a", "instance_id": "brain"},
             "profile_ref": "profile-ref:org-a", "timezone": "UTC", "locale": "en",
             "constraints": {"allowed_providers": [], "allow_network_egress": false,
                 "max_tokens_per_run": 1, "max_concurrent_runs": 1, "max_daily_cost_microusd": 0}
         }});
+        serde_json::from_value::<SolutionConfigurationRequest>(request.clone())
+            .expect("the unauthorized request must contain a valid configuration");
         let response = apply(Router::new())
             .with_state(state)
             .oneshot(

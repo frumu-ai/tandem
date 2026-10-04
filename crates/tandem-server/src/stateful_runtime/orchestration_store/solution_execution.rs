@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Resolve provider accounting roots from the existing protected goal/run
 //! records. This validates execution lineage, not installation or user grants.
 

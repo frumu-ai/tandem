@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Logical model selection over current host-approved facts. This module does
 //! not grant access, perform provider requests, or own the shared spend ledger.
 use std::collections::{BTreeMap, BTreeSet};

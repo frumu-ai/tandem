@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Connect actual adapter attempts to the existing protected budget store.
 //! The runtime must supply current authorized binding/root facts; this module
 //! never treats a customer document or a provider callback as that authority.

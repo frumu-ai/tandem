@@ -188,6 +188,7 @@ function callIsInsideNamedFunction(source, callIndex, functionName) {
 }
 
 export function extractRoutesFromRust(source, sourcePath = "fixture.rs") {
+  sourcePath = sourcePath.replaceAll("\\", "/");
   const production = productionSource(source);
   const routes = [];
   const unsupported = [];
@@ -611,7 +612,7 @@ export function buildInventory(files = routeFiles()) {
     }
   }
   const inventoryRoutes = [...byKey.values()]
-    .map((route) => ({ ...route, sources: [...new Set(route.sources)].sort() }))
+    .map((route) => ({ ...route, sources: [...new Set(route.sources.map((source) => source.replaceAll("\\", "/")))].sort() }))
     .sort(
       (left, right) =>
         left.listener.localeCompare(right.listener) ||

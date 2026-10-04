@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::*;
 use crate::stateful_runtime::backend::{params, Executor, TransactionBehavior};
 use crate::stateful_runtime::orchestration_store::protected_records;

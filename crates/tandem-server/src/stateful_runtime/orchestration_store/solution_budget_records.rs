@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Protected budget records share the orchestration writer transaction and
 //! transfer machinery. Version history detects deleting/rolling back only a
 //! current row; off-host rollback detection still requires recovery anchors.

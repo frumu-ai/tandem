@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Current account-use authorization over existing hosted/native grants and the
 //! existing provider credential store. This snapshot does not authorize a run.
 

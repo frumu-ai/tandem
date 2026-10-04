@@ -57,7 +57,7 @@ const legacyPhraseTokens = [
 ];
 
 function read(relativePath) {
-  return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+  return fs.readFileSync(path.join(repoRoot, relativePath), "utf8").replaceAll("\r\n", "\n");
 }
 
 function exists(relativePath) {

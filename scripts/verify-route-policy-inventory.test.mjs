@@ -22,6 +22,14 @@ test("extracts every method from a chained Axum route", () => {
   assert.deepEqual(result.unsupported, []);
 });
 
+test("route source locations are identical across Windows and POSIX paths", () => {
+  const source = 'fn apply(router: Router) { router.route("/resource", get(read)); }';
+  const posix = extractRoutesFromRust(source, "crates/server/routes.rs");
+  const windows = extractRoutesFromRust(source, "crates\\server\\routes.rs");
+  assert.deepEqual(windows, posix);
+  assert.equal(windows.routes[0].source, "crates/server/routes.rs:1");
+});
+
 test("classifies every automation webhook spelling as public capability ingress", () => {
   for (const routePath of [
     "/webhooks/automations/{public_path_token}",

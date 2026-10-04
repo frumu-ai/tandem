@@ -1,6 +1,25 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+@utility tcp-input-base {
+    @apply w-full rounded-none px-3 py-1.5 text-sm leading-tight focus:ring-2;
+    min-height: 2.25rem;
+    border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+    background: color-mix(in srgb, var(--color-surface-elevated) 88%, #000 12%);
+    color: var(--color-text);
+    --tw-ring-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+
+@utility tcp-btn-base {
+    @apply inline-flex h-9 items-center justify-center gap-1.5 rounded-none px-3.5 text-sm font-semibold leading-none shadow-soft transition-all duration-150 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+    border: 1px solid color-mix(in srgb, var(--color-border-subtle) 92%, transparent);
+    background: color-mix(in srgb, var(--color-surface-elevated) 94%, #000 6%);
+    color: var(--color-text);
+}
+
+@utility tcp-badge-base {
+    @apply inline-flex items-center gap-1 rounded-none border px-2.5 py-0.5 text-xs font-medium;
+}
 
 @layer base {
   /* Seed defaults from the default theme (electric_blue, see DEFAULT_THEME_ID in
@@ -107,13 +126,13 @@
     overflow: hidden;
   }
 
-  @screen lg {
+  @media (min-width: 1024px) {
     .tcp-shell {
       grid-template-columns: 300px minmax(0, 1fr);
     }
   }
 
-  @screen xl {
+  @media (min-width: 1280px) {
     .tcp-shell {
       grid-template-columns: 76px minmax(0, 1fr);
     }
@@ -354,7 +373,7 @@
     overflow: hidden;
   }
 
-  @screen lg {
+  @media (min-width: 1024px) {
     .tcp-shell {
       min-height: 100dvh;
     }
@@ -395,7 +414,7 @@
     display: none;
   }
 
-  @screen lg {
+  @media (min-width: 1024px) {
     .tcp-topbar {
       display: flex;
       align-items: end;
@@ -535,7 +554,7 @@
     padding-bottom: 0;
   }
 
-  @screen lg {
+  @media (min-width: 1024px) {
     .tcp-main-content {
       flex: 0 0 auto;
     }
@@ -639,12 +658,7 @@
   }
 
   .tcp-input {
-    @apply w-full rounded-none px-3 py-1.5 text-sm leading-tight focus:ring-2;
-    min-height: 2.25rem;
-    border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
-    background: color-mix(in srgb, var(--color-surface-elevated) 88%, #000 12%);
-    color: var(--color-text);
-    --tw-ring-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+    @apply tcp-input-base;
   }
 
   .tcp-input::placeholder,
@@ -672,14 +686,11 @@
   }
 
   .tcp-select {
-    @apply tcp-input pr-10;
+    @apply tcp-input-base pr-10;
   }
 
   .tcp-btn {
-    @apply inline-flex h-9 items-center justify-center gap-1.5 rounded-none px-3.5 text-sm font-semibold leading-none shadow-soft transition-all duration-150 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
-    border: 1px solid color-mix(in srgb, var(--color-border-subtle) 92%, transparent);
-    background: color-mix(in srgb, var(--color-surface-elevated) 94%, #000 6%);
-    color: var(--color-text);
+    @apply tcp-btn-base;
   }
 
   .tcp-btn:hover {
@@ -693,7 +704,7 @@
   }
 
   .tcp-btn-primary {
-    @apply tcp-btn text-[#111111] shadow-hard;
+    @apply tcp-btn-base text-[#111111] shadow-hard;
     border-color: color-mix(in srgb, var(--color-primary) 56%, transparent);
     background: color-mix(in srgb, var(--color-primary) 94%, white 6%);
   }
@@ -703,7 +714,7 @@
   }
 
   .tcp-btn-danger {
-    @apply tcp-btn border-rose-500/50 text-rose-100;
+    @apply tcp-btn-base border-rose-500/50 text-rose-100;
     background: color-mix(in srgb, #7f1d1d 74%, var(--color-surface-elevated) 26%);
   }
 
@@ -715,7 +726,7 @@
      actions (e.g. chat clarifier controls) that were previously falling back to
      the default .tcp-btn because this class was never defined. */
   .tcp-btn-ghost {
-    @apply tcp-btn;
+    @apply tcp-btn-base;
     border-color: transparent;
     background: transparent;
     box-shadow: none;
@@ -729,12 +740,12 @@
   }
 
   .tcp-badge {
-    @apply inline-flex items-center gap-1 rounded-none border px-2.5 py-0.5 text-xs font-medium;
+    @apply tcp-badge-base;
   }
 
   .tcp-badge-ok,
   .tcp-badge-success {
-    @apply tcp-badge;
+    @apply tcp-badge-base;
     border-color: color-mix(in srgb, var(--color-success) 52%, transparent);
     background: color-mix(in srgb, var(--color-success) 8%, var(--color-surface-elevated));
     color: color-mix(in srgb, var(--color-success) 78%, var(--color-text) 22%);
@@ -742,7 +753,7 @@
 
   .tcp-badge-warn,
   .tcp-badge-warning {
-    @apply tcp-badge;
+    @apply tcp-badge-base;
     border-color: color-mix(in srgb, var(--color-warning) 52%, transparent);
     background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface-elevated));
     color: color-mix(in srgb, var(--color-warning) 78%, var(--color-text) 22%);
@@ -750,20 +761,20 @@
 
   .tcp-badge-err,
   .tcp-badge-error {
-    @apply tcp-badge;
+    @apply tcp-badge-base;
     border-color: color-mix(in srgb, var(--color-error) 52%, transparent);
     background: color-mix(in srgb, var(--color-error) 8%, var(--color-surface-elevated));
     color: color-mix(in srgb, var(--color-error) 78%, var(--color-text) 22%);
   }
 
   .tcp-badge-info {
-    @apply tcp-badge;
+    @apply tcp-badge-base;
     border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
     color: color-mix(in srgb, var(--color-primary) 76%, var(--color-text) 24%);
   }
 
   .tcp-badge-blocked {
-    @apply tcp-badge;
+    @apply tcp-badge-base;
     border-color: color-mix(in srgb, var(--color-primary) 52%, transparent);
     background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface-elevated));
     color: color-mix(in srgb, var(--color-primary) 78%, var(--color-text) 22%);
@@ -830,7 +841,7 @@
   }
 
   .nav-item {
-    @apply tcp-btn h-10 w-full justify-start border-transparent bg-transparent shadow-none;
+    @apply tcp-btn-base h-10 w-full justify-start border-transparent bg-transparent shadow-none;
     color: var(--color-text-muted);
   }
 
@@ -914,7 +925,7 @@
     gap: 1rem;
   }
 
-  @screen xl {
+  @media (min-width: 1280px) {
     .tcp-split-view {
       grid-template-columns: minmax(0, 1fr) minmax(320px, 0.84fr);
     }

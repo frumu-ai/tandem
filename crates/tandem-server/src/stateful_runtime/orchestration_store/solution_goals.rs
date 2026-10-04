@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Immutable installation association in the existing protected goal record.
 //! This does not grant activation or replace current per-attempt user policy.
 

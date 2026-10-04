@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Authenticated customer configuration and installation orchestration over
 //! existing PackManager, host registries and protected state. No new identity,
 //! pack, credential or memory registry is introduced here.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Durable per-logical-operation route history. A selection is an observation,
 //! never a provider send permit or a substitute for current account authority.
 

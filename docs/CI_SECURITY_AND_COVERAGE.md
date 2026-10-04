@@ -66,14 +66,26 @@ The verifier requires every ignored ID to appear exactly once in this table,
 with a non-empty owner, reachability/compensating-control statement, and a
 future expiry. Each ID maps to `https://rustsec.org/advisories/<ID>.html`.
 
+The 2026-10-04 reassessment removed seven exceptions through a compatible
+Tauri dependency refresh: `urlpattern` 0.6 replaces the five `rust-unic` crates,
+and the plugins now select `build-2`, removing the legacy `kuchikiki` /
+`selectors` 0.24 / `fxhash` / `rand` 0.7 chain. The remaining six unmaintained
+crate notices and one unsoundness advisory have separate reachability evidence
+below. Their removal and required regression evidence are tracked in
+[TAN-842](https://linear.app/frumu/issue/TAN-842/cbp19-extend-setup-doctor-with-solution-readiness-and-guided),
+comment `90c590ef-acc6-445d-8a86-a3ff797dc617`, with a 2026-10-31 deadline.
+There is no automatic renewal. The ignore-free audit must still report exactly
+the reviewed IDs and reject new advisories, stale exceptions and yanked crates.
+
 | Advisory IDs | Crate family | Owner | Reachability / compensating control | Expires |
 | --- | --- | --- | --- | --- |
-| `RUSTSEC-2024-0429` | GTK3/Tauri Linux stack | Desktop runtime | Reachable only in the Linux desktop GTK runtime. Tandem does not directly call `VariantStrIter`; keep Tauri patched, exercise Linux desktop CI, and replace this stack before expiry. | 2026-09-30 |
-| `RUSTSEC-2024-0370`, `RUSTSEC-2024-0388` | `proc-macro-error`, `derivative` | Desktop runtime | Compile-time/macro or generated helper paths through GTK/D-Bus; no attacker-controlled runtime entry was identified. Remove through upstream desktop dependency refresh. | 2026-09-30 |
-| `RUSTSEC-2024-0384`, `RUSTSEC-2024-0436`, `RUSTSEC-2025-0057`, `RUSTSEC-2025-0119` | Utility transitive crates | Runtime dependencies | Unmaintained helpers with no identified Tandem call path that crosses an untrusted boundary. CI pins the lockfile and will reject any new advisory; prefer upstream removal over a direct fork. | 2026-09-30 |
-| `RUSTSEC-2025-0075`, `RUSTSEC-2025-0080`, `RUSTSEC-2025-0081`, `RUSTSEC-2025-0098`, `RUSTSEC-2025-0100` | `rust-unic` via Tauri `urlpattern` | Desktop runtime | Limited to Tauri URL-pattern parsing; application navigation and deep links remain allowlisted. Remove through upstream Tauri/urlpattern replacement. | 2026-09-30 |
-| `RUSTSEC-2026-0097` | `rand` 0.7 via `selectors` code generation | Desktop build | Build-time-only path through Tauri HTML selector code generation. The advisory requires a custom logger that re-enters `rand::thread_rng()` during reseed; that precondition is absent from the generator. | 2026-09-30 |
-| `RUSTSEC-2026-0192` | `ttf-parser` via `lopdf`/`pdf-extract` | Desktop document preview | Reachable only for local document-preview font parsing. Updated parser parents remain pinned; preview input is local/user-initiated and the parser must be replaced before expiry. | 2026-09-30 |
+| [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html) | `glib` 0.18.5, GTK3/Tauri | Desktop runtime | Known unsound `VariantStrIter` is present in the desktop GTK3 runtime. No affected iterator or `array_iter_str` call path was found in Tandem or the reviewed GTK/GIO/WebKit/Tauri/Wry sources. Even Tauri 2.12.1 pins GTK 0.18 and WebKit 2.0, preventing glib >=0.20. Keep the lockfile pinned and run Linux desktop CI; coordinate the GTK/WebKit upgrade. This source review does not prove the dependency memory-safe. | 2026-10-31 |
+| [RUSTSEC-2024-0370](https://rustsec.org/advisories/RUSTSEC-2024-0370.html) | `proc-macro-error` 1.0.4 | Desktop build | Unmaintained compile-time helper through glib-macros/gtk3-macros, with no runtime parser entry in the helper. Latest Tauri still requires the older GTK macros. Keep the lockfile and compile the Linux desktop; remove with the coordinated GTK upgrade. No patched version is published. | 2026-10-31 |
+| [RUSTSEC-2024-0384](https://rustsec.org/advisories/RUSTSEC-2024-0384.html) | `instant` 0.1.13 | Runtime credentials | Unmaintained clock helper transitive through fastrand/futures-lite/zbus/secret-service/keyring 2 in tandem-core and tandem-providers credential operations. This is a runtime dependency, with no vulnerability reported by this notice. Preserve credential identity, native backend selection and recovery tests when upgrading keyring; keep the lockfile pinned meanwhile. | 2026-10-31 |
+| [RUSTSEC-2024-0388](https://rustsec.org/advisories/RUSTSEC-2024-0388.html) | `derivative` 2.2.0 | Runtime credentials | Unmaintained compile-time derive helper through zbus 3.15 in the core/providers keyring 2 stack. The helper does not parse runtime credential input. Remove through a tested keyring/Secret Service migration that retains native credential access, rather than disabling the Linux backend. No patched version is published. | 2026-10-31 |
+| [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436.html) | `paste` 1.0.15 | Runtime dependencies | Unmaintained compile-time macros through tokenizers/macro_rules_attribute for local embeddings and rav1e/image in the server and desktop/TUI graph. These consumers can process untrusted input, but paste itself expands build-time tokens and has no runtime parsing entry. Latest tokenizers and rav1e still require paste; retain their regression gates and pin the lockfile until upstream replacement. | 2026-10-31 |
+| [RUSTSEC-2025-0119](https://rustsec.org/advisories/RUSTSEC-2025-0119.html) | `number_prefix` 0.4.0 | Local embeddings | Unmaintained runtime progress-number formatter transitive through indicatif 0.17 / hf-hub 0.4 / fastembed 4 when local embeddings are enabled. The notice reports no vulnerability. hf-hub 0.5 uses indicatif 0.18, but fastembed 4 pins hf-hub 0.4; migrate and test model download, offline reuse and embedding compatibility before removal. | 2026-10-31 |
+| [RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192.html) | `ttf-parser` 0.25.1 | Shared document extraction | Unmaintained dependency transitive through lopdf 0.42 / pdf-extract 0.12, used by tandem-document and desktop PDF extraction. The only reviewed lopdf ttf-parser entry is `FontData::new` for PDF font creation; no call to that API was found in pdf-extract or Tandem. This does not establish safety for arbitrary fonts. lopdf 0.45 replaces it with optional skrifa, but latest pdf-extract 0.12.1 still pins lopdf 0.42; port with shared document regression tests. | 2026-10-31 |
 
 ### Current License Exceptions
 
@@ -120,8 +132,8 @@ The lockfile also updates lru to 0.18.2 for
 and replaces the yanked chacha20 0.10.1 with 0.10.2.
 Existing audit gates and severity thresholds remain unchanged.
 
-Engine and panel runtime images now use the 2026-09-23 12:00 UTC Debian snapshots and
-explicitly pin curl 8.14.1-2+deb13u5 and OpenSSL 3.5.7-1~deb13u2. Package availability was checked against
+Engine and panel runtime images now use the 2026-10-03 12:00 UTC Debian snapshots and
+explicitly pin curl 8.14.1-2+deb13u5, OpenSSL 3.5.7-1~deb13u3 and PCRE2 10.46-1~deb13u3. Package availability was checked against
 both snapshot indexes; the [Debian security tracker](https://security-tracker.debian.org/tracker/source-package/openssl)
 identifies this as the patched trixie-security package. Runtime and migration
 images use the official Node 24.20.0 trixie-slim multi-architecture digest
