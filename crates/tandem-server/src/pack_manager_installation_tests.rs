@@ -9,6 +9,8 @@ use crate::stateful_runtime::orchestration_store::{
     OrchestrationStateStore, SolutionComponentProgress,
 };
 use crate::AppState;
+#[path = "pack_manager_installation_authority_tests.rs"]
+mod authority_tests;
 #[path = "pack_manager_model_account_tests.rs"]
 mod model_account_tests;
 use tandem_enterprise_contract::{
@@ -153,7 +155,7 @@ impl Fixture {
         this
     }
 
-    async fn policy(&self, version: u64, active: bool) {
+    fn write_policy(&self, version: u64, active: bool) {
         let now = crate::now_ms();
         let path = self.root.path().join("policy.json");
         let raw = serde_json::to_vec(&serde_json::json!({
@@ -174,6 +176,10 @@ impl Fixture {
             .enterprise
             .hosted_policy
             .configure_test_source("org-a", "dep-a", path);
+    }
+
+    async fn policy(&self, version: u64, active: bool) {
+        self.write_policy(version, active);
         self.state.reload_hosted_policy().await.unwrap();
     }
 

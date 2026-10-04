@@ -940,9 +940,16 @@ pub(super) async fn memory_search(
                 }
             }
         }
-        // Stable sorting retains storage order for equal scores while ranking
-        // candidates from different departments before the final result limit.
-        hits.sort_by(|left, right| right.score.total_cmp(&left.score));
+        // Equal-score candidates need a global order across departments before
+        // applying the result limit. Encrypted storage assigns every hit the
+        // same score, so prefer newer records and break timestamp ties by ID.
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| right.record.created_at_ms.cmp(&left.record.created_at_ms))
+                .then_with(|| left.record.id.cmp(&right.record.id))
+        });
         let filtered = hits
             .into_iter()
             .filter(|hit| {

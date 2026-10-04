@@ -36,7 +36,7 @@ struct PolicySource {
 pub(crate) struct HostedPolicyRuntime {
     source: RwLock<Option<PolicySource>>,
     snapshot: RwLock<Option<Arc<ValidatedHostedPolicy>>>,
-    update: tokio::sync::Mutex<()>,
+    update: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl HostedPolicyRuntime {
@@ -46,6 +46,17 @@ impl HostedPolicyRuntime {
     /// held across async persistence, unlike a std RwLock read guard.
     pub(crate) async fn lock_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.update.lock().await
+    }
+
+    /// A native commit owns this guard until its writer finishes, even when
+    /// the request waiting for that commit is cancelled.
+    pub(crate) async fn lock_publication_owned(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.update.clone().lock_owned().await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publication_mutex_locked_for_test(&self) -> bool {
+        self.update.try_lock().is_err()
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -166,7 +177,17 @@ impl HostedPolicyRuntime {
         permission: AccessPermission,
         require_policy: bool,
     ) -> Result<(), &'static str> {
-        let Some(policy) = self.current()? else {
+        let policy = self.current()?;
+        Self::authorize_snapshot_permission(policy.as_deref(), verified, permission, require_policy)
+    }
+
+    fn authorize_snapshot_permission(
+        policy: Option<&ValidatedHostedPolicy>,
+        verified: Option<&VerifiedTenantContext>,
+        permission: AccessPermission,
+        require_policy: bool,
+    ) -> Result<(), &'static str> {
+        let Some(policy) = policy else {
             return if require_policy {
                 Err("hosted_policy_not_configured")
             } else {
@@ -189,6 +210,20 @@ impl HostedPolicyRuntime {
             return Err("hosted_operation_permission_required");
         }
         Ok(())
+    }
+
+    /// Recheck the actor and current time while retaining the exact policy
+    /// snapshot through a synchronous native write.
+    pub(crate) fn with_current_permission<R>(
+        &self,
+        verified: Option<&VerifiedTenantContext>,
+        permission: AccessPermission,
+        commit: impl FnOnce() -> R,
+    ) -> Result<R, &'static str> {
+        self.with_current_policy(|policy| {
+            Self::authorize_snapshot_permission(policy, verified, permission, false)?;
+            Ok(commit())
+        })?
     }
 
     pub(crate) fn is_ready(&self) -> bool {

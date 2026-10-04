@@ -1,6 +1,28 @@
 @import "tailwindcss";
 @config "../tailwind.config.js";
 
+/* Preserve the Tailwind 3 defaults used by existing panel controls. */
+@theme {
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.05);
+  --blur-sm: 4px;
+}
+
+@utility outline-none {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+@layer utilities {
+  /* Tailwind's built-in outline-none is emitted alongside the custom utility. */
+  .outline-none,
+  .focus\:outline-none:focus,
+  .focus-visible\:outline-none:focus-visible {
+    --tw-outline-style: solid;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
+}
+
 @utility tcp-input-base {
     @apply w-full rounded-none px-3 py-1.5 text-sm leading-tight focus:ring-2;
     min-height: 2.25rem;
@@ -22,6 +44,14 @@
 }
 
 @layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+
   /* Seed defaults from the default theme (electric_blue, see DEFAULT_THEME_ID in
      tandem-theme-contract) so the first paint matches the theme JS applies on
      mount. Previously these were charcoal/amber and flashed to blue every load. */

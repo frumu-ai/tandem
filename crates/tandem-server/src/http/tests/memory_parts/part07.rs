@@ -478,6 +478,108 @@ async fn memory_http_json(app: &axum::Router, request: Request<Body>) -> (Status
 }
 
 #[tokio::test]
+async fn encrypted_memory_search_orders_all_departments_before_result_limit() {
+    let state = test_state().await;
+    let db = std::sync::Arc::new(
+        tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
+            .await
+            .expect("memory database")
+            .with_crypto_provider(tandem_memory::MemoryCryptoProvider::local_key([7u8; 32]))
+            .expect("encrypted memory database"),
+    );
+    assert!(state.memory_store.set(db.clone()).is_ok());
+    // The newest record belongs to the lexicographically last department.
+    // Equal timestamps also deliberately oppose the department append order.
+    for (id, org_unit, created_at_ms) in [
+        ("older-first-department", "ou-a", 100),
+        ("z-tied-first-department", "ou-a", 200),
+        ("a-tied-last-department", "ou-z", 200),
+        ("newest-last-department", "ou-z", 300),
+    ] {
+        db.put_global_memory_record(&tandem_memory::types::GlobalMemoryRecord {
+            id: id.to_string(),
+            user_id: "alice".to_string(),
+            source_type: "fact".to_string(),
+            content: format!("encrypted department ordering sentinel {id}"),
+            content_hash: format!("hash-{id}"),
+            run_id: "encrypted-department-ordering".to_string(),
+            session_id: None,
+            message_id: None,
+            tool_name: None,
+            project_tag: Some("proj-a".to_string()),
+            channel_tag: None,
+            host_tag: None,
+            metadata: Some(json!({"owner_org_unit_id": org_unit})),
+            provenance: Some(json!({
+                "tenant_context": {
+                    "org_id": "acme", "workspace_id": "north", "deployment_id": null
+                },
+                "partition": {
+                    "org_id": "acme", "workspace_id": "north",
+                    "project_id": "proj-a", "tier": "session"
+                }
+            })),
+            redaction_status: "passed".to_string(),
+            redaction_count: 0,
+            visibility: "shared".to_string(),
+            demoted: false,
+            score_boost: 0.0,
+            created_at_ms,
+            updated_at_ms: created_at_ms,
+            expires_at_ms: None,
+        })
+        .await
+        .expect("seed encrypted department memory");
+    }
+    let app = app_router(state);
+    for (limit, expected) in [
+        (1, vec!["newest-last-department"]),
+        (
+            3,
+            vec![
+                "newest-last-department",
+                "a-tied-last-department",
+                "z-tied-first-department",
+            ],
+        ),
+    ] {
+        let (status, payload) = memory_http_json(
+            &app,
+            org_unit_http_request_with_units(
+                "POST",
+                "/memory/search",
+                "alice",
+                &["ou-a", "ou-z"],
+                Some(json!({
+                    "run_id": "encrypted-department-ordering",
+                    "query": "encrypted department ordering sentinel",
+                    "read_scopes": ["session"],
+                    "partition": {
+                        "org_id": "acme", "workspace_id": "north",
+                        "project_id": "proj-a", "tier": "session"
+                    },
+                    "limit": limit,
+                    "capability": memory_capability(
+                        "encrypted-department-ordering", "alice", "acme", "north", "proj-a"
+                    )
+                })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        let results = payload["results"].as_array().expect("search results");
+        assert!(results
+            .iter()
+            .all(|row| row["score"].as_f64() == Some(0.25)));
+        let ids = results
+            .iter()
+            .map(|row| row["id"].as_str().expect("result id"))
+            .collect::<Vec<_>>();
+        assert_eq!(ids, expected, "ordering must precede the result limit");
+    }
+}
+
+#[tokio::test]
 async fn memory_search_reads_all_verified_units_without_cross_unit_visibility() {
     let state = test_state().await;
     let app = app_router(state);

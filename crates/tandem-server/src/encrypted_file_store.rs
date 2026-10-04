@@ -497,10 +497,10 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let test_crypto = TEST_CRYPTO.try_with(Clone::clone).ok();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(crypto) = test_crypto {
             return TEST_CRYPTO.sync_scope(crypto, operation);
         }

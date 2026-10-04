@@ -59,6 +59,9 @@ pub(super) async fn reload(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     {
+        // Follow the shared policy-before-target lock order and retain this
+        // guard through final current-authority revalidation and publication.
+        let _publication = state.lock_hosted_policy_publication().await;
         let mut current = state
             .context_assertion_security
             .write()
@@ -77,3 +80,7 @@ pub(super) async fn reload(
     // This operation does not reload provider credentials or channel listeners.
     Ok(Json(json!({"ok": true, "verifier": receipt})))
 }
+
+#[cfg(test)]
+#[path = "tests/context_key_reload.rs"]
+mod tests;

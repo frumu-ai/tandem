@@ -236,8 +236,23 @@ impl AppState {
                         } else {
                             template.default_model = None;
                         }
+                        // Policy publication precedes the native writer lock.
+                        // The commit task owns the guard through durable write.
+                        let publication =
+                            self.enterprise.hosted_policy.lock_publication_owned().await;
+                        self.enterprise
+                            .hosted_policy
+                            .authorize_permission(Some(verified), AccessPermission::HostedAdmin)
+                            .map_err(anyhow::Error::msg)?;
                         self.agent_teams
-                            .stage_solution_template(&workspace, template, template_owner)
+                            .stage_solution_template_authorized(
+                                &workspace,
+                                template,
+                                template_owner,
+                                self.clone(),
+                                verified.clone(),
+                                publication,
+                            )
                             .await?
                     }
                 }
@@ -271,7 +286,19 @@ impl AppState {
                         routine.timezone = self
                             .solution_configuration_timezone(verified, &request)
                             .await?;
-                        self.stage_solution_routine(routine, owner).await
+                        let publication =
+                            self.enterprise.hosted_policy.lock_publication_owned().await;
+                        self.enterprise
+                            .hosted_policy
+                            .authorize_permission(Some(verified), AccessPermission::HostedAdmin)
+                            .map_err(anyhow::Error::msg)?;
+                        self.stage_solution_routine_authorized(
+                            routine,
+                            owner,
+                            verified.clone(),
+                            publication,
+                        )
+                        .await
                     }
                     .map_err(|error| anyhow::anyhow!("native routine conflict: {error:?}"))?
                 }

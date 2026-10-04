@@ -17,6 +17,7 @@ use crate::routines::types::{
     RoutineStatus, SolutionRoutineOwner,
 };
 use tandem_types::TenantContext;
+use tandem_types::VerifiedTenantContext;
 
 fn managed(message: impl ToString) -> RoutineStoreError {
     RoutineStoreError::ManagedResource {
@@ -127,8 +128,38 @@ impl AppState {
     /// fingerprint for the installation journal. This never activates it.
     pub async fn stage_solution_routine(
         &self,
+        routine: RoutineSpec,
+        owner: SolutionRoutineOwner,
+    ) -> Result<String, RoutineStoreError> {
+        self.stage_solution_routine_inner(routine, owner, None)
+            .await
+    }
+
+    /// Finish persistence or rollback under the owned policy guard even if the
+    /// request waiting for the native commit is cancelled.
+    pub(crate) async fn stage_solution_routine_authorized(
+        &self,
+        routine: RoutineSpec,
+        owner: SolutionRoutineOwner,
+        verified: VerifiedTenantContext,
+        publication: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<String, RoutineStoreError> {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _publication = publication;
+            state
+                .stage_solution_routine_inner(routine, owner, Some(verified))
+                .await
+        })
+        .await
+        .map_err(managed)?
+    }
+
+    async fn stage_solution_routine_inner(
+        &self,
         mut routine: RoutineSpec,
         mut owner: SolutionRoutineOwner,
+        verified: Option<VerifiedTenantContext>,
     ) -> Result<String, RoutineStoreError> {
         if !routine.routine_id.starts_with("solution-")
             || routine.routine_id.trim() != routine.routine_id
@@ -252,13 +283,35 @@ impl AppState {
                 "routine store changed outside this writer; reload and reconcile",
             ));
         }
+        if let Some(verified) = verified.as_ref() {
+            self.enterprise
+                .hosted_policy
+                .authorize_permission(
+                    Some(verified),
+                    tandem_enterprise_contract::AccessPermission::HostedAdmin,
+                )
+                .map_err(managed)?;
+        }
         if let Some(existing) = cached.get(&key) {
             if bytes(existing)? != payload {
                 return Err(managed("solution routine ownership or content conflict"));
             }
             return Ok(fingerprint);
         }
-        self.routines.write().await.insert(key.clone(), routine);
+        let mut rows = self.routines.write().await;
+        if let Some(verified) = verified.as_ref() {
+            self.enterprise
+                .hosted_policy
+                .with_current_permission(
+                    Some(verified),
+                    tandem_enterprise_contract::AccessPermission::HostedAdmin,
+                    || rows.insert(key.clone(), routine),
+                )
+                .map_err(managed)?;
+        } else {
+            rows.insert(key.clone(), routine);
+        }
+        drop(rows);
         if let Err(error) = self.persist_routines_inner(false).await {
             self.routines.write().await.remove(&key);
             return Err(RoutineStoreError::PersistFailed {
