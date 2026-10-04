@@ -13,13 +13,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
+const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 const files = {
   memorySchemas: [
     "crates/tandem-memory/src/memory_database_impl_parts/part01.rs",
     "crates/tandem-memory/src/memory_database_impl_parts/part01_a.rs",
+    "crates/tandem-memory/src/memory_database_impl_parts/part01_schema.rs",
     "crates/tandem-memory/src/memory_database_impl_parts/part01_b.rs",
   ],
   memoryQueries: "crates/tandem-memory/src/memory_database_impl_parts/part02.rs",

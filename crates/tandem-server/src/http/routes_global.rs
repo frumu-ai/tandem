@@ -42,6 +42,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         )
         .route("/global/dispose", post(global_dispose))
         .route("/admin/reload-config", post(admin_reload_config))
+        .route(
+            "/admin/context-assertions/reload",
+            post(super::context_key_reload::reload),
+        )
         .route("/tool/ids", get(tool_ids))
         .route("/tool", get(tool_list_for_model))
         .route("/tool/execute", post(execute_tool))

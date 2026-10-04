@@ -432,13 +432,21 @@ fn transfer_tables(
             .difference(&source_names)
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
-        // The v7 migration only adds these empty tables. Project them into the
-        // locked v6 source instead of migrating the rollback source in place.
+        // The v7/v8 migrations only add these empty tables. Project them into
+        // the locked legacy source instead of migrating the rollback source.
+        let expected_missing = match version(source)? {
+            6 => BTreeSet::from([
+                "solution_installations",
+                "solution_installation_versions",
+                "solution_budget_records",
+                "solution_budget_versions",
+            ]),
+            7 => BTreeSet::from(["solution_budget_records", "solution_budget_versions"]),
+            _ => bail!("source and target stateful storage schemas expose different tables"),
+        };
         if !source_names.is_subset(&target_names)
-            || missing
-                != BTreeSet::from(["solution_installations", "solution_installation_versions"])
-            || version(source)? != 6
-            || version(target)? != 7
+            || missing != expected_missing
+            || version(target)? != 8
         {
             bail!("source and target stateful storage schemas expose different tables");
         }
@@ -1005,64 +1013,74 @@ mod tests {
 
     #[cfg(feature = "storage-sqlite")]
     #[test]
-    fn legacy_v6_transfer_projects_empty_installation_tables_without_mutating_source() {
-        let source_root = tempfile::tempdir().unwrap();
-        let target_root = tempfile::tempdir().unwrap();
-        let source = OrchestrationStateStore::open_with_config(
-            paths(source_root.path()),
-            backend::StorageBackendConfig::Sqlite,
-        )
-        .unwrap();
-        super::super::customer_config_tests::seed_protected_config_for_transfer(&source);
-        source
+    fn legacy_v6_and_v7_transfer_projects_empty_additive_tables_without_mutating_source() {
+        for version in [6, 7] {
+            let source_root = tempfile::tempdir().unwrap();
+            let target_root = tempfile::tempdir().unwrap();
+            let source = OrchestrationStateStore::open_with_config(
+                paths(source_root.path()),
+                backend::StorageBackendConfig::Sqlite,
+            )
+            .unwrap();
+            super::super::customer_config_tests::seed_protected_config_for_transfer(&source);
+            source
             .with_connection(|connection| {
                 connection.execute_batch(
-                    "DROP TABLE solution_installation_versions;
-                 DROP TABLE solution_installations;
-                 UPDATE schema_metadata SET schema_version = 6;",
+                    "DROP TABLE solution_budget_records; DROP TABLE solution_budget_versions;",
                 )?;
+                if version == 6 {
+                    connection.execute_batch(
+                        "DROP TABLE solution_installation_versions; DROP TABLE solution_installations;",
+                    )?;
+                }
+                connection.execute("UPDATE schema_metadata SET schema_version=?1", [version])?;
                 Ok(())
             })
             .unwrap();
-        let before = std::fs::read(&source.paths().database_path).unwrap();
-        let target = OrchestrationStateStore::open_for_backend_transfer_target(
-            paths(target_root.path()),
-            backend::StorageBackendConfig::Sqlite,
-        )
-        .unwrap();
-        let _source_lock = source.acquire_engine_lock().unwrap();
-        let tables = transfer_tables(&source, &target).unwrap();
-        let source_fingerprint = fingerprint_store(&source, &tables, TransferSide::Source).unwrap();
-        assert!(source_fingerprint.1 > 0);
-        ensure_target_empty(&target, &tables).unwrap();
-        copy_store(&source, &target, &tables).unwrap();
-        assert_eq!(
-            source_fingerprint,
-            fingerprint_store(&target, &tables, TransferSide::Target).unwrap()
-        );
-        assert_eq!(
-            before,
-            std::fs::read(&source.paths().database_path).unwrap()
-        );
-        assert!(!table_names(&source)
-            .unwrap()
-            .contains("solution_installations"));
+            let before = std::fs::read(&source.paths().database_path).unwrap();
+            let target = OrchestrationStateStore::open_for_backend_transfer_target(
+                paths(target_root.path()),
+                backend::StorageBackendConfig::Sqlite,
+            )
+            .unwrap();
+            let _source_lock = source.acquire_engine_lock().unwrap();
+            let tables = transfer_tables(&source, &target).unwrap();
+            let source_fingerprint =
+                fingerprint_store(&source, &tables, TransferSide::Source).unwrap();
+            assert!(source_fingerprint.1 > 0);
+            ensure_target_empty(&target, &tables).unwrap();
+            copy_store(&source, &target, &tables).unwrap();
+            assert_eq!(
+                source_fingerprint,
+                fingerprint_store(&target, &tables, TransferSide::Target).unwrap()
+            );
+            assert_eq!(
+                before,
+                std::fs::read(&source.paths().database_path).unwrap()
+            );
+            let source_tables = table_names(&source).unwrap();
+            assert_eq!(
+                source_tables.contains("solution_installations"),
+                version == 7
+            );
+            assert!(!source_tables.contains("solution_budget_records"));
 
-        // New target-only rows must still participate in verification.
-        target
-            .with_connection(|connection| {
-                connection.execute_batch(
-                    "INSERT INTO solution_installations
-                 (org_id,workspace_id,deployment_id,instance_id,generation,record_json)
-                 VALUES ('org','workspace','deployment','unexpected',1,'{}');",
-                )?;
-                Ok(())
-            })
-            .unwrap();
-        assert_ne!(
-            source_fingerprint,
-            fingerprint_store(&target, &tables, TransferSide::Target).unwrap()
-        );
+            // New target-only rows must still participate in verification.
+            target
+                .with_connection(|connection| {
+                    connection.execute_batch(
+                        "INSERT INTO solution_budget_records
+                 (org_id,workspace_id,deployment_id,instance_id,record_key,generation,record_json)
+                 VALUES ('org','workspace','deployment','unexpected','unexpected',1,'{}');",
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            assert_ne!(
+                source_fingerprint,
+                fingerprint_store(&target, &tables, TransferSide::Target).unwrap()
+            );
+        }
     }
 
     #[cfg(feature = "storage-postgres")]
@@ -1074,104 +1092,122 @@ mod tests {
 
     #[cfg(feature = "storage-postgres")]
     #[test]
-    fn legacy_v6_transfer_preserves_source_in_both_backend_directions() {
+    fn legacy_v6_and_v7_transfer_preserves_source_in_both_backend_directions() {
         let Some(url) = postgres_url() else {
-            eprintln!("skipping v6 backend transfer test without TANDEM_TEST_POSTGRES_URL");
+            eprintln!("skipping legacy backend transfer test without TANDEM_TEST_POSTGRES_URL");
             return;
         };
-        let source_root = tempfile::tempdir().unwrap();
-        let postgres_root = tempfile::tempdir().unwrap();
-        let restored_root = tempfile::tempdir().unwrap();
-        let source = OrchestrationStateStore::open_with_config(
-            paths(source_root.path()),
-            backend::StorageBackendConfig::Sqlite,
-        )
-        .unwrap();
-        let config =
-            super::super::customer_config_tests::seed_protected_config_for_transfer(&source);
-        let make_v6 = |store: &OrchestrationStateStore| {
-            store
+        for version in [6, 7] {
+            let source_root = tempfile::tempdir().unwrap();
+            let postgres_root = tempfile::tempdir().unwrap();
+            let restored_root = tempfile::tempdir().unwrap();
+            let source = OrchestrationStateStore::open_with_config(
+                paths(source_root.path()),
+                backend::StorageBackendConfig::Sqlite,
+            )
+            .unwrap();
+            let config =
+                super::super::customer_config_tests::seed_protected_config_for_transfer(&source);
+            let installation = (version == 7).then(|| {
+                super::super::solution_installation_tests::seed_protected_installation_for_transfer(
+                    &source,
+                )
+            });
+            let make_legacy = |store: &OrchestrationStateStore| {
+                store
                 .with_connection(|connection| {
                     connection.execute_batch(
-                        "DROP TABLE solution_installation_versions;
-                    DROP TABLE solution_installations;
-                    UPDATE schema_metadata SET schema_version = 6;",
+                        "DROP TABLE solution_budget_records; DROP TABLE solution_budget_versions;",
                     )?;
+                    if version == 6 {
+                        connection.execute_batch(
+                            "DROP TABLE solution_installation_versions; DROP TABLE solution_installations;",
+                        )?;
+                    }
+                    connection.execute("UPDATE schema_metadata SET schema_version=?1", [version])?;
                     Ok(())
                 })
                 .unwrap();
-        };
-        let assert_v6 = |store: &OrchestrationStateStore| {
-            assert!(!table_names(store)
-                .unwrap()
-                .contains("solution_installations"));
-            store
-                .with_connection(|connection| {
-                    let version: i64 = connection.query_row(
-                        "SELECT schema_version FROM schema_metadata",
-                        [],
-                        |row| row.get(0),
-                    )?;
-                    assert_eq!(version, 6);
-                    Ok(())
-                })
-                .unwrap();
-            super::super::customer_config_tests::assert_protected_config_after_transfer(
-                store, &config,
+            };
+            let assert_legacy = |store: &OrchestrationStateStore| {
+                let tables = table_names(store).unwrap();
+                assert_eq!(tables.contains("solution_installations"), version == 7);
+                assert!(!tables.contains("solution_budget_records"));
+                store
+                    .with_connection(|connection| {
+                        let stored_version: i64 = connection.query_row(
+                            "SELECT schema_version FROM schema_metadata",
+                            [],
+                            |row| row.get(0),
+                        )?;
+                        assert_eq!(stored_version, version);
+                        Ok(())
+                    })
+                    .unwrap();
+                super::super::customer_config_tests::assert_protected_config_after_transfer(
+                    store, &config,
+                );
+                if let Some(installation) = &installation {
+                    super::super::solution_installation_tests::assert_protected_installation_after_transfer(store, installation);
+                }
+            };
+            make_legacy(&source);
+            let before = std::fs::read(&source.paths().database_path).unwrap();
+            let request = StatefulBackendMigrationRequest {
+                source_paths: paths(source_root.path()),
+                target_paths: paths(postgres_root.path()),
+                source_backend: StatefulBackendKind::Sqlite,
+                target_backend: StatefulBackendKind::Postgres,
+                source_postgres_url: None,
+                target_postgres_url: Some(url.clone()),
+            };
+            let first = migrate_stateful_storage_backend(&request).unwrap();
+            assert_eq!(first.source_fingerprint, first.target_fingerprint);
+            assert!(
+                migrate_stateful_storage_backend(&request)
+                    .unwrap()
+                    .already_complete
             );
-        };
-        make_v6(&source);
-        let before = std::fs::read(&source.paths().database_path).unwrap();
-        let request = StatefulBackendMigrationRequest {
-            source_paths: paths(source_root.path()),
-            target_paths: paths(postgres_root.path()),
-            source_backend: StatefulBackendKind::Sqlite,
-            target_backend: StatefulBackendKind::Postgres,
-            source_postgres_url: None,
-            target_postgres_url: Some(url.clone()),
-        };
-        let first = migrate_stateful_storage_backend(&request).unwrap();
-        assert_eq!(first.source_fingerprint, first.target_fingerprint);
-        assert!(
-            migrate_stateful_storage_backend(&request)
-                .unwrap()
-                .already_complete
-        );
-        assert_v6(&source);
-        assert_eq!(
-            before,
-            std::fs::read(&source.paths().database_path).unwrap()
-        );
-        let postgres = OrchestrationStateStore::open_for_backend_transfer_source(
-            paths(postgres_root.path()),
-            backend::StorageBackendConfig::Postgres { url: url.clone() },
-        )
-        .unwrap();
-        make_v6(&postgres);
-        let restored = migrate_stateful_storage_backend(&StatefulBackendMigrationRequest {
-            source_paths: paths(postgres_root.path()),
-            target_paths: paths(restored_root.path()),
-            source_backend: StatefulBackendKind::Postgres,
-            target_backend: StatefulBackendKind::Sqlite,
-            source_postgres_url: Some(url.clone()),
-            target_postgres_url: None,
-        })
-        .unwrap();
-        assert_eq!(restored.source_fingerprint, restored.target_fingerprint);
-        assert_v6(&postgres);
-        let restored = OrchestrationStateStore::open_with_config(
-            paths(restored_root.path()),
-            backend::StorageBackendConfig::Sqlite,
-        )
-        .unwrap();
-        super::super::customer_config_tests::assert_protected_config_after_transfer(
-            &restored, &config,
-        );
-        let schema = match &postgres.backend {
-            StoreBackendSelection::Postgres(target) => target.schema().to_string(),
-            _ => unreachable!(),
-        };
-        crate::stateful_runtime::backend::postgres::drop_schema_for_tests(&url, &schema).unwrap();
+            assert_legacy(&source);
+            assert_eq!(
+                before,
+                std::fs::read(&source.paths().database_path).unwrap()
+            );
+            let postgres = OrchestrationStateStore::open_for_backend_transfer_source(
+                paths(postgres_root.path()),
+                backend::StorageBackendConfig::Postgres { url: url.clone() },
+            )
+            .unwrap();
+            make_legacy(&postgres);
+            let restored = migrate_stateful_storage_backend(&StatefulBackendMigrationRequest {
+                source_paths: paths(postgres_root.path()),
+                target_paths: paths(restored_root.path()),
+                source_backend: StatefulBackendKind::Postgres,
+                target_backend: StatefulBackendKind::Sqlite,
+                source_postgres_url: Some(url.clone()),
+                target_postgres_url: None,
+            })
+            .unwrap();
+            assert_eq!(restored.source_fingerprint, restored.target_fingerprint);
+            assert_legacy(&postgres);
+            let restored = OrchestrationStateStore::open_with_config(
+                paths(restored_root.path()),
+                backend::StorageBackendConfig::Sqlite,
+            )
+            .unwrap();
+            super::super::customer_config_tests::assert_protected_config_after_transfer(
+                &restored, &config,
+            );
+            if let Some(installation) = &installation {
+                super::super::solution_installation_tests::assert_protected_installation_after_transfer(&restored, installation);
+            }
+            let schema = match &postgres.backend {
+                StoreBackendSelection::Postgres(target) => target.schema().to_string(),
+                _ => unreachable!(),
+            };
+            crate::stateful_runtime::backend::postgres::drop_schema_for_tests(&url, &schema)
+                .unwrap();
+        }
     }
 
     #[cfg(feature = "storage-postgres")]
@@ -1238,6 +1274,10 @@ mod tests {
             super::super::solution_installation_tests::seed_protected_installation_for_transfer(
                 &source,
             );
+        let budget =
+            super::super::solution_installation_tests::budget_tests::seed_budget_for_transfer(
+                &source,
+            );
 
         let request = StatefulBackendMigrationRequest {
             source_paths: source_paths.clone(),
@@ -1298,6 +1338,10 @@ mod tests {
         super::super::solution_installation_tests::assert_protected_installation_after_transfer(
             &round_trip,
             &installation,
+        );
+        super::super::solution_installation_tests::budget_tests::assert_budget_after_transfer(
+            &round_trip,
+            &budget,
         );
         round_trip
             .with_connection(|connection| {

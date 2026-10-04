@@ -267,11 +267,8 @@ async fn memory_put_org_unit_stamp_requires_membership() {
 async fn governed_read_filter_threads_org_units_from_verified_context() {
     let tenant_context =
         tandem_types::TenantContext::explicit_user_workspace("acme", "north", None, "user-a");
-    let member = verified_org_unit_context(
-        tenant_context.clone(),
-        "user-a",
-        vec!["ou-eng".to_string()],
-    );
+    let member =
+        verified_org_unit_context(tenant_context.clone(), "user-a", vec!["ou-eng".to_string()]);
     let filter = crate::memory::read_policy::governed_memory_read_filter(
         tandem_types::RuntimeAuthMode::EnterpriseRequired,
         Some(&member),
@@ -444,22 +441,24 @@ fn org_unit_http_request(
     org_unit: &str,
     body: Option<Value>,
 ) -> Request<Body> {
-    let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
-        "acme", "north", None, actor,
-    );
+    org_unit_http_request_with_units(method, uri, actor, &[org_unit], body)
+}
+
+fn org_unit_http_request_with_units(
+    method: &str,
+    uri: &str,
+    actor: &str,
+    org_units: &[&str],
+    body: Option<Value>,
+) -> Request<Body> {
+    let tenant_context =
+        tandem_types::TenantContext::explicit_user_workspace("acme", "north", None, actor);
     let verified = verified_org_unit_context(
         tenant_context,
         actor,
-        vec![org_unit.to_string()],
+        org_units.iter().map(|unit| (*unit).to_string()).collect(),
     );
-    let mut request = tenant_memory_request(
-        method,
-        uri,
-        "acme",
-        "north",
-        actor,
-        body,
-    );
+    let mut request = tenant_memory_request(method, uri, "acme", "north", actor, body);
     request.extensions_mut().insert(verified);
     request
 }
@@ -476,6 +475,250 @@ async fn memory_http_json(app: &axum::Router, request: Request<Body>) -> (Status
         .expect("memory HTTP body");
     let payload = serde_json::from_slice(&body).unwrap_or(Value::Null);
     (status, payload)
+}
+
+#[tokio::test]
+async fn encrypted_memory_search_orders_all_departments_before_result_limit() {
+    let state = test_state().await;
+    let db = std::sync::Arc::new(
+        tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
+            .await
+            .expect("memory database")
+            .with_crypto_provider(tandem_memory::MemoryCryptoProvider::local_key([7u8; 32]))
+            .expect("encrypted memory database"),
+    );
+    assert!(state.memory_store.set(db.clone()).is_ok());
+    // The newest record belongs to the lexicographically last department.
+    // Equal timestamps also deliberately oppose the department append order.
+    for (id, org_unit, created_at_ms) in [
+        ("older-first-department", "ou-a", 100),
+        ("z-tied-first-department", "ou-a", 200),
+        ("a-tied-last-department", "ou-z", 200),
+        ("newest-last-department", "ou-z", 300),
+    ] {
+        db.put_global_memory_record(&tandem_memory::types::GlobalMemoryRecord {
+            id: id.to_string(),
+            user_id: "alice".to_string(),
+            source_type: "fact".to_string(),
+            content: format!("encrypted department ordering sentinel {id}"),
+            content_hash: format!("hash-{id}"),
+            run_id: "encrypted-department-ordering".to_string(),
+            session_id: None,
+            message_id: None,
+            tool_name: None,
+            project_tag: Some("proj-a".to_string()),
+            channel_tag: None,
+            host_tag: None,
+            metadata: Some(json!({"owner_org_unit_id": org_unit})),
+            provenance: Some(json!({
+                "tenant_context": {
+                    "org_id": "acme", "workspace_id": "north", "deployment_id": null
+                },
+                "partition": {
+                    "org_id": "acme", "workspace_id": "north",
+                    "project_id": "proj-a", "tier": "session"
+                }
+            })),
+            redaction_status: "passed".to_string(),
+            redaction_count: 0,
+            visibility: "shared".to_string(),
+            demoted: false,
+            score_boost: 0.0,
+            created_at_ms,
+            updated_at_ms: created_at_ms,
+            expires_at_ms: None,
+        })
+        .await
+        .expect("seed encrypted department memory");
+    }
+    let app = app_router(state);
+    for (limit, expected) in [
+        (1, vec!["newest-last-department"]),
+        (
+            3,
+            vec![
+                "newest-last-department",
+                "a-tied-last-department",
+                "z-tied-first-department",
+            ],
+        ),
+    ] {
+        let (status, payload) = memory_http_json(
+            &app,
+            org_unit_http_request_with_units(
+                "POST",
+                "/memory/search",
+                "alice",
+                &["ou-a", "ou-z"],
+                Some(json!({
+                    "run_id": "encrypted-department-ordering",
+                    "query": "encrypted department ordering sentinel",
+                    "read_scopes": ["session"],
+                    "partition": {
+                        "org_id": "acme", "workspace_id": "north",
+                        "project_id": "proj-a", "tier": "session"
+                    },
+                    "limit": limit,
+                    "capability": memory_capability(
+                        "encrypted-department-ordering", "alice", "acme", "north", "proj-a"
+                    )
+                })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        let results = payload["results"].as_array().expect("search results");
+        assert!(results
+            .iter()
+            .all(|row| row["score"].as_f64() == Some(0.25)));
+        let ids = results
+            .iter()
+            .map(|row| row["id"].as_str().expect("result id"))
+            .collect::<Vec<_>>();
+        assert_eq!(ids, expected, "ordering must precede the result limit");
+    }
+}
+
+#[tokio::test]
+async fn memory_search_reads_all_verified_units_without_cross_unit_visibility() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let put = |actor: &str, units: &[&str], label: &str, private: bool, metadata: Value| {
+        org_unit_http_request_with_units(
+            "POST",
+            "/memory/put",
+            actor,
+            units,
+            Some(json!({
+                "run_id": "multi-unit-read",
+                "partition": {
+                    "org_id": "acme", "workspace_id": "north",
+                    "project_id": "proj-a", "tier": "session"
+                },
+                "kind": "fact",
+                "content": format!("multi-unit sentinel {label}"),
+                "classification": "internal",
+                "private": private,
+                "metadata": metadata,
+                "capability": memory_capability(
+                    "multi-unit-read", actor, "acme", "north", "proj-a"
+                )
+            })),
+        )
+    };
+    let alice_units = &["ou-alice-only", "ou-eng"];
+    let rows = [
+        put(
+            "alice",
+            alice_units,
+            "engineering",
+            false,
+            json!({"owner_org_unit_id": "ou-eng"}),
+        ),
+        put(
+            "alice",
+            alice_units,
+            "alice-private",
+            true,
+            json!({"owner_org_unit_id": "ou-alice-only"}),
+        ),
+        put(
+            "alice",
+            alice_units,
+            "tenant-shared",
+            false,
+            json!({"tenant_shared": true}),
+        ),
+        put(
+            "bob",
+            &["ou-eng"],
+            "bob-private",
+            true,
+            json!({"owner_org_unit_id": "ou-eng"}),
+        ),
+        put(
+            "mallory",
+            &["ou-finance"],
+            "finance",
+            false,
+            json!({"owner_org_unit_id": "ou-finance"}),
+        ),
+    ];
+    let mut ids = Vec::new();
+    for row in rows {
+        let (status, payload) = memory_http_json(&app, row).await;
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        ids.push(payload["id"].as_str().expect("memory id").to_string());
+    }
+    let search = |actor: &str, units: &[&str]| {
+        org_unit_http_request_with_units(
+            "POST",
+            "/memory/search",
+            actor,
+            units,
+            Some(json!({
+                "run_id": "multi-unit-read",
+                "query": "multi-unit sentinel",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "acme", "workspace_id": "north",
+                    "project_id": "proj-a", "tier": "session"
+                },
+                "limit": 20,
+                "capability": memory_capability(
+                    "multi-unit-read", actor, "acme", "north", "proj-a"
+                )
+            })),
+        )
+    };
+    let result_ids = |payload: &Value| {
+        payload["results"]
+            .as_array()
+            .expect("search results")
+            .iter()
+            .map(|row| row["id"].as_str().expect("result id").to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let (status, alice) = memory_http_json(&app, search("alice", alice_units)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(alice["results"].as_array().map(Vec::len), Some(3));
+    assert_eq!(
+        result_ids(&alice),
+        [ids[0].clone(), ids[1].clone(), ids[2].clone()].into()
+    );
+
+    let (status, bob) = memory_http_json(&app, search("bob", &["ou-eng"])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bob["results"].as_array().map(Vec::len), Some(3));
+    assert_eq!(
+        result_ids(&bob),
+        [ids[0].clone(), ids[2].clone(), ids[3].clone()].into()
+    );
+
+    let (status, finance) = memory_http_json(&app, search("mallory", &["ou-finance"])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(finance["results"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        result_ids(&finance),
+        [ids[2].clone(), ids[4].clone()].into()
+    );
+
+    let (status, _) = memory_http_json(&app, search("alice", &[])).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "missing verified membership must fail closed"
+    );
+    let too_many = (0..65)
+        .map(|index| format!("ou-{index:03}"))
+        .collect::<Vec<_>>();
+    let refs = too_many.iter().map(String::as_str).collect::<Vec<_>>();
+    let (status, _) = memory_http_json(&app, search("alice", &refs)).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "membership query count must be bounded"
+    );
 }
 
 #[tokio::test]
@@ -599,11 +842,8 @@ async fn memory_http_enforces_trusted_subject_and_active_org_unit_scopes() {
         Some(shared_id.as_str())
     );
 
-    let (status, other_department_search) = memory_http_json(
-        &app,
-        search("user-sales", "ou-sales", "scope-sales-search"),
-    )
-    .await;
+    let (status, other_department_search) =
+        memory_http_json(&app, search("user-sales", "ou-sales", "scope-sales-search")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(other_department_search
         .get("results")
@@ -744,14 +984,7 @@ async fn revoked_org_unit_membership_denies_reads_and_mutations() {
             "user-owner",
         );
         let verified = verified_org_unit_context(tenant_context, "user-owner", Vec::new());
-        let mut request = tenant_memory_request(
-            method,
-            uri,
-            "acme",
-            "north",
-            "user-owner",
-            body,
-        );
+        let mut request = tenant_memory_request(method, uri, "acme", "north", "user-owner", body);
         request.extensions_mut().insert(verified);
         request
     };

@@ -211,6 +211,107 @@ async fn hosted_policy_execution_requires_current_use_grant_and_replaces_project
         .has_permission(AccessPermission::HostedUse));
 }
 
+#[tokio::test]
+async fn hosted_org_unit_grant_admin_requires_current_signed_policy_authority() {
+    let state = crate::test_support::test_state().await;
+    let mut admin = identity(4);
+    admin.roles = vec!["hosted:role:admin".into(), "hosted:admin".into()];
+    admin.capabilities = tandem_enterprise_contract::hosted_policy::role_capabilities("admin")
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    assert!(state
+        .authorize_hosted_org_unit_grant_mutation(&admin)
+        .is_err());
+
+    let now = crate::now_ms();
+    let mut bundle = HostedPolicyBundle::from_json(&policy_json(4, now, true)).unwrap();
+    bundle.users[0].role = "admin".into();
+    bundle.users[0].capabilities = admin.capabilities.clone();
+    let runtime = &state.enterprise.hosted_policy;
+    runtime.configure_test_source("org-a", "dep-a", PathBuf::from("unused"));
+    *runtime.snapshot.write().unwrap() = Some(Arc::new(
+        bundle.validate("org-a", "dep-a", now, None).unwrap(),
+    ));
+    assert!(state
+        .authorize_hosted_org_unit_grant_mutation(&admin)
+        .is_ok());
+    let commit_guard = state
+        .hosted_org_unit_grant_mutation_guard(Some(&admin))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), runtime.update.lock())
+            .await
+            .is_err()
+    );
+    drop(commit_guard);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), runtime.update.lock())
+            .await
+            .is_ok()
+    );
+
+    let member_assertion = identity(4);
+    assert!(state
+        .authorize_hosted_org_unit_grant_mutation(&member_assertion)
+        .is_err());
+    let mut forged_capability = member_assertion.clone();
+    forged_capability.capabilities.push("hosted.admin".into());
+    assert!(state
+        .authorize_hosted_org_unit_grant_mutation(&forged_capability)
+        .is_err());
+    let mut wrong_tenant = admin.clone();
+    wrong_tenant.tenant_context.org_id = "org-b".into();
+    assert!(state
+        .authorize_hosted_org_unit_grant_mutation(&wrong_tenant)
+        .is_err());
+
+    let mut downgraded = HostedPolicyBundle::from_json(&policy_json(5, now, true)).unwrap();
+    downgraded.users[0].role = "member".into();
+    *runtime.snapshot.write().unwrap() = Some(Arc::new(
+        downgraded.validate("org-a", "dep-a", now, None).unwrap(),
+    ));
+    assert!(state
+        .authorize_hosted_org_unit_grant_mutation(&admin)
+        .is_err());
+    let mut fresh_member = identity(5);
+    fresh_member.capabilities = vec!["hosted.use".into()];
+    assert!(state
+        .authorize_hosted_org_unit_grant_mutation(&fresh_member)
+        .is_err());
+
+    // A deployment-level hosted.admin grant is an explicit policy delegation;
+    // the route uses current permission authority, not a role-name shortcut.
+    let mut delegated = HostedPolicyBundle::from_json(&policy_json(6, now, true)).unwrap();
+    delegated.users[0].role = "viewer".into();
+    delegated.users[0].capabilities =
+        tandem_enterprise_contract::hosted_policy::role_capabilities("viewer")
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+    delegated.deployment_grants = serde_json::from_value(serde_json::json!([{
+        "id": "delegated-admin", "deployment_id": "dep-a",
+        "principal_kind": "member", "principal_id": "alice",
+        "resource_kind": "deployment", "resource_id": "dep-a",
+        "permissions": ["hosted.admin"]
+    }]))
+    .unwrap();
+    *runtime.snapshot.write().unwrap() = Some(Arc::new(
+        delegated.validate("org-a", "dep-a", now, None).unwrap(),
+    ));
+    let mut viewer = identity(6);
+    viewer.roles = vec!["hosted:role:viewer".into()];
+    viewer.capabilities = tandem_enterprise_contract::hosted_policy::role_capabilities("viewer")
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    assert!(state
+        .authorize_hosted_org_unit_grant_mutation(&viewer)
+        .is_ok());
+}
+
 fn policy_json(version: u64, generated_at_ms: u64, active: bool) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "schema_version": 1, "policy_version": version,

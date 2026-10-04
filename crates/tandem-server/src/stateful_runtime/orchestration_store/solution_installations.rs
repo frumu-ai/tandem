@@ -26,6 +26,7 @@ pub const SOLUTION_INSTALLATION_CONFLICT: &str =
 /// Host-owned inputs, never deserialized from an HTTP install request. Every
 /// transition resolves again against the configuration read in its transaction.
 pub struct SolutionInstallationInput<'a> {
+    pub host_facts_sha256: Option<&'a str>,
     pub configuration: CustomerConfigInput<'a>,
     pub expected_config: &'a CustomerConfigVersion,
     pub blueprint: &'a SolutionBlueprint,
@@ -89,7 +90,7 @@ pub enum SolutionInstallationTransition<'a> {
     },
 }
 
-fn load(
+pub(super) fn load(
     executor: &impl Executor,
     context: &VerifiedTenantContext,
     scope: &CustomerScope,
@@ -167,6 +168,7 @@ impl OrchestrationStateStore {
                 ..config_input
             })?;
             let plan = prepared.resolve(input.blueprint, CustomerResolutionInput {
+                host_facts_sha256: input.host_facts_sha256,
                 verified_context: context, now_ms,
                 engine_version: input.engine_version, host_policy,
                 available_deployment_requirements: input.available_deployment_requirements,
@@ -338,7 +340,7 @@ pub(super) fn migrate_sqlite(connection: &mut rusqlite::Connection) -> anyhow::R
     )?;
     match version {
         6 => transaction.execute_batch(SCHEMA_V7)?,
-        7 => {}
+        7 | 8 => {}
         _ => bail!("unsupported schema version for installation migration: {version}"),
     }
     transaction.commit()?;

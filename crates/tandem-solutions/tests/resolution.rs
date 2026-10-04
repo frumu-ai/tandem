@@ -67,9 +67,16 @@ impl Fixture {
         }
     }
     fn plan(&self) -> Result<ResolvedPlan, SolutionError> {
+        self.plan_with_host_facts(None)
+    }
+    fn plan_with_host_facts(
+        &self,
+        host_facts_sha256: Option<&str>,
+    ) -> Result<ResolvedPlan, SolutionError> {
         resolve(
             &self.blueprint,
             ResolutionInput {
+                host_facts_sha256,
                 request: &self.request,
                 approved_models: &self.approved_models,
                 verified_context: &self.context,
@@ -413,6 +420,7 @@ fn expired_local_or_inconsistent_identity_never_falls_back_to_shared() {
 fn incompatible_engine_and_missing_host_readiness_fail_before_planning() {
     let fixture = Fixture::new();
     let mut input = ResolutionInput {
+        host_facts_sha256: None,
         request: &fixture.request,
         approved_models: &fixture.approved_models,
         verified_context: &fixture.context,
@@ -428,6 +436,7 @@ fn incompatible_engine_and_missing_host_readiness_fail_before_planning() {
     );
     let empty = Default::default();
     input = ResolutionInput {
+        host_facts_sha256: None,
         request: &fixture.request,
         approved_models: &fixture.approved_models,
         verified_context: &fixture.context,
@@ -545,4 +554,32 @@ fn generated_schema_matches_checked_in_contract() {
         serde_json::to_value(blueprint_schema()).unwrap(),
         checked_in
     );
+}
+
+#[test]
+fn reviewed_composition_binds_host_fact_revision_and_preserves_legacy_locks() {
+    let fixture = Fixture::new();
+    let old = fixture.plan().unwrap();
+    let bytes = serde_json::to_vec(&old).unwrap();
+    assert!(!String::from_utf8(bytes.clone())
+        .unwrap()
+        .contains("host_facts_sha256"));
+    let roundtrip: ResolvedPlan = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        old.composition_hash().unwrap(),
+        roundtrip.composition_hash().unwrap()
+    );
+    let first = sha256(b"source binding revision 1; provider endpoint A");
+    let second = sha256(b"source binding revision 2; provider endpoint B");
+    let a = fixture.plan_with_host_facts(Some(&first)).unwrap();
+    let b = fixture.plan_with_host_facts(Some(&second)).unwrap();
+    assert_eq!(a.host_facts_sha256.as_deref(), Some(first.as_str()));
+    assert_ne!(
+        old.composition_hash().unwrap(),
+        a.composition_hash().unwrap()
+    );
+    assert_ne!(a.composition_hash().unwrap(), b.composition_hash().unwrap());
+    for invalid in ["", "endpoint-secret", "123", &"z".repeat(64)] {
+        assert!(fixture.plan_with_host_facts(Some(invalid)).is_err());
+    }
 }

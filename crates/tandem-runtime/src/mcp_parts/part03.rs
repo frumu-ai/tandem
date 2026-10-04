@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,8 +586,7 @@ mod tests {
             .await;
         let tenant_a =
             TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
-        let tenant_b =
-            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
+        let tenant_b = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
         registry
             .set_bearer_token_for_tenant("notion", "alice-token", &tenant_a)
             .await
@@ -1316,8 +1318,7 @@ mod tests {
             "deployment-admin",
         );
         let server_name = "identity-credential-clear";
-        let secret_id =
-            mcp_header_secret_id_for_tenant(server_name, "Authorization", &tenant);
+        let secret_id = mcp_header_secret_id_for_tenant(server_name, "Authorization", &tenant);
 
         registry
             .add_or_update_with_secret_refs(
@@ -1383,6 +1384,7 @@ mod tests {
 
     #[tokio::test]
     async fn credential_replacement_rotates_connection_generation() {
+        let _provider_auth_guard = provider_auth_test_guard().await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file.clone());
         registry

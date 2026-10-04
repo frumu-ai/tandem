@@ -273,3 +273,109 @@ fn failed_reload_retains_last_known_good_and_requests_never_reread_env() {
         Err(ContextAssertionError::UnknownKey)
     );
 }
+
+#[test]
+#[serial_test::serial(context_assertion_env)]
+fn hosted_key_rotation_overlap_retirement_and_replay_state_are_preserved() {
+    let guard = AssertionEnvGuard::cleared();
+    let temp = tempfile::tempdir().unwrap();
+    let old_key = signing_key(25);
+    let new_key = signing_key(26);
+    configure_hosted(
+        &guard,
+        &metadata_keyring(&old_key, "old"),
+        &temp.path().join("replay.sqlite3"),
+    );
+    let first = RuntimeContextAssertionSecurity::load_from_env(RuntimeAuthMode::HostedSingleTenant)
+        .unwrap()
+        .unwrap();
+    let old_claims = claims("stable-replay-id");
+    let tenant = old_claims.tenant_context.clone();
+    assert!(first
+        .verify_at(&sign(&old_key, "old", &old_claims), 1_800_000_000_000)
+        .is_ok());
+    let mut document: BTreeMap<String, Value> =
+        serde_json::from_str(&metadata_keyring(&old_key, "old")).unwrap();
+    document.extend(
+        serde_json::from_str::<BTreeMap<String, Value>>(&metadata_keyring(&new_key, "new"))
+            .unwrap(),
+    );
+    guard.set(
+        "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+        serde_json::to_string(&document).unwrap(),
+    );
+    guard.set(
+        "TANDEM_CONTEXT_ASSERTION_REPLAY_STORE_FILE",
+        temp.path().join("must-not-create.sqlite3"),
+    );
+    guard.set("TANDEM_CONTEXT_ASSERTION_REPLAY_MODE", "off");
+    guard.set("TANDEM_CONTEXT_ASSERTION_AUDIENCE", "must-not-reconfigure");
+    let overlap = first.load_hosted_keyring_for_reload().unwrap();
+    overlap
+        .validate_hosted_key_transition(&first, &tenant)
+        .unwrap();
+    assert_eq!(overlap.replay_mode(), ContextAssertionReplayMode::Bound);
+    assert!(!temp.path().join("must-not-create.sqlite3").exists());
+    assert!(overlap
+        .verify_at(&sign(&old_key, "old", &old_claims), 1_800_000_000_000)
+        .is_ok());
+    assert!(overlap
+        .verify_at(&sign(&new_key, "new", &claims("new-id")), 1_800_000_000_000)
+        .is_ok());
+    let mut conflicting = old_claims.clone();
+    conflicting.roles.push("different-role".into());
+    assert_eq!(
+        overlap.verify_at(&sign(&old_key, "old", &conflicting), 1_800_000_000_000),
+        Err(ContextAssertionError::Replayed)
+    );
+    document.get_mut("old").unwrap()["status"] = serde_json::json!("retired");
+    guard.set(
+        "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+        serde_json::to_string(&document).unwrap(),
+    );
+    let retired = overlap.load_hosted_keyring_for_reload().unwrap();
+    retired
+        .validate_hosted_key_transition(&overlap, &tenant)
+        .unwrap();
+    assert!(retired
+        .verify_at(
+            &sign(&old_key, "old", &claims("retired-id")),
+            1_800_000_000_000
+        )
+        .is_err());
+    assert!(retired
+        .verify_at(
+            &sign(&new_key, "new", &claims("active-id")),
+            1_800_000_000_000
+        )
+        .is_ok());
+    assert!(overlap
+        .validate_hosted_key_transition(&retired, &tenant)
+        .is_err());
+    let foreign = TenantContext::explicit_user_workspace(
+        "foreign",
+        "workspace-a",
+        Some("dep-a".into()),
+        "user-a",
+    );
+    assert!(retired
+        .validate_hosted_key_transition(&overlap, &foreign)
+        .is_err());
+    document.remove("old");
+    guard.set(
+        "TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS",
+        serde_json::to_string(&document).unwrap(),
+    );
+    let missing = retired.load_hosted_keyring_for_reload().unwrap();
+    assert!(missing
+        .validate_hosted_key_transition(&retired, &tenant)
+        .is_err());
+    guard.set("TANDEM_CONTEXT_ASSERTION_PUBLIC_KEYS", "{invalid");
+    assert!(retired.load_hosted_keyring_for_reload().is_err());
+    assert!(retired
+        .verify_at(
+            &sign(&new_key, "new", &claims("still-active")),
+            1_800_000_000_000
+        )
+        .is_ok());
+}

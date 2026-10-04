@@ -67,6 +67,7 @@ mod channel_interaction_audit;
 mod channels_api;
 mod coder;
 pub(crate) mod config_providers;
+mod context_key_reload;
 pub(crate) mod context_packs;
 mod context_run_authority;
 mod context_run_ledger;
@@ -99,6 +100,9 @@ pub(crate) mod mcp_inventory;
 pub(crate) mod mcp_run_as;
 pub(crate) mod memory_audit_store;
 mod middleware;
+pub(crate) use middleware::enrich_verified_context_with_org_unit_grants;
+#[cfg(feature = "test-support")]
+pub use middleware::hosted_test_ingress;
 mod mission_builder;
 mod mission_builder_host;
 mod mission_builder_runtime;

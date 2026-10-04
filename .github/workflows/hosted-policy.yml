@@ -28,6 +28,39 @@ jobs:
         run: |
           cargo test -p tandem-memory global_sharing --lib
           cargo test -p tandem-server tenant_shared_stamp_keeps_private_owner_and_explicit_department --lib
+      - name: Validate scoped key lifecycle and administrative authority
+        run: |
+          cargo test -p tandem-server context_assertion_security --lib
+          cargo test -p tandem-server action_authorization --lib
+      - name: Verify encrypted global storage and conservative local reopening
+        run: |
+          set -euo pipefail
+          cargo test -p tandem-memory --locked --lib 'db::tests::' -- --list > "$RUNNER_TEMP/hosted-memory-tests.txt"
+          for tandem_memory_test_name in \
+            hosted_chunk_round_trips_and_is_ciphertext_at_rest \
+            hosted_read_without_a_principal_fails_closed \
+            cross_tenant_principal_cannot_read_another_tenants_memory \
+            wrong_data_class_principal_is_denied \
+            local_mode_leaves_crypto_envelope_null_and_reads_back \
+            hosted_layer_seals_content_and_reads_back_under_principal \
+            hosted_global_chunk_is_returned_by_vector_search \
+            source_binding_data_class_drives_the_key_scope \
+            hosted_global_record_cold_decrypt_search_and_sqlite_artifacts_are_sealed \
+            hosted_global_record_rejects_plaintext_legacy_and_scope_change \
+            hosted_atomic_global_write_and_context_update_remain_sealed \
+            local_key_global_search_still_matches_decrypted_content \
+            hosted_global_optional_metadata_removal_is_detected \
+            hosted_mixed_class_search_skips_denied_rows_but_rejects_corruption \
+            reset_keeps_plaintext_history_unusable_for_hosted \
+            hosted_reset_requires_fresh_storage \
+            reopened_legacy_unknown_still_accepts_local_writes
+          do
+            if ! grep -Fxq "db::tests::$tandem_memory_test_name: test" "$RUNNER_TEMP/hosted-memory-tests.txt"; then
+              echo "Missing hosted encryption/reopening test: $tandem_memory_test_name" >&2
+              exit 1
+            fi
+          done
+          cargo test -p tandem-memory --locked --lib 'db::tests::'
       - name: Validate current runtime authority and persisted revision
         run: cargo test -p tandem-server hosted_policy --lib
       - name: Verify revocation after approval and before provider dispatch

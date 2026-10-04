@@ -2,6 +2,9 @@
 mod tests {
     use super::*;
     include!("../hosted_policy_tests.rs");
+    include!("../provider_attempt_tests.rs");
+    include!("../attempt_accounting_tests.rs");
+    include!("../runtime_binding_tests.rs");
     use futures::StreamExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -239,9 +242,11 @@ mod tests {
             )
             .await
             .is_err());
-        assert!(registry
-            .tenant_provider_auth_is_loaded(&tenant, "openai-codex")
-            .await);
+        assert!(
+            registry
+                .tenant_provider_auth_is_loaded(&tenant, "openai-codex")
+                .await
+        );
         assert!(registry
             .clear_tenant_provider_bearer_token_if_unchanged_guarded(
                 &tenant,
@@ -251,9 +256,11 @@ mod tests {
             )
             .await
             .expect("authorized clear"));
-        assert!(!registry
-            .tenant_provider_auth_is_loaded(&tenant, "openai-codex")
-            .await);
+        assert!(
+            !registry
+                .tenant_provider_auth_is_loaded(&tenant, "openai-codex")
+                .await
+        );
     }
 
     #[derive(Clone)]
@@ -274,7 +281,8 @@ mod tests {
             _sampling: SamplingParams,
             _cancel: CancellationToken,
             auth_override: ProviderAuthOverride,
-        ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+        ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>>
+        {
             self.complete_with_auth_override("stream", model_override, auth_override)
                 .await?;
             Ok(Box::pin(futures::stream::empty()))
@@ -552,7 +560,10 @@ mod tests {
                 resolve_provider_request_target("http://127.0.0.1:11434/v1", "ollama"),
             )
             .await;
-        assert!(allowed.is_ok(), "standalone network policy should allow ollama");
+        assert!(
+            allowed.is_ok(),
+            "standalone network policy should allow ollama"
+        );
     }
 
     #[test]
@@ -1154,10 +1165,7 @@ mod tests {
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(OPENAI_CODEX_DEFAULT_MODEL, "gpt-5.6-terra");
-        assert_eq!(
-            openai_codex_effective_default_model(None),
-            "gpt-5.6-terra"
-        );
+        assert_eq!(openai_codex_effective_default_model(None), "gpt-5.6-terra");
         assert!(ids.contains(&"gpt-5.6-sol"));
         assert!(ids.contains(&"gpt-5.6-terra"));
         assert!(ids.contains(&"gpt-5.6-luna"));
@@ -1587,7 +1595,9 @@ mod tests {
             .await
             .expect_err("chunked response over the streaming limit must fail");
         server.await.expect("server");
-        assert!(error.to_string().contains("provider response exceeds 64 bytes"));
+        assert!(error
+            .to_string()
+            .contains("provider response exceeds 64 bytes"));
     }
 
     // ── Per-role sampling parameter mapping & clamping ───────────────────────

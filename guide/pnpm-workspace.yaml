@@ -5,6 +5,9 @@ allowBuilds:
   esbuild: true
   sharp: true
 
+minimumReleaseAgeExclude:
+  - http-cache-semantics@4.3.0
+
 overrides:
   'fast-uri@>=3.0.0 <3.1.8': 3.1.8
   'js-yaml@>=4.0.0 <4.3.2': 4.3.2
@@ -16,6 +19,8 @@ overrides:
   'sharp@<0.35.4': 0.35.4
   'smol-toml@<1.7.1': 1.7.1
   'svgo@<4.1.0': 4.1.0
-  'devalue@<5.9.2': 5.9.2
+  'devalue@<5.9.3': 5.9.3
   'uuid@<11.1.1': 11.1.1
   'yaml@>=2.0.0 <2.8.3': 2.9.0
+  'dompurify@<3.4.16': 3.4.16
+  'http-cache-semantics@<=4.2.0': 4.3.0

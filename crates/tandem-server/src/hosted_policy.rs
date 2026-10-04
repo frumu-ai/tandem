@@ -36,7 +36,7 @@ struct PolicySource {
 pub(crate) struct HostedPolicyRuntime {
     source: RwLock<Option<PolicySource>>,
     snapshot: RwLock<Option<Arc<ValidatedHostedPolicy>>>,
-    update: tokio::sync::Mutex<()>,
+    update: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl HostedPolicyRuntime {
@@ -46,6 +46,17 @@ impl HostedPolicyRuntime {
     /// held across async persistence, unlike a std RwLock read guard.
     pub(crate) async fn lock_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.update.lock().await
+    }
+
+    /// A native commit owns this guard until its writer finishes, even when
+    /// the request waiting for that commit is cancelled.
+    pub(crate) async fn lock_publication_owned(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.update.clone().lock_owned().await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publication_mutex_locked_for_test(&self) -> bool {
+        self.update.try_lock().is_err()
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -157,8 +168,31 @@ impl HostedPolicyRuntime {
         verified: Option<&VerifiedTenantContext>,
         permission: AccessPermission,
     ) -> Result<(), &'static str> {
-        let Some(policy) = self.current()? else {
-            return Ok(());
+        self.authorize_permission_with_policy(verified, permission, false)
+    }
+
+    fn authorize_permission_with_policy(
+        &self,
+        verified: Option<&VerifiedTenantContext>,
+        permission: AccessPermission,
+        require_policy: bool,
+    ) -> Result<(), &'static str> {
+        let policy = self.current()?;
+        Self::authorize_snapshot_permission(policy.as_deref(), verified, permission, require_policy)
+    }
+
+    fn authorize_snapshot_permission(
+        policy: Option<&ValidatedHostedPolicy>,
+        verified: Option<&VerifiedTenantContext>,
+        permission: AccessPermission,
+        require_policy: bool,
+    ) -> Result<(), &'static str> {
+        let Some(policy) = policy else {
+            return if require_policy {
+                Err("hosted_policy_not_configured")
+            } else {
+                Ok(())
+            };
         };
         let now = crate::now_ms();
         let projection =
@@ -176,6 +210,20 @@ impl HostedPolicyRuntime {
             return Err("hosted_operation_permission_required");
         }
         Ok(())
+    }
+
+    /// Recheck the actor and current time while retaining the exact policy
+    /// snapshot through a synchronous native write.
+    pub(crate) fn with_current_permission<R>(
+        &self,
+        verified: Option<&VerifiedTenantContext>,
+        permission: AccessPermission,
+        commit: impl FnOnce() -> R,
+    ) -> Result<R, &'static str> {
+        self.with_current_policy(|policy| {
+            Self::authorize_snapshot_permission(policy, verified, permission, false)?;
+            Ok(commit())
+        })?
     }
 
     pub(crate) fn is_ready(&self) -> bool {
@@ -227,6 +275,76 @@ impl HostedPolicyRuntime {
 }
 
 impl AppState {
+    /// Distinguish a hosted policy source from the local enterprise role path.
+    /// A configured source remains authoritative while it is unsynchronized.
+    pub(crate) fn hosted_policy_source_configured(&self) -> Result<bool, &'static str> {
+        Ok(self
+            .enterprise
+            .hosted_policy
+            .source
+            .read()
+            .map_err(|_| "hosted_policy_lock_failed")?
+            .is_some())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_hosted_policy_snapshot_for_test(
+        &self,
+        organization_id: &str,
+        deployment_id: &str,
+        input: &[u8],
+    ) -> Result<(), &'static str> {
+        let now = crate::now_ms();
+        let policy = HostedPolicyBundle::from_json(input)?.validate(
+            organization_id,
+            deployment_id,
+            now,
+            None,
+        )?;
+        let runtime = &self.enterprise.hosted_policy;
+        *runtime
+            .source
+            .write()
+            .map_err(|_| "hosted_policy_lock_failed")? = Some(PolicySource {
+            organization_id: organization_id.into(),
+            deployment_id: deployment_id.into(),
+            path: PathBuf::from("test-only-policy"),
+            started_at_ms: 0,
+        });
+        *runtime
+            .snapshot
+            .write()
+            .map_err(|_| "hosted_policy_lock_failed")? = Some(Arc::new(policy));
+        Ok(())
+    }
+
+    /// Enterprise grant mutations may use hosted administration only when a
+    /// synchronized policy currently grants it to this signed identity.
+    pub fn authorize_hosted_org_unit_grant_mutation(
+        &self,
+        verified: &VerifiedTenantContext,
+    ) -> Result<(), &'static str> {
+        self.enterprise
+            .hosted_policy
+            .authorize_permission_with_policy(Some(verified), AccessPermission::HostedAdmin, true)
+    }
+
+    /// Serialize grant commits with hosted policy publication. The returned
+    /// guard must be held through durable persistence of the grant snapshot.
+    pub async fn hosted_org_unit_grant_mutation_guard(
+        &self,
+        verified: Option<&VerifiedTenantContext>,
+    ) -> Result<Option<tokio::sync::MutexGuard<'_, ()>>, &'static str> {
+        if !self.hosted_policy_source_configured()? {
+            return Ok(None);
+        }
+        let guard = self.enterprise.hosted_policy.update.lock().await;
+        self.enterprise
+            .hosted_policy
+            .authorize_permission_with_policy(verified, AccessPermission::HostedAdmin, true)?;
+        Ok(Some(guard))
+    }
+
     /// Serialize an enterprise commit with hosted-policy publication. Acquire
     /// this before the target registry writer lock, and recheck current
     /// authority after that writer lock is acquired.

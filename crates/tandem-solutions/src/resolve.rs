@@ -11,6 +11,9 @@ use tandem_enterprise_contract::{TenantSource, VerifiedTenantContext};
 /// CapabilityResolver readiness checks. Never deserialize this from a browser,
 /// model response, or solution pack. No network or wall clock access occurs here.
 pub struct ResolutionInput<'a> {
+    /// Digest of the host-owned source and provider routing snapshot. Callers
+    /// that install resources must supply it; None preserves pure legacy plans.
+    pub host_facts_sha256: Option<&'a str>,
     pub request: &'a InstallRequest,
     pub verified_context: &'a VerifiedTenantContext,
     pub now_ms: u64,
@@ -29,6 +32,9 @@ pub fn resolve(
     input: ResolutionInput<'_>,
 ) -> Result<ResolvedPlan, SolutionError> {
     validate_blueprint(blueprint)?;
+    if let Some(value) = input.host_facts_sha256 {
+        digest(value, "host_facts_sha256")?;
+    }
     let request = input.request;
     identifier(&request.instance_id, "instance_id")?;
     digest(
@@ -102,6 +108,7 @@ pub fn resolve(
     let mut required_capabilities = BTreeSet::new();
     let mut optional_capabilities = BTreeSet::new();
     let mut model_classes = BTreeSet::new();
+    let mut selected_profile_catalog = None;
     // Tenant-qualified namespace prevents the same logical instance name in a
     // different workspace from claiming existing resources.
     for id in &selected {
@@ -134,6 +141,32 @@ pub fn resolve(
                 "Entry bytes differ from the pinned digest",
             ));
         }
+        if component.kind == ComponentKind::ModelProfile {
+            if selected_profile_catalog.is_some() {
+                return Err(SolutionError::new(
+                    "ambiguous_model_profile",
+                    format!("components.{id}"),
+                    "Select one model-profile catalog",
+                ));
+            }
+            let text = std::str::from_utf8(bytes).map_err(|_| {
+                SolutionError::new(
+                    "invalid_model_profiles",
+                    format!("components.{id}.artifact"),
+                    "Model-profile artifact must be UTF-8",
+                )
+            })?;
+            let catalog = parse_model_profiles(text)?;
+            let classes: BTreeSet<String> = catalog.profiles.keys().cloned().collect();
+            if component.model_classes != classes {
+                return Err(SolutionError::new(
+                    "model_profile_class_mismatch",
+                    format!("components.{id}.model_classes"),
+                    "Declared model slots must match the signed catalog classes",
+                ));
+            }
+            selected_profile_catalog = Some(catalog);
+        }
         components.insert(
             id.clone(),
             LockedComponent {
@@ -153,6 +186,21 @@ pub fn resolve(
         required_capabilities.extend(component.required_capabilities.iter().cloned());
         optional_capabilities.extend(component.optional_capabilities.iter().cloned());
         model_classes.extend(component.model_classes.iter().cloned());
+    }
+    if let Some(catalog) = selected_profile_catalog {
+        if let Some(class) = model_classes
+            .iter()
+            .find(|class| !catalog.profiles.contains_key(*class))
+        {
+            return Err(SolutionError::new(
+                "model_profile_missing_class",
+                format!("models.{class}"),
+                "Selected worker class is absent from the signed model-profile catalog",
+            ));
+        }
+        // The profile component declares every possible route class, so the
+        // existing customer-config template and model binding validation cover
+        // fallback and escalation routes before staging.
     }
     optional_capabilities = optional_capabilities
         .difference(&required_capabilities)
@@ -256,6 +304,7 @@ pub fn resolve(
         .cloned()
         .collect();
     Ok(ResolvedPlan {
+        host_facts_sha256: input.host_facts_sha256.map(str::to_owned),
         schema_version: SCHEMA_VERSION.into(),
         resolver_version: RESOLVER_VERSION.into(),
         engine_version: engine.to_string(),

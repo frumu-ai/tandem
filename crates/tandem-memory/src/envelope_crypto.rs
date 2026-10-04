@@ -19,13 +19,14 @@
 //! plus the envelope. Unsealing recovers the DEK — from cache, or via
 //! broker-authorized KMS unwrap on a miss — and decrypts.
 //!
-//! **Layering note.** The DEK cache is a process-internal optimization: a hit
-//! returns key material without re-consulting the broker, exactly like an OS page
-//! cache holds already-decrypted bytes. Authorization of *which caller may read a
-//! row's plaintext* is enforced upstream by the M1 access filter and, on a cache
-//! miss, by the broker's principal check here. Cross-tenant confidentiality **at
-//! rest** is guaranteed structurally: every scope gets a distinct KMS-wrapped
-//! DEK, so a raw DB dump cannot decrypt one tenant's rows with another's DEK.
+//! **Layering note.** Every unseal validates the envelope against independently
+//! supplied authority and consults the broker for the current principal before
+//! checking the DEK cache. A cache hit skips only the external KMS unwrap; it
+//! cannot grant a different tenant, data class, or source access. The upstream
+//! M1 access filter still enforces row-level membership and policy decisions.
+//! Cross-tenant confidentiality **at rest** is guaranteed structurally: every
+//! scope gets a distinct KMS-wrapped DEK, so a raw DB dump cannot decrypt one
+//! tenant's rows with another's DEK.
 
 use crate::crypto::{decrypt_with_key, encrypt_with_key, random_dek, CIPHERTEXT_PREFIX, KEY_LEN};
 use crate::decrypt_broker::{
@@ -729,10 +730,8 @@ mod tests {
                 "audit-1",
             )
             .expect("seal");
-        crypto.cache().clear();
-        // A principal scoped to a different tenant must be denied at the broker,
-        // and a raw DB dump would carry acme's wrapped DEK — not the other
-        // tenant's — so the row stays confidential across tenants.
+        // Seal populated the DEK cache. The broker must still deny a principal
+        // scoped to a different tenant on this warm-cache path.
         let err = crypto
             .unseal(
                 &sealed.envelope,
@@ -755,7 +754,7 @@ mod tests {
                 "audit-1",
             )
             .expect("seal");
-        crypto.cache().clear();
+        // The DEK is already cached by seal; data-class checks still run.
         let err = crypto
             .unseal(
                 &sealed.envelope,

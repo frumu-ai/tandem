@@ -21,8 +21,14 @@ mod goal_control;
 mod goal_lifecycle;
 mod migration;
 pub(crate) mod protected_records;
+mod provider_attempt_budget;
 mod runtime_records;
+pub(crate) mod solution_budget_records;
+mod solution_budgets;
+mod solution_execution;
+mod solution_goals;
 pub(crate) mod solution_installations;
+mod solution_profile_history;
 mod transfer;
 mod transition;
 
@@ -34,10 +40,19 @@ pub use goal_lifecycle::{GoalEventRow, GoalPauseOutcome, GoalResumeOutcome, Star
 pub use migration::{
     LegacyImportContext, LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport,
 };
+pub use provider_attempt_budget::{ApprovedModelPrice, ApprovedSolutionProviderCharge};
+pub use solution_budgets::{
+    SolutionBudgetInput, SolutionBudgetReservationResult, SolutionChargeCostBasis,
+    SolutionChargeIntent, SolutionChargeKind, SolutionChargeReservation, SolutionChargeStatus,
+    SolutionRunBudget,
+};
+pub use solution_execution::SolutionRunExecution;
+pub use solution_goals::SolutionGoalStart;
 pub use solution_installations::{
     SolutionComponentProgress, SolutionInstallation, SolutionInstallationInput,
     SolutionInstallationTransition, SOLUTION_INSTALLATION_CONFLICT,
 };
+pub use solution_profile_history::{RuntimeProfileRequest, RuntimeProfileSelection};
 pub use transfer::{
     migrate_stateful_storage_backend, StatefulBackendKind, StatefulBackendMigrationReport,
     StatefulBackendMigrationRequest,
@@ -47,7 +62,7 @@ pub use transition::{
     WorkflowCompletionResult,
 };
 
-pub(crate) const SCHEMA_VERSION: i64 = 7;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationStorePaths {
@@ -749,7 +764,13 @@ impl OrchestrationStateStore {
     }
 
     pub fn put_goal(&self, goal: &LongRunningGoal) -> anyhow::Result<()> {
-        self.with_connection(|connection| upsert_goal(connection, goal))
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            upsert_goal(&transaction, goal)?;
+            transaction.commit()?;
+            Ok(())
+        })
     }
 
     pub fn get_goal(&self, goal_id: &str) -> anyhow::Result<Option<LongRunningGoal>> {
@@ -1218,6 +1239,10 @@ fn initialize_schema(connection: &mut rusqlite::Connection) -> anyhow::Result<()
         solution_installations::migrate_sqlite(connection)?;
         version = 7;
     }
+    if version == 7 {
+        solution_budget_records::migrate_sqlite(connection)?;
+        version = 8;
+    }
     if version != SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {SCHEMA_VERSION}"
@@ -1414,7 +1439,19 @@ fn table_has_column(
     Ok(false)
 }
 
-fn upsert_goal(connection: &impl Executor, goal: &LongRunningGoal) -> anyhow::Result<()> {
+fn upsert_goal(
+    connection: &backend::Transaction<'_>,
+    goal: &LongRunningGoal,
+) -> anyhow::Result<()> {
+    upsert_goal_record(connection, goal, false)
+}
+
+fn upsert_goal_record(
+    connection: &backend::Transaction<'_>,
+    goal: &LongRunningGoal,
+    allow_initial_solution: bool,
+) -> anyhow::Result<()> {
+    solution_goals::preserve(connection, goal, allow_initial_solution)?;
     let status = serde_json::to_value(&goal.status)?;
     connection.execute(
         "INSERT INTO long_running_goals

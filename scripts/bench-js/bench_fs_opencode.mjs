@@ -1,7 +1,7 @@
 
 import { writeFile, readFile, rm, mkdir } from 'fs/promises';
 import { resolve, join } from 'path';
-import fg from 'fast-glob';
+import { glob } from 'node:fs/promises';
 import pLimit from 'p-limit';
 
 const CONCURRENCY = 8;
@@ -58,8 +58,8 @@ async function runBenchmark() {
   const startList = performance.now();
 
   // Opencode `list` tool accepts glob patterns. 
-  // We use fast-glob to simulate this.
-  const files = await fg(`${TEMP_DIR}/*.txt`);
+  // Use the native Node glob implementation for the fixed benchmark pattern.
+  const files = await Array.fromAsync(glob('*.txt', { cwd: TEMP_DIR }));
   
   const endList = performance.now();
   const listDuration = (endList - startList) / 1000;

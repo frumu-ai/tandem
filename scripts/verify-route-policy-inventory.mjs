@@ -188,6 +188,7 @@ function callIsInsideNamedFunction(source, callIndex, functionName) {
 }
 
 export function extractRoutesFromRust(source, sourcePath = "fixture.rs") {
+  sourcePath = sourcePath.replaceAll("\\", "/");
   const production = productionSource(source);
   const routes = [];
   const unsupported = [];
@@ -377,6 +378,15 @@ function assertProductionRouteCoverage(files) {
 
 export function classifyRoute(route) {
   const { method, path: routePath } = route;
+  if (method === "POST" && routePath === "/admin/context-assertions/reload") {
+    return {
+      ingress_policy: "runtime_auth_gate",
+      authorization_policy: "verified_hosted_administrator_and_current_policy",
+      capability: "hosted.admin",
+      resolver: "operator_keyring_current_snapshot_and_protected_audit",
+      policy_origin: "admin.context_assertion_keyring",
+    };
+  }
   if (route.listener === "loopback_oauth_callback") {
     return {
       ingress_policy: "loopback_listener",
@@ -602,7 +612,7 @@ export function buildInventory(files = routeFiles()) {
     }
   }
   const inventoryRoutes = [...byKey.values()]
-    .map((route) => ({ ...route, sources: [...new Set(route.sources)].sort() }))
+    .map((route) => ({ ...route, sources: [...new Set(route.sources.map((source) => source.replaceAll("\\", "/")))].sort() }))
     .sort(
       (left, right) =>
         left.listener.localeCompare(right.listener) ||

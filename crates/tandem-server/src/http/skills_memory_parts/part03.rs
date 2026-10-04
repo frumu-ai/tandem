@@ -687,7 +687,7 @@ pub(super) async fn memory_list(
             .await
             {
                 Ok(tandem_memory::MemoryStoreQueryResult::GlobalRecords(rows)) => rows,
-                _ => Vec::new(),
+                _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
             };
             let row_count = rows.len();
             for row in rows {
@@ -738,7 +738,7 @@ pub(super) async fn memory_list(
             })
             .collect::<Vec<_>>()
     } else {
-        Vec::new()
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };
     let total = page.len();
     Ok(Json(json!({
@@ -759,6 +759,31 @@ fn trusted_memory_database_scope(
             .map_err(|_| StatusCode::FORBIDDEN)?,
         trusted_subject.map(ToString::to_string),
     ))
+}
+
+/// Every search scope must come from the current verified membership set. Keep
+/// fan-out bounded and fail closed rather than silently dropping departments.
+fn trusted_memory_search_org_units(
+    verified: Option<&VerifiedTenantContext>,
+    active_org_unit: Option<String>,
+) -> Result<Vec<Option<String>>, StatusCode> {
+    const MAX_SEARCH_ORG_UNITS: usize = 64;
+    let Some(verified) = verified else {
+        return Ok(vec![active_org_unit]);
+    };
+    let units = verified
+        .org_units
+        .iter()
+        .map(|unit| unit.trim())
+        .filter(|unit| !unit.is_empty())
+        .collect::<std::collections::BTreeSet<_>>();
+    if units.is_empty() || units.len() > MAX_SEARCH_ORG_UNITS {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(units
+        .into_iter()
+        .map(|unit| Some(unit.to_string()))
+        .collect())
 }
 
 /// Enforce per-user ownership before an admin-style mutation (demote/delete)

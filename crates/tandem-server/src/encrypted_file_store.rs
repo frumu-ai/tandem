@@ -301,14 +301,45 @@ impl ProtectedFileCrypto {
     }
 }
 
+tokio::task_local! {
+    // A protected audit append reads the ledger, then the store appender reads it
+    // again under its process lock. Share only that append's DEK cache between
+    // the two reads; neither the cache nor decrypted rows survive the request.
+    static AUDIT_APPEND_CRYPTO: ProtectedFileCrypto;
+}
+
 fn crypto() -> ProtectedFileCrypto {
+    if let Ok(provider) = AUDIT_APPEND_CRYPTO.try_with(Clone::clone) {
+        return provider;
+    }
     #[cfg(test)]
+    {
+        if let Ok(provider) =
+            TEST_CRYPTO_FACTORY.try_with(|(factory, principal_id)| ProtectedFileCrypto {
+                provider: factory(),
+                principal_id: principal_id.clone(),
+            })
+        {
+            return provider;
+        }
+    }
+    #[cfg(any(test, feature = "test-support"))]
     {
         if let Ok(provider) = TEST_CRYPTO.try_with(Clone::clone) {
             return provider;
         }
     }
     ProtectedFileCrypto::from_env()
+}
+
+/// Keep one crypto handle only for a single audit append. The store still
+/// re-reads and authenticates the ledger under its process lock, and hosted
+/// decrypt authorization still runs on every unseal, including cache hits.
+pub(crate) async fn with_audit_append_crypto<F, T>(future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    AUDIT_APPEND_CRYPTO.scope(crypto(), future).await
 }
 
 fn required_crypto_for(
@@ -451,12 +482,56 @@ where
     write_text_file(path, &plaintext, context).await
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 tokio::task_local! {
     static TEST_CRYPTO: ProtectedFileCrypto;
 }
 
+/// Run synchronous protected storage off the async executor. Production uses
+/// its configured crypto provider as usual; tests carry their isolated crypto
+/// context into the blocking thread instead of silently falling back to env.
+pub(crate) async fn spawn_protected_blocking<F, T>(
+    operation: F,
+) -> Result<T, tokio::task::JoinError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    #[cfg(any(test, feature = "test-support"))]
+    let test_crypto = TEST_CRYPTO.try_with(Clone::clone).ok();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(crypto) = test_crypto {
+            return TEST_CRYPTO.sync_scope(crypto, operation);
+        }
+        operation()
+    })
+    .await
+}
+
 #[cfg(test)]
+tokio::task_local! {
+    static TEST_CRYPTO_FACTORY: (
+        std::sync::Arc<dyn Fn() -> MemoryCryptoProvider + Send + Sync>,
+        Option<String>,
+    );
+}
+
+#[cfg(test)]
+pub(crate) async fn with_test_crypto_factory<F, T>(
+    factory: std::sync::Arc<dyn Fn() -> MemoryCryptoProvider + Send + Sync>,
+    principal_id: Option<&str>,
+    future: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    TEST_CRYPTO_FACTORY
+        .scope((factory, principal_id.map(ToOwned::to_owned)), future)
+        .await
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) async fn with_test_crypto_provider<F, T>(
     provider: MemoryCryptoProvider,
     principal_id: Option<&str>,

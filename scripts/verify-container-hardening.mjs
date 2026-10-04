@@ -15,10 +15,10 @@ const PINNED_NODE_BASE =
   "node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0";
 const PINNED_OS_STEPS = [
   "rm -f /etc/apt/sources.list.d/debian.sources",
-  "printf '%s\\n' 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260923T120000Z trixie main' 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260923T120000Z trixie-security main' > /etc/apt/sources.list",
+  "printf '%s\\n' 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20261003T120000Z trixie main' 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20261003T120000Z trixie-security main' > /etc/apt/sources.list",
   "apt-get -o Acquire::Check-Valid-Until=false update",
   "apt-get -y --no-install-recommends upgrade",
-  "apt-get install -y --no-install-recommends ca-certificates=20250419 curl=8.14.1-2+deb13u5 libssl3t64=3.5.7-1~deb13u2 openssl=3.5.7-1~deb13u2 openssl-provider-legacy=3.5.7-1~deb13u2",
+  "apt-get install -y --no-install-recommends ca-certificates=20250419 curl=8.14.1-2+deb13u5 libssl3t64=3.5.7-1~deb13u3 openssl=3.5.7-1~deb13u3 openssl-provider-legacy=3.5.7-1~deb13u3 libpcre2-8-0=10.46-1~deb13u3",
 ];
 const PINNED_OS_CLEANUP = "rm -rf /var/lib/apt/lists/* /etc/apt/sources.list";
 const PANEL_PACKAGE_MANAGER_STEPS = [
@@ -39,6 +39,9 @@ const APPROVED_BUILD_PREFIXES = new Map([
   ["engine Dockerfile", "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
   ["control-panel Dockerfile", "27e054f9b28f629b375f2875f5efe6742df1b12c8573a96f5ea84bf669031925"],
 ]);
+// The complete release-builder recipe pins the Rust toolchain and the reviewed
+// Ubuntu 22.04 base. No later instruction may replace its patched OS packages.
+const APPROVED_RELEASE_BUILDER_RECIPE = "80e8349cd33bbe3f7a93cbef2efee5c869202e53f5b2c1512bf6da33fbcfd243";
 const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
 const SEMVER_PRERELEASE_IDENTIFIER =
   "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
@@ -84,6 +87,12 @@ function runtimeInstructions(source) {
   const instructions = dockerInstructions(source);
   const lastFrom = instructions.findLastIndex((line) => /^FROM\s/i.test(line));
   return instructions.slice(lastFrom + 1);
+}
+
+function hasApprovedReleaseBuilderRecipe(source) {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(dockerInstructions(source))).digest("hex");
+  return digest === APPROVED_RELEASE_BUILDER_RECIPE;
 }
 
 function finalRuntimeUser(source) {
@@ -245,6 +254,10 @@ export async function verifyContainerHardening(
     path.join(root, "packages/tandem-control-panel/docker/control-panel.Dockerfile"),
     "utf8"
   );
+  const releaseBuilderDockerfile = await readFile(
+    path.join(root, "scripts/linux-release-builder.Dockerfile"),
+    "utf8"
+  );
   const compose = await readFile(
     path.join(root, "packages/tandem-control-panel/docker-compose.yml"),
     "utf8"
@@ -278,18 +291,23 @@ export async function verifyContainerHardening(
       errors.push(`${name} contains a floating latest dependency`);
     }
     for (const marker of [
-      "snapshot.debian.org/archive/debian/20260923T120000Z",
-      "snapshot.debian.org/archive/debian-security/20260923T120000Z",
+      "snapshot.debian.org/archive/debian/20261003T120000Z",
+      "snapshot.debian.org/archive/debian-security/20261003T120000Z",
       "ca-certificates=20250419",
       "curl=8.14.1-2+deb13u5",
-      "libssl3t64=3.5.7-1~deb13u2",
-      "openssl=3.5.7-1~deb13u2",
-      "openssl-provider-legacy=3.5.7-1~deb13u2",
+      "libssl3t64=3.5.7-1~deb13u3",
+      "openssl=3.5.7-1~deb13u3",
+      "openssl-provider-legacy=3.5.7-1~deb13u3",
+      "libpcre2-8-0=10.46-1~deb13u3",
     ]) {
       if (!source.includes(marker)) errors.push(`${name} is missing immutable OS input ${marker}`);
     }
     if (!hasPinnedOsUpgrade(source, name)) errors.push(`${name} must execute the pinned OS upgrade`);
     if (!hasApprovedRuntimeTail(source, name)) errors.push(`${name} has an unreviewed build or post-upgrade runtime recipe`);
+  }
+
+  if (!hasApprovedReleaseBuilderRecipe(releaseBuilderDockerfile)) {
+    errors.push("linux release builder has an unreviewed toolchain, OS base or build recipe");
   }
 
   const engineVersion = parsePinnedEngineVersion(engineDockerfile);
@@ -420,6 +438,23 @@ export async function verifyContainerHardening(
 }
 
 async function selfTest() {
+  const builder = await readFile("scripts/linux-release-builder.Dockerfile", "utf8");
+  if (!hasApprovedReleaseBuilderRecipe(builder)) throw new Error("unapproved current release builder recipe");
+  for (const mutation of [
+    builder.replace("fe30470b234405f2af4dc715f97d656dd06faed304083b05737c035de914b8ee", "0704d9775531e89274dca865a6bdaf13ed71a64bfe36f3a01cf6bd59bdf1f6eb"),
+    builder.replace("rust:1.95.0-bullseye", "rust:latest"),
+    builder.replace("buildpack-deps:jammy@sha256:", "buildpack-deps:noble@sha256:"),
+    builder.replace("COPY --from=rust_toolchain /usr/local/cargo /usr/local/cargo", "COPY unreviewed /usr/local/cargo"),
+    builder.replace("PATH=/usr/local/cargo/bin:", "PATH=/unreviewed:"),
+    `${builder}\nRUN apt-get update && apt-get install -y openssl=3.0.2-0ubuntu1.25\n`,
+    `${builder}\nCOPY unreviewed-packages /usr/lib/\n`,
+    `${builder}\nFROM buildpack-deps:jammy\n`,
+    `ARG UNREVIEWED_BUILD_INPUT=1\n${builder}`,
+    `# escape=\u0060\n${builder}`,
+    builder.replace("FROM buildpack-deps:", "FROM\u00a0buildpack-deps:"),
+  ]) {
+    if (hasApprovedReleaseBuilderRecipe(mutation)) throw new Error("accepted unreviewed release builder mutation");
+  }
   for (const name of ["engine", "control-panel"]) {
     const source = await readFile(`packages/tandem-control-panel/docker/${name}.Dockerfile`, "utf8");
     for (const mutation of [
@@ -438,6 +473,9 @@ async function selfTest() {
       if (hasPinnedOsUpgrade(mutation, `${name} Dockerfile`)) throw new Error(`accepted non-shell whitespace in ${name}`);
     }
     for (const mutation of [
+      source.replaceAll("20261003T120000Z", "20260923T120000Z"),
+      source.replaceAll("3.5.7-1~deb13u3", "3.5.7-1~deb13u2"),
+      source.replace("libpcre2-8-0=10.46-1~deb13u3", "libpcre2-8-0=10.46-1~deb13u2"),
       source.replace(`HOME=/var/lib/tandem/${role}`, `HOME=/var/lib/tandem/${opposite}`),
       source.replace(`XDG_CACHE_HOME=/var/lib/tandem/${role}/.cache`, `XDG_CACHE_HOME=/var/lib/tandem/${opposite}/.cache`),
       source.replace(PINNED_OS_CLEANUP, "rm -rf /var/lib/apt/lists/*\\\n/etc/apt/sources.list"),
