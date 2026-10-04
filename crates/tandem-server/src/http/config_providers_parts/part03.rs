@@ -570,10 +570,12 @@ mod provider_auth_resolution_tests {
                 State(disconnect_state),
                 Extension(disconnect_tenant),
                 Extension(RequestPrincipal::anonymous()),
-                Extension(crate::http::host_authority::RequestLocality::from_peer_and_headers(
-                    Some("127.0.0.1:43210".parse().expect("loopback peer")),
-                    &axum::http::HeaderMap::new(),
-                )),
+                Extension(
+                    crate::http::host_authority::RequestLocality::from_peer_and_headers(
+                        Some("127.0.0.1:43210".parse().expect("loopback peer")),
+                        &axum::http::HeaderMap::new(),
+                    ),
+                ),
                 Some(Extension(verified)),
                 Path(OPENAI_CODEX_PROVIDER_ID.to_string()),
             )
@@ -692,6 +694,16 @@ mod provider_auth_resolution_tests {
                 .and_then(Result::ok)
                 .is_some_and(|event| event.event_type == "provider.oauth.reauth_required");
         assert!(!unexpected_reauth);
+    }
+
+    #[tokio::test]
+    async fn revoked_refresh_stops_before_second_oauth_exchange() {
+        let error = exchange_openai_codex_api_key_if_authorized("unused-id-token", &|| {
+            Err(anyhow::anyhow!("hosted use revoked"))
+        })
+        .await
+        .expect_err("revocation must not be swallowed as optional API-key failure");
+        assert_eq!(error.to_string(), "hosted use revoked");
     }
 }
 
@@ -846,11 +858,10 @@ async fn fetch_openrouter_models(
         );
     };
 
-    let (status, body) = fetch_hardened_provider_response(
-        "https://openrouter.ai/api/v1/models",
-        false,
-        |request| request.bearer_auth(api_key),
-    )
+    let (status, body) =
+        fetch_hardened_provider_response("https://openrouter.ai/api/v1/models", false, |request| {
+            request.bearer_auth(api_key)
+        })
         .await
         .map_err(|err| format!("Failed to fetch OpenRouter models: {err}"))?;
     if !status.is_success() {
@@ -943,8 +954,8 @@ async fn fetch_openai_codex_models(
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let (status, body) =
         fetch_hardened_provider_response(&url, false, |request| request.bearer_auth(api_key))
-        .await
-        .map_err(|err| format!("Failed to fetch OpenAI Codex models: {err}"))?;
+            .await
+            .map_err(|err| format!("Failed to fetch OpenAI Codex models: {err}"))?;
     if !status.is_success() {
         return Err(format!(
             "OpenAI Codex model catalog request failed with status {}",
@@ -1006,15 +1017,12 @@ async fn fetch_anthropic_models(
             "Anthropic requires an API key before live model discovery is available.".to_string(),
         );
     };
-    let (status, body) = fetch_hardened_provider_response(
-        "https://api.anthropic.com/v1/models",
-        false,
-        |request| {
+    let (status, body) =
+        fetch_hardened_provider_response("https://api.anthropic.com/v1/models", false, |request| {
             request
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
-        },
-    )
+        })
         .await
         .map_err(|err| format!("Failed to fetch Anthropic models: {err}"))?;
     if !status.is_success() {
@@ -1082,8 +1090,8 @@ async fn fetch_cohere_models(
     let url = format!("{}/models", normalize_cohere_catalog_base(base_url));
     let (status, body) =
         fetch_hardened_provider_response(&url, false, |request| request.bearer_auth(api_key))
-        .await
-        .map_err(|err| format!("Failed to fetch Cohere models: {err}"))?;
+            .await
+            .map_err(|err| format!("Failed to fetch Cohere models: {err}"))?;
     if !status.is_success() {
         return Err(format!(
             "Cohere model catalog request failed with status {}",

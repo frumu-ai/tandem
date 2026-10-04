@@ -58,6 +58,7 @@ use crate::{
 
 pub(crate) mod approvals;
 mod audit_stream;
+mod automation_object_authority;
 mod automation_projection_runtime;
 mod capabilities;
 pub(crate) mod channel_automation_drafts;
@@ -68,6 +69,7 @@ mod coder;
 pub(crate) mod config_providers;
 mod context_key_reload;
 pub(crate) mod context_packs;
+mod context_run_authority;
 mod context_run_ledger;
 mod context_run_mutation_checkpoints;
 pub(crate) mod context_runs;
@@ -75,13 +77,19 @@ pub(crate) mod context_types;
 pub(crate) mod cross_tenant_grants;
 mod data_boundary_monitoring;
 mod discord_interactions;
+mod event_stream_authority;
 mod external_actions;
 mod global;
 mod goal_capability_learning;
 mod goals_api;
+mod goals_authority;
 mod goals_projection;
 pub(crate) mod governance;
 pub(crate) mod host_authority;
+mod hosted_admin_authority;
+#[cfg(test)]
+#[path = "http/tests/hosted_event_stream_tests.rs"]
+mod hosted_event_stream_tests;
 mod hosted_route_authority;
 pub(crate) mod incident_monitor;
 mod marketplace;
@@ -542,7 +550,7 @@ pub async fn serve_with_route_extensions(
     });
     let app = build_router_with_extensions(state.clone(), route_extensions);
     let reaper = tokio::spawn(async move {
-        if !reaper_state.wait_until_ready_or_failed(120, 250).await {
+        if !reaper_state.wait_for_worker_ready_or_failed(120, 250).await {
             let startup = reaper_state.startup_snapshot().await;
             tracing::warn!(
                 component = "run_reaper",
@@ -863,7 +871,7 @@ impl crate::app::approval_outbound::PendingApprovalsSource for AppStatePendingAp
 }
 
 async fn run_approval_outbound(state: AppState, cancel: Arc<AtomicBool>) {
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         let startup = state.startup_snapshot().await;
         tracing::warn!(
             component = "approval_outbound",
@@ -1038,6 +1046,88 @@ fn app_router(state: AppState) -> Router {
 
 fn tenant_matches(a: &TenantContext, b: &TenantContext) -> bool {
     a.org_id == b.org_id && a.workspace_id == b.workspace_id && a.deployment_id == b.deployment_id
+}
+
+/// Re-evaluate a hosted operation against the live policy after handler awaits.
+/// Standalone local/test callers keep their existing ingress behavior.
+fn require_current_hosted_permission(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    permission: tandem_types::AccessPermission,
+) -> Result<(), StatusCode> {
+    state
+        .enterprise
+        .hosted_policy
+        .with_current_policy(|policy| {
+            require_hosted_permission_under_policy(tenant, verified, permission, policy)
+        })
+        .map_err(|_| StatusCode::FORBIDDEN)?
+}
+
+/// Check against a borrowed snapshot while its read guard is still held.
+/// This must not call `current()` or await; callers may commit under the guard.
+pub(crate) fn require_hosted_permission_under_policy(
+    tenant: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+    permission: tandem_types::AccessPermission,
+    policy: Option<&tandem_enterprise_contract::hosted_policy::ValidatedHostedPolicy>,
+) -> Result<(), StatusCode> {
+    match policy {
+        None => {
+            if verified.is_some_and(|context| context.policy_version.is_some()) {
+                Err(StatusCode::FORBIDDEN)
+            } else {
+                Ok(())
+            }
+        }
+        Some(policy) => {
+            let verified = verified.ok_or(StatusCode::FORBIDDEN)?;
+            let actor = verified.human_actor.actor_id.trim();
+            let now = crate::now_ms();
+            if actor.is_empty()
+                || verified.policy_version.is_none()
+                || verified.is_expired_at(now)
+                || !tenant_matches(tenant, &verified.tenant_context)
+                || tenant.actor_id.as_deref() != Some(actor)
+            {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            let projection = policy
+                .project_identity(verified, now)
+                .map_err(|_| StatusCode::FORBIDDEN)?;
+            if projection
+                .evaluate_access(
+                    &policy.deployment_resource(),
+                    permission,
+                    tandem_enterprise_contract::DataClass::Internal,
+                    now,
+                )
+                .decision
+                != tandem_enterprise_contract::AccessDecision::Allow
+            {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            Ok(())
+        }
+    }
+}
+
+pub(crate) async fn external_action_context_run_tenant(
+    state: &AppState,
+    coder_run_id: &str,
+    run_id: &str,
+) -> Option<TenantContext> {
+    let coder = coder::load_coder_run_record(state, coder_run_id)
+        .await
+        .ok()?;
+    if coder.linked_context_run_id != run_id {
+        return None;
+    }
+    context_runs::load_context_run_state(state, run_id)
+        .await
+        .ok()
+        .map(|run| run.tenant_context)
 }
 
 fn ensure_same_tenant(

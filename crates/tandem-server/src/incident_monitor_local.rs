@@ -108,6 +108,7 @@ pub async fn publish_draft(
     mode: PublishMode,
     destination: LocalDestinationContext,
 ) -> anyhow::Result<PublishOutcome> {
+    crate::incident_monitor::require_current_policy(state)?;
     let status = state.incident_monitor_status_snapshot().await;
     let config = status.config.clone();
     validate_local_publish_config(&config, mode, &destination)?;
@@ -311,25 +312,40 @@ async fn publish_local_record(
     }
 
     let record_id = deterministic_record_id(destination, target_ref, &draft, evidence_digest)?;
-    let receipt = build_receipt(
-        state,
-        &draft,
-        incident,
-        destination,
-        target_ref,
-        &record_id,
-        &idempotency_key,
-        evidence_digest,
-    )
-    .await?;
-    // TAN-556: actually persist the telemetry record to the configured sink
-    // before reporting the publish as posted, so `record_telemetry` isn't a
-    // receipt-only no-op. A write failure surfaces as a publish failure rather
-    // than a false success.
-    if destination.kind == IncidentMonitorDestinationKind::Telemetry {
-        let sink = resolve_telemetry_sink_path(state, &destination.telemetry_path());
-        persist_incident_monitor_telemetry(&sink, &receipt).await?;
+    let prepared = async {
+        crate::incident_monitor::require_current_policy(state)?;
+        let receipt = build_receipt(
+            state,
+            &draft,
+            incident,
+            destination,
+            target_ref,
+            &record_id,
+            &idempotency_key,
+            evidence_digest,
+        )
+        .await?;
+        crate::incident_monitor::require_current_policy(state)?;
+        // TAN-556: actually persist the telemetry record to the configured sink
+        // before reporting the publish as posted, so `record_telemetry` isn't a
+        // receipt-only no-op. A write failure surfaces as a publish failure rather
+        // than a false success.
+        if destination.kind == IncidentMonitorDestinationKind::Telemetry {
+            let sink = resolve_telemetry_sink_path(state, &destination.telemetry_path());
+            return persist_incident_monitor_telemetry(state, &sink, &receipt).await;
+        }
+        Ok::<_, anyhow::Error>(receipt)
     }
+    .await;
+    let receipt = match prepared {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            if error.is::<crate::incident_monitor::HostedPolicyUnavailable>() {
+                pause_local_claim(state, &existing_claim).await?;
+            }
+            return Err(error);
+        }
+    };
     let response_excerpt = receipt
         .get("summary")
         .and_then(Value::as_str)
@@ -356,7 +372,22 @@ async fn publish_local_record(
         updated_at_ms: now_ms(),
         ..existing_claim
     };
-    let post = state.put_incident_monitor_post(post).await?;
+    let post = if destination.kind == IncidentMonitorDestinationKind::InternalMemory {
+        let mut guard = state.incident_monitor_posts.write().await;
+        if let Err(error) = crate::incident_monitor::require_current_policy(state) {
+            drop(guard);
+            pause_local_claim(state, &post).await?;
+            return Err(error);
+        }
+        guard.insert(post.post_id.clone(), post.clone());
+        drop(guard);
+        state.persist_incident_monitor_posts().await?;
+        post
+    } else {
+        // The telemetry write already happened; its receipt must remain durable
+        // even if policy expires after delivery.
+        state.put_incident_monitor_post(post).await?
+    };
     apply_existing_local_post_to_draft(&mut draft, &post);
     let draft = state.put_incident_monitor_draft(draft).await?;
     state
@@ -454,32 +485,28 @@ fn resolve_telemetry_sink_path(state: &AppState, configured: &str) -> std::path:
     base.join(relative)
 }
 
-/// Append a telemetry record as a JSON line to the resolved sink file, creating
-/// parent directories as needed (TAN-556).
-async fn persist_incident_monitor_telemetry(
-    path: &std::path::Path,
-    receipt: &Value,
+mod telemetry_sink;
+use telemetry_sink::persist_incident_monitor_telemetry;
+async fn pause_local_claim(
+    state: &AppState,
+    claim: &IncidentMonitorPostRecord,
 ) -> anyhow::Result<()> {
-    use anyhow::Context;
-    use tokio::io::AsyncWriteExt;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .with_context(|| format!("create telemetry sink directory {}", parent.display()))?;
+    let changed = {
+        let mut guard = state.incident_monitor_posts.write().await;
+        if let Some(row) = guard
+            .get_mut(&claim.post_id)
+            .filter(|row| row.status == "pending" && row.idempotency_key == claim.idempotency_key)
+        {
+            row.status = "policy_paused".into();
+            row.updated_at_ms = now_ms();
+            true
+        } else {
+            false
         }
+    };
+    if changed {
+        state.persist_incident_monitor_posts().await?;
     }
-    let mut line = serde_json::to_string(receipt)?;
-    line.push('\n');
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await
-        .with_context(|| format!("open telemetry sink {}", path.display()))?;
-    file.write_all(line.as_bytes())
-        .await
-        .with_context(|| format!("append telemetry record to {}", path.display()))?;
     Ok(())
 }
 
@@ -793,4 +820,357 @@ fn redact_sensitive_line(line: &str) -> String {
         }
     }
     line.to_string()
+}
+
+#[cfg(test)]
+mod hosted_policy_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn telemetry_retry_recovers_flushed_record_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let posts_path = temp.path().join("posts.json");
+        let drafts_path = temp.path().join("drafts.json");
+        let sink = temp.path().join("telemetry/events.jsonl");
+        let destination = LocalDestinationContext {
+            destination_id: "telemetry-recovery".into(),
+            route_id: None,
+            route_match_reason: None,
+            kind: IncidentMonitorDestinationKind::Telemetry,
+            telemetry_path: Some(sink.to_string_lossy().into_owned()),
+            memory_category: None,
+            config: None,
+        };
+        let draft = IncidentMonitorDraftRecord {
+            draft_id: "draft-recovery".into(),
+            fingerprint: "fingerprint-recovery".into(),
+            repo: "acme/platform".into(),
+            title: Some("Recover telemetry delivery".into()),
+            status: "ready".into(),
+            created_at_ms: now_ms(),
+            ..Default::default()
+        };
+        let target_ref = destination.target_ref().unwrap();
+        let digest = compute_evidence_digest(&draft);
+        let key = build_idempotency_key(
+            &destination.destination_id,
+            destination.kind_label().unwrap(),
+            &target_ref,
+            &draft.fingerprint,
+            destination.operation().unwrap(),
+            &digest,
+        );
+        let record_id =
+            deterministic_record_id(&destination, &target_ref, &draft, &digest).unwrap();
+
+        let mut before_crash = crate::app::state::tests::ready_test_state().await;
+        before_crash.incident_monitor_posts_path = posts_path.clone();
+        before_crash.incident_monitor_drafts_path = drafts_path.clone();
+        let receipt = build_receipt(
+            &before_crash,
+            &draft,
+            None,
+            &destination,
+            &target_ref,
+            &record_id,
+            &key,
+            &digest,
+        )
+        .await
+        .unwrap();
+        let old = now_ms() - 11 * 60 * 1000;
+        before_crash
+            .put_incident_monitor_post(IncidentMonitorPostRecord {
+                post_id: "pending-before-crash".into(),
+                draft_id: draft.draft_id.clone(),
+                fingerprint: draft.fingerprint.clone(),
+                repo: draft.repo.clone(),
+                operation: "record_telemetry".into(),
+                status: "pending".into(),
+                destination_id: Some(destination.destination_id.clone()),
+                destination_kind: Some(IncidentMonitorDestinationKind::Telemetry),
+                target_ref: Some(target_ref.clone()),
+                evidence_digest: Some(digest.clone()),
+                idempotency_key: key.clone(),
+                created_at_ms: old,
+                updated_at_ms: old,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(sink.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&sink, format!("{receipt}\n"))
+            .await
+            .unwrap();
+        drop(before_crash);
+
+        let mut restarted = crate::app::state::tests::ready_test_state().await;
+        restarted.incident_monitor_posts_path = posts_path.clone();
+        restarted.incident_monitor_drafts_path = drafts_path;
+        restarted.load_incident_monitor_posts().await.unwrap();
+        assert_eq!(restarted.list_incident_monitor_posts(10).await.len(), 1);
+        let outcome =
+            publish_local_record(&restarted, draft, None, &destination, &target_ref, &digest)
+                .await
+                .unwrap();
+        let recovered_draft = outcome.draft.clone();
+        let post = outcome.post.expect("recovered post");
+        assert_eq!(post.status, "posted");
+        assert_eq!(post.external_id.as_deref(), Some(record_id.as_str()));
+        assert_eq!(post.receipt.as_ref(), Some(&receipt));
+        let contents = tokio::fs::read_to_string(&sink).await.unwrap();
+        assert_eq!(
+            contents.lines().count(),
+            1,
+            "duplicate telemetry: {contents}"
+        );
+        let duplicate = publish_local_record(
+            &restarted,
+            recovered_draft,
+            None,
+            &destination,
+            &target_ref,
+            &digest,
+        )
+        .await
+        .unwrap();
+        assert_eq!(duplicate.action, "skip_duplicate");
+        assert_eq!(tokio::fs::read_to_string(&sink).await.unwrap(), contents);
+
+        let mut verified = crate::app::state::tests::ready_test_state().await;
+        verified.incident_monitor_posts_path = posts_path;
+        verified.load_incident_monitor_posts().await.unwrap();
+        assert_eq!(
+            verified
+                .get_incident_monitor_post(&post.post_id)
+                .await
+                .unwrap()
+                .status,
+            "posted"
+        );
+    }
+
+    #[tokio::test]
+    async fn telemetry_sink_reconciliation_separates_partial_tail_and_serializes_writers() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = crate::app::state::tests::test_state_with_path(temp.path().join("state.json"));
+        let sink = temp.path().join("telemetry/events.jsonl");
+        tokio::fs::create_dir_all(sink.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&sink, b"{incomplete").await.unwrap();
+        let receipt = json!({
+            "provider": "incident_monitor_telemetry",
+            "operation": "record_telemetry",
+            "status": "posted",
+            "record_id": "bmtel_concurrent",
+            "idempotency_key": "key-concurrent",
+            "destination_id": "telemetry-primary",
+            "target_ref": "telemetry:events",
+        });
+        let (first, second) = tokio::join!(
+            persist_incident_monitor_telemetry(&state, &sink, &receipt),
+            persist_incident_monitor_telemetry(&state, &sink, &receipt),
+        );
+        assert_eq!(first.unwrap(), receipt);
+        assert_eq!(second.unwrap(), receipt);
+        let contents = tokio::fs::read_to_string(&sink).await.unwrap();
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2, "unexpected sink: {contents}");
+        assert_eq!(lines[0], "{incomplete");
+        assert_eq!(serde_json::from_str::<Value>(lines[1]).unwrap(), receipt);
+
+        let mut different_key = receipt.clone();
+        different_key["idempotency_key"] = json!("different-key");
+        assert_eq!(
+            persist_incident_monitor_telemetry(&state, &sink, &different_key)
+                .await
+                .unwrap(),
+            different_key
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&sink)
+                .await
+                .unwrap()
+                .lines()
+                .count(),
+            3
+        );
+
+        // Simulate a separate process appending while this process retains an
+        // index. The next locked publisher must scan that new suffix.
+        let mut external = receipt.clone();
+        external["idempotency_key"] = json!("external-key");
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&sink)
+                .unwrap();
+            writeln!(file, "{external}").unwrap();
+            file.sync_data().unwrap();
+        }
+        assert_eq!(
+            persist_incident_monitor_telemetry(&state, &sink, &external)
+                .await
+                .unwrap(),
+            external
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&sink)
+                .await
+                .unwrap()
+                .lines()
+                .count(),
+            4
+        );
+
+        #[cfg(unix)]
+        {
+            // A replacement at the same pathname must discard the old
+            // offsets, even when the replacement already has a valid receipt.
+            let mut replacement_receipt = receipt.clone();
+            replacement_receipt["idempotency_key"] = json!("replacement-key");
+            let replacement = temp.path().join("replacement.jsonl");
+            std::fs::write(&replacement, format!("{replacement_receipt}\n")).unwrap();
+            std::fs::rename(&replacement, &sink).unwrap();
+            assert_eq!(
+                persist_incident_monitor_telemetry(&state, &sink, &replacement_receipt)
+                    .await
+                    .unwrap(),
+                replacement_receipt
+            );
+            assert_eq!(
+                tokio::fs::read_to_string(&sink)
+                    .await
+                    .unwrap()
+                    .lines()
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn telemetry_append_is_visible_before_success_returns() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = crate::app::state::tests::test_state_with_path(temp.path().join("state.json"));
+        let sink = temp.path().join("telemetry/events.jsonl");
+        for sequence in 0..32 {
+            let receipt = json!({"event": "write-completion", "sequence": sequence});
+            persist_incident_monitor_telemetry(&state, &sink, &receipt)
+                .await
+                .unwrap();
+            // Read synchronously: an async read would give a pending background
+            // write another scheduling opportunity and could hide the race.
+            let contents = std::fs::read_to_string(&sink).unwrap();
+            let lines = contents.lines().collect::<Vec<_>>();
+            assert_eq!(lines.len(), sequence + 1);
+            assert_eq!(
+                serde_json::from_str::<Value>(lines.last().unwrap()).unwrap(),
+                receipt
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_incident_paused_local_claim_is_retryable_and_preserves_completed_receipts() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut state =
+            crate::app::state::tests::test_state_with_path(temp.path().join("state.json"));
+        state.incident_monitor_posts_path = temp.path().join("posts.json");
+        let claim = IncidentMonitorPostRecord {
+            post_id: "original".into(),
+            idempotency_key: "local-policy-retry".into(),
+            status: "pending".into(),
+            updated_at_ms: now_ms(),
+            ..Default::default()
+        };
+        assert!(
+            state
+                .try_claim_incident_monitor_post_idempotency(claim.clone())
+                .await
+                .unwrap()
+                .0
+        );
+        pause_local_claim(&state, &claim).await.unwrap();
+        assert_eq!(
+            state
+                .get_incident_monitor_post(&claim.post_id)
+                .await
+                .unwrap()
+                .status,
+            "policy_paused"
+        );
+        let retry = IncidentMonitorPostRecord {
+            post_id: "retry".into(),
+            ..claim.clone()
+        };
+        assert!(
+            state
+                .try_claim_incident_monitor_post_idempotency(retry.clone())
+                .await
+                .unwrap()
+                .0
+        );
+        let completed = IncidentMonitorPostRecord {
+            status: "posted".into(),
+            ..retry.clone()
+        };
+        state.put_incident_monitor_post(completed).await.unwrap();
+        pause_local_claim(&state, &retry).await.unwrap();
+        assert_eq!(
+            state
+                .get_incident_monitor_post(&retry.post_id)
+                .await
+                .unwrap()
+                .status,
+            "posted"
+        );
+        assert!(
+            !state
+                .try_claim_incident_monitor_post_idempotency(claim)
+                .await
+                .unwrap()
+                .0
+        );
+    }
+
+    #[tokio::test]
+    async fn hosted_incident_telemetry_policy_outage_does_not_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = crate::app::state::tests::test_state_with_path(temp.path().join("state.json"));
+        let sink = temp.path().join("telemetry/events.jsonl");
+        let receipt = json!({"event": "incident", "id": "policy-control"});
+
+        // The same sink remains usable in an unconfigured standalone deployment.
+        persist_incident_monitor_telemetry(&state, &sink, &receipt)
+            .await
+            .unwrap();
+        let before = tokio::fs::read(&sink).await.unwrap();
+        assert_eq!(
+            String::from_utf8(before.clone()).unwrap().lines().count(),
+            1
+        );
+
+        state.enterprise.hosted_policy.configure_test_source(
+            "org-a",
+            "dep-a",
+            temp.path().join("missing-policy.json"),
+        );
+        let error = persist_incident_monitor_telemetry(&state, &sink, &receipt)
+            .await
+            .unwrap_err();
+        assert!(error.is::<crate::incident_monitor::HostedPolicyUnavailable>());
+        assert_eq!(tokio::fs::read(&sink).await.unwrap(), before);
+        let new_sink = temp.path().join("blocked/events.jsonl");
+        assert!(
+            persist_incident_monitor_telemetry(&state, &new_sink, &receipt)
+                .await
+                .is_err()
+        );
+        assert!(!new_sink.parent().unwrap().exists());
+    }
 }

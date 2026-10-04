@@ -4,10 +4,14 @@
 //! Pure solution planning. This crate does not provision identities, download
 //! packs, grant permissions, or mutate a running Tandem installation.
 mod contract;
+mod customer_config;
+mod customer_contract;
 mod resolve;
 mod validate;
 
 pub use contract::*;
+pub use customer_config::*;
+pub use customer_contract::*;
 pub use resolve::{resolve, ResolutionInput};
 pub use validate::{blueprint_hash, parse_blueprint, validate_blueprint};
 
@@ -47,6 +51,22 @@ impl std::error::Error for SolutionError {}
 
 pub fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Stable native resource identity, shared by planning and resource staging.
+/// This derives an identifier; callers must independently authorize the owner.
+pub fn solution_resource_id(
+    org_id: &str,
+    workspace_id: &str,
+    deployment_id: &str,
+    instance_id: &str,
+    component_id: &str,
+) -> Result<String, SolutionError> {
+    let namespace = sha256(&canonical_json(&serde_json::json!({
+        "org": org_id, "workspace": workspace_id,
+        "deployment": deployment_id, "instance": instance_id,
+    }))?);
+    Ok(format!("solution-{namespace}-{component_id}"))
 }
 
 // Object ordering is explicit even when another workspace crate enables

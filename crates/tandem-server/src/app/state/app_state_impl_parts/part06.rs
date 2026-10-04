@@ -81,7 +81,11 @@ fn resolve_incident_monitor_state_read_path(
 /// (by mtime), walking the project/source subdirectories. Best-effort: I/O
 /// errors on individual entries are skipped so one unreadable file can't stall
 /// retention pruning (TAN-556).
-async fn prune_incident_monitor_evidence_dir(dir: &std::path::Path, cutoff_ms: u64) -> usize {
+async fn prune_incident_monitor_evidence_dir(
+    state: &AppState,
+    dir: &std::path::Path,
+    cutoff_ms: u64,
+) -> usize {
     let mut removed = 0usize;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
@@ -102,6 +106,9 @@ async fn prune_incident_monitor_evidence_dir(dir: &std::path::Path, cutoff_ms: u
                 continue;
             };
             if let Ok(elapsed) = modified.duration_since(std::time::UNIX_EPOCH) {
+                if !state.enterprise.hosted_policy.is_ready() {
+                    return removed;
+                }
                 if (elapsed.as_millis() as u64) < cutoff_ms && fs::remove_file(&path).await.is_ok()
                 {
                     removed += 1;
@@ -349,6 +356,15 @@ fn runtime_policy_rule_for_decision(decision: &PolicyDecisionRecord) -> Enterpri
 
 impl AppState {
     async fn recover_automation_definitions_from_run_snapshots(&self) -> anyhow::Result<usize> {
+        let _persistence_guard = self.automations_v2_persistence.lock().await;
+        let tombstoned = self
+            .automation_governance
+            .read()
+            .await
+            .deleted_automations
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
         let runs = self
             .automation_v2_runs
             .read()
@@ -367,9 +383,15 @@ impl AppState {
             let Some(snapshot) = run.automation_snapshot.clone() else {
                 continue;
             };
+            if snapshot.automation_id != run.automation_id
+                || tombstoned.contains(&run.automation_id)
+            {
+                continue;
+            }
             let snapshot_is_context_recovered =
                 automation_v2_definition_is_context_recovered(&snapshot);
             let should_replace = match guard.get(&run.automation_id) {
+                Some(existing) if existing.created_at_ms != snapshot.created_at_ms => false,
                 Some(existing)
                     if snapshot_is_context_recovered
                         && !automation_v2_definition_is_context_recovered(existing) =>
@@ -394,7 +416,7 @@ impl AppState {
                 active_path,
                 "recovered automation v2 definitions from run snapshots"
             );
-            self.persist_automations_v2().await?;
+            self.persist_automations_v2_locked().await?;
         }
         Ok(recovered)
     }
@@ -466,7 +488,16 @@ impl AppState {
 
     pub async fn put_incident_monitor_config(
         &self,
+        config: IncidentMonitorConfig,
+    ) -> anyhow::Result<IncidentMonitorConfig> {
+        self.put_incident_monitor_config_checked(config, || Ok(()))
+            .await
+    }
+
+    pub(crate) async fn put_incident_monitor_config_checked(
+        &self,
         mut config: IncidentMonitorConfig,
+        authorize: impl FnOnce() -> anyhow::Result<()>,
     ) -> anyhow::Result<IncidentMonitorConfig> {
         config.workspace_root = config
             .workspace_root
@@ -490,8 +521,13 @@ impl AppState {
         }
         validate_incident_monitor_monitored_projects(self, &mut config).await?;
         config.updated_at_ms = now_ms();
-        let previous = self.incident_monitor_config.read().await.clone();
-        *self.incident_monitor_config.write().await = config.clone();
+        let previous = {
+            let mut current = self.incident_monitor_config.write().await;
+            // Validation and lock acquisition may await. Reauthorize at the
+            // shared state mutation boundary, with no intervening await.
+            authorize()?;
+            std::mem::replace(&mut *current, config.clone())
+        };
         self.persist_incident_monitor_config().await?;
         self.note_incident_monitor_config_reassessment_triggers(&previous, &config)
             .await;
@@ -611,17 +647,6 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn persist_incident_monitor_intake_keys(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.incident_monitor_intake_keys_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        let payload = {
-            let guard = self.incident_monitor_intake_keys.read().await;
-            serde_json::to_string_pretty(&*guard)?
-        };
-        write_state_file_atomically(&self.incident_monitor_intake_keys_path, payload).await
-    }
-
     pub async fn list_incident_monitor_intake_keys(&self) -> Vec<IncidentMonitorProjectIntakeKey> {
         let mut rows = self
             .incident_monitor_intake_keys
@@ -644,31 +669,6 @@ impl AppState {
             .insert(key.key_id.clone(), key.clone());
         self.persist_incident_monitor_intake_keys().await?;
         Ok(key)
-    }
-
-    pub async fn validate_incident_monitor_intake_key(
-        &self,
-        raw_key: &str,
-        project_id: &str,
-        required_scope: &str,
-    ) -> Option<IncidentMonitorProjectIntakeKey> {
-        let key_hash = crate::sha256_hex(&[raw_key.trim()]);
-        let mut matched = {
-            self.incident_monitor_intake_keys
-                .read()
-                .await
-                .values()
-                .find(|row| {
-                    row.enabled
-                        && row.project_id == project_id
-                        && crate::constant_time_str_eq(&row.key_hash, &key_hash)
-                        && row.scopes.iter().any(|scope| scope == required_scope)
-                })
-                .cloned()
-        }?;
-        matched.last_used_at_ms = Some(now_ms());
-        let _ = self.put_incident_monitor_intake_key(matched.clone()).await;
-        Some(matched)
     }
 
     pub async fn load_incident_monitor_drafts(&self) -> anyhow::Result<()> {
@@ -846,11 +846,13 @@ impl AppState {
         if retention_days == 0 {
             return Ok((0, 0, 0));
         }
+        crate::incident_monitor::require_current_policy(self)?;
         let cutoff =
             crate::now_ms().saturating_sub(retention_days.saturating_mul(24 * 60 * 60 * 1_000));
 
         let removed_posts = {
             let mut guard = self.incident_monitor_posts.write().await;
+            crate::incident_monitor::require_current_policy(self)?;
             let before = guard.len();
             guard.retain(|_, post| post.updated_at_ms >= cutoff);
             before - guard.len()
@@ -861,6 +863,7 @@ impl AppState {
 
         let removed_incidents = {
             let mut guard = self.incident_monitor_incidents.write().await;
+            crate::incident_monitor::require_current_policy(self)?;
             let before = guard.len();
             guard.retain(|_, incident| incident.updated_at_ms >= cutoff);
             before - guard.len()
@@ -869,9 +872,12 @@ impl AppState {
             self.persist_incident_monitor_incidents().await?;
         }
 
-        let removed_artifacts =
-            prune_incident_monitor_evidence_dir(&self.incident_monitor_log_evidence_dir, cutoff)
-                .await;
+        let removed_artifacts = prune_incident_monitor_evidence_dir(
+            self,
+            &self.incident_monitor_log_evidence_dir,
+            cutoff,
+        )
+        .await;
 
         Ok((removed_posts, removed_incidents, removed_artifacts))
     }
@@ -1151,6 +1157,7 @@ impl AppState {
         let pending_claim_ttl_ms = 10 * 60 * 1000;
         let result = {
             let mut guard = self.incident_monitor_posts.write().await;
+            crate::incident_monitor::require_current_policy(self)?;
             if let Some(existing) = guard
                 .values()
                 .find(|row| {
@@ -1707,8 +1714,9 @@ impl AppState {
 
     pub async fn record_external_action(
         &self,
-        action: ExternalActionRecord,
+        mut action: ExternalActionRecord,
     ) -> anyhow::Result<ExternalActionRecord> {
+        action.provenance = self.external_action_provenance(&action).await;
         let action = {
             let mut guard = self.external_actions.write().await;
             if let Some(idempotency_key) = action
@@ -1726,11 +1734,18 @@ impl AppState {
                             .map(str::trim)
                             .filter(|value| !value.is_empty())
                             == Some(idempotency_key)
+                            && existing.provenance == action.provenance
                     })
                     .cloned()
                 {
                     return Ok(existing);
                 }
+            }
+            if guard
+                .get(&action.action_id)
+                .is_some_and(|existing| existing.provenance != action.provenance)
+            {
+                anyhow::bail!("external action ID belongs to a different provenance");
             }
             guard.insert(action.action_id.clone(), action.clone());
             action

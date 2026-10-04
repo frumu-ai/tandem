@@ -83,90 +83,106 @@ impl AppState {
             .automation_v2_runs
             .read()
             .await
-            .values()
+            .keys()
             .cloned()
             .collect::<Vec<_>>();
         let mut recovered = 0usize;
-        for run in runs {
-            match run.status {
-                AutomationRunStatus::Running => {
-                    if self.recover_running_run_after_restart(&run).await {
-                        recovered += 1;
+        for run_id in runs {
+            'retry_run: loop {
+                // Recovery runs only once per executor startup. A policy outage
+                // pauses it; only shutdown/startup failure may abandon the pass.
+                let run = loop {
+                    if !self.wait_for_worker_ready_or_failed(120, 250).await {
+                        return recovered;
                     }
-                }
-                AutomationRunStatus::Pausing => {
-                    // `Pausing` is a transient state: the executor task that
-                    // was about to finish pausing is gone after a restart and
-                    // will never complete the transition. Settle the run to
-                    // `Paused` so it (a) releases its workspace lock (Pausing
-                    // holds it, Paused does not) and (b) becomes eligible for
-                    // `/recover` via the API. Without this, the Pausing lock
-                    // perpetuates across every restart and blocks every new
-                    // run on the same workspace.
-                    let detail =
-                        "automation run settled to paused after server restart".to_string();
-                    if let Some(updated_run) = self
-                        .update_automation_v2_run(&run.run_id, |row| {
-                            row.status = AutomationRunStatus::Paused;
-                            if row.pause_reason.is_none() {
-                                row.pause_reason = Some(detail.clone());
-                            }
-                            automation::record_automation_lifecycle_event(
-                                row,
-                                "run_pausing_settled_on_restart",
-                                Some(detail.clone()),
-                                None,
-                            );
-                        })
-                        .await
-                    {
-                        self.append_internal_sweep_protected_audit_event(
-                            "automation_v2.internal_sweep.server_restart_settled_pausing_run",
-                            &updated_run,
-                            "recover_in_flight_runs",
-                            "settled_pausing_run",
-                            Some(detail),
-                            json!({ "previous_status": "pausing" }),
-                        )
-                        .await;
-                        recovered += 1;
+                    let run = self.automation_v2_runs.read().await.get(&run_id).cloned();
+                    if self.enterprise.hosted_policy.is_ready() {
+                        break run;
                     }
-                }
-                AutomationRunStatus::Paused | AutomationRunStatus::AwaitingApproval => {
-                    if run.status == AutomationRunStatus::AwaitingApproval {
-                        let has_settled_gate_decision = run
-                            .checkpoint
-                            .awaiting_gate
-                            .as_ref()
-                            .and_then(|gate| {
-                                run.checkpoint
-                                    .gate_history
-                                    .iter()
-                                    .rev()
-                                    .find(|record| record.node_id == gate.node_id)
+                };
+                // A run may have been removed or changed while policy was absent.
+                let Some(run) = run else { break 'retry_run };
+                match run.status {
+                    AutomationRunStatus::Running => {
+                        if self.recover_running_run_after_restart(&run).await {
+                            recovered += 1;
+                        } else {
+                            continue 'retry_run;
+                        }
+                    }
+                    AutomationRunStatus::Pausing => {
+                        // `Pausing` is a transient state: the executor task that
+                        // was about to finish pausing is gone after a restart and
+                        // will never complete the transition. Settle the run to
+                        // `Paused` so it (a) releases its workspace lock (Pausing
+                        // holds it, Paused does not) and (b) becomes eligible for
+                        // `/recover` via the API. Without this, the Pausing lock
+                        // perpetuates across every restart and blocks every new
+                        // run on the same workspace.
+                        let detail =
+                            "automation run settled to paused after server restart".to_string();
+                        if let Some(updated_run) = self
+                            .update_automation_v2_run_matching(&run.run_id, Some(&run), |row| {
+                                row.status = AutomationRunStatus::Paused;
+                                if row.pause_reason.is_none() {
+                                    row.pause_reason = Some(detail.clone());
+                                }
+                                automation::record_automation_lifecycle_event(
+                                    row,
+                                    "run_pausing_settled_on_restart",
+                                    Some(detail.clone()),
+                                    None,
+                                );
                             })
-                            .is_some_and(|record| {
-                                crate::app::state::automation_gate_decision_settles_wait(
-                                    &record.decision,
-                                )
-                            });
-                        if has_settled_gate_decision {
-                            let automation =
-                                self.automation_definition_for_restart_recovery(&run).await;
-                            if let Ok(automation) = automation {
-                                if let Some(updated_run) = self
-                                    .update_automation_v2_run(&run.run_id, |row| {
+                            .await
+                        {
+                            self.append_internal_sweep_protected_audit_event(
+                                "automation_v2.internal_sweep.server_restart_settled_pausing_run",
+                                &updated_run,
+                                "recover_in_flight_runs",
+                                "settled_pausing_run",
+                                Some(detail),
+                                json!({ "previous_status": "pausing" }),
+                            )
+                            .await;
+                            recovered += 1;
+                        } else {
+                            continue 'retry_run;
+                        }
+                    }
+                    AutomationRunStatus::Paused | AutomationRunStatus::AwaitingApproval => {
+                        if run.status == AutomationRunStatus::AwaitingApproval {
+                            let has_settled_gate_decision = run
+                                .checkpoint
+                                .awaiting_gate
+                                .as_ref()
+                                .and_then(|gate| {
+                                    run.checkpoint
+                                        .gate_history
+                                        .iter()
+                                        .rev()
+                                        .find(|record| record.node_id == gate.node_id)
+                                })
+                                .is_some_and(|record| {
+                                    crate::app::state::automation_gate_decision_settles_wait(
+                                        &record.decision,
+                                    )
+                                });
+                            if has_settled_gate_decision {
+                                let automation =
+                                    self.automation_definition_for_restart_recovery(&run).await;
+                                if let Ok(automation) = automation {
+                                    let Some(updated_run) = self
+                                    .update_automation_v2_run_matching(&run.run_id, Some(&run), |row| {
                                         crate::app::state::recover_settled_automation_gate_decision(
                                             row,
                                             &automation,
                                         );
                                     })
                                     .await
-                                    .filter(|updated| {
-                                        updated.status != AutomationRunStatus::AwaitingApproval
-                                    })
-                                {
-                                    self.append_internal_sweep_protected_audit_event(
+                                else { continue 'retry_run };
+                                    if updated_run.status != AutomationRunStatus::AwaitingApproval {
+                                        self.append_internal_sweep_protected_audit_event(
                                         "automation_v2.internal_sweep.approval_gate_decision_recovered",
                                         &updated_run,
                                         "recover_in_flight_runs",
@@ -175,46 +191,65 @@ impl AppState {
                                         json!({ "previous_status": "awaiting_approval" }),
                                     )
                                     .await;
-                                    recovered += 1;
-                                    continue;
+                                        recovered += 1;
+                                        break 'retry_run;
+                                    }
                                 }
                             }
                         }
-                    }
-                    let workspace_root = if automation_status_holds_workspace_lock(&run.status) {
-                        self.automation_v2_run_workspace_root(&run).await
-                    } else {
-                        None
-                    };
-                    let mut scheduler = self.automation_scheduler.write().await;
-                    if automation_status_holds_workspace_lock(&run.status) {
-                        scheduler.reserve_workspace(&run.run_id, workspace_root.as_deref());
-                    }
-                    for (node_id, output) in &run.checkpoint.node_outputs {
-                        if let Some((path, content_digest)) =
-                            automation::node_output::automation_output_validated_artifact(output)
+                        let workspace_root = if automation_status_holds_workspace_lock(&run.status)
                         {
-                            scheduler.preexisting_registry.register_validated(
-                                &run.run_id,
-                                node_id,
-                                automation::scheduler::ValidatedArtifact {
-                                    path,
-                                    content_digest,
-                                },
-                            );
+                            self.automation_v2_run_workspace_root(&run).await
+                        } else {
+                            None
+                        };
+                        let mut scheduler = self.automation_scheduler.write().await;
+                        if !self.enterprise.hosted_policy.is_ready()
+                            || self.is_automation_scheduler_stopping()
+                        {
+                            drop(scheduler);
+                            continue 'retry_run;
+                        }
+                        if automation_status_holds_workspace_lock(&run.status) {
+                            scheduler.reserve_workspace(&run.run_id, workspace_root.as_deref());
+                        }
+                        for (node_id, output) in &run.checkpoint.node_outputs {
+                            if let Some((path, content_digest)) =
+                                automation::node_output::automation_output_validated_artifact(
+                                    output,
+                                )
+                            {
+                                scheduler.preexisting_registry.register_validated(
+                                    &run.run_id,
+                                    node_id,
+                                    automation::scheduler::ValidatedArtifact {
+                                        path,
+                                        content_digest,
+                                    },
+                                );
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
+                break 'retry_run;
             }
+        }
+        if !self.wait_for_worker_ready_or_failed(120, 250).await {
+            return recovered;
         }
         recovered += self
             .recover_missing_automation_v2_wait_registrations()
             .await;
+        if !self.wait_for_worker_ready_or_failed(120, 250).await {
+            return recovered;
+        }
         recovered += self.recover_lost_stateful_wait_wakes().await;
         // TAN-564: re-drive any dead letters whose retry was requested before a
         // crash so the failed effect actually re-executes on restart.
-        recovered += self.dispatch_ready_stateful_dead_letter_retries().await;
+        if self.wait_for_worker_ready_or_failed(120, 250).await {
+            recovered += self.dispatch_ready_stateful_dead_letter_retries().await;
+        }
         recovered
     }
 
@@ -254,82 +289,98 @@ impl AppState {
             .await
             .values()
             .filter(|run| run.status == AutomationRunStatus::Paused)
-            .cloned()
+            .map(|run| run.run_id.clone())
             .collect::<Vec<_>>();
 
         let mut recovered = 0usize;
-        for run in paused_runs {
-            // Match by run id AND tenant visibility: the waits store is shared
-            // across tenants/deployments and the same run_id can appear in more
-            // than one, so a foreign tenant's wait must never influence this
-            // run's recovery (mirrors the rest of the stateful wait API).
-            let run_waits = waits
-                .iter()
-                .filter(|wait| {
-                    wait.run_id == run.run_id && wait.visible_to_tenant(&run.tenant_context)
-                })
-                .collect::<Vec<&StatefulWaitRecord>>();
-            if run_waits.is_empty() {
-                continue;
-            }
-            // Legitimately parked on a live wait — leave it for the scheduler.
-            if run_waits.iter().any(|wait| {
-                matches!(
-                    wait.status,
-                    StatefulWaitStatus::Waiting | StatefulWaitStatus::Claimed
-                )
-            }) {
-                continue;
-            }
-            let Some(wait) = run_waits
-                .iter()
-                .filter(|wait| {
-                    wait.status == StatefulWaitStatus::Woken
-                        && wait.event_seq.is_some()
-                        && wait.updated_at_ms >= run.updated_at_ms
-                })
-                .max_by_key(|wait| wait.updated_at_ms)
-            else {
-                continue;
-            };
+        for run_id in paused_runs {
+            loop {
+                if !self.wait_for_worker_ready_or_failed(120, 250).await {
+                    return recovered;
+                }
+                let Some(run) = self.automation_v2_runs.read().await.get(&run_id).cloned() else {
+                    break;
+                };
+                if run.status != AutomationRunStatus::Paused {
+                    break;
+                }
+                // A deferred attempt must not reuse old pause or wait evidence.
+                let waits = load_stateful_waits(&paths.waits_path);
+                // Match by run id AND tenant visibility: the waits store is shared
+                // across tenants/deployments and the same run_id can appear in more
+                // than one, so a foreign tenant's wait must never influence this
+                // run's recovery (mirrors the rest of the stateful wait API).
+                let run_waits = waits
+                    .iter()
+                    .filter(|wait| {
+                        wait.run_id == run.run_id && wait.visible_to_tenant(&run.tenant_context)
+                    })
+                    .collect::<Vec<&StatefulWaitRecord>>();
+                if run_waits.is_empty() {
+                    break;
+                }
+                // Legitimately parked on a live wait — leave it for the scheduler.
+                if run_waits.iter().any(|wait| {
+                    matches!(
+                        wait.status,
+                        StatefulWaitStatus::Waiting | StatefulWaitStatus::Claimed
+                    )
+                }) {
+                    break;
+                }
+                let Some(wait) = run_waits
+                    .iter()
+                    .filter(|wait| {
+                        wait.status == StatefulWaitStatus::Woken
+                            && wait.event_seq.is_some()
+                            && wait.updated_at_ms >= run.updated_at_ms
+                    })
+                    .max_by_key(|wait| wait.updated_at_ms)
+                else {
+                    break;
+                };
 
-            let event_seq = wait.event_seq.unwrap_or_default();
-            let detail = format!(
+                let event_seq = wait.event_seq.unwrap_or_default();
+                let detail = format!(
                 "stateful wait `{}` woke while the run was paused; requeued after server restart",
                 wait.wait_id
             );
-            if let Some(updated) = self
-                .requeue_automation_v2_run_from_stateful_wait_wake(
-                    &run.run_id,
-                    &wait.wait_id,
-                    "stateful_wait_wake_recovered_on_restart",
-                    event_seq,
-                    detail.clone(),
-                    json!({
-                        "wait_id": wait.wait_id,
-                        "wait_kind": wait.wait_kind,
-                        "recovered_on_restart": true,
-                    }),
-                )
-                .await
-            {
-                self.append_internal_sweep_protected_audit_event(
-                    "automation_v2.internal_sweep.stateful_wait_wake_recovered",
-                    &updated,
-                    "recover_lost_stateful_wait_wakes",
-                    "requeued_lost_wake",
-                    Some(detail),
-                    json!({ "wait_id": wait.wait_id, "event_seq": event_seq }),
-                )
-                .await;
-                recovered += 1;
+                if let Some(updated) = self
+                    .requeue_automation_v2_run_from_stateful_wait_wake_matching(
+                        &run.run_id,
+                        Some(&run),
+                        &wait.wait_id,
+                        "stateful_wait_wake_recovered_on_restart",
+                        event_seq,
+                        detail.clone(),
+                        json!({
+                            "wait_id": wait.wait_id,
+                            "wait_kind": wait.wait_kind,
+                            "recovered_on_restart": true,
+                        }),
+                    )
+                    .await
+                {
+                    self.append_internal_sweep_protected_audit_event(
+                        "automation_v2.internal_sweep.stateful_wait_wake_recovered",
+                        &updated,
+                        "recover_lost_stateful_wait_wakes",
+                        "requeued_lost_wake",
+                        Some(detail),
+                        json!({ "wait_id": wait.wait_id, "event_seq": event_seq }),
+                    )
+                    .await;
+                    recovered += 1;
+                    break;
+                }
+                // A policy outage or concurrent run change rejected the commit.
+                // Retry this run in the same startup pass, from fresh evidence.
             }
         }
         recovered
     }
 
     async fn recover_running_run_after_restart(&self, run: &AutomationV2RunRecord) -> bool {
-        self.forget_interrupted_run_handles(run).await;
         let automation = self.automation_definition_for_restart_recovery(run).await;
         let automation = match automation {
             Ok(automation) => automation,
@@ -397,7 +448,7 @@ impl AppState {
         }
 
         let updated_run = self
-            .update_automation_v2_run(&run.run_id, |row| {
+            .update_automation_v2_run_matching(&run.run_id, Some(run), |row| {
                 for node_id in &in_progress_node_ids {
                     if row.checkpoint.node_outputs.contains_key(node_id) {
                         continue;
@@ -456,6 +507,7 @@ impl AppState {
         if let Some(updated_run) =
             updated_run.filter(|row| row.status == AutomationRunStatus::Queued)
         {
+            self.forget_interrupted_run_handles(run).await;
             self.append_internal_sweep_protected_audit_event(
                 "automation_v2.internal_sweep.server_restart_queued_run_for_resume",
                 &updated_run,
@@ -480,7 +532,7 @@ impl AppState {
         metadata: Value,
     ) -> bool {
         if let Some(updated_run) = self
-            .update_automation_v2_run(&run.run_id, |row| {
+            .update_automation_v2_run_matching(&run.run_id, Some(run), |row| {
                 row.status = AutomationRunStatus::Failed;
                 row.detail = Some(detail.clone());
                 row.stop_kind = Some(AutomationStopKind::ServerRestart);
@@ -497,6 +549,7 @@ impl AppState {
             })
             .await
         {
+            self.forget_interrupted_run_handles(run).await;
             self.append_internal_sweep_protected_audit_event(
                 "automation_v2.internal_sweep.server_restart_failed_run",
                 &updated_run,

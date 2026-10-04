@@ -203,7 +203,7 @@ pub async fn run_benchmark_profiler(state: AppState) {
         tracing::debug!("benchmark profiler: disabled");
         return;
     }
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         tracing::warn!("benchmark profiler: skipped because runtime did not become ready");
         return;
     }

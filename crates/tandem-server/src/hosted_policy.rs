@@ -40,7 +40,39 @@ pub(crate) struct HostedPolicyRuntime {
 }
 
 impl HostedPolicyRuntime {
-    #[cfg(test)]
+    /// Serialize a durable authority-sensitive commit with policy publication.
+    /// Keep a consistent lock order with the caller's target-store locks, then
+    /// reproject against the current snapshot before committing. It may be
+    /// held across async persistence, unlike a std RwLock read guard.
+    pub(crate) async fn lock_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.update.lock().await
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn install_test_bundle(
+        &self,
+        bundle: HostedPolicyBundle,
+    ) -> Result<(), &'static str> {
+        let organization_id = bundle.organization_id.clone();
+        let deployment_id = bundle.deployment_id.clone();
+        let policy = bundle.validate(&organization_id, &deployment_id, crate::now_ms(), None)?;
+        *self
+            .source
+            .write()
+            .map_err(|_| "hosted_policy_lock_failed")? = Some(PolicySource {
+            organization_id,
+            deployment_id,
+            path: PathBuf::from("test-policy-snapshot"),
+            started_at_ms: 0,
+        });
+        *self
+            .snapshot
+            .write()
+            .map_err(|_| "hosted_policy_lock_failed")? = Some(Arc::new(policy));
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn configure_test_source(
         &self,
         organization_id: &str,
@@ -70,6 +102,34 @@ impl HostedPolicyRuntime {
             .clone()
             .map(Some)
             .ok_or("hosted_policy_not_synchronized")
+    }
+
+    /// Keep publication of a newer snapshot serialized with a synchronous
+    /// authorization-and-commit section. Callers must not await in `inspect`.
+    pub(crate) fn with_current_policy<R>(
+        &self,
+        inspect: impl FnOnce(Option<&ValidatedHostedPolicy>) -> R,
+    ) -> Result<R, &'static str> {
+        let source = self
+            .source
+            .read()
+            .map_err(|_| "hosted_policy_lock_failed")?;
+        if source.is_none() {
+            return Ok(inspect(None));
+        }
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| "hosted_policy_lock_failed")?;
+        let policy = snapshot
+            .as_deref()
+            .ok_or("hosted_policy_not_synchronized")?;
+        Ok(inspect(Some(policy)))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publication_write_blocked_for_test(&self) -> bool {
+        self.snapshot.try_write().is_err()
     }
 
     pub(crate) fn project(
@@ -248,6 +308,44 @@ impl AppState {
             .hosted_policy
             .authorize_permission_with_policy(verified, AccessPermission::HostedAdmin, true)?;
         Ok(Some(guard))
+    }
+
+    /// Serialize an enterprise commit with hosted-policy publication. Acquire
+    /// this before the target registry writer lock, and recheck current
+    /// authority after that writer lock is acquired.
+    pub async fn lock_hosted_policy_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.enterprise.hosted_policy.lock_publication().await
+    }
+
+    /// Reproject a versioned hosted identity against the currently published
+    /// policy, rather than trusting the projection attached at request ingress.
+    pub fn authorize_current_hosted_admin(
+        &self,
+        verified: &VerifiedTenantContext,
+    ) -> Result<(), &'static str> {
+        if verified.policy_version.is_none() {
+            return Err("hosted_policy_version_required");
+        }
+        let policy = self
+            .enterprise
+            .hosted_policy
+            .current()?
+            .ok_or("hosted_policy_not_synchronized")?;
+        let now = crate::now_ms();
+        let projection = policy.project_identity(verified, now)?;
+        if projection
+            .evaluate_access(
+                &policy.deployment_resource(),
+                AccessPermission::HostedAdmin,
+                DataClass::Internal,
+                now,
+            )
+            .decision
+            != AccessDecision::Allow
+        {
+            return Err("hosted_operation_permission_required");
+        }
+        Ok(())
     }
 
     pub(crate) fn start_hosted_policy_sync(&self, mode: RuntimeAuthMode) -> anyhow::Result<()> {

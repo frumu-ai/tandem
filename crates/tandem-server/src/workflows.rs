@@ -654,7 +654,7 @@ pub async fn dispatch_workflow_event(state: &AppState, event: &EngineEvent) {
 }
 
 pub async fn run_workflow_dispatcher(state: AppState) {
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         let startup = state.startup_snapshot().await;
         tracing::warn!(
             component = "workflow_dispatcher",
@@ -1677,6 +1677,7 @@ async fn record_workflow_external_action(
             ])
         });
     let action = crate::ExternalActionRecord {
+        provenance: None,
         action_id: workflow_external_action_id(&idempotency_key),
         operation: binding.capability_id.clone(),
         status: "posted".to_string(),

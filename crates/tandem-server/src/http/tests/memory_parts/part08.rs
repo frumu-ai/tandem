@@ -224,41 +224,34 @@ async fn open_global_memory_db_for_state_test(
         .expect("memory db")
 }
 
-/// Axis: tenant × distillation (TAN-608f). Distillation has no private opt-in,
-/// so its output is shared within the writing tenant and excluded from others.
+/// Axis: tenant × distillation (TAN-608f). Hosted distillation requires a
+/// verified writer; its output stays within that tenant and subject.
 #[tokio::test]
 async fn matrix_distillation_output_scoped_to_writing_tenant() {
-    let state = test_state().await;
+    let (state, _policy) = super::workflow_learning::hosted_learning_state().await;
     install_fixed_completion_provider(
         &state,
         r#"[{"category":"fact","content":"Tenant A prefers metric dashboards refreshed hourly.","importance":0.9,"follow_up_needed":false}]"#,
     )
     .await;
 
-    let app = app_router(state.clone());
-    let resp = app
-        .oneshot(tenant_memory_request(
-            "POST",
-            "/memory/context/distill",
-            "acme",
-            "north",
-            "user-a",
-            Some(json!({
-                "session_id": "matrix-distill-session",
-                "conversation": [
-                    "user: our operations team needs the metric dashboards to stay fresh because stale numbers keep causing bad rollout decisions during weekly planning reviews",
-                    "assistant: understood — I will refresh the metric dashboards hourly, annotate each panel with its last-updated timestamp, and flag any feed that lags behind the hourly cadence",
-                    "user: also make sure the refresh preference is remembered for future reporting sessions so we never have to repeat this setup conversation again",
-                    "assistant: noted as a durable preference: tenant A prefers metric dashboards refreshed hourly with visible freshness timestamps on every reporting surface"
-                ],
-                "project_id": "proj-a"
-            })),
-        ))
-        .await
-        .expect("distill response");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
-    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let (status, payload) = super::workflow_learning::hosted_learning_request(
+        super::workflow_learning::hosted_learning_router(state.clone(), "alice"),
+        "POST",
+        "/memory/context/distill",
+        Some(json!({
+            "session_id": "matrix-distill-session",
+            "conversation": [
+                "user: our operations team needs the metric dashboards to stay fresh because stale numbers keep causing bad rollout decisions during weekly planning reviews",
+                "assistant: understood — I will refresh the metric dashboards hourly, annotate each panel with its last-updated timestamp, and flag any feed that lags behind the hourly cadence",
+                "user: also make sure the refresh preference is remembered for future reporting sessions so we never have to repeat this setup conversation again",
+                "assistant: noted as a durable preference: tenant A prefers metric dashboards refreshed hourly with visible freshness timestamps on every reporting surface"
+            ],
+            "project_id": "proj-a"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "distill response: {payload}");
     assert!(
         payload.get("stored_count").and_then(Value::as_u64) >= Some(1),
         "distillation must store at least one fact: {payload}"
@@ -268,10 +261,10 @@ async fn matrix_distillation_output_scoped_to_writing_tenant() {
     // The writing subject in the writing tenant sees the distilled fact.
     let own = db
         .search_global_memory_for_tenant(
-            "acme",
-            "north",
-            None,
-            "user-a",
+            "org-learning",
+            "dep-learning",
+            Some("dep-learning"),
+            "alice",
             "metric dashboards",
             10,
             None,
@@ -288,10 +281,10 @@ async fn matrix_distillation_output_scoped_to_writing_tenant() {
     // Without a verified department stamp, fail closed to the writing subject.
     let sibling = db
         .search_global_memory_for_tenant(
-            "acme",
-            "north",
-            None,
-            "user-b",
+            "org-learning",
+            "dep-learning",
+            Some("dep-learning"),
+            "bob",
             "metric dashboards",
             10,
             None,
@@ -309,8 +302,8 @@ async fn matrix_distillation_output_scoped_to_writing_tenant() {
         .search_global_memory_for_tenant(
             "globex",
             "south",
-            None,
-            "user-a",
+            Some("dep-learning"),
+            "alice",
             "metric dashboards",
             10,
             None,

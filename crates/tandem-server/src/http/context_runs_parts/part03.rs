@@ -26,7 +26,7 @@ pub(crate) async fn sync_routine_run_blackboard(
         let context_run = ContextRunState {
             run_id: run_id.clone(),
             run_type: "routine".to_string(),
-            tenant_context: TenantContext::local_implicit(),
+            tenant_context: run.tenant_context.clone(),
             source_client: Some("routine_runtime".to_string()),
             source_metadata: None,
             model_provider: None,
@@ -54,6 +54,12 @@ pub(crate) async fn sync_routine_run_blackboard(
     }
 
     let mut run_state = load_context_run_state(state, &run_id).await?;
+    if run_state.run_type != "routine"
+        || run_state.source_client.as_deref() != Some("routine_runtime")
+        || run_state.tenant_context != run.tenant_context
+    {
+        return Err(StatusCode::CONFLICT);
+    }
     let now = crate::now_ms();
     run_state.status = routine_run_status_to_context(&run.status);
     run_state.objective = format!("Routine {} ({})", run.routine_id, run.entrypoint);

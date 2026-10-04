@@ -7,6 +7,9 @@ use serde_json::Value;
 use serial_test::serial;
 use tandem_types::{AuthorityChain, HumanActor, OrganizationUnitState, TenantSource};
 
+#[path = "tests/middleware_hosted_session_tests.rs"]
+mod hosted_session_tests;
+
 #[test]
 fn resolve_enterprise_request_context_defaults_to_local_tenant() {
     let headers = HeaderMap::new();

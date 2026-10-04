@@ -56,6 +56,7 @@ async fn routine_put_persists_and_loads() {
     state.routines_path = routines_path.clone();
 
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "routine-1".to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Digest".to_string(),
@@ -94,6 +95,7 @@ async fn persist_routines_does_not_clobber_existing_store_with_empty_state() {
     writer.routines_path = routines_path.clone();
     writer
         .put_routine(RoutineSpec {
+            solution_owner: None,
             routine_id: "automation-guarded".to_string(),
             tenant_context: tandem_types::TenantContext::local_implicit(),
             name: "Guarded Automation".to_string(),
@@ -187,6 +189,7 @@ async fn evaluate_routine_misfires_respects_skip_run_once_and_catch_up() {
     state.routines_path = routines_path.clone();
 
     let base = |id: &str, policy: RoutineMisfirePolicy| RoutineSpec {
+        solution_owner: None,
         routine_id: id.to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: id.to_string(),
@@ -251,6 +254,7 @@ async fn evaluate_routine_misfires_respects_skip_run_once_and_catch_up() {
 #[test]
 fn routine_policy_blocks_external_side_effects_by_default() {
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "routine-policy-1".to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Connector routine".to_string(),
@@ -277,6 +281,7 @@ fn routine_policy_blocks_external_side_effects_by_default() {
 #[test]
 fn routine_policy_requires_approval_for_external_side_effects_when_enabled() {
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "routine-policy-2".to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Connector routine".to_string(),
@@ -306,6 +311,7 @@ fn routine_policy_requires_approval_for_external_side_effects_when_enabled() {
 #[test]
 fn routine_policy_allows_non_external_entrypoints() {
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "routine-policy-3".to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Internal mission routine".to_string(),
@@ -369,6 +375,7 @@ async fn record_external_action_appends_routine_receipt_artifact() {
 
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-1".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -392,6 +399,7 @@ async fn record_external_action_appends_routine_receipt_artifact() {
 
     let duplicate = state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-2".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -479,6 +487,7 @@ async fn record_external_action_without_idempotency_key_keeps_current_behavior()
 
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-a".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -501,6 +510,7 @@ async fn record_external_action_without_idempotency_key_keeps_current_behavior()
         .expect("record first external action");
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-b".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -567,6 +577,7 @@ async fn record_external_action_dedupes_by_idempotency_key() {
 
     let first = state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-1".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -589,6 +600,7 @@ async fn record_external_action_dedupes_by_idempotency_key() {
         .expect("record first external action");
     let second = state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-2".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -636,6 +648,7 @@ async fn record_external_action_reliability_scope_prefers_authoritative_run() {
 
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-authoritative".to_string(),
             operation: "send_email".to_string(),
             status: "posted".to_string(),
@@ -669,6 +682,7 @@ async fn record_external_action_reliability_scope_does_not_trust_unresolved_meta
 
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-unresolved".to_string(),
             operation: "send_email".to_string(),
             status: "failed".to_string(),
@@ -793,6 +807,7 @@ async fn record_external_action_without_idempotency_key_preserves_existing_behav
 
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-1".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -815,6 +830,7 @@ async fn record_external_action_without_idempotency_key_preserves_existing_behav
         .expect("record first external action");
     state
         .record_external_action(ExternalActionRecord {
+            provenance: None,
             action_id: "action-2".to_string(),
             operation: "create_issue".to_string(),
             status: "posted".to_string(),
@@ -880,6 +896,7 @@ async fn record_external_action_dedupes_under_concurrent_retries() {
         .insert(run.run_id.clone(), run);
 
     let action_a = ExternalActionRecord {
+        provenance: None,
         action_id: "action-a".to_string(),
         operation: "create_issue".to_string(),
         status: "posted".to_string(),
@@ -899,6 +916,7 @@ async fn record_external_action_dedupes_under_concurrent_retries() {
         updated_at_ms: 10,
     };
     let action_b = ExternalActionRecord {
+        provenance: None,
         action_id: "action-b".to_string(),
         receipt: Some(json!({"issue_number": 102})),
         created_at_ms: 20,
@@ -959,6 +977,7 @@ async fn record_external_action_dedupes_under_retry_storm() {
         .insert(run.run_id.clone(), run);
 
     let make_action = |action_id: &str, created_at_ms: u64| ExternalActionRecord {
+        provenance: None,
         action_id: action_id.to_string(),
         operation: "create_issue".to_string(),
         status: "posted".to_string(),
@@ -997,6 +1016,36 @@ async fn record_external_action_dedupes_under_retry_storm() {
     assert_eq!(state.list_external_actions(10).await.len(), 1);
     let updated = state.get_routine_run("run-1").await.expect("routine run");
     assert_eq!(updated.artifacts.len(), 1);
+}
+
+#[tokio::test]
+async fn hosted_routine_claim_rechecks_policy_after_run_lock_wait() {
+    let mut state = ready_test_state().await;
+    let temp = tempfile::tempdir().unwrap();
+    state.routine_runs_path = temp.path().join("runs.json");
+    let before: RoutineRunRecord = serde_json::from_value(serde_json::json!({
+        "run_id": "hosted-lock-wait", "routine_id": "routine", "trigger_type": "manual",
+        "run_count": 1, "status": "queued", "created_at_ms": 1, "updated_at_ms": 1,
+        "requires_approval": false, "entrypoint": "mission.default"
+    }))
+    .unwrap();
+    let mut guard = state.routine_runs.write().await;
+    guard.insert(before.run_id.clone(), before.clone());
+    let pending = state.claim_next_queued_routine_run();
+    tokio::pin!(pending);
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    state.enterprise.hosted_policy.configure_test_source(
+        "org-a",
+        "dep-a",
+        temp.path().join("missing.json"),
+    );
+    drop(guard);
+    assert!(pending.await.is_none());
+    let after = state.get_routine_run(&before.run_id).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(after).unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
 }
 
 #[tokio::test]
@@ -1082,6 +1131,7 @@ async fn routine_session_policy_roundtrip_normalizes_tools() {
 async fn routine_run_preserves_latest_session_id_after_session_clears() {
     let state = AppState::new_starting("routine-latest-session".to_string(), true);
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "routine-session-link".to_string(),
         tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Routine Session Link".to_string(),
@@ -1138,6 +1188,7 @@ async fn hosted_scheduled_routine_preserves_tenant_in_spec_run_and_session() {
     );
     hosted.deployment_id = Some("deployment-hosted-a".to_string());
     let routine = RoutineSpec {
+        solution_owner: None,
         routine_id: "hosted-scheduled".to_string(),
         tenant_context: hosted.clone(),
         name: "Hosted Scheduled".to_string(),

@@ -23,6 +23,7 @@ fn sample_candidate(
         workflow_id: workflow_id.to_string(),
         project_id: "proj-1".to_string(),
         source_run_id: format!("run-{candidate_id}"),
+        source_binding: None,
         kind,
         status,
         confidence: 0.5,
@@ -110,6 +111,57 @@ async fn workflow_learning_candidate_upsert_dedupes_by_workflow_kind_and_fingerp
             .await
             .len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn workflow_learning_upsert_keeps_reused_source_instances_separate() {
+    let state = ready_test_state().await;
+    let mut alice = sample_candidate(
+        "wflearn-alice-instance",
+        "reused-workflow-id",
+        WorkflowLearningCandidateKind::MemoryFact,
+        WorkflowLearningCandidateStatus::Proposed,
+        "same-fingerprint",
+    );
+    alice.source_binding = Some(WorkflowLearningCandidateSourceBinding::Workflow {
+        tenant_context: tandem_types::TenantContext::explicit(
+            "org-a",
+            "workspace",
+            Some("alice".into()),
+        ),
+        creator_id: "alice".into(),
+        created_at_ms: 1,
+        owner_principal: None,
+    });
+    let mut bob = sample_candidate(
+        "wflearn-bob-instance",
+        "reused-workflow-id",
+        WorkflowLearningCandidateKind::MemoryFact,
+        WorkflowLearningCandidateStatus::Proposed,
+        "same-fingerprint",
+    );
+    bob.source_binding = Some(WorkflowLearningCandidateSourceBinding::Workflow {
+        tenant_context: tandem_types::TenantContext::explicit(
+            "org-b",
+            "workspace",
+            Some("bob".into()),
+        ),
+        creator_id: "bob".into(),
+        created_at_ms: 2,
+        owner_principal: None,
+    });
+    state
+        .upsert_workflow_learning_candidate(alice)
+        .await
+        .unwrap();
+    state.upsert_workflow_learning_candidate(bob).await.unwrap();
+    assert_eq!(
+        state
+            .list_workflow_learning_candidates(Some("reused-workflow-id"), None, None)
+            .await
+            .len(),
+        2
     );
 }
 

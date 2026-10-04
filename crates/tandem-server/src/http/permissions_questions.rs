@@ -7,6 +7,38 @@ use tandem_types::VerifiedTenantContext;
 
 type QueueError = (StatusCode, Json<ErrorEnvelope>);
 
+#[derive(Debug)]
+struct QueueDecisionAuthorityDenied;
+
+impl std::fmt::Display for QueueDecisionAuthorityDenied {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("queue reviewer authority changed before the decision")
+    }
+}
+
+impl std::error::Error for QueueDecisionAuthorityDenied {}
+
+async fn current_hosted_admin_commit_guard<'a>(
+    state: &'a AppState,
+    tenant_context: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+) -> Result<tokio::sync::MutexGuard<'a, ()>, &'static str> {
+    let guard = state.enterprise.hosted_policy.lock_publication().await;
+    state
+        .enterprise
+        .hosted_policy
+        .with_current_policy(|policy| {
+            super::require_hosted_permission_under_policy(
+                tenant_context,
+                verified,
+                tandem_types::AccessPermission::HostedAdmin,
+                policy,
+            )
+            .map_err(|_| "hosted_operation_permission_required")
+        })??;
+    Ok(guard)
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct PermissionReplyInput {
     pub reply: String,
@@ -155,6 +187,11 @@ fn map_permission_reply_error(error: tandem_core::PermissionReplyError) -> Queue
             "Failed to persist permission decision",
             ErrorCode::ApprovalPersistenceFailed,
         ),
+        tandem_core::PermissionReplyError::AuthorityDenied => queue_error(
+            StatusCode::FORBIDDEN,
+            "Reviewer authority changed before the decision",
+            ErrorCode::TenantContextDenied,
+        ),
     }
 }
 
@@ -236,13 +273,18 @@ async fn apply_permission_reply(
     .map_err(super::protected_audit_error_envelope)?;
     state
         .permissions
-        .reply_with_provenance_for_tenant(
+        .reply_with_provenance_for_tenant_checked(
             tenant_context,
             expected_session_id,
             request_id,
             reply,
             Some(reviewer),
             Some(reason.to_string()),
+            async {
+                current_hosted_admin_commit_guard(state, tenant_context, verified)
+                    .await
+                    .map_err(|_| tandem_core::PermissionReplyError::AuthorityDenied)
+            },
         )
         .await
         .map_err(map_permission_reply_error)?
@@ -427,6 +469,13 @@ pub(super) async fn list_questions(
 }
 
 fn map_question_lookup_error(error: anyhow::Error) -> QueueError {
+    if error.is::<QueueDecisionAuthorityDenied>() {
+        return queue_error(
+            StatusCode::FORBIDDEN,
+            "Reviewer authority changed before the decision",
+            ErrorCode::TenantContextDenied,
+        );
+    }
     let message = error.to_string();
     if message.contains("EXPIRED") {
         queue_error(
@@ -504,7 +553,16 @@ async fn apply_question_reply(
     .map_err(super::protected_audit_error_envelope)?;
     let removed = state
         .storage
-        .decide_question_for_tenant(question_id, tenant_context, expected_session_id)
+        .decide_question_for_tenant_checked(
+            question_id,
+            tenant_context,
+            expected_session_id,
+            async {
+                current_hosted_admin_commit_guard(state, tenant_context, verified)
+                    .await
+                    .map_err(|_| anyhow::Error::new(QueueDecisionAuthorityDenied))
+            },
+        )
         .await
         .map_err(map_question_lookup_error)?;
     if removed.is_none() {

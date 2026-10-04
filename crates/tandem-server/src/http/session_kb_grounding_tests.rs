@@ -4,6 +4,15 @@
 use super::*;
 
 #[test]
+fn revoked_kb_answer_never_includes_evidence_or_source_labels() {
+    let (answer, outcome) = strict_kb_revoked_answer();
+    assert_eq!(answer, STRICT_KB_AUTHORITY_REVOKED);
+    assert_eq!(outcome.support, "blocked");
+    assert!(outcome.sources.is_empty());
+    assert_eq!(outcome.evidence_count, 0);
+}
+
+#[test]
 fn source_label_extraction_reads_nested_document_paths() {
     let labels = extract_kb_source_labels(
         r#"{"documents":[{"relative_path":"refund-and-billing-policy.md"},{"doc_id":"staff-roles-and-contacts.md"}]}"#,

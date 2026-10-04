@@ -57,6 +57,7 @@ use prompt_context::{
 };
 use prompt_helpers::*;
 use prompt_runtime::*;
+use tool_execution::ProviderStreamPoll;
 use tool_output::*;
 use tool_parsing::*;
 use types::{EngineToolProgressSink, StreamedToolCall, WritePathRecoveryMode};
@@ -1489,6 +1490,7 @@ impl EngineLoop {
             .execute_tool_with_timeout(
                 session_id,
                 message_id,
+                run_id,
                 &tool,
                 args,
                 preauthorized_dispatch_decision,

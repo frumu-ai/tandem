@@ -5,6 +5,10 @@ contract. It parses JSON/YAML, rejects invalid input, verifies selected artifact
 digests, and produces the same resolved plan for every caller. It has no network,
 filesystem, credential lookup, account provisioning or installation side effects.
 
+The separate [customer configuration contract](customer-configuration.md)
+prepares scoped customer inputs, reference checks and sanitized template exports
+for this same resolver. Runtime installation and persistence remain separate.
+
 This is the foundation for the installer, **not a working Company Brain
 installation yet**. The fixture is an offline planning example; it neither logs
 in a user nor runs a model. Keep TAN-824 open until the runtime adapter and the

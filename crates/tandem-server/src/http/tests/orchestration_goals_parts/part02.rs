@@ -701,13 +701,14 @@ async fn hosted_draft_update_accepts_principal_ref_creator_metadata() {
     let expected_updated_at_ms = draft.updated_at_ms;
     draft.metadata.as_mut().unwrap()["created_by"] =
         json!(tandem_types::PrincipalRef::human_user("operator"));
+    draft.updated_at_ms = expected_updated_at_ms.saturating_add(1);
     store
         .put_orchestration_draft(&draft, Some(expected_updated_at_ms))
         .unwrap();
 
     let mut update = draft_payload(&planner_hash, &executor_hash);
     update["name"] = json!("Updated through hosted HTTP");
-    update["expected_updated_at_ms"] = json!(expected_updated_at_ms);
+    update["expected_updated_at_ms"] = json!(draft.updated_at_ms);
     let payload = serde_json::from_value(update).unwrap();
     let response = crate::http::orchestrations_api::update_orchestration_draft(
         State(state.clone()),

@@ -308,6 +308,7 @@ impl AppState {
             idempotency_persistence: Arc::new(tokio::sync::Mutex::new(())),
             workflow_plans: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_plan_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            workflow_plan_draft_authority: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_planner_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_learning_candidates: Arc::new(RwLock::new(std::collections::HashMap::new())),
             context_packs: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -332,6 +333,8 @@ impl AppState {
             incident_monitor_log_evidence_dir:
                 config::paths::resolve_incident_monitor_log_evidence_dir(),
             incident_monitor_intake_keys: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            incident_monitor_intake_keys_persistence: Arc::new(tokio::sync::Mutex::new(())),
+            incident_monitor_intake_keys_pending: Arc::new(std::sync::Mutex::new(None)),
             incident_monitor_intake_keys_path:
                 config::paths::resolve_incident_monitor_intake_keys_path(),
             external_actions: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -429,7 +432,10 @@ impl AppState {
     pub async fn wait_until_ready_or_failed(&self, attempts: usize, sleep_ms: u64) -> bool {
         for _ in 0..attempts {
             let startup = self.startup_snapshot().await;
-            if matches!(startup.status, StartupStatus::Ready) {
+            if matches!(startup.status, StartupStatus::Ready)
+                && self.runtime.get().is_some()
+                && self.enterprise.hosted_policy.is_ready()
+            {
                 return true;
             }
             if matches!(startup.status, StartupStatus::Failed) {
@@ -438,6 +444,35 @@ impl AppState {
             tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
         }
         matches!(self.startup_snapshot().await.status, StartupStatus::Ready)
+            && self.runtime.get().is_some()
+            && self.enterprise.hosted_policy.is_ready()
+    }
+
+    /// Keep persistent workers alive through a recoverable hosted-policy outage.
+    /// The retry budget still bounds runtime startup; it is not consumed while
+    /// an installed, ready runtime is waiting for its first fresh policy.
+    pub async fn wait_for_worker_ready_or_failed(&self, attempts: usize, sleep_ms: u64) -> bool {
+        let mut startup_attempts = 0;
+        loop {
+            if self.is_automation_scheduler_stopping() {
+                return false;
+            }
+            let startup = self.startup_snapshot().await;
+            if matches!(startup.status, StartupStatus::Failed) {
+                return false;
+            }
+            if matches!(startup.status, StartupStatus::Ready) && self.runtime.get().is_some() {
+                if self.enterprise.hosted_policy.is_ready() {
+                    return true;
+                }
+            } else {
+                if startup_attempts >= attempts {
+                    return false;
+                }
+                startup_attempts += 1;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+        }
     }
 
     pub fn mode_label(&self) -> &'static str {
@@ -632,7 +667,9 @@ impl AppState {
             .as_ref()
             .is_some_and(|hash| constant_time_hash_eq(hash, &record.token_hash))
         {
-            return Err("rotate to a replacement token before revoking the current transport token");
+            return Err(
+                "rotate to a replacement token before revoking the current transport token",
+            );
         }
         if active_count <= 1 {
             return Err("cannot revoke the final active transport token");
@@ -826,11 +863,11 @@ impl AppState {
         self.load_routines().await?;
         let _ = self.load_routine_history().await;
         let _ = self.load_routine_runs().await;
+        self.load_automation_governance().await?;
         self.load_automations_v2().await?;
         let _ = self.load_channel_automation_drafts().await;
         let _ = self.load_channel_user_capabilities().await;
-        let _ = self.load_automation_governance().await;
-        let _ = self.bootstrap_automation_governance().await;
+        self.bootstrap_automation_governance().await?;
         let _ = self.load_automation_v2_runs().await;
         self.load_automation_webhook_records().await?;
         let _ = self.load_idempotency_keys().await;
@@ -1415,8 +1452,27 @@ impl AppState {
             migrated = canonicalize_automation_output_paths(automation) || migrated;
             migrated = repair_automation_output_contracts(automation) || migrated;
         }
+        // A restore intent may have staged a definition shard immediately
+        // before a crash. Governance is loaded first during startup, so never
+        // publish that unaudited shard into the live automation map.
+        let pending_restore_ids = self
+            .automation_governance
+            .read()
+            .await
+            .deleted_automations
+            .iter()
+            .filter_map(|(id, deleted)| deleted.pending_restore.as_ref().map(|_| id.clone()))
+            .collect::<std::collections::HashSet<_>>();
+        let before_pending_filter = merged.len();
+        merged.retain(|id, _| !pending_restore_ids.contains(id));
+        let quarantined_pending = before_pending_filter != merged.len();
         *self.automations_v2.write().await = merged;
-        if loaded_from_alternate || migrated || !shards_loaded {
+        if quarantined_pending {
+            // A pending restore's staged shard must be removed durably before
+            // startup can report Ready. Do not treat cleanup failure as a
+            // best-effort migration.
+            self.persist_automations_v2().await?;
+        } else if loaded_from_alternate || migrated || !shards_loaded {
             let _ = self.persist_automations_v2().await;
         } else if canonical_loaded {
             let _ = archive_automation_v2_aggregate_file(&self.automations_v2_path).await;

@@ -139,6 +139,49 @@ async fn protected_records_bind_tenant_scope_kind_and_id() {
 }
 
 #[tokio::test]
+async fn protected_scoped_decode_preserves_explicit_deployment() {
+    crate::encrypted_file_store::with_test_crypto_provider(
+        MemoryCryptoProvider::local_key([0x4d; 32]),
+        None,
+        async {
+            let tenant = tenant("org-a", "user-a");
+            let scoped = protected_records::tenant_from_scope("org-a", "workspace-a", Some("prod"));
+            assert_eq!(scoped.deployment_id.as_deref(), Some("prod"));
+            assert_eq!(scoped.actor_id, None);
+            assert_eq!(scoped.source, tandem_types::TenantSource::Explicit);
+            assert_eq!(
+                protected_records::tenant_from_scope("local", "local", None),
+                TenantContext::local_implicit(),
+            );
+            let value = serde_json::json!({"objective": "private hosted goal"});
+            let stored = protected_records::encode(&tenant, "goal", "goal-a", &value).unwrap();
+            assert_eq!(
+                protected_records::decode_scoped::<serde_json::Value>(
+                    "org-a",
+                    "workspace-a",
+                    Some("prod"),
+                    "goal",
+                    "goal-a",
+                    &stored,
+                )
+                .unwrap(),
+                value,
+            );
+            assert!(protected_records::decode_scoped::<serde_json::Value>(
+                "org-a",
+                "workspace-a",
+                Some("other"),
+                "goal",
+                "goal-a",
+                &stored,
+            )
+            .is_err());
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn randomized_ciphertext_uses_stable_tenant_scoped_digest() {
     crate::encrypted_file_store::with_test_crypto_provider(
         MemoryCryptoProvider::local_key([0x33; 32]),

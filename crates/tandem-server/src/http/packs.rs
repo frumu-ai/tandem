@@ -3,7 +3,7 @@
 
 use super::*;
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::Response;
 use serde_json::{json, Value};
@@ -20,6 +20,20 @@ fn pack_authorization_status(error: HostAuthorizationError) -> StatusCode {
         HostAuthorizationError::AuditPersistenceFailed => StatusCode::INTERNAL_SERVER_ERROR,
         HostAuthorizationError::InvalidEffectArguments => StatusCode::BAD_REQUEST,
         _ => StatusCode::FORBIDDEN,
+    }
+}
+
+// Installed packs live in one process-wide store with no tenant or actor
+// provenance. Until that store can enforce object scope, only the implicit
+// single-user runtime may enumerate or read it.
+fn require_local_pack_read(
+    tenant: &TenantContext,
+    verified: Option<&tandem_types::VerifiedTenantContext>,
+) -> Result<(), StatusCode> {
+    if tenant.is_local_implicit() && verified.is_none() {
+        Ok(())
+    } else {
+        Err(StatusCode::NOT_FOUND)
     }
 }
 
@@ -94,7 +108,12 @@ pub(super) struct PackUpdateApplyInput {
     pub target_version: Option<String>,
 }
 
-pub(super) async fn packs_list(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+pub(super) async fn packs_list(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
+) -> Result<Json<Value>, StatusCode> {
+    require_local_pack_read(&tenant, verified.as_deref())?;
     let packs = state.pack_manager.list().await.map_err(|err| {
         tracing::warn!("packs list failed: {}", err);
         StatusCode::INTERNAL_SERVER_ERROR
@@ -104,8 +123,11 @@ pub(super) async fn packs_list(State(state): State<AppState>) -> Result<Json<Val
 
 pub(super) async fn packs_get(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(PackSelectorPath { selector }): Path<PackSelectorPath>,
 ) -> Result<Json<Value>, StatusCode> {
+    require_local_pack_read(&tenant, verified.as_deref())?;
     let inspection = state.pack_manager.inspect(&selector).await.map_err(|err| {
         if err.to_string().contains("not found") {
             StatusCode::NOT_FOUND
@@ -121,8 +143,11 @@ pub(super) async fn packs_get(
 
 pub(super) async fn packs_file_get(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(PackSelectorFilePath { selector, path }): Path<PackSelectorFilePath>,
 ) -> Result<Response, StatusCode> {
+    require_local_pack_read(&tenant, verified.as_deref())?;
     let rel = sanitize_relative_subpath(Some(&path))?;
     let inspection = state.pack_manager.inspect(&selector).await.map_err(|err| {
         if err.to_string().contains("not found") {
@@ -323,8 +348,11 @@ pub(super) async fn packs_export(
 
 pub(super) async fn packs_updates_get(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(PackSelectorPath { selector }): Path<PackSelectorPath>,
 ) -> Result<Json<Value>, StatusCode> {
+    require_local_pack_read(&tenant, verified.as_deref())?;
     let inspection = state.pack_manager.inspect(&selector).await.map_err(|err| {
         if err.to_string().contains("not found") {
             StatusCode::NOT_FOUND
@@ -372,9 +400,12 @@ fn content_type_for_path(path: &std::path::Path) -> &'static str {
 
 pub(super) async fn packs_update_post(
     State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Path(PackSelectorPath { selector }): Path<PackSelectorPath>,
     Json(input): Json<PackUpdateApplyInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    require_local_pack_read(&tenant, verified.as_deref())?;
     let inspection = state.pack_manager.inspect(&selector).await.map_err(|err| {
         if err.to_string().contains("not found") {
             StatusCode::NOT_FOUND
@@ -454,3 +485,7 @@ pub(super) async fn packs_detect(
         "marker": "tandempack.yaml",
     })))
 }
+
+#[cfg(test)]
+#[path = "tests/packs_hosted_read_security.rs"]
+mod hosted_read_security_tests;

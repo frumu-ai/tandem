@@ -18,3 +18,4 @@ include!("config_providers_parts/part03.rs");
 include!("config_providers_parts/part04.rs");
 include!("config_providers_parts/part05.rs");
 include!("config_providers_parts/part06.rs");
+include!("config_providers_parts/oauth_runtime_publication.rs");

@@ -3,19 +3,16 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parsePinnedEngineVersion } from "./verify-container-hardening.mjs";
+import { parsePinnedEngineRelease } from "./verify-container-hardening.mjs";
 
 const dockerfile = "packages/tandem-control-panel/docker/engine.Dockerfile";
 
 function releasePin(source) {
-  const version = parsePinnedEngineVersion(source);
-  const versions = [...source.matchAll(/^\s*TANDEM_ENGINE_VERSION=/gm)];
-  const hashes = [...source.matchAll(/^\s*TANDEM_ENGINE_BINARY_SHA256=([^\r\n]*)/gm)];
-  const hash = hashes[0]?.[1].match(/^([0-9a-f]{64}) \\$/)?.[1];
-  if (!version || versions.length !== 1 || hashes.length !== 1 || !hash) {
+  const pin = parsePinnedEngineRelease(source);
+  if (!pin) {
     throw new Error("Engine Dockerfile must contain one valid release version and SHA-256 pin.");
   }
-  return `${version}:${hash}`;
+  return `${pin.version}:${pin.hash}`;
 }
 
 // A runtime OS/base-image update does not publish a new engine binary. Only

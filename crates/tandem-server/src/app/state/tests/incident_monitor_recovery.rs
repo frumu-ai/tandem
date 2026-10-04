@@ -75,6 +75,174 @@ fn incident_for_draft(
 }
 
 #[tokio::test]
+async fn hosted_incident_creation_rechecks_policy_after_registry_lock() {
+    let state = incident_monitor_recovery_state("hosted-incident-create-lock-outage");
+    let incident = incident_for_draft("blocked-incident", "blocked-draft", "blocked-run");
+    let guard = state.incident_monitor_incidents.write().await;
+    let creation = state.put_incident_monitor_incident_with_current_policy(incident.clone());
+    tokio::pin!(creation);
+    assert!(futures::poll!(creation.as_mut()).is_pending());
+    let temp = tempfile::tempdir().unwrap();
+    state.enterprise.hosted_policy.configure_test_source(
+        "org-a",
+        "dep-a",
+        temp.path().join("missing.json"),
+    );
+    drop(guard);
+    let error = creation.await.unwrap_err();
+    assert!(error.is::<crate::incident_monitor::HostedPolicyUnavailable>());
+    assert!(state.incident_monitor_incidents.read().await.is_empty());
+
+    // Unconfigured standalone deployments must retain ordinary publication.
+    let standalone = incident_monitor_recovery_state("standalone-incident-create-control");
+    standalone
+        .put_incident_monitor_incident_with_current_policy(incident.clone())
+        .await
+        .unwrap();
+    assert!(standalone
+        .incident_monitor_incidents
+        .read()
+        .await
+        .contains_key(&incident.incident_id));
+}
+
+#[tokio::test]
+async fn hosted_incident_recovery_rechecks_policy_after_incident_lookup() {
+    let state = ready_incident_monitor_recovery_state("hosted-incident-lookup-outage").await;
+    state
+        .put_incident_monitor_config(IncidentMonitorConfig {
+            enabled: true,
+            paused: false,
+            repo: Some("frumu-ai/tandem".into()),
+            triage_timeout_ms: Some(0),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let draft = timed_out_draft("lookup-outage-draft", "lookup-outage-run");
+    state
+        .put_incident_monitor_draft(draft.clone())
+        .await
+        .unwrap();
+    let before = state
+        .get_incident_monitor_draft(&draft.draft_id)
+        .await
+        .unwrap();
+    let guard = state.incident_monitor_incidents.write().await;
+    let recovery = recover_overdue_incident_monitor_triage_runs(&state);
+    tokio::pin!(recovery);
+    assert!(futures::poll!(recovery.as_mut()).is_pending());
+    let temp = tempfile::tempdir().unwrap();
+    state.enterprise.hosted_policy.configure_test_source(
+        "org-a",
+        "dep-a",
+        temp.path().join("missing.json"),
+    );
+    drop(guard);
+    assert!(recovery.await.unwrap().is_empty());
+    assert_eq!(
+        serde_json::to_value(
+            state
+                .get_incident_monitor_draft(&draft.draft_id)
+                .await
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn hosted_incident_recovery_preserves_pending_draft_during_policy_outage() {
+    let state = ready_incident_monitor_recovery_state("hosted-incident-policy-outage").await;
+    state
+        .put_incident_monitor_config(IncidentMonitorConfig {
+            enabled: true,
+            paused: false,
+            repo: Some("frumu-ai/tandem".into()),
+            triage_timeout_ms: Some(0),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let draft = timed_out_draft("policy-outage-draft", "policy-outage-run");
+    state
+        .put_incident_monitor_draft(draft.clone())
+        .await
+        .unwrap();
+    let before = state
+        .get_incident_monitor_draft(&draft.draft_id)
+        .await
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("policy.json");
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", path.clone());
+    let recovered = recover_overdue_incident_monitor_triage_runs(&state)
+        .await
+        .unwrap();
+    assert!(
+        recovered.is_empty(),
+        "unavailable policy must not consume a recovery attempt"
+    );
+    let error = crate::incident_monitor::router::publish_draft(
+        &state,
+        crate::incident_monitor::router::IncidentMonitorPublishRequest {
+            draft_id: draft.draft_id.clone(),
+            incident_id: None,
+            mode: crate::incident_monitor_github::PublishMode::Recovery,
+            destination_ids: Vec::new(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.is::<crate::incident_monitor::HostedPolicyUnavailable>());
+    let error = crate::incident_monitor::service::process_event(
+        &state,
+        &tandem_types::EngineEvent::new("automation_v2.run.failed", serde_json::json!({})),
+        &state.incident_monitor_config().await,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.is::<crate::incident_monitor::HostedPolicyUnavailable>());
+    assert_eq!(
+        serde_json::to_value(
+            state
+                .get_incident_monitor_draft(&draft.draft_id)
+                .await
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1, "policy_version": 1,
+            "organization_id": "org-a", "deployment_id": "dep-a",
+            "generated_at": chrono::Utc::now(), "users": [], "org_units": [],
+            "org_unit_memberships": [], "deployment_grants": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    state.reload_hosted_policy().await.unwrap();
+    assert_eq!(
+        recover_overdue_incident_monitor_triage_runs(&state)
+            .await
+            .unwrap(),
+        vec![(draft.draft_id, None)]
+    );
+}
+
+#[tokio::test]
 async fn overdue_recovery_retries_unposted_timed_out_triage_drafts() {
     let state = incident_monitor_recovery_state("incident-monitor-retry-timed-out-draft");
     state

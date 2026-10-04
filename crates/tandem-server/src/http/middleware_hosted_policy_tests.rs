@@ -57,16 +57,21 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
             "grant-eng".into(),
             OrganizationUnitAccessGrant::active(
                 "grant-eng",
-                tenant,
+                tenant.clone(),
                 tandem_enterprise_contract::hosted_policy::hosted_unit_principal("eng"),
                 document.clone(),
                 now,
             )
-            .with_permissions(vec![AccessPermission::Read])
+            .with_permissions(vec![
+                AccessPermission::Read,
+                AccessPermission::Admin,
+                AccessPermission::HostedAdmin,
+            ])
             .with_data_classes(vec![DataClass::Internal]),
         );
     verified.strict_projection = Some(policy.project_identity(&verified, now).unwrap());
-    enrich_verified_context_with_org_unit_grants(&state, &mut verified, Some(memberships)).await;
+    enrich_verified_context_with_org_unit_grants(&state, &mut verified, Some(memberships.clone()))
+        .await;
     let access = |verified: &VerifiedTenantContext| {
         verified
             .strict_projection
@@ -75,10 +80,138 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
             .evaluate_access(&document, AccessPermission::Read, DataClass::Internal, now)
             .decision
     };
+    assert_ne!(access(&verified), AccessDecision::Allow);
+    let strict = verified.strict_projection.as_ref().unwrap();
+    assert!(strict.has_permission(AccessPermission::HostedUse));
+    assert!(!strict.has_permission(AccessPermission::Admin));
+    assert!(!strict.has_permission(AccessPermission::HostedAdmin));
+
+    // Local data grants must work for current hosted members without allowing
+    // the mixed hosted-operation grant above to confer deployment authority.
+    state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .insert(
+            "data-grant-eng".into(),
+            OrganizationUnitAccessGrant::active(
+                "data-grant-eng",
+                tenant,
+                tandem_enterprise_contract::hosted_policy::hosted_unit_principal("eng"),
+                document.clone(),
+                now,
+            )
+            .with_permissions(vec![
+                AccessPermission::Read,
+                AccessPermission::Admin,
+                AccessPermission::Delegate,
+            ])
+            .with_data_classes(vec![DataClass::Internal]),
+        );
+    enrich_verified_context_with_org_unit_grants(&state, &mut verified, Some(memberships)).await;
     assert_eq!(access(&verified), AccessDecision::Allow);
+    let strict = verified.strict_projection.as_ref().unwrap();
+    assert!(strict.has_permission(AccessPermission::HostedUse));
+    assert!(strict.has_permission(AccessPermission::Admin));
+    assert!(!strict.has_permission(AccessPermission::HostedAdmin));
+    assert!(!super::super::workflows::workflow_reviewer_is_eligible(
+        &verified.tenant_context,
+        Some(&verified),
+    ));
+    let projected = strict
+        .grants
+        .iter()
+        .find(|grant| grant.grant_id.ends_with("::data-grant-eng"))
+        .unwrap();
+    assert_eq!(projected.expires_at_ms, Some(policy.expires_at_ms()));
+
+    // Prompt admission must preserve the same current local data grants as ingress.
+    let temp = tempfile::tempdir().unwrap();
+    let policy_path = temp.path().join("policy.json");
+    std::fs::write(&policy_path, serde_json::to_vec(&input).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&policy_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("org-a", "dep-a", policy_path);
+    state.reload_hosted_policy().await.unwrap();
+    let mut session = tandem_types::Session::new(Some("local grant refresh".into()), None);
+    session.tenant_context = verified.tenant_context.clone();
+    session.verified_tenant_context = Some(verified.clone());
+    let session_id = session.id.clone();
+    state.storage.save_session(session).await.unwrap();
+    super::super::sessions_actor_scope::refresh_prompt_authority(
+        &state,
+        &session_id,
+        &verified.tenant_context,
+        Some(&verified),
+    )
+    .await
+    .unwrap();
+    let refreshed = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .unwrap()
+        .verified_tenant_context
+        .unwrap();
+    assert_eq!(
+        access(&refreshed),
+        AccessDecision::Allow,
+        "prompt refresh must retain current local hosted data grants"
+    );
+    assert!(!refreshed
+        .strict_projection
+        .as_ref()
+        .unwrap()
+        .has_permission(AccessPermission::HostedAdmin));
+    let removed_grant = state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .remove("data-grant-eng")
+        .unwrap();
+    super::super::sessions_actor_scope::refresh_prompt_authority(
+        &state,
+        &session_id,
+        &verified.tenant_context,
+        Some(&verified),
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        access(
+            &state
+                .storage
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .verified_tenant_context
+                .unwrap()
+        ),
+        AccessDecision::Allow
+    );
+    state
+        .enterprise
+        .org_unit_access_grants
+        .write()
+        .await
+        .insert("data-grant-eng".into(), removed_grant);
 
     input.policy_version = 2;
     input.org_unit_memberships.clear();
+    std::fs::write(
+        temp.path().join("policy.json"),
+        serde_json::to_vec(&input).unwrap(),
+    )
+    .unwrap();
+    state.reload_hosted_policy().await.unwrap();
     let removed = input
         .validate("org-a", "dep-a", now, Some(policy.revision()))
         .unwrap();
@@ -90,6 +223,26 @@ async fn hosted_policy_removed_membership_cannot_reappear_from_local_registry() 
         .await;
     assert_ne!(access(&verified), AccessDecision::Allow);
     assert_eq!(state.enterprise.org_unit_memberships.read().await.len(), 1);
+    super::super::sessions_actor_scope::refresh_prompt_authority(
+        &state,
+        &session_id,
+        &verified.tenant_context,
+        Some(&verified),
+    )
+    .await
+    .unwrap();
+    let refreshed = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .unwrap()
+        .verified_tenant_context
+        .unwrap();
+    assert_ne!(
+        access(&refreshed),
+        AccessDecision::Allow,
+        "prompt refresh must not revive removed hosted membership from local rows"
+    );
 
     // Unconfigured local policy enrichment preserves its existing behavior.
     enrich_verified_context_with_org_unit_grants(&state, &mut verified, None).await;

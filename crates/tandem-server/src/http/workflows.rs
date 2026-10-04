@@ -11,7 +11,6 @@ use futures::Stream;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use crate::{execute_workflow, simulate_workflow_event};
@@ -128,13 +127,29 @@ pub(super) async fn workflow_hooks_list(
 
 pub(super) async fn workflow_hooks_patch(
     State(state): State<AppState>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(WorkflowHookPath { id }): Path<WorkflowHookPath>,
     Json(input): Json<WorkflowHookPatchInput>,
 ) -> Result<Json<Value>, StatusCode> {
+    let verified = verified_tenant_context.as_deref();
+    state
+        .enterprise
+        .hosted_policy
+        .authorize_permission(verified, AccessPermission::HostedAdmin)
+        .map_err(|_| StatusCode::FORBIDDEN)?;
     let hook = state
-        .set_workflow_hook_enabled(&id, input.enabled)
+        .set_workflow_hook_enabled(&id, input.enabled, verified)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|error| {
+            if error
+                .downcast_ref::<crate::app::state::WorkflowHookAdminDenied>()
+                .is_some()
+            {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(json!({ "hook": hook })))
 }
@@ -168,7 +183,7 @@ pub(super) async fn workflows_run(
     Ok(Json(json!({ "run": run })))
 }
 
-fn workflow_run_visible_to_caller(
+pub(super) fn workflow_run_visible_to_caller(
     run: &tandem_workflows::WorkflowRunRecord,
     tenant_context: &TenantContext,
     request_principal: &tandem_types::RequestPrincipal,
@@ -255,6 +270,9 @@ pub(super) fn workflow_reviewer_is_eligible(
     {
         return false;
     }
+    if verified.policy_version.is_some() {
+        return super::hosted_admin_authority::allowed(verified);
+    }
     verified
         .roles
         .iter()
@@ -267,6 +285,7 @@ pub(super) fn workflow_reviewer_is_eligible(
         })
         || verified.strict_projection.as_ref().is_some_and(|strict| {
             strict.has_permission(AccessPermission::Admin)
+                || strict.has_permission(AccessPermission::HostedAdmin)
                 || strict.has_permission(AccessPermission::Delegate)
         })
 }
@@ -365,12 +384,14 @@ pub(super) async fn workflow_run_gate_decide(
         ));
     };
 
-    if !workflow_reviewer_is_eligible(
-        &tenant_context,
-        verified_tenant_context
-            .as_ref()
-            .map(|Extension(verified)| verified),
-    ) {
+    let verified = verified_tenant_context.as_deref();
+    if !workflow_reviewer_is_eligible(&tenant_context, verified)
+        || state
+            .enterprise
+            .hosted_policy
+            .authorize_permission(verified, AccessPermission::HostedAdmin)
+            .is_err()
+    {
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -489,6 +510,8 @@ pub(super) async fn workflow_run_gate_decide(
     let record_for_update = record.clone();
     let expired_at_persist = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let expired_at_persist_for_update = expired_at_persist.clone();
+    let revoked_at_persist = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let revoked_at_persist_for_update = revoked_at_persist.clone();
     let result = state
         .update_workflow_run_persisted(&id, |row| {
             let Some(current_gate) = row.awaiting_gate.as_ref() else {
@@ -501,6 +524,18 @@ pub(super) async fn workflow_run_gate_decide(
             }
             if current_gate.expires_at_ms > 0 && crate::now_ms() >= current_gate.expires_at_ms {
                 expired_at_persist_for_update.store(true, std::sync::atomic::Ordering::Relaxed);
+                return false;
+            }
+            // Ingress authority may have been revoked while digest validation
+            // or protected audit was pending. Reproject at the durable commit.
+            if !workflow_reviewer_is_eligible(&tenant_context, verified)
+                || state
+                    .enterprise
+                    .hosted_policy
+                    .authorize_permission(verified, AccessPermission::HostedAdmin)
+                    .is_err()
+            {
+                revoked_at_persist_for_update.store(true, std::sync::atomic::Ordering::Relaxed);
                 return false;
             }
             row.awaiting_gate = None;
@@ -569,6 +604,15 @@ pub(super) async fn workflow_run_gate_decide(
         ));
     };
     if !applied {
+        if revoked_at_persist.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "workflow approval requires an eligible tenant reviewer",
+                    "code": "WORKFLOW_GATE_REVIEWER_FORBIDDEN",
+                })),
+            ));
+        }
         if expired_at_persist.load(std::sync::atomic::Ordering::Relaxed) {
             return Err((
                 StatusCode::CONFLICT,
@@ -633,17 +677,10 @@ pub(super) async fn workflow_run_gate_decide(
     Ok(Json(json!({ "ok": true, "run": updated })))
 }
 
-fn workflow_event_tenant_context(event: &EngineEvent) -> TenantContext {
-    event
-        .properties
-        .get("tenantContext")
-        .and_then(|value| serde_json::from_value(value.clone()).ok())
-        .unwrap_or_else(TenantContext::local_implicit)
-}
-
 pub(super) fn workflow_events_stream(
     state: AppState,
     tenant_context: TenantContext,
+    verified: Option<VerifiedTenantContext>,
     workflow_id: Option<String>,
     run_id: Option<String>,
 ) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
@@ -655,52 +692,58 @@ pub(super) fn workflow_events_stream(
         }))
         .unwrap_or_default(),
     )));
-    let rx = state.event_bus.subscribe();
-    let live = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event) => {
-            if !event.event_type.starts_with("workflow.") {
-                return None;
-            }
-            if !super::tenant_matches(&tenant_context, &workflow_event_tenant_context(&event)) {
-                return None;
-            }
-            if let Some(expected) = workflow_id.as_deref() {
-                let actual = event
-                    .properties
-                    .get("workflowID")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                if actual != expected {
-                    return None;
-                }
-            }
-            if let Some(expected) = run_id.as_deref() {
-                let actual = event
-                    .properties
-                    .get("runID")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                if actual != expected {
-                    return None;
-                }
-            }
-            Some(Ok(
-                Event::default().data(serde_json::to_string(&event).unwrap_or_default())
-            ))
+    let live = super::event_stream_authority::subscribe(
+        state.clone(),
+        tenant_context.clone(),
+        verified.clone(),
+    )
+    .filter_map(move |event| {
+        if !event.event_type.starts_with("workflow.") {
+            return None;
         }
-        Err(_) => None,
+        if let Some(expected) = workflow_id.as_deref() {
+            let actual = event
+                .properties
+                .get("workflowID")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if actual != expected {
+                return None;
+            }
+        }
+        if let Some(expected) = run_id.as_deref() {
+            let actual = event
+                .properties
+                .get("runID")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if actual != expected {
+                return None;
+            }
+        }
+        Some(Ok(
+            Event::default().data(serde_json::to_string(&event).unwrap_or_default())
+        ))
     });
-    ready.chain(live)
+    super::event_stream_authority::guard(
+        ready.chain(live),
+        state,
+        tenant_context,
+        verified,
+        Some(AccessPermission::HostedWorkflowRead),
+    )
 }
 
 pub(super) async fn workflow_events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<WorkflowEventsQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
     Sse::new(workflow_events_stream(
         state,
         tenant_context,
+        verified.map(|Extension(value)| value),
         query.workflow_id,
         query.run_id,
     ))

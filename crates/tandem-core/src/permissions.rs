@@ -19,6 +19,13 @@ use crate::event_bus::EventBus;
 const PERMISSION_STATE_SCHEMA_VERSION: u32 = 3;
 const PERMISSION_REQUEST_TTL_MS: u64 = 15 * 60 * 1000;
 
+#[path = "permissions_batch.rs"]
+mod batch;
+
+#[cfg(test)]
+#[path = "permissions_checked_tests.rs"]
+mod checked_rule_tests;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionAction {
@@ -150,6 +157,7 @@ pub enum PermissionReplyError {
     ActionMismatch,
     SessionMismatch,
     PersistenceFailed,
+    AuthorityDenied,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -659,6 +667,28 @@ impl PermissionManager {
         .await
     }
 
+    /// Revalidate after both mutation locks, immediately before installing a
+    /// session rule. The callback must not await or reenter this manager.
+    pub async fn add_rule_for_session_checked<E>(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: &str,
+        permission: impl Into<String>,
+        pattern: impl Into<String>,
+        action: PermissionAction,
+        authorize: impl FnOnce() -> Result<(), E>,
+    ) -> Result<PermissionRule, E> {
+        self.add_rule_for_scope_checked(
+            tenant_context,
+            Some(session_id.to_string()),
+            permission,
+            pattern,
+            action,
+            authorize,
+        )
+        .await
+    }
+
     async fn add_rule_for_scope(
         &self,
         tenant_context: &TenantContext,
@@ -667,6 +697,27 @@ impl PermissionManager {
         pattern: impl Into<String>,
         action: PermissionAction,
     ) -> PermissionRule {
+        self.add_rule_for_scope_checked(
+            tenant_context,
+            session_id,
+            permission,
+            pattern,
+            action,
+            || Ok::<(), std::convert::Infallible>(()),
+        )
+        .await
+        .expect("trusted rule insertion is infallible")
+    }
+
+    async fn add_rule_for_scope_checked<E>(
+        &self,
+        tenant_context: &TenantContext,
+        session_id: Option<String>,
+        permission: impl Into<String>,
+        pattern: impl Into<String>,
+        action: PermissionAction,
+        authorize: impl FnOnce() -> Result<(), E>,
+    ) -> Result<PermissionRule, E> {
         let rule = PermissionRule {
             id: Uuid::new_v4().to_string(),
             tenant_context: tenant_context.clone(),
@@ -681,6 +732,7 @@ impl PermissionManager {
         };
         let transaction_guard = self.state_write_lock.lock().await;
         let mut rules = self.rules.write().await;
+        authorize()?;
         if rules.iter().any(|existing| {
             permission_tenant_matches(&existing.tenant_context, tenant_context)
                 && existing.session_id == rule.session_id
@@ -688,7 +740,7 @@ impl PermissionManager {
                 && existing.pattern == rule.pattern
                 && std::mem::discriminant(&existing.action) == std::mem::discriminant(&rule.action)
         }) {
-            return rule;
+            return Ok(rule);
         }
         rules.push(rule.clone());
         drop(rules);
@@ -700,7 +752,7 @@ impl PermissionManager {
             tracing::warn!(?error, "failed to persist permission rule");
         }
         drop(transaction_guard);
-        rule
+        Ok(rule)
     }
 
     pub async fn reply(&self, id: &str, reply: &str) -> bool {
@@ -738,7 +790,35 @@ impl PermissionManager {
         decided_by: Option<String>,
         reason: Option<String>,
     ) -> Result<Option<PermissionReplyOutcome>, PermissionReplyError> {
+        self.reply_with_provenance_for_tenant_checked(
+            tenant_context,
+            expected_session_id,
+            id,
+            reply,
+            decided_by,
+            reason,
+            std::future::ready(Ok(())),
+        )
+        .await
+    }
+
+    /// Acquire the caller's authority guard after the queue writer lock and
+    /// retain it until the durable decision and waiter notification complete.
+    pub async fn reply_with_provenance_for_tenant_checked<G, F>(
+        &self,
+        tenant_context: &TenantContext,
+        expected_session_id: Option<&str>,
+        id: &str,
+        reply: &str,
+        decided_by: Option<String>,
+        reason: Option<String>,
+        authorize: F,
+    ) -> Result<Option<PermissionReplyOutcome>, PermissionReplyError>
+    where
+        F: std::future::Future<Output = Result<G, PermissionReplyError>>,
+    {
         let transaction_guard = self.state_write_lock.lock().await;
+        let _authority_guard = authorize.await?;
         let before_requests = self.requests.read().await.clone();
         let before_rules = self.rules.read().await.clone();
         let before_decisions = self.decisions.read().await.clone();
@@ -942,15 +1022,11 @@ async fn write_permission_state_file(
     tokio::fs::write(&tmp, payload)
         .await
         .context("failed to write temporary permission state file")?;
-    match tokio::fs::rename(&tmp, path).await {
-        Ok(()) => Ok(()),
-        Err(rename_error) => {
-            let _ = tokio::fs::remove_file(path).await;
-            tokio::fs::rename(&tmp, path).await.with_context(|| {
-                format!("failed to replace permission state file after {rename_error}")
-            })
-        }
+    if let Err(error) = tokio::fs::rename(&tmp, path).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(error).context("failed to replace permission state file");
     }
+    Ok(())
 }
 
 fn wildcard_matches(pattern: &str, value: &str) -> bool {

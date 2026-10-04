@@ -19,9 +19,9 @@ use tandem_server::automation_v2::governance::GovernanceApprovalStatus;
 use tandem_server::{now_ms, AppState};
 
 use super::routes_enterprise::{
-    ingestion_quarantine_tenant_matches, storage_base, validate_enterprise_id,
-    validate_external_id, validate_resource_ref_matches_tenant, EnterpriseAdminResponseBase,
-    EnterpriseResult,
+    enterprise_admin_allowed_for_mutation, ingestion_quarantine_tenant_matches, storage_base,
+    validate_enterprise_id, validate_external_id, validate_resource_ref_matches_tenant,
+    EnterpriseAdminResponseBase, EnterpriseResult,
 };
 
 const GOOGLE_DRIVE_PROVIDER: &str = "google_drive";
@@ -942,18 +942,7 @@ fn require_enterprise_read_access(
     request_principal: &RequestPrincipal,
     verified_tenant_context: Option<&VerifiedTenantContext>,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    if let Some(verified) = verified_tenant_context {
-        if verified
-            .roles
-            .iter()
-            .any(|role| enterprise_admin_role(role))
-        {
-            return Ok(());
-        }
-    } else if matches!(
-        request_principal.source.as_str(),
-        "api_token" | "control_panel" | "local_api_token" | "local_control_panel"
-    ) {
+    if enterprise_admin_allowed_for_mutation(request_principal, verified_tenant_context) {
         return Ok(());
     }
     Err((
@@ -1223,18 +1212,5 @@ fn preview_bad_request(code: impl Into<String>) -> (StatusCode, Json<Value>) {
             "code": code,
             "message": "enterprise onboarding preview validation failed"
         })),
-    )
-}
-
-fn enterprise_admin_role(role: &str) -> bool {
-    matches!(
-        role.trim().to_ascii_lowercase().as_str(),
-        "admin"
-            | "owner"
-            | "org:admin"
-            | "organization:admin"
-            | "workspace:admin"
-            | "enterprise:admin"
-            | "reconfigure"
     )
 }

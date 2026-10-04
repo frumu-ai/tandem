@@ -24,6 +24,10 @@ pub struct ActiveRun {
     pub agent_profile: Option<String>,
     #[serde(rename = "workflowPhase", skip_serializing_if = "Option::is_none")]
     pub workflow_phase: Option<String>,
+    /// Server-derived authority for this exact HTTP prompt run; never returned
+    /// through the run status API or inferred from a persisted session.
+    #[serde(skip)]
+    pub local_pack_builder_authorized: bool,
 }
 
 #[derive(Clone, Default)]
@@ -56,13 +60,35 @@ impl RunRegistry {
         agent_id: Option<String>,
         agent_profile: Option<String>,
     ) -> std::result::Result<ActiveRun, ActiveRun> {
-        self.acquire_with_workflow_phase(
+        self.acquire_with_workflow_phase_and_local_authority(
             session_id,
             run_id,
             client_id,
             agent_id,
             agent_profile,
             None,
+            false,
+        )
+        .await
+    }
+
+    pub async fn acquire_http_prompt(
+        &self,
+        session_id: &str,
+        run_id: String,
+        client_id: Option<String>,
+        agent_id: Option<String>,
+        agent_profile: Option<String>,
+        local_pack_builder_authorized: bool,
+    ) -> std::result::Result<ActiveRun, ActiveRun> {
+        self.acquire_with_workflow_phase_and_local_authority(
+            session_id,
+            run_id,
+            client_id,
+            agent_id,
+            agent_profile,
+            None,
+            local_pack_builder_authorized,
         )
         .await
     }
@@ -75,6 +101,29 @@ impl RunRegistry {
         agent_id: Option<String>,
         agent_profile: Option<String>,
         workflow_phase: Option<String>,
+    ) -> std::result::Result<ActiveRun, ActiveRun> {
+        self.acquire_with_workflow_phase_and_local_authority(
+            session_id,
+            run_id,
+            client_id,
+            agent_id,
+            agent_profile,
+            workflow_phase,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn acquire_with_workflow_phase_and_local_authority(
+        &self,
+        session_id: &str,
+        run_id: String,
+        client_id: Option<String>,
+        agent_id: Option<String>,
+        agent_profile: Option<String>,
+        workflow_phase: Option<String>,
+        local_pack_builder_authorized: bool,
     ) -> std::result::Result<ActiveRun, ActiveRun> {
         let mut guard = self.active.write().await;
         if let Some(existing) = guard.get(session_id).cloned() {
@@ -89,6 +138,7 @@ impl RunRegistry {
             agent_id,
             agent_profile,
             workflow_phase,
+            local_pack_builder_authorized,
         };
         guard.insert(session_id.to_string(), run.clone());
         Ok(run)

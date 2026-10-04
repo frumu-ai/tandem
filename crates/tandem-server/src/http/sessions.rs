@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use super::session_kb_grounding::{
     apply_strict_kb_grounding_after_run, policy_answer_question_tool,
-    render_strict_kb_direct_answer, tool_allowlist_for_kb_grounding,
+    render_strict_kb_direct_answer, tool_allowlist_for_kb_grounding, StrictKbGroundingOutcome,
 };
 use super::sessions_actor_scope::{ensure_same_session_actor, session_visible_to_actor};
 use super::*;
@@ -190,7 +190,7 @@ fn request_is_text_only(req: &SendMessageRequest) -> bool {
         .all(|part| matches!(part, MessagePartInput::Text { .. }))
 }
 
-fn session_permission_rules_allowed(
+pub(super) fn session_permission_rules_allowed(
     tenant_context: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
@@ -204,6 +204,9 @@ fn session_permission_rules_allowed(
         || !super::tenant_matches(tenant_context, &verified.tenant_context)
     {
         return false;
+    }
+    if verified.policy_version.is_some() {
+        return super::hosted_admin_authority::allowed(verified);
     }
     verified
         .roles
@@ -282,13 +285,7 @@ pub(super) async fn create_session(
             tracing::error!(error = %error, session_id = %session.id, "failed to save created session");
             persistence_error(format!("Failed to save session: {error}"))
         })?;
-    apply_session_permission_rules(
-        &state,
-        &tenant_context,
-        &session.id,
-        requested_permission_rules,
-    )
-    .await;
+    apply_created_session_permission_rules(&state, &session, requested_permission_rules).await?;
     publish_tenant_event(
         &state,
         &session.tenant_context,
@@ -298,25 +295,7 @@ pub(super) async fn create_session(
     Ok(Json(session.into()))
 }
 
-pub(super) async fn apply_session_permission_rules(
-    state: &AppState,
-    tenant_context: &TenantContext,
-    session_id: &str,
-    rules: Option<Vec<serde_json::Value>>,
-) {
-    let Some(rules) = rules else {
-        return;
-    };
-    for raw in rules {
-        let Some((permission, pattern, action)) = parse_permission_rule_input(&raw) else {
-            continue;
-        };
-        let _ = state
-            .permissions
-            .add_rule_for_session(tenant_context, session_id, permission, pattern, action)
-            .await;
-    }
-}
+include!("session_permission_rules.rs");
 
 pub(super) fn parse_permission_rule_input(
     raw: &serde_json::Value,
@@ -616,6 +595,8 @@ pub(super) async fn session_messages(
 pub(super) async fn prompt_async(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    request_locality: Option<Extension<super::host_authority::RequestLocality>>,
     Path(id): Path<String>,
     Query(query): Query<PromptAsyncQuery>,
     headers: HeaderMap,
@@ -657,14 +638,22 @@ pub(super) async fn prompt_async(
         ));
     }
 
+    let local_pack_builder_authorized =
+        super::host_authority::prompt_has_local_pack_builder_authority(
+            &state,
+            &tenant_context,
+            verified_tenant_context.as_deref(),
+            request_locality.map(|Extension(value)| value),
+        );
     let active_run = match state
         .run_registry
-        .acquire(
+        .acquire_http_prompt(
             &session_id,
             run_id.clone(),
             client_id.clone(),
             req.agent.clone(),
             req.agent.clone(),
+            local_pack_builder_authorized,
         )
         .await
     {
@@ -696,6 +685,29 @@ pub(super) async fn prompt_async(
             return Ok((StatusCode::CONFLICT, Json(payload)).into_response());
         }
     };
+
+    if let Err(error) = super::sessions_actor_scope::refresh_prompt_authority(
+        &state,
+        &id,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await
+    {
+        state.run_registry.finish_if_match(&id, &run_id).await;
+        if let Some(super::session_run_idempotency::PromptSubmissionDecision::Reserved(
+            reservation,
+        )) = prompt_submission.as_ref()
+        {
+            super::session_run_idempotency::release_prompt_submission(
+                &state,
+                &session.tenant_context,
+                reservation,
+            )
+            .await?;
+        }
+        return Err(error);
+    }
 
     tracing::info!(
         target: "tandem.obs",
@@ -774,6 +786,8 @@ pub(super) async fn prompt_async(
 pub(super) async fn prompt_sync(
     State(state): State<AppState>,
     Extension(request_tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    request_locality: Option<Extension<super::host_authority::RequestLocality>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(req): Json<SendMessageRequest>,
@@ -836,14 +850,22 @@ pub(super) async fn prompt_sync(
     let agent_profile = req.agent.clone();
     let tenant_context = session.tenant_context.clone();
     let run_id = Uuid::new_v4().to_string();
+    let local_pack_builder_authorized =
+        super::host_authority::prompt_has_local_pack_builder_authority(
+            &state,
+            &request_tenant_context,
+            verified_tenant_context.as_deref(),
+            request_locality.map(|Extension(value)| value),
+        );
     let active_run = match state
         .run_registry
-        .acquire(
+        .acquire_http_prompt(
             &id,
             run_id.clone(),
             client_id.clone(),
             agent_id.clone(),
             agent_profile.clone(),
+            local_pack_builder_authorized,
         )
         .await
     {
@@ -864,6 +886,17 @@ pub(super) async fn prompt_sync(
             return Ok((StatusCode::CONFLICT, Json(payload)).into_response());
         }
     };
+    if let Err(error) = super::sessions_actor_scope::refresh_prompt_authority(
+        &state,
+        &id,
+        &request_tenant_context,
+        verified_tenant_context.as_deref(),
+    )
+    .await
+    {
+        state.run_registry.finish_if_match(&id, &run_id).await;
+        return Err(error);
+    }
     publish_tenant_event(
         &state,
         &tenant_context,
@@ -1062,7 +1095,7 @@ pub(super) async fn execute_run(
                             )
                             .await
                             {
-                                persist_direct_kb_answer_messages(
+                                let persisted = persist_direct_kb_answer_messages(
                                     &state,
                                     &session_id,
                                     &question,
@@ -1070,8 +1103,24 @@ pub(super) async fn execute_run(
                                     args.clone(),
                                     &output,
                                     &answer,
+                                    &outcome,
+                                    &tenant_context,
+                                    verified_tenant_context.as_ref(),
                                 )
-                                .await?;
+                                .await;
+                                if let Err(error) = persisted {
+                                    if error.is::<DirectKbTranscriptAuthorityDenied>() {
+                                        finish_direct_kb_authority_denied_run(
+                                            &state,
+                                            &session_id,
+                                            &run_id,
+                                            &tenant_context,
+                                        )
+                                        .await;
+                                        return Ok(());
+                                    }
+                                    return Err(error);
+                                }
                                 direct_kb_outcome = Some(outcome);
                                 tracing::info!(
                                     prefix = "STRICT_KB_DIRECT_ANSWER",
@@ -1300,48 +1349,6 @@ async fn persist_session_error_message(
         }],
     );
     state.storage.append_message(session_id, msg).await
-}
-
-async fn persist_direct_kb_answer_messages(
-    state: &AppState,
-    session_id: &str,
-    question: &str,
-    tool_name: &str,
-    tool_args: Value,
-    tool_output: &str,
-    answer: &str,
-) -> anyhow::Result<()> {
-    if question.trim().is_empty() || answer.trim().is_empty() {
-        return Ok(());
-    }
-    let user_message = Message::new(
-        MessageRole::User,
-        vec![
-            MessagePart::Text {
-                text: question.trim().to_string(),
-            },
-            MessagePart::ToolInvocation {
-                tool: tool_name.to_string(),
-                args: tool_args,
-                result: Some(Value::String(tool_output.to_string())),
-                error: None,
-            },
-        ],
-    );
-    state
-        .storage
-        .append_message(session_id, user_message)
-        .await?;
-    let assistant_message = Message::new(
-        MessageRole::Assistant,
-        vec![MessagePart::Text {
-            text: answer.trim().to_string(),
-        }],
-    );
-    state
-        .storage
-        .append_message(session_id, assistant_message)
-        .await
 }
 
 pub(super) fn sse_run_stream(
@@ -1773,7 +1780,14 @@ pub(super) async fn update_session(
     if let Some(title) = input.title {
         session.title = title;
     }
-    apply_session_permission_rules(&state, &tenant_context, &id, input.permission).await;
+    apply_session_permission_rules_checked(
+        &state,
+        &tenant_context,
+        &id,
+        verified_tenant_context.as_deref(),
+        input.permission,
+    )
+    .await?;
     session.time.updated = chrono::Utc::now();
     state
         .storage

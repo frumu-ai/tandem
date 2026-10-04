@@ -6,9 +6,14 @@ use tandem_tools::{
     ToolDispatchReceiptPhase, ToolDispatchSource, ToolDispatchStatus,
 };
 
-struct EnginePreauthorizedDispatchPolicy {
-    decision: ToolDispatchDecision,
-    authority: Option<Arc<dyn ToolPolicyHook>>,
+pub(super) struct EnginePreauthorizedDispatchPolicy {
+    pub(super) decision: ToolDispatchDecision,
+    pub(super) authority: Option<Arc<dyn ToolPolicyHook>>,
+}
+
+pub(super) enum ProviderStreamPoll {
+    Chunk(Option<anyhow::Result<StreamChunk>>),
+    IdleTimeout,
 }
 
 #[async_trait::async_trait]
@@ -23,8 +28,13 @@ impl ToolDispatchPolicy for EnginePreauthorizedDispatchPolicy {
 
     async fn evaluate(
         &self,
-        _context: ToolDispatchPolicyContext,
+        context: ToolDispatchPolicyContext,
     ) -> anyhow::Result<ToolDispatchDecision> {
+        if let Some(hook) = &self.authority {
+            if let Some(decision) = hook.revalidate_dispatch(context).await? {
+                return Ok(decision);
+            }
+        }
         Ok(self.decision.clone())
     }
 }
@@ -46,6 +56,53 @@ impl ToolDispatchLedger for EngineToolDispatchLedger {
 }
 
 impl EngineLoop {
+    async fn revalidate_active_provider_stream(
+        &self,
+        session_id: &str,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<()> {
+        if let Err(error) = self.revalidate_session_authority(session_id).await {
+            cancel.cancel();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// A provider's dispatch guard covers stream creation, not later polls.
+    /// Keep the `next` future pinned across periodic authority checks so an idle
+    /// stream is revoked promptly without resetting its poll or idle deadline.
+    pub(super) async fn poll_provider_stream_chunk(
+        &self,
+        session_id: &str,
+        stream: &mut std::pin::Pin<
+            Box<dyn futures::Stream<Item = anyhow::Result<StreamChunk>> + Send>,
+        >,
+        cancel: &CancellationToken,
+        idle_timeout: Option<Duration>,
+    ) -> anyhow::Result<ProviderStreamPoll> {
+        let next_chunk = stream.next();
+        tokio::pin!(next_chunk);
+        let idle_deadline = idle_timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+        loop {
+            tokio::select! {
+                chunk = &mut next_chunk => {
+                    self.revalidate_active_provider_stream(session_id, cancel).await?;
+                    return Ok(ProviderStreamPoll::Chunk(chunk));
+                }
+                _ = async {
+                    if let Some(deadline) = idle_deadline {
+                        tokio::time::sleep_until(deadline).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => return Ok(ProviderStreamPoll::IdleTimeout),
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                    self.revalidate_active_provider_stream(session_id, cancel).await?;
+                }
+            }
+        }
+    }
+
     pub(super) async fn scope_provider_authority<F: std::future::Future>(
         &self,
         session_id: &str,
@@ -125,6 +182,7 @@ impl EngineLoop {
         &self,
         session_id: &str,
         message_id: &str,
+        run_id: Option<&str>,
         tool: &str,
         args: Value,
         preauthorized_decision: Option<ToolDispatchDecision>,
@@ -146,12 +204,14 @@ impl EngineLoop {
             .cloned()
             .unwrap_or_default();
         let tool_dispatch_ledger = self.tool_dispatch_ledger.read().await.clone();
+        let mut source = ToolDispatchSource::new("engine_loop")
+            .session(session_id)
+            .message(message_id);
+        if let Some(run_id) = run_id {
+            source = source.run(run_id);
+        }
         let mut dispatch_context = ToolDispatchContext::for_tenant("engine_loop", tenant_context)
-            .with_source(
-                ToolDispatchSource::new("engine_loop")
-                    .session(session_id)
-                    .message(message_id),
-            )
+            .with_source(source)
             .with_scope_allowlist(scope_allowlist)
             .with_policy(Arc::new(EnginePreauthorizedDispatchPolicy {
                 decision: preauthorized_decision
@@ -683,7 +743,7 @@ impl EngineLoop {
             }
         };
         self.revalidate_session_authority(session_id).await?;
-        let stream = match self
+        let mut stream = match self
             .scope_provider_authority(
                 session_id,
                 self.providers.stream_with_egress_permit(
@@ -702,9 +762,11 @@ impl EngineLoop {
             Ok(stream) => stream,
             Err(_) => return Ok(None),
         };
-        tokio::pin!(stream);
         let mut completion = String::new();
-        while let Some(chunk) = stream.next().await {
+        while let ProviderStreamPoll::Chunk(Some(chunk)) = self
+            .poll_provider_stream_chunk(session_id, &mut stream, &cancel, None)
+            .await?
+        {
             if cancel.is_cancelled() {
                 return Ok(None);
             }

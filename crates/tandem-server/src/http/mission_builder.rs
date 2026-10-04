@@ -111,8 +111,25 @@ pub(super) async fn mission_builder_generate_draft(
 pub(super) async fn mission_builder_apply(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<MissionBuilderApplyRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    state
+        .enterprise
+        .hosted_policy
+        .authorize_permission(
+            verified_tenant_context.as_ref().map(|value| &value.0),
+            tandem_types::AccessPermission::HostedAutomationWrite,
+        )
+        .map_err(|code| {
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "hosted automation write authority is required",
+                    "code": code,
+                })),
+            )
+        })?;
     let creator_id = input
         .creator_id
         .as_deref()

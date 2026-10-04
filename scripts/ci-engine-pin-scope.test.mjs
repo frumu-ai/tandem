@@ -39,3 +39,25 @@ test("commit inputs cannot become git options or arbitrary revision expressions"
     assert.throws(() => changedBetweenCommits("a".repeat(40), value), /full commit SHAs/);
   }
 });
+
+test("hidden effective release-pin overrides fail classification", () => {
+  for (const [key, value] of [["TANDEM_ENGINE_VERSION", "99.0.0"], ["TANDEM_ENGINE_BINARY_SHA256", "a".repeat(64)]]) {
+    for (const assignment of [`${key}=${value}`, `${key}="${value}"`, `${key} ${value}`]) {
+      for (const source of [
+        original.replace("\nRUN ", `\nENV ${assignment}\nRUN `),
+        original.replace("XDG_CACHE_HOME=/var/lib/tandem/engine/.cache", `XDG_CACHE_HOME=/var/lib/tandem/engine/.cache ${assignment}`),
+        original + `\nENV ${assignment}\n`,
+      ]) {
+        assert.throws(() => engineReleasePinChanged(original, source), /one valid release/);
+        assert.throws(() => engineReleasePinChanged(source, original), /one valid release/);
+      }
+    }
+  }
+  for (const key of ["TANDEM_ENGINE_VERSION", "TANDEM_ENGINE_BINARY_SHA256"]) {
+    const value = original.match(new RegExp(`${key}=([^ \\r\\n]+)`))[1];
+    const duplicate = original.replace("\nRUN ", `\nENV ${key}=${value}\nRUN `);
+    assert.throws(() => engineReleasePinChanged(original, duplicate), /one valid release/);
+  }
+  const prerelease = original.replace(/TANDEM_ENGINE_VERSION=\S+/, "TANDEM_ENGINE_VERSION=0.8.0-beta.1+build.01");
+  assert.equal(engineReleasePinChanged(original, prerelease), true);
+});

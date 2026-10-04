@@ -562,8 +562,37 @@ async fn execute_collect_inputs_node_uses_deterministic_shortcut() {
     );
     let node = automation.flow.nodes.first().expect("collect_inputs node");
     let agent = automation.agents.first().expect("planner agent");
+    let mut template: tandem_orchestrator::AgentTemplate = serde_json::from_value(json!({
+        "templateID": "shortcut-template-regression", "role": "worker", "enabled": false
+    })).unwrap();
+    state.agent_teams.upsert_template(workspace_root.to_str().unwrap(), template.clone()).await.unwrap();
+    let mut bound_agent = agent.clone();
+    bound_agent.template_id = Some(template.template_id.clone());
+    let sessions_before = state.storage.list_sessions().await.len();
+    let outputs = workspace_root.join(".tandem/runs").join(&claimed.run_id).join("artifacts");
+    for reuse in [false, true] {
+        if reuse {
+            std::fs::create_dir_all(&outputs).unwrap();
+            let cached = outputs.join("cached-output.txt");
+            std::fs::write(&cached, "previously validated content").unwrap();
+            state.automation_scheduler.write().await.preexisting_registry.register_validated(
+                &claimed.run_id, &node.node_id,
+                crate::app::state::automation::ValidatedArtifact {
+                    path: cached.to_string_lossy().into_owned(),
+                    content_digest: crate::app::state::sha256_hex(&["previously validated content"]),
+                },
+            );
+        }
+        let error = execute_automation_v2_node(&state, &claimed.run_id, &automation, node, &bound_agent).await.unwrap_err();
+        assert!(error.to_string().contains("disabled"), "{error}");
+        assert_eq!(state.storage.list_sessions().await.len(), sessions_before);
+        assert!(!outputs.join("collect-inputs.json").exists());
+    }
+    state.automation_scheduler.write().await.preexisting_registry.clear_run(&claimed.run_id);
+    template.enabled = true;
+    state.agent_teams.upsert_template(workspace_root.to_str().unwrap(), template).await.unwrap();
 
-    let output = execute_automation_v2_node(&state, &claimed.run_id, &automation, node, agent)
+    let output = execute_automation_v2_node(&state, &claimed.run_id, &automation, node, &bound_agent)
         .await
         .expect("execute collect_inputs");
 

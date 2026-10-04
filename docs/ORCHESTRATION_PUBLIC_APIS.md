@@ -12,7 +12,11 @@ through two tenant-scoped HTTP surfaces:
 
 All routes read the tenant from the standard `x-tandem-*` headers (or the
 verified enterprise context). Resource visibility is scoped by
-org/workspace/deployment; cross-tenant access fails closed as 404.
+org/workspace/deployment. In hosted mode, `/goals` additionally requires a
+current goal read/use operation grant: the initiating actor, an authorized
+administrator, or a principal with a goal-scoped grant can inspect a goal.
+Cross-tenant and unauthorized goal IDs fail closed as 404; missing operation
+authority returns 403.
 
 ## Authoring: `/orchestrations`
 
@@ -74,7 +78,7 @@ Stable machine-readable error codes across both surfaces:
 validation report), `goal_not_found`, `goal_terminal`, `goal_state_conflict`,
 `goal_forbidden`, `wait_not_found`, `wait_resolution_conflict`.
 
-Fine-grained enterprise authority (org-unit grants, delegation, run-as) over
-these surfaces lands with TAN-705; SDK/MCP clients land with TAN-696.
+Further enterprise delegation and run-as work over these surfaces lands with
+TAN-705; SDK/MCP clients land with TAN-696.
 
 Contract tests: `crates/tandem-server/src/http/tests/orchestration_goals.rs`.

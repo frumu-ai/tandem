@@ -206,3 +206,62 @@ async fn explicit_tenant_session_request_without_actor_fails_closed() {
     assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn project_discovery_only_lists_requesting_actors_session_directories() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    for (actor, directory) in [
+        ("user-a", "/tmp/tandem-project-user-a"),
+        ("user-b", "/tmp/tandem-project-user-b"),
+    ] {
+        let session = create_tenant_session(
+            app.clone(),
+            "org-a",
+            "workspace-a",
+            actor,
+            "project discovery session",
+        )
+        .await;
+        let id = session["id"].as_str().expect("session id");
+        let mut stored = state.storage.get_session(id).await.expect("stored session");
+        stored.directory = directory.to_string();
+        state.storage.save_session(stored).await.expect("save session");
+    }
+
+    let response = app
+        .clone()
+        .oneshot(tenant_request(
+            "GET",
+            "/project",
+            "org-a",
+            "workspace-a",
+            "user-a",
+            None,
+        ))
+        .await
+        .expect("project response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("project body");
+    let projects: Vec<String> = serde_json::from_slice(&body).expect("project directories");
+    assert_eq!(projects, vec!["/tmp/tandem-project-user-a"]);
+
+    let response = app
+        .oneshot(tenant_request(
+            "GET",
+            "/project",
+            "org-a",
+            "workspace-a",
+            "user-b",
+            None,
+        ))
+        .await
+        .expect("other actor project response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("other actor project body");
+    let projects: Vec<String> = serde_json::from_slice(&body).expect("other actor directories");
+    assert_eq!(projects, vec!["/tmp/tandem-project-user-b"]);
+}

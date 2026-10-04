@@ -33,6 +33,8 @@ acme-demo = ["premium-governance"]
 anyhow = "1"
 base64 = "0.22"
 axum = { version = "0.8", features = ["ws"] }
+cap-std = "4.0.3"
+cap-fs-ext = "4.0.3"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 cron = "0.12"
@@ -73,6 +75,7 @@ tandem-tools = { path = "../tandem-tools", version = "0.7.2" }
 tandem-automation = { path = "../tandem-automation", version = "0.7.2" }
 tandem-incident-monitor = { path = "../tandem-incident-monitor", version = "0.7.2" }
 tandem-skills = { path = "../tandem-skills", version = "0.7.2" }
+tandem-solutions = { path = "../tandem-solutions", version = "0.7.2" }
 tandem-memory = { path = "../tandem-memory", version = "0.7.2" }
 tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.7.2" }
 tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "0.7.2" }

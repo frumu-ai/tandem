@@ -96,7 +96,68 @@ fn governance_route_error(
     )
 }
 
-fn governance_mutation_admin_allowed(
+#[derive(Debug)]
+struct CurrentGovernanceAdminDenied;
+
+impl std::fmt::Display for CurrentGovernanceAdminDenied {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("current governance admin authority required")
+    }
+}
+
+impl std::error::Error for CurrentGovernanceAdminDenied {}
+
+pub(super) fn require_current_governance_admin(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+) -> anyhow::Result<()> {
+    if !governance_mutation_admin_allowed(tenant, verified) {
+        return Err(CurrentGovernanceAdminDenied.into());
+    }
+    if !tenant.is_local_implicit() {
+        // The request projection can outlive a policy revision. This check is
+        // repeated by the state writer after its approval/audit awaits.
+        let verified = verified.ok_or(CurrentGovernanceAdminDenied)?;
+        if tenant.actor_id.as_deref() != Some(verified.human_actor.actor_id.as_str()) {
+            return Err(CurrentGovernanceAdminDenied.into());
+        }
+        if verified.policy_version.is_some() {
+            state
+                .authorize_current_hosted_admin(verified)
+                .map_err(|_| CurrentGovernanceAdminDenied)?;
+        } else {
+            state
+                .enterprise
+                .hosted_policy
+                .authorize_permission(Some(verified), AccessPermission::HostedAdmin)
+                .map_err(|_| CurrentGovernanceAdminDenied)?;
+        }
+    }
+    Ok(())
+}
+
+fn governance_commit_authority(
+    state: AppState,
+    tenant: TenantContext,
+    verified: Option<VerifiedTenantContext>,
+) -> impl Fn() -> anyhow::Result<()> + Send + Sync {
+    move || require_current_governance_admin(&state, &tenant, verified.as_ref())
+}
+
+fn governance_write_error(error: anyhow::Error, code: &'static str) -> (StatusCode, Json<Value>) {
+    let status = if error
+        .downcast_ref::<CurrentGovernanceAdminDenied>()
+        .is_some()
+    {
+        StatusCode::FORBIDDEN
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    governance_route_error(status, error.to_string(), code)
+}
+
+pub(super) fn governance_mutation_admin_allowed(
     tenant_context: &TenantContext,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
@@ -110,6 +171,9 @@ fn governance_mutation_admin_allowed(
         || !super::tenant_matches(tenant_context, &verified.tenant_context)
     {
         return false;
+    }
+    if verified.policy_version.is_some() {
+        return super::hosted_admin_authority::allowed(verified);
     }
     verified
         .roles
@@ -227,17 +291,32 @@ async fn require_independent_mutation_approval(
         (reserved_action == action && reserved_actor.eq_ignore_ascii_case(actor_id))
             .then(|| reservation_id.to_string())
     });
-    // Only grant revocation has a mutation-level idempotent continuation: an
-    // already-revoked grant remains addressable so an exact retry can finish a
-    // failed dependency pause. Reusing a reservation for create/restore/retire
-    // operations could repeat a mutation that committed before approval
-    // consumption failed (for example by creating a second grant).
-    let retryable_after_reservation = action == "revoke_modify_access";
+    // A restore continuation is retryable only while its retained tombstone
+    // durably binds this exact actor, tenant, approval and reservation. New
+    // restores and every other create/retire mutation keep the anti-replay gate.
+    let exact_pending_restore = if action == "restore_automation" {
+        if let Some(reservation_id) = reusable_reservation_id.as_deref() {
+            state
+                .pending_restore_matches_approval(
+                    automation_id,
+                    actor,
+                    approval_id,
+                    reservation_id,
+                    tenant_context,
+                )
+                .await
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let retryable_after_reservation = action == "revoke_modify_access" || exact_pending_restore;
     let unconsumed = approval.context.get("_mutation_consumption").is_none()
         && (existing_reservation.is_none()
             || (retryable_after_reservation && reusable_reservation_id.is_some()));
     if approval.status != GovernanceApprovalStatus::Approved
-        || crate::now_ms() >= approval.expires_at_ms
+        || (crate::now_ms() >= approval.expires_at_ms && !exact_pending_restore)
         || !allowed_types.contains(&approval.request_type)
         || !target_matches
         || !action_matches
@@ -885,7 +964,7 @@ pub(super) async fn automation_grant_create(
             })),
         ));
     }
-    if !governance_mutation_admin_allowed(&tenant_context, verified.as_deref()) {
+    if require_current_governance_admin(&state, &tenant_context, verified.as_deref()).is_err() {
         return Err(governance_route_error(
             StatusCode::FORBIDDEN,
             "Modify grants require tenant governance administration authority",
@@ -926,16 +1005,15 @@ pub(super) async fn automation_grant_create(
             granted_by.clone(),
             input.reason,
             &tenant_context,
+            governance_commit_authority(
+                state.clone(),
+                tenant_context.clone(),
+                verified.map(|Extension(value)| value),
+            ),
         )
         .await
         .map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "AUTOMATION_GOVERNANCE_GRANT_CREATE_FAILED",
-                })),
-            )
+            governance_write_error(error, "AUTOMATION_GOVERNANCE_GRANT_CREATE_FAILED")
         })?;
     commit_mutation_approval_reservation(
         &state,
@@ -967,7 +1045,7 @@ pub(super) async fn automation_grant_revoke(
             "AUTOMATION_GOVERNANCE_GRANT_FORBIDDEN",
         ));
     }
-    if !governance_mutation_admin_allowed(&tenant_context, verified.as_deref()) {
+    if require_current_governance_admin(&state, &tenant_context, verified.as_deref()).is_err() {
         return Err(governance_route_error(
             StatusCode::FORBIDDEN,
             "Modify grant revocation requires tenant governance administration authority",
@@ -1005,16 +1083,15 @@ pub(super) async fn automation_grant_revoke(
             revoked_by.clone(),
             input.reason,
             &tenant_context,
+            governance_commit_authority(
+                state.clone(),
+                tenant_context.clone(),
+                verified.map(|Extension(value)| value),
+            ),
         )
         .await
         .map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "AUTOMATION_GOVERNANCE_GRANT_REVOKE_FAILED",
-                })),
-            )
+            governance_write_error(error, "AUTOMATION_GOVERNANCE_GRANT_REVOKE_FAILED")
         })?
     else {
         return Err((
@@ -1082,7 +1159,7 @@ pub(super) async fn automation_restore(
             "AUTOMATION_GOVERNANCE_RESTORE_FORBIDDEN",
         ));
     }
-    if !governance_mutation_admin_allowed(&tenant_context, verified.as_deref()) {
+    if require_current_governance_admin(&state, &tenant_context, verified.as_deref()).is_err() {
         return Err(governance_route_error(
             StatusCode::FORBIDDEN,
             "Automation restore requires tenant governance administration authority",
@@ -1121,22 +1198,22 @@ pub(super) async fn automation_restore(
     )
     .await?;
     let Some(restored) = state
-        .restore_deleted_automation_v2(
+        .restore_deleted_automation_v2_with_reservation(
             &id,
             actor.clone(),
             approval_id.map(str::to_string),
+            approval_reservation
+                .as_ref()
+                .map(|reservation| reservation.reservation_id.clone()),
             &tenant_context,
+            governance_commit_authority(
+                state.clone(),
+                tenant_context.clone(),
+                verified.map(|Extension(value)| value),
+            ),
         )
         .await
-        .map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "AUTOMATION_GOVERNANCE_RESTORE_FAILED",
-                })),
-            )
-        })?
+        .map_err(|error| governance_write_error(error, "AUTOMATION_GOVERNANCE_RESTORE_FAILED"))?
     else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1147,13 +1224,8 @@ pub(super) async fn automation_restore(
             })),
         ));
     };
-    commit_mutation_approval_reservation(
-        &state,
-        &tenant_context,
-        &actor,
-        approval_reservation.as_ref(),
-    )
-    .await?;
+    // Restore commits the exact reservation in the same durable governance
+    // snapshot that clears its tombstone, after both required audit rows.
     debug_assert_eq!(deleted.automation_id, restored.automation_id);
     Ok(Json(json!({
         "automation": restored,
@@ -1178,7 +1250,7 @@ pub(super) async fn automation_retire(
             "AUTOMATION_GOVERNANCE_RETIRE_FORBIDDEN",
         ));
     }
-    if !governance_mutation_admin_allowed(&tenant_context, verified.as_deref()) {
+    if require_current_governance_admin(&state, &tenant_context, verified.as_deref()).is_err() {
         return Err(governance_route_error(
             StatusCode::FORBIDDEN,
             "Automation retirement requires tenant governance administration authority",
@@ -1214,17 +1286,14 @@ pub(super) async fn automation_retire(
             input.reason,
             input.approval_id,
             &tenant_context,
+            governance_commit_authority(
+                state.clone(),
+                tenant_context.clone(),
+                verified.map(|Extension(value)| value),
+            ),
         )
         .await
-        .map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "AUTOMATION_GOVERNANCE_RETIRE_FAILED",
-                })),
-            )
-        })?
+        .map_err(|error| governance_write_error(error, "AUTOMATION_GOVERNANCE_RETIRE_FAILED"))?
     else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1265,7 +1334,7 @@ pub(super) async fn automation_extend(
             "AUTOMATION_GOVERNANCE_EXTEND_FORBIDDEN",
         ));
     }
-    if !governance_mutation_admin_allowed(&tenant_context, verified.as_deref()) {
+    if require_current_governance_admin(&state, &tenant_context, verified.as_deref()).is_err() {
         return Err(governance_route_error(
             StatusCode::FORBIDDEN,
             "Automation retirement extension requires tenant governance administration authority",
@@ -1303,17 +1372,14 @@ pub(super) async fn automation_extend(
             input.reason,
             input.approval_id,
             &tenant_context,
+            governance_commit_authority(
+                state.clone(),
+                tenant_context.clone(),
+                verified.map(|Extension(value)| value),
+            ),
         )
         .await
-        .map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "AUTOMATION_GOVERNANCE_EXTEND_FAILED",
-                })),
-            )
-        })?
+        .map_err(|error| governance_write_error(error, "AUTOMATION_GOVERNANCE_EXTEND_FAILED"))?
     else {
         return Err((
             StatusCode::NOT_FOUND,

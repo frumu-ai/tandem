@@ -20,8 +20,9 @@ use tandem_enterprise_contract::{
 use tandem_server::{now_ms, AppState};
 
 use super::routes_enterprise::{
-    bad_request, internal_error, require_enterprise_admin, storage_base, validate_enterprise_id,
-    validate_external_id, EnterpriseAdminResponseBase, EnterpriseResult,
+    bad_request, internal_error, require_current_enterprise_admin, require_enterprise_admin,
+    storage_base, validate_enterprise_id, validate_external_id, EnterpriseAdminResponseBase,
+    EnterpriseResult,
 };
 
 async fn require_org_unit_grant_admin<'a>(
@@ -228,17 +229,28 @@ pub(super) async fn list_org_units(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<EnterpriseOrgUnitsResponse> {
-    let mut org_units = state
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
+    let view = state
         .enterprise_org_unit_view(&tenant_context)
         .await
-        .map_err(registry_error)?
-        .units;
+        .map_err(registry_error)?;
+    let mut org_units = view.units;
     org_units.sort_by(|left, right| {
         left.taxonomy_id
             .cmp(&right.taxonomy_id)
             .then_with(|| left.unit_id.cmp(&right.unit_id))
     });
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
 
     Ok(Json(EnterpriseOrgUnitsResponse {
         base: storage_base(tenant_context, request_principal),
@@ -251,12 +263,18 @@ pub(super) async fn list_org_unit_memberships(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<EnterpriseOrgUnitMembershipsResponse> {
-    let mut memberships = state
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
+    let view = state
         .enterprise_org_unit_view(&tenant_context)
         .await
-        .map_err(registry_error)?
-        .memberships;
+        .map_err(registry_error)?;
+    let mut memberships = view.memberships;
     memberships.sort_by(|left, right| {
         left.unit
             .id
@@ -264,6 +282,11 @@ pub(super) async fn list_org_unit_memberships(
             .then_with(|| left.member.id.cmp(&right.member.id))
             .then_with(|| left.membership_id.cmp(&right.membership_id))
     });
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
 
     Ok(Json(EnterpriseOrgUnitMembershipsResponse {
         base: storage_base(tenant_context, request_principal),
@@ -276,12 +299,18 @@ pub(super) async fn list_org_unit_access_grants(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<EnterpriseOrgUnitAccessGrantsResponse> {
-    let mut access_grants = state
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
+    let view = state
         .enterprise_org_unit_view(&tenant_context)
         .await
-        .map_err(registry_error)?
-        .access_grants;
+        .map_err(registry_error)?;
+    let mut access_grants = view.access_grants;
     access_grants.sort_by(|left, right| {
         left.unit
             .id
@@ -289,6 +318,11 @@ pub(super) async fn list_org_unit_access_grants(
             .then_with(|| left.resource.resource_id.cmp(&right.resource.resource_id))
             .then_with(|| left.grant_id.cmp(&right.grant_id))
     });
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
 
     Ok(Json(EnterpriseOrgUnitAccessGrantsResponse {
         base: storage_base(tenant_context, request_principal),
@@ -302,7 +336,13 @@ pub(super) async fn list_effective_org_unit_grants(
     Query(query): Query<EffectiveOrgUnitGrantsQuery>,
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
 ) -> EnterpriseResult<EnterpriseOrgUnitEffectiveGrantsResponse> {
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
     let member_id = validate_external_id("member_id", &query.member_id)?;
     let member = PrincipalRef::new(query.member_kind, member_id);
     let now = now_ms();
@@ -333,6 +373,11 @@ pub(super) async fn list_effective_org_unit_grants(
         }
     }
     grants.sort_by(|left, right| left.grant_id.cmp(&right.grant_id));
+    require_current_enterprise_admin(
+        &state,
+        &request_principal,
+        verified_tenant_context.as_deref(),
+    )?;
 
     Ok(Json(EnterpriseOrgUnitEffectiveGrantsResponse {
         base: storage_base(tenant_context, request_principal),
@@ -398,6 +443,11 @@ pub(super) async fn create_org_unit(
 
     {
         let mut registry = state.enterprise.org_units.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         registry.insert(enterprise_org_unit_key(&unit), unit);
         persist_enterprise_org_units(&state.enterprise.org_units_path, &registry).await?;
     }
@@ -452,6 +502,11 @@ pub(super) async fn create_org_unit_membership(
 
     {
         let mut registry = state.enterprise.org_unit_memberships.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         registry.insert(
             enterprise_org_unit_membership_key(&membership),
             membership.clone(),
@@ -477,6 +532,7 @@ pub(super) async fn create_org_unit_access_grant(
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<CreateOrganizationUnitAccessGrantRequest>,
 ) -> EnterpriseResult<EnterpriseOrgUnitAccessGrantsResponse> {
+    require_enterprise_admin(&request_principal, verified_tenant_context.as_deref())?;
     let unit_id = validate_enterprise_id("unit_id", &input.unit_id)?;
     let taxonomy_id = input
         .taxonomy_id
@@ -537,6 +593,11 @@ pub(super) async fn create_org_unit_access_grant(
     .await?;
     {
         let mut registry = state.enterprise.org_unit_access_grants.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         let mut next = registry.clone();
         next.insert(enterprise_org_unit_access_grant_key(&grant), grant.clone());
         state
@@ -565,6 +626,11 @@ pub(super) async fn update_org_unit_membership(
     let membership_id = validate_enterprise_id("membership_id", &membership_id)?;
     let updated = {
         let mut registry = state.enterprise.org_unit_memberships.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         let Some(membership) = registry.values_mut().find(|membership| {
             membership.membership_id == membership_id
                 && org_unit_membership_tenant_matches(membership, &tenant_context)
@@ -608,6 +674,11 @@ pub(super) async fn update_org_unit_access_grant(
     let grant_id = validate_enterprise_id("grant_id", &grant_id)?;
     let updated = {
         let mut registry = state.enterprise.org_unit_access_grants.write().await;
+        require_current_enterprise_admin(
+            &state,
+            &request_principal,
+            verified_tenant_context.as_deref(),
+        )?;
         let mut next = registry.clone();
         let Some(grant) = next.values_mut().find(|grant| {
             grant.grant_id == grant_id
@@ -796,8 +867,8 @@ mod hosted_policy_grant_tests {
     use ed25519_dalek::Signer;
     use serde_json::json;
     use tandem_enterprise_contract::{
-        hosted_policy::role_capabilities, AuthorityChain, HumanActor, TenantContextAssertionClaims,
-        TenantContextAssertionHeader,
+        hosted_policy::{role_capabilities, HostedPolicyBundle}, AuthorityChain, HumanActor,
+        TenantContextAssertionClaims, TenantContextAssertionHeader,
     };
     use tower::ServiceExt;
 
@@ -826,7 +897,16 @@ mod hosted_policy_grant_tests {
     }
 
     fn identity(actor: &str, role: &str, version: u64) -> VerifiedTenantContext {
-        claims(actor, role, version, "direct").into()
+        let mut verified: VerifiedTenantContext = claims(actor, role, version, "direct").into();
+        // Direct handler calls retain the same scoped ingress projection as
+        // signed HTTP. The handler independently rechecks the current policy.
+        let now = now_ms();
+        let policy = HostedPolicyBundle::from_json(&policy(version, role))
+            .unwrap()
+            .validate("org-a", "dep-a", now, None)
+            .unwrap();
+        verified.strict_projection = Some(policy.project_identity(&verified, now).unwrap());
+        verified
     }
 
     fn policy(version: u64, alice_role: &str) -> Vec<u8> {

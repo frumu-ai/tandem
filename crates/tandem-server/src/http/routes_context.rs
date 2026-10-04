@@ -10,8 +10,8 @@ use super::context_run_mutation_checkpoints::*;
 use super::context_runs::*;
 use crate::AppState;
 
-pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
-    router
+pub(super) fn apply(router: Router<AppState>, state: AppState) -> Router<AppState> {
+    let run_routes = Router::<AppState>::new()
         .route(
             "/context/runs",
             post(context_run_create).get(context_run_list),
@@ -19,17 +19,6 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route(
             "/context/runs/events/stream",
             get(context_runs_events_stream),
-        )
-        .route(
-            "/context/packs",
-            get(context_pack_list).post(context_pack_publish),
-        )
-        .route("/context/packs/{pack_id}", get(context_pack_get))
-        .route("/context/packs/{pack_id}/bind", post(context_pack_bind))
-        .route("/context/packs/{pack_id}/revoke", post(context_pack_revoke))
-        .route(
-            "/context/packs/{pack_id}/supersede",
-            post(context_pack_supersede),
         )
         .route(
             "/context/runs/{run_id}",
@@ -104,5 +93,23 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route(
             "/context/runs/{run_id}/driver/next",
             post(context_run_driver_next),
+        );
+    let pack_routes = Router::<AppState>::new()
+        .route(
+            "/context/packs",
+            get(context_pack_list).post(context_pack_publish),
         )
+        .route("/context/packs/{pack_id}", get(context_pack_get))
+        .route("/context/packs/{pack_id}/bind", post(context_pack_bind))
+        .route("/context/packs/{pack_id}/revoke", post(context_pack_revoke))
+        .route(
+            "/context/packs/{pack_id}/supersede",
+            post(context_pack_supersede),
+        );
+    router
+        .merge(run_routes.route_layer(axum::middleware::from_fn_with_state(
+            state,
+            super::context_run_authority::guard_context_route,
+        )))
+        .merge(pack_routes)
 }

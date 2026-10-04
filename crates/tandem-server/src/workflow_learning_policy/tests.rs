@@ -12,6 +12,7 @@ fn candidate(kind: WorkflowLearningCandidateKind, confidence: f64) -> WorkflowLe
         workflow_id: "wf".to_string(),
         project_id: "proj".to_string(),
         source_run_id: "run".to_string(),
+        source_binding: None,
         kind,
         status: WorkflowLearningCandidateStatus::Proposed,
         confidence,

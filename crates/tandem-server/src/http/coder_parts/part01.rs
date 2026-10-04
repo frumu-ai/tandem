@@ -731,7 +731,6 @@ fn coder_memory_candidate_path(
     coder_memory_candidates_dir(state, linked_context_run_id).join(format!("{candidate_id}.json"))
 }
 
-
 async fn ensure_coder_runs_dir(state: &AppState) -> Result<(), StatusCode> {
     tokio::fs::create_dir_all(coder_runs_root(state))
         .await
@@ -851,7 +850,7 @@ async fn save_coder_run_record(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-async fn load_coder_run_record(
+pub(super) async fn load_coder_run_record(
     state: &AppState,
     coder_run_id: &str,
 ) -> Result<CoderRunRecord, StatusCode> {
@@ -1748,15 +1747,14 @@ async fn list_project_memory_hits(
     let results = if let (Some(tenant_context), Some(tenant_scope)) =
         (tenant_context, tenant_scope.as_ref())
     {
-        let search = manager
-            .search_for_tenant(
-                query,
-                Some(MemoryTier::Project),
-                Some(&repo_binding.project_id),
-                None,
-                tenant_scope,
-                Some(limit.clamp(1, 20) as i64),
-            );
+        let search = manager.search_for_tenant(
+            query,
+            Some(MemoryTier::Project),
+            Some(&repo_binding.project_id),
+            None,
+            tenant_scope,
+            Some(limit.clamp(1, 20) as i64),
+        );
         match coder_project_memory_decrypt_principal(tenant_context) {
             Some(principal) => {
                 tandem_memory::decrypt_context::with_decrypt_principal(principal, search).await

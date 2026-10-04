@@ -346,6 +346,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authority_update_preserves_current_session_and_never_recreates_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = Storage::new(directory.path()).await.unwrap();
+        let original = Session::new(Some("original".into()), None);
+        let id = original.id.clone();
+        let expected_tenant = original.tenant_context.clone();
+        storage.save_session(original.clone()).await.unwrap();
+        let mut newer = original;
+        newer.title = "concurrently renamed".into();
+        storage.save_session(newer).await.unwrap();
+        storage.append_message(&id, Message::new(MessageRole::User, vec![MessagePart::Text { text: "concurrent message".into() }])).await.unwrap();
+        let authority: tandem_types::VerifiedTenantContext = tandem_types::TenantContextAssertionClaims::new_v1(
+            "test-issuer", "test-audience", 1, u64::MAX, "new-assertion",
+            expected_tenant.clone(),
+            tandem_types::HumanActor::tandem_user("test-user"),
+            tandem_types::AuthorityChain::from_request(tandem_types::RequestPrincipal::authenticated_user("test-user", "test-issuer")),
+            Vec::new(),
+        ).into();
+        let mut before = storage.get_session(&id).await.unwrap();
+        before.verified_tenant_context = Some(authority.clone());
+        assert!(storage.update_session_authority(&id, expected_tenant.clone(), Some(authority)).await.unwrap());
+        let after = storage.get_session(&id).await.unwrap();
+        assert_eq!(serde_json::to_value(before).unwrap(), serde_json::to_value(after).unwrap());
+        let mut other_tenant = expected_tenant.clone();
+        other_tenant.org_id = "other-org".into();
+        assert!(!storage.update_session_authority(&id, other_tenant, None).await.unwrap());
+        storage.delete_session(&id).await.unwrap();
+        assert!(!storage.update_session_authority(&id, expected_tenant, None).await.unwrap());
+        assert!(storage.get_session(&id).await.is_none());
+    }
+
+    #[tokio::test]
     async fn append_message_part_persists_tool_invocation_and_result() {
         let base = std::env::temp_dir().join(format!("tandem-core-tool-parts-{}", Uuid::new_v4()));
         let storage = Storage::new(&base).await.expect("storage");

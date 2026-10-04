@@ -249,6 +249,7 @@ pub enum ResourceKind {
     KnowledgeSpace,
     SecretProviderCredential,
     Automation,
+    Orchestration,
     Run,
     Approval,
     AuditExport,

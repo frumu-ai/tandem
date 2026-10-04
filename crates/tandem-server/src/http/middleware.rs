@@ -378,7 +378,7 @@ async fn denial_receipt_diagnostic_and_response_hide_error_content() {
     assert_eq!(json["error"], REQUIRED_DENIAL_RECEIPT_PUBLIC_ERROR);
 }
 
-async fn enrich_verified_context_with_org_unit_grants(
+pub(super) async fn enrich_verified_context_with_org_unit_grants(
     state: &AppState,
     verified: &mut VerifiedTenantContext,
     hosted_memberships: Option<Vec<OrganizationUnitMembership>>,
@@ -386,17 +386,18 @@ async fn enrich_verified_context_with_org_unit_grants(
     if verified.strict_projection.is_none() {
         return;
     }
-    let memberships = if let Some(memberships) = hosted_memberships {
-        memberships
-    } else {
-        state
+    // An empty hosted membership set is authoritative; local state cannot restore it.
+    let hosted = hosted_memberships.is_some();
+    let memberships = match hosted_memberships {
+        Some(memberships) => memberships,
+        None => state
             .enterprise
             .org_unit_memberships
             .read()
             .await
             .values()
             .cloned()
-            .collect::<Vec<_>>()
+            .collect(),
     };
     let access_grants = state
         .enterprise
@@ -409,12 +410,30 @@ async fn enrich_verified_context_with_org_unit_grants(
     project_org_unit_grants_into_verified_context(
         verified,
         memberships.iter(),
-        access_grants.iter(),
+        access_grants
+            .iter()
+            .filter(|grant| !hosted || local_hosted_data_grant(grant)),
         crate::util::time::now_ms(),
     );
 }
 
-fn project_org_unit_grants_into_verified_context<'a>(
+pub(super) fn local_hosted_data_grant(grant: &OrganizationUnitAccessGrant) -> bool {
+    // Deployment operations are control-plane authored; reject mixed permission grants.
+    grant.resource.resource_kind != tandem_types::ResourceKind::HostedDeployment
+        && grant.permissions.iter().all(|permission| {
+            matches!(
+                permission,
+                AccessPermission::View
+                    | AccessPermission::Read
+                    | AccessPermission::Edit
+                    | AccessPermission::Execute
+                    | AccessPermission::Delegate
+                    | AccessPermission::Admin
+            )
+        })
+}
+
+pub(super) fn project_org_unit_grants_into_verified_context<'a>(
     verified: &mut VerifiedTenantContext,
     memberships: impl Iterator<Item = &'a OrganizationUnitMembership>,
     access_grants: impl Iterator<Item = &'a OrganizationUnitAccessGrant>,
@@ -1883,6 +1902,7 @@ fn resource_kind_scope_label(kind: ResourceKind) -> &'static str {
         ResourceKind::KnowledgeSpace => "knowledge_space",
         ResourceKind::SecretProviderCredential => "secret_provider_credential",
         ResourceKind::Automation => "automation",
+        ResourceKind::Orchestration => "orchestration",
         ResourceKind::Run => "run",
         ResourceKind::Approval => "approval",
         ResourceKind::AuditExport => "audit_export",
@@ -1967,7 +1987,9 @@ mod hosted_policy_tests;
 #[cfg(test)]
 #[path = "tests/middleware_hosted_signed_tests.rs"]
 mod hosted_signed_tests;
-
+#[cfg(test)]
+#[path = "tests/middleware_hosted_workflow_hook_tests.rs"]
+mod hosted_workflow_hook_tests;
 #[cfg(test)]
 mod slack_events_bypass_tests {
     use super::is_public_slack_events_path;

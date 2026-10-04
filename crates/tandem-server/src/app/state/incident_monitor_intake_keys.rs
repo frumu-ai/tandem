@@ -1,0 +1,147 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
+use super::*;
+
+pub(crate) type IntakeKeyPublicationBatch =
+    tokio::sync::watch::Receiver<Option<Result<(), String>>>;
+
+impl AppState {
+    pub async fn persist_incident_monitor_intake_keys(&self) -> anyhow::Result<()> {
+        let mut completion = {
+            // Register before the first await. Only one not-yet-snapshotted
+            // publication owns a task; other callers share its completion.
+            let mut pending = self
+                .incident_monitor_intake_keys_pending
+                .lock()
+                .map_err(|_| anyhow::anyhow!("intake publication queue poisoned"))?;
+            if let Some(completion) = pending
+                .as_ref()
+                .filter(|receiver| receiver.has_changed().is_ok())
+            {
+                completion.clone()
+            } else {
+                let (sender, completion) = tokio::sync::watch::channel(None);
+                *pending = Some(completion.clone());
+                let publication_order = self.incident_monitor_intake_keys_persistence.clone();
+                let pending_batch = self.incident_monitor_intake_keys_pending.clone();
+                let keys = self.incident_monitor_intake_keys.clone();
+                let path = self.incident_monitor_intake_keys_path.clone();
+                // The task owns publication even if all request receivers disappear.
+                tokio::spawn(async move {
+                    let result = async {
+                        let guard = publication_order.lock_owned().await;
+                        // Requests after this boundary join one follow-up batch. Clear
+                        // before reading the map so every member's mutation is included.
+                        pending_batch
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("intake publication queue poisoned"))?
+                            .take();
+                        // Snapshot after acquiring order, then release the authorization
+                        // map before serialization/fsync so in-memory revocation is prompt.
+                        let snapshot = keys.read().await.clone();
+                        // The blocking task retains publication order through completion,
+                        // even if the async task is dropped during runtime shutdown.
+                        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
+                            let payload = serde_json::to_string_pretty(&snapshot)?;
+                            let result = write_state_file_atomically_blocking(&path, &payload)
+                                .map_err(anyhow::Error::from);
+                            drop(guard);
+                            result
+                        })
+                        .await?
+                    }
+                    .await;
+                    sender.send_replace(Some(
+                        result.map_err(|error: anyhow::Error| format!("{error:#}")),
+                    ));
+                });
+                completion
+            }
+        };
+        loop {
+            let result = completion.borrow_and_update().clone();
+            if let Some(result) = result {
+                return result.map_err(anyhow::Error::msg);
+            }
+            completion
+                .changed()
+                .await
+                .map_err(|_| anyhow::anyhow!("intake publication task ended before completion"))?;
+        }
+    }
+
+    pub async fn validate_incident_monitor_intake_key(
+        &self,
+        raw_key: &str,
+        project_id: &str,
+        required_scope: &str,
+    ) -> Option<IncidentMonitorProjectIntakeKey> {
+        let key_hash = crate::sha256_hex(&[raw_key.trim()]);
+        let matched = {
+            let mut current = self.incident_monitor_intake_keys.write().await;
+            let matched = current.values_mut().find(|row| {
+                row.enabled
+                    && row.project_id == project_id
+                    && crate::constant_time_str_eq(&row.key_hash, &key_hash)
+                    && row.scopes.iter().any(|scope| scope == required_scope)
+            })?;
+            // Usage bookkeeping changes only the current row, never a stale
+            // copy that could restore a concurrently disabled credential.
+            matched.last_used_at_ms = Some(now_ms());
+            matched.clone()
+        };
+        let _ = self.persist_incident_monitor_intake_keys().await;
+        Some(matched)
+    }
+
+    pub(crate) async fn list_incident_monitor_intake_keys_checked(
+        &self,
+        authorize: impl FnOnce() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<IncidentMonitorProjectIntakeKey>> {
+        let mut rows = {
+            let current = self.incident_monitor_intake_keys.read().await;
+            authorize()?;
+            current.values().cloned().collect::<Vec<_>>()
+        };
+        rows.sort_by(|a, b| a.project_id.cmp(&b.project_id).then(a.name.cmp(&b.name)));
+        Ok(rows)
+    }
+
+    pub(crate) async fn put_incident_monitor_intake_key_checked(
+        &self,
+        key: IncidentMonitorProjectIntakeKey,
+        authorize: impl FnOnce() -> anyhow::Result<()>,
+    ) -> anyhow::Result<IncidentMonitorProjectIntakeKey> {
+        {
+            let mut current = self.incident_monitor_intake_keys.write().await;
+            authorize()?;
+            current.insert(key.key_id.clone(), key.clone());
+        }
+        self.persist_incident_monitor_intake_keys().await?;
+        Ok(key)
+    }
+
+    pub(crate) async fn disable_incident_monitor_intake_key_checked(
+        &self,
+        id: &str,
+        authorize: impl FnOnce() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Option<IncidentMonitorProjectIntakeKey>> {
+        let key = {
+            let mut current = self.incident_monitor_intake_keys.write().await;
+            // Check before looking up the key: denial must not reveal existence.
+            // Read and disable the current row under the same lock.
+            authorize()?;
+            let Some(key) = current.get_mut(id) else {
+                return Ok(None);
+            };
+            key.enabled = false;
+            key.clone()
+        };
+        self.persist_incident_monitor_intake_keys().await?;
+        Ok(Some(key))
+    }
+}

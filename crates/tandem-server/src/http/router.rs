@@ -174,7 +174,7 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
         axum::routing::post(super::telegram_interactions::telegram_interactions),
     );
     router = super::routes_coder::apply(router);
-    router = super::routes_context::apply(router);
+    router = super::routes_context::apply(router, state.clone());
     router = super::routes_sessions::apply(router);
     router = router.route(
         "/runs/{run_id}/events",

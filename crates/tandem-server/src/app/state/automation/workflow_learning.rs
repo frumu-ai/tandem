@@ -610,6 +610,34 @@ pub(crate) fn workflow_learning_context_for_candidates(
     Some(lines.join("\n"))
 }
 
+pub(crate) fn workflow_learning_candidate_usable_by_automation(
+    state: &AppState,
+    candidate: &WorkflowLearningCandidate,
+    automation: &AutomationV2Spec,
+) -> bool {
+    if automation.tenant_context().is_local_implicit() {
+        return matches!(state.enterprise.hosted_policy.current(), Ok(None))
+            && candidate
+                .source_binding
+                .as_ref()
+                .map_or(true, |binding| match binding {
+                    WorkflowLearningCandidateSourceBinding::Workflow { tenant_context, .. }
+                    | WorkflowLearningCandidateSourceBinding::Session { tenant_context, .. } => {
+                        tenant_context.is_local_implicit()
+                    }
+                });
+    }
+    // The state-side learning injector has no request principal. Hosted
+    // cross-workflow/project sharing cannot establish the source object's
+    // current ACL here, so only this exact workflow instance may consume it.
+    candidate.workflow_id == automation.automation_id
+        && automation.created_at_ms > 0
+        && candidate.source_binding.as_ref()
+            == Some(&WorkflowLearningCandidateSourceBinding::workflow(
+                automation,
+            ))
+}
+
 pub(crate) fn workflow_learning_candidates_for_terminal_run(
     automation: &AutomationV2Spec,
     run: &AutomationV2RunRecord,
@@ -630,6 +658,9 @@ pub(crate) fn workflow_learning_candidates_for_terminal_run(
                     workflow_id: automation.automation_id.clone(),
                     project_id: project_id.clone(),
                     source_run_id: run.run_id.clone(),
+                    source_binding: Some(WorkflowLearningCandidateSourceBinding::workflow(
+                        automation,
+                    )),
                     kind: WorkflowLearningCandidateKind::MemoryFact,
                     status: WorkflowLearningCandidateStatus::Proposed,
                     confidence: 0.65,
@@ -697,6 +728,7 @@ pub(crate) fn workflow_learning_candidates_for_terminal_run(
                 workflow_id: automation.automation_id.clone(),
                 project_id: project_id.clone(),
                 source_run_id: run.run_id.clone(),
+                source_binding: Some(WorkflowLearningCandidateSourceBinding::workflow(automation)),
                 kind: WorkflowLearningCandidateKind::RepairHint,
                 status: WorkflowLearningCandidateStatus::Proposed,
                 confidence: 0.7,
@@ -727,6 +759,7 @@ pub(crate) fn workflow_learning_candidates_for_terminal_run(
                 workflow_id: automation.automation_id.clone(),
                 project_id: project_id.clone(),
                 source_run_id: run.run_id.clone(),
+                source_binding: Some(WorkflowLearningCandidateSourceBinding::workflow(automation)),
                 kind: WorkflowLearningCandidateKind::PromptPatch,
                 status: WorkflowLearningCandidateStatus::Proposed,
                 confidence: 0.75,
@@ -777,6 +810,7 @@ pub(crate) fn workflow_learning_candidates_for_terminal_run(
                     workflow_id: automation.automation_id.clone(),
                     project_id,
                     source_run_id: run.run_id.clone(),
+                    source_binding: Some(WorkflowLearningCandidateSourceBinding::workflow(automation)),
                     kind: WorkflowLearningCandidateKind::GraphPatch,
                     status: WorkflowLearningCandidateStatus::Proposed,
                     confidence: 0.8,

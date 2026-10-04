@@ -455,6 +455,19 @@ impl Tool for PackBuilderTool {
     }
 
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        // Also enforce the boundary inside the tool, after dispatch
+        // revalidation and before preview/apply can touch shared state.
+        if !matches!(self.state.enterprise.hosted_policy.current(), Ok(None))
+            || args
+                .get("__verified_tenant_context")
+                .is_some_and(|value| !value.is_null())
+        {
+            let reason = "pack_builder requires the local single-user runtime";
+            return Err(anyhow::Error::new(tandem_tools::ToolDispatchBlocked {
+                decision: tandem_tools::ToolDispatchDecision::deny(reason),
+                message: reason.to_string(),
+            }));
+        }
         let mut input: PackBuilderInput = serde_json::from_value(args).unwrap_or_default();
         let mut mode = input
             .mode
@@ -1136,6 +1149,7 @@ impl PackBuilderTool {
                 .unwrap_or("team");
             let max_agents = input.max_agents.unwrap_or(4);
             let mut routine = RoutineSpec {
+                solution_owner: None,
                 routine_id: routine_id.clone(),
                 tenant_context: routine_tenant_context.clone(),
                 name: plan.routine_template.name.clone(),

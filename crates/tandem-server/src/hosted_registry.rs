@@ -76,6 +76,9 @@ impl AppState {
                     && !row.unit.id.starts_with(&format!("{HOSTED_TAXONOMY_ID}/"))
             });
             memberships.extend(projected.memberships);
+            // Reserved hosted-unit grants have the same sole owner as their
+            // memberships. Preserve unrelated native service-unit grants.
+            access_grants.retain(|row| !row.unit.id.starts_with(&format!("{HOSTED_TAXONOMY_ID}/")));
             access_grants.extend(projected.access_grants);
             Some(policy.revision().clone())
         } else {

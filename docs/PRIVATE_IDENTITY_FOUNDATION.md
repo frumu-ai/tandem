@@ -145,8 +145,11 @@ The existing enterprise registry APIs expose imported units under the reserved
 `hosted-control-plane` taxonomy. Their principal IDs are
 `hosted-control-plane/{unit_id}`. Imported rows are ephemeral, and local API
 writes cannot claim that namespace or membership source. Local data grants can
-target these units, but apply only through current hosted memberships. Retained
-local human memberships cannot restore removed hosted authority. The readiness
+target these units, but apply only through current hosted memberships. Local
+grants targeting deployment resources or containing hosted-operation permissions
+are not projected, including mixed data/hosted-operation grants. Scoped data
+Admin or Delegate does not confer hosted administration or workflow review.
+Retained local human memberships cannot restore removed hosted authority. The readiness
 view uses one hosted revision and does not count deployment-operation grants as
 proof of governed data access.
 

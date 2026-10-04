@@ -26,6 +26,7 @@ struct IdempotencyKeysFile {
 #[serde(rename_all = "snake_case")]
 pub enum IdempotencyKeyStatus {
     Reserved,
+    ReleasePending,
     Completed,
     Conflicted,
 }
@@ -51,6 +52,9 @@ pub struct IdempotencyKeyRecord {
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
     pub record_id: String,
+    /// Distinguishes successive reservations of the same logical key.
+    #[serde(default)]
+    pub reservation_id: String,
     #[serde(default = "default_tenant_context")]
     pub tenant_context: TenantContext,
     pub operation: String,
@@ -107,6 +111,7 @@ impl IdempotencyKeyRecord {
 
 impl AppState {
     pub(crate) async fn load_idempotency_keys(&self) -> anyhow::Result<()> {
+        let _guard = self.idempotency_persistence.lock().await;
         if !self.idempotency_keys_path.exists() {
             return Ok(());
         }
@@ -118,7 +123,24 @@ impl AppState {
                     self.idempotency_keys_path.display()
                 )
             })?;
-        let records = parse_idempotency_keys_file(&raw)?;
+        let mut records = parse_idempotency_keys_file(&raw)?;
+        let intents = match self.load_idempotency_release_intents().await {
+            Ok(intents) => intents,
+            Err(error) => {
+                // Startup currently ignores load errors. Preserve the
+                // reservations even if their recovery journal is unreadable.
+                *self.idempotency_keys.write().await = records;
+                return Err(error);
+            }
+        };
+        for (id, record) in &mut records {
+            if intents
+                .get(id)
+                .is_some_and(|intent| release_intent_matches(intent, record))
+            {
+                record.status = IdempotencyKeyStatus::ReleasePending;
+            }
+        }
         *self.idempotency_keys.write().await = records;
         Ok(())
     }
@@ -153,6 +175,12 @@ impl AppState {
                 );
                 *existing = record.clone();
                 IdempotencyReservation::Reserved(record)
+            }
+            // The record ID is tenant-scoped, not actor-scoped. A different
+            // owner must never receive or disturb the original reservation,
+            // even when it presents the same key and request fingerprint.
+            Some(existing) if existing.owner != owner => {
+                IdempotencyReservation::Conflict(existing.clone())
             }
             Some(existing) if existing.request_fingerprint == request_fingerprint => {
                 existing.last_seen_at_ms = input.now_ms;
@@ -227,29 +255,146 @@ impl AppState {
         key: &str,
         request_fingerprint: &str,
     ) -> anyhow::Result<bool> {
+        self.release_idempotency_key(tenant_context, operation, key, request_fingerprint, false)
+            .await
+    }
+
+    pub(crate) async fn retry_pending_idempotency_release(
+        &self,
+        tenant_context: &TenantContext,
+        operation: &str,
+        key: &str,
+        request_fingerprint: &str,
+    ) -> anyhow::Result<bool> {
+        self.release_idempotency_key(tenant_context, operation, key, request_fingerprint, true)
+            .await
+    }
+
+    async fn release_idempotency_key(
+        &self,
+        tenant_context: &TenantContext,
+        operation: &str,
+        key: &str,
+        request_fingerprint: &str,
+        pending_only: bool,
+    ) -> anyhow::Result<bool> {
         let operation = normalized_non_empty(operation, "idempotency operation")?;
         let key = normalized_non_empty(key, "idempotency key")?;
         let request_fingerprint =
             normalized_non_empty(request_fingerprint, "idempotency fingerprint")?;
         let record_id = idempotency_record_id(tenant_context, &operation, &key);
+        let state = self.clone();
+        let tenant_context = tenant_context.clone();
+        // Keep persistence ordering through both writes even if the HTTP caller
+        // disappears. The atomic file writer itself runs on a blocking task.
+        tokio::spawn(async move {
+            state
+                .release_idempotency_record(
+                    &tenant_context,
+                    record_id,
+                    request_fingerprint,
+                    pending_only,
+                )
+                .await
+        })
+        .await
+        .context("idempotency release task failed")?
+    }
+
+    async fn release_idempotency_record(
+        &self,
+        tenant_context: &TenantContext,
+        record_id: String,
+        request_fingerprint: String,
+        pending_only: bool,
+    ) -> anyhow::Result<bool> {
         let _guard = self.idempotency_persistence.lock().await;
         let mut records = self.idempotency_keys.write().await;
         let releasable = records
             .get(&record_id)
             .map(|record| {
                 record.tenant_matches(tenant_context)
-                    && record.status == IdempotencyKeyStatus::Reserved
+                    && (!pending_only || record.status == IdempotencyKeyStatus::ReleasePending)
+                    && matches!(
+                        record.status,
+                        IdempotencyKeyStatus::Reserved | IdempotencyKeyStatus::ReleasePending
+                    )
                     && record.request_fingerprint == request_fingerprint
             })
             .unwrap_or(false);
         if !releasable {
             return Ok(false);
         }
-        records.remove(&record_id);
-        let snapshot = records.clone();
+        // Publish intent before deleting the durable reservation. If deletion
+        // fails or the process stops between writes, a fresh process can retry
+        // this exact release without reclaiming unrelated active reservations.
+        records
+            .get_mut(&record_id)
+            .expect("checked reservation")
+            .status = IdempotencyKeyStatus::ReleasePending;
+        let pending = records.clone();
         drop(records);
-        self.persist_idempotency_keys_locked(snapshot).await?;
+        // The journal has a separate replacement path, so a failed keys.json
+        // replacement cannot erase the only durable evidence of this release.
+        let mut intents = self.load_idempotency_release_intents().await?;
+        intents.retain(|id, intent| {
+            pending
+                .get(id)
+                .is_some_and(|record| release_intent_matches(intent, record))
+        });
+        intents.insert(record_id.clone(), pending[&record_id].clone());
+        self.persist_idempotency_release_intents(intents.clone())
+            .await
+            .context("failed to journal idempotency release; reservation retained")?;
+        self.persist_idempotency_keys_locked(pending.clone())
+            .await
+            .context("failed to persist idempotency release intent; reservation retained")?;
+        #[cfg(test)]
+        tests::interrupt_release_after_intent(&self.idempotency_keys_path);
+        let mut released = pending;
+        released.remove(&record_id);
+        self.persist_idempotency_keys_locked(released).await?;
+        self.idempotency_keys.write().await.remove(&record_id);
+        intents.remove(&record_id);
+        // A stale journal is harmless: its reservation identity cannot match a
+        // future reuse of this key. Main-file deletion has already committed.
+        if let Err(error) = self.persist_idempotency_release_intents(intents).await {
+            tracing::warn!(
+                ?error,
+                "failed to prune committed idempotency release journal"
+            );
+        }
         Ok(true)
+    }
+
+    fn idempotency_release_journal_path(&self) -> PathBuf {
+        let mut path = self.idempotency_keys_path.as_os_str().to_os_string();
+        path.push(".release-intents.json");
+        PathBuf::from(path)
+    }
+
+    async fn load_idempotency_release_intents(
+        &self,
+    ) -> anyhow::Result<HashMap<String, IdempotencyKeyRecord>> {
+        let path = self.idempotency_release_journal_path();
+        match tokio::fs::read_to_string(&path).await {
+            Ok(raw) => {
+                parse_idempotency_keys_file(&raw).context("invalid idempotency release journal")
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(error) => Err(error).context("failed to read idempotency release journal"),
+        }
+    }
+
+    async fn persist_idempotency_release_intents(
+        &self,
+        intents: HashMap<String, IdempotencyKeyRecord>,
+    ) -> anyhow::Result<()> {
+        let path = self.idempotency_release_journal_path();
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        super::write_state_file_atomically(&path, serialize_idempotency_keys_file(intents)?).await
     }
 
     pub(crate) async fn get_idempotency_key(
@@ -284,6 +429,22 @@ impl AppState {
     }
 }
 
+fn release_intent_matches(intent: &IdempotencyKeyRecord, record: &IdempotencyKeyRecord) -> bool {
+    intent.status == IdempotencyKeyStatus::ReleasePending
+        && matches!(
+            record.status,
+            IdempotencyKeyStatus::Reserved | IdempotencyKeyStatus::ReleasePending
+        )
+        && intent.record_id == record.record_id
+        && intent.reservation_id == record.reservation_id
+        && intent.tenant_context == record.tenant_context
+        && intent.operation == record.operation
+        && intent.key == record.key
+        && intent.owner == record.owner
+        && intent.request_fingerprint == record.request_fingerprint
+        && intent.first_seen_at_ms == record.first_seen_at_ms
+}
+
 fn new_idempotency_record(
     record_id: String,
     input: IdempotencyReservationInput,
@@ -295,6 +456,7 @@ fn new_idempotency_record(
     IdempotencyKeyRecord {
         schema_version: IDEMPOTENCY_KEYS_SCHEMA_VERSION,
         record_id,
+        reservation_id: uuid::Uuid::new_v4().to_string(),
         tenant_context: input.tenant_context,
         operation,
         key,
@@ -397,6 +559,325 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    static INTERRUPT_RELEASE: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    > = std::sync::LazyLock::new(Default::default);
+
+    pub(super) fn interrupt_release_after_intent(path: &std::path::Path) {
+        if INTERRUPT_RELEASE.lock().unwrap().remove(path) {
+            // Exercise an actual atomic-writer failure after intent is durable.
+            std::fs::create_dir(path.with_extension("tmp")).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_release_survives_restart_without_reclaiming_active_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = temp_state();
+        state.idempotency_keys_path = directory.path().join("keys.json");
+        let tenant = tenant("restart-org", "restart-workspace");
+        for key in ["release", "active"] {
+            state
+                .reserve_idempotency_key(input(
+                    tenant.clone(),
+                    "workflow_plan.apply",
+                    key,
+                    "fingerprint",
+                ))
+                .await
+                .unwrap();
+        }
+        INTERRUPT_RELEASE
+            .lock()
+            .unwrap()
+            .insert(state.idempotency_keys_path.clone());
+        assert!(state
+            .release_reserved_idempotency_key(
+                &tenant,
+                "workflow_plan.apply",
+                "release",
+                "fingerprint",
+            )
+            .await
+            .is_err());
+        let path = state.idempotency_keys_path.clone();
+        drop(state);
+        let mut restarted = temp_state();
+        restarted.idempotency_keys_path = path.clone();
+        restarted.load_idempotency_keys().await.unwrap();
+        assert_eq!(
+            restarted
+                .get_idempotency_key(&tenant, "workflow_plan.apply", "release",)
+                .await
+                .unwrap()
+                .status,
+            IdempotencyKeyStatus::ReleasePending
+        );
+        std::fs::remove_dir(path.with_extension("tmp")).unwrap();
+        assert!(!restarted
+            .retry_pending_idempotency_release(&tenant, "workflow_plan.apply", "release", "wrong",)
+            .await
+            .unwrap());
+        let other =
+            TenantContext::explicit_user_workspace("other", "restart-workspace", None, "actor-a");
+        assert!(!restarted
+            .retry_pending_idempotency_release(
+                &other,
+                "workflow_plan.apply",
+                "release",
+                "fingerprint",
+            )
+            .await
+            .unwrap());
+        assert!(!restarted
+            .retry_pending_idempotency_release(
+                &tenant,
+                "workflow_plan.apply",
+                "active",
+                "fingerprint",
+            )
+            .await
+            .unwrap());
+        assert!(restarted
+            .retry_pending_idempotency_release(
+                &tenant,
+                "workflow_plan.apply",
+                "release",
+                "fingerprint",
+            )
+            .await
+            .unwrap());
+        restarted.load_idempotency_keys().await.unwrap();
+        assert!(restarted
+            .get_idempotency_key(&tenant, "workflow_plan.apply", "release")
+            .await
+            .is_none());
+        assert_eq!(
+            restarted
+                .get_idempotency_key(&tenant, "workflow_plan.apply", "active",)
+                .await
+                .unwrap()
+                .status,
+            IdempotencyKeyStatus::Reserved
+        );
+    }
+
+    #[tokio::test]
+    async fn release_intent_write_failure_recovers_after_restart_and_storage_repair() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("keys.json");
+        let mut state = temp_state();
+        state.idempotency_keys_path = path.clone();
+        let tenant = tenant("intent-failure-org", "workspace");
+        state
+            .reserve_idempotency_key(input(
+                tenant.clone(),
+                "workflow_plan.apply",
+                "key",
+                "fingerprint",
+            ))
+            .await
+            .unwrap();
+        std::fs::create_dir(path.with_extension("tmp")).unwrap();
+        assert!(state
+            .release_reserved_idempotency_key(&tenant, "workflow_plan.apply", "key", "fingerprint",)
+            .await
+            .is_err());
+        drop(state);
+        std::fs::remove_dir(path.with_extension("tmp")).unwrap();
+        let mut restarted = temp_state();
+        restarted.idempotency_keys_path = path;
+        restarted.load_idempotency_keys().await.unwrap();
+        assert!(
+            restarted
+                .retry_pending_idempotency_release(
+                    &tenant,
+                    "workflow_plan.apply",
+                    "key",
+                    "fingerprint",
+                )
+                .await
+                .unwrap(),
+            "storage repair must not leave an abandoned release permanently reserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_release_journal_cannot_release_a_reused_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = temp_state();
+        state.idempotency_keys_path = directory.path().join("keys.json");
+        let tenant = tenant("journal-org", "workspace");
+        let reservation = || input(tenant.clone(), "workflow_plan.apply", "key", "fingerprint");
+        let first = state.reserve_idempotency_key(reservation()).await.unwrap();
+        let obstruction = state.idempotency_keys_path.with_extension("tmp");
+        std::fs::create_dir(&obstruction).unwrap();
+        assert!(state
+            .release_reserved_idempotency_key(&tenant, "workflow_plan.apply", "key", "fingerprint",)
+            .await
+            .is_err());
+        let journal = tokio::fs::read(state.idempotency_release_journal_path())
+            .await
+            .unwrap();
+        std::fs::remove_dir(obstruction).unwrap();
+        assert!(
+            state
+                .retry_pending_idempotency_release(
+                    &tenant,
+                    "workflow_plan.apply",
+                    "key",
+                    "fingerprint",
+                )
+                .await
+                .unwrap()
+        );
+        let second = state.reserve_idempotency_key(reservation()).await.unwrap();
+        assert_ne!(
+            first.record().reservation_id,
+            second.record().reservation_id
+        );
+        // Simulate a crash after durable deletion but before journal pruning.
+        tokio::fs::write(state.idempotency_release_journal_path(), journal)
+            .await
+            .unwrap();
+        let path = state.idempotency_keys_path.clone();
+        drop(state);
+        let mut restarted = temp_state();
+        restarted.idempotency_keys_path = path;
+        restarted.load_idempotency_keys().await.unwrap();
+        assert!(
+            !restarted
+                .retry_pending_idempotency_release(
+                    &tenant,
+                    "workflow_plan.apply",
+                    "key",
+                    "fingerprint",
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            restarted
+                .get_idempotency_key(&tenant, "workflow_plan.apply", "key")
+                .await
+                .unwrap()
+                .status,
+            IdempotencyKeyStatus::Reserved
+        );
+    }
+
+    #[tokio::test]
+    async fn unreadable_release_journal_does_not_discard_durable_reservations() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = temp_state();
+        state.idempotency_keys_path = directory.path().join("keys.json");
+        let tenant = tenant("corrupt-journal-org", "workspace");
+        state
+            .reserve_idempotency_key(input(
+                tenant.clone(),
+                "workflow_plan.apply",
+                "key",
+                "fingerprint",
+            ))
+            .await
+            .unwrap();
+        tokio::fs::write(state.idempotency_release_journal_path(), b"not json")
+            .await
+            .unwrap();
+        let path = state.idempotency_keys_path.clone();
+        drop(state);
+        let mut restarted = temp_state();
+        restarted.idempotency_keys_path = path;
+        assert!(restarted.load_idempotency_keys().await.is_err());
+        assert_eq!(
+            restarted
+                .get_idempotency_key(&tenant, "workflow_plan.apply", "key")
+                .await
+                .unwrap()
+                .status,
+            IdempotencyKeyStatus::Reserved
+        );
+    }
+
+    #[tokio::test]
+    async fn release_journal_matches_legacy_reservations_but_not_completed_or_conflicted_work() {
+        let tenant = tenant("legacy-journal-org", "workspace");
+        let record = new_idempotency_record(
+            "legacy-record".into(),
+            input(tenant, "workflow_plan.apply", "key", "fingerprint"),
+            "key".into(),
+            "workflow_plan.apply".into(),
+            "test-owner".into(),
+            "fingerprint".into(),
+        );
+        let mut encoded = serde_json::to_value(record).unwrap();
+        encoded.as_object_mut().unwrap().remove("reservation_id");
+        let mut legacy: IdempotencyKeyRecord = serde_json::from_value(encoded).unwrap();
+        assert!(legacy.reservation_id.is_empty());
+        let mut intent = legacy.clone();
+        intent.status = IdempotencyKeyStatus::ReleasePending;
+        assert!(release_intent_matches(&intent, &legacy));
+        for status in [
+            IdempotencyKeyStatus::Completed,
+            IdempotencyKeyStatus::Conflicted,
+        ] {
+            legacy.status = status;
+            assert!(!release_intent_matches(&intent, &legacy));
+        }
+        legacy.status = IdempotencyKeyStatus::Reserved;
+        legacy.reservation_id = Uuid::new_v4().to_string();
+        assert!(!release_intent_matches(&intent, &legacy));
+    }
+
+    #[tokio::test]
+    async fn caller_cancellation_does_not_abandon_queued_release() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = temp_state();
+        state.idempotency_keys_path = directory.path().join("keys.json");
+        let tenant = tenant("cancel-org", "cancel-workspace");
+        state
+            .reserve_idempotency_key(input(
+                tenant.clone(),
+                "workflow_plan.apply",
+                "key",
+                "fingerprint",
+            ))
+            .await
+            .unwrap();
+        let held = state.idempotency_persistence.lock().await;
+        {
+            let release = state.release_reserved_idempotency_key(
+                &tenant,
+                "workflow_plan.apply",
+                "key",
+                "fingerprint",
+            );
+            tokio::pin!(release);
+            let first = std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(std::future::Future::poll(release.as_mut(), cx))
+            })
+            .await;
+            assert!(first.is_pending());
+        }
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while state
+                .get_idempotency_key(&tenant, "workflow_plan.apply", "key")
+                .await
+                .is_some()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        state.load_idempotency_keys().await.unwrap();
+        assert!(state
+            .get_idempotency_key(&tenant, "workflow_plan.apply", "key")
+            .await
+            .is_none());
+    }
 
     fn tenant(org: &str, workspace: &str) -> TenantContext {
         TenantContext::explicit_user_workspace(org, workspace, None, "actor-a")
@@ -518,6 +999,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn another_owner_cannot_replay_or_poison_a_tenant_reservation() {
+        let state = temp_state();
+        let tenant = tenant("org-a", "workspace-a");
+        let mut alice = input(
+            tenant.clone(),
+            "operator.workflow_plan_start",
+            "shared",
+            "same",
+        );
+        alice.owner = "alice".to_string();
+        let first = state.reserve_idempotency_key(alice).await.unwrap();
+        assert!(matches!(first, IdempotencyReservation::Reserved(_)));
+        let original = first.record().clone();
+
+        for fingerprint in ["same", "different"] {
+            let mut bob = input(
+                tenant.clone(),
+                "operator.workflow_plan_start",
+                "shared",
+                fingerprint,
+            );
+            bob.owner = "bob".to_string();
+            bob.now_ms = 2_000;
+            assert!(matches!(
+                state.reserve_idempotency_key(bob).await.unwrap(),
+                IdempotencyReservation::Conflict(_)
+            ));
+        }
+
+        let stored = state
+            .get_idempotency_key(&tenant, "operator.workflow_plan_start", "shared")
+            .await
+            .unwrap();
+        assert_eq!(stored, original);
+        let mut alice_retry = input(tenant, "operator.workflow_plan_start", "shared", "same");
+        alice_retry.owner = "alice".to_string();
+        assert!(matches!(
+            state.reserve_idempotency_key(alice_retry).await.unwrap(),
+            IdempotencyReservation::Duplicate(_)
+        ));
+        let _ = tokio::fs::remove_file(&state.idempotency_keys_path).await;
+    }
+
+    #[tokio::test]
     async fn conflicting_key_reuse_is_recorded() {
         let state = temp_state();
         let tenant_a = tenant("org-a", "workspace-a");
@@ -558,6 +1083,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_reservation_release_preserves_state_and_can_be_retried() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = temp_state();
+        let durable = directory.path().join("keys.json");
+        state.idempotency_keys_path = durable.clone();
+        let tenant = tenant("org-release", "workspace-release");
+        state
+            .reserve_idempotency_key(input(
+                tenant.clone(),
+                "workflow_plan.apply",
+                "key",
+                "fingerprint",
+            ))
+            .await
+            .unwrap();
+        let before = tokio::fs::read(&durable).await.unwrap();
+        let blocked = directory.path().join("not-a-directory");
+        tokio::fs::write(&blocked, b"blocked").await.unwrap();
+        state.idempotency_keys_path = blocked.join("keys.json");
+        assert!(state
+            .release_reserved_idempotency_key(&tenant, "workflow_plan.apply", "key", "fingerprint")
+            .await
+            .is_err());
+        assert_eq!(
+            state
+                .get_idempotency_key(&tenant, "workflow_plan.apply", "key")
+                .await
+                .unwrap()
+                .status,
+            IdempotencyKeyStatus::ReleasePending
+        );
+        assert_eq!(tokio::fs::read(&durable).await.unwrap(), before);
+        state.idempotency_keys_path = durable;
+        assert!(!state
+            .retry_pending_idempotency_release(&tenant, "workflow_plan.apply", "key", "other")
+            .await
+            .unwrap());
+        assert!(state
+            .retry_pending_idempotency_release(&tenant, "workflow_plan.apply", "key", "fingerprint")
+            .await
+            .unwrap());
+        state.load_idempotency_keys().await.unwrap();
+        assert!(state
+            .get_idempotency_key(&tenant, "workflow_plan.apply", "key")
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn reserved_key_can_be_released_only_by_its_fingerprint() {
         let state = temp_state();
         let tenant_a = tenant("org-a", "workspace-a");
@@ -571,6 +1145,15 @@ mod tests {
             .await
             .expect("reserve key");
 
+        assert!(!state
+            .retry_pending_idempotency_release(
+                &tenant_a,
+                "session.prompt_async",
+                "prompt-1",
+                "fingerprint-a",
+            )
+            .await
+            .expect("do not release active reservation"));
         assert!(!state
             .release_reserved_idempotency_key(
                 &tenant_a,

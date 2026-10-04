@@ -657,6 +657,7 @@ async fn committed_grant_with_unconsumed_reservation_cannot_duplicate() {
             ),
             Some("reviewed delegation".to_string()),
             &tenant,
+            || Ok(()),
         )
         .await
         .expect("simulate committed grant before reservation consumption");
@@ -822,6 +823,7 @@ async fn governance_bootstrap_migrates_unscoped_record_and_grant_tenant() {
             ),
             None,
             &tenant_context,
+            || Ok(()),
         )
         .await
         .expect("seed scoped grant");
@@ -894,6 +896,7 @@ async fn governance_bootstrap_persists_quarantine_for_tenant_mismatch() {
             ),
             None,
             &tenant,
+            || Ok(()),
         )
         .await
         .expect("seed grant");
@@ -1237,6 +1240,7 @@ async fn governance_grant_audit_failure_leaves_state_unchanged() {
             crate::automation_v2::governance::GovernanceActorRef::human(Some("owner".to_string()), "test"),
             Some("audit must precede mutation".to_string()),
             &tenant_context,
+            || Ok(()),
         )
         .await;
     assert!(result.is_err(), "grant must fail when its audit cannot persist");
@@ -1248,6 +1252,55 @@ async fn governance_grant_audit_failure_leaves_state_unchanged() {
         governance.modify_grants.is_empty(),
         "failed audit must leave no visible modify grant"
     );
+}
+
+#[tokio::test]
+async fn governance_grant_commit_denial_leaves_state_and_file_unchanged() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation_id = "auto-governance-commit-denial";
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/automations/v2")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    automation_v2_payload(automation_id, "agent-a", None).to_string(),
+                ))
+                .expect("automation create"),
+        )
+        .await
+        .expect("automation create response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let before = std::fs::read(&state.automation_governance_path).expect("governance before");
+    let result = state
+        .grant_automation_modify_access(
+            automation_id,
+            crate::automation_v2::governance::GovernanceActorRef::agent(
+                Some("grantee".to_string()),
+                "test",
+            ),
+            crate::automation_v2::governance::GovernanceActorRef::human(
+                Some("owner".to_string()),
+                "test",
+            ),
+            None,
+            &TenantContext::local_implicit(),
+            || anyhow::bail!("authority revoked before commit"),
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read(&state.automation_governance_path).expect("governance after"),
+        before
+    );
+    assert!(state
+        .get_automation_governance(automation_id)
+        .await
+        .expect("governance record")
+        .modify_grants
+        .is_empty());
 }
 
 /// GOV-B10: in the OSS/local engine a human may freely mutate their own (or an

@@ -472,6 +472,7 @@ impl OrchestrationTool {
             }
             OrchestrationToolKind::GoalStart => {
                 let actor = mutation_actor(args, tenant, None)?;
+                let verified = verified_context(args);
                 let mut metadata = args.get("metadata").cloned().unwrap_or_else(|| json!({}));
                 merge_object_value(&mut metadata, "started_by", json!(actor));
                 let request = crate::app::state::StartGoalRequest {
@@ -486,7 +487,7 @@ impl OrchestrationTool {
                 };
                 match self
                     .state
-                    .start_long_running_goal(tenant, &request, &actor)
+                    .start_long_running_goal(tenant, &request, &actor, verified.as_ref())
                     .await?
                 {
                     StartGoalOutcome::Created { goal, root_run } => Ok(json!({

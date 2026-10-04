@@ -67,6 +67,22 @@ impl OrchestrationStateStore {
         link: &GoalRunLink,
         actor: &PrincipalRef,
     ) -> anyhow::Result<StartGoalOutcome> {
+        self.start_goal_with_commit_guard(goal, root_run, link, actor, |commit| commit())
+    }
+
+    /// Invoke the authority continuation only after the backend's serialized
+    /// writer lock has been acquired. The continuation must keep revocable
+    /// authority read guards alive while it calls `commit`.
+    pub(crate) fn start_goal_with_commit_guard(
+        &self,
+        goal: &LongRunningGoal,
+        root_run: &AutomationV2RunRecord,
+        link: &GoalRunLink,
+        actor: &PrincipalRef,
+        guard: impl FnOnce(
+            &mut dyn FnMut() -> anyhow::Result<StartGoalOutcome>,
+        ) -> anyhow::Result<StartGoalOutcome>,
+    ) -> anyhow::Result<StartGoalOutcome> {
         if link.goal_id != goal.goal_id || link.run_id != root_run.run_id {
             bail!("goal start lineage must bind the goal to its root run");
         }
@@ -79,6 +95,8 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // Authorization before this point can go stale while SQLite waits
+            // for BEGIN IMMEDIATE or Postgres waits for its advisory lock.
             let existing = transaction
                 .query_row(
                     "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
@@ -128,48 +146,65 @@ impl OrchestrationStateStore {
                 });
             }
 
-            upsert_goal(&transaction, goal)?;
-            upsert_automation_run(&transaction, root_run)?;
-            transaction.execute(
-                "INSERT INTO goal_run_links
+            // A replay does not create anything. Keep it available to a
+            // caller who can still inspect the stored goal even if source
+            // Execute was revoked during the writer-lock wait. The app checks
+            // current replay visibility before returning the stored record.
+            let mut transaction = Some(transaction);
+            let outcome = {
+                let mut commit_once = || {
+                    let transaction = transaction
+                        .take()
+                        .context("goal start transaction already consumed")?;
+                    upsert_goal(&transaction, goal)?;
+                    upsert_automation_run(&transaction, root_run)?;
+                    transaction.execute(
+                        "INSERT INTO goal_run_links
                     (goal_id, run_id, orchestration_node_id, orchestration_version, hop_index,
                      parent_run_id, triggering_handoff_id, link_json, created_at_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    link.goal_id,
-                    link.run_id,
-                    link.orchestration_node_id,
-                    link.orchestration_version,
-                    link.hop_index,
-                    link.parent_run_id,
-                    link.triggering_handoff_id,
-                    protected_records::encode(
-                        &goal.tenant_context,
-                        "link",
-                        &link.run_id,
-                        link,
-                    )?,
-                    link.created_at_ms,
-                ],
-            )?;
-            insert_goal_event(
-                &transaction,
-                goal,
-                actor,
-                goal.created_at_ms,
-                "stateful_runtime.goal.started",
-                json!({
-                    "goal_id": goal.goal_id,
-                    "orchestration_id": goal.orchestration_id,
-                    "orchestration_version": goal.orchestration_version,
-                    "root_run_id": root_run.run_id,
-                }),
-            )?;
-            transaction.commit()?;
-            Ok(StartGoalOutcome::Created {
-                goal: goal.clone(),
-                root_run: root_run.clone(),
-            })
+                        params![
+                            link.goal_id,
+                            link.run_id,
+                            link.orchestration_node_id,
+                            link.orchestration_version,
+                            link.hop_index,
+                            link.parent_run_id,
+                            link.triggering_handoff_id,
+                            protected_records::encode(
+                                &goal.tenant_context,
+                                "link",
+                                &link.run_id,
+                                link,
+                            )?,
+                            link.created_at_ms,
+                        ],
+                    )?;
+                    insert_goal_event(
+                        &transaction,
+                        goal,
+                        actor,
+                        goal.created_at_ms,
+                        "stateful_runtime.goal.started",
+                        json!({
+                            "goal_id": goal.goal_id,
+                            "orchestration_id": goal.orchestration_id,
+                            "orchestration_version": goal.orchestration_version,
+                            "root_run_id": root_run.run_id,
+                        }),
+                    )?;
+                    transaction.commit()?;
+                    Ok(StartGoalOutcome::Created {
+                        goal: goal.clone(),
+                        root_run: root_run.clone(),
+                    })
+                };
+                guard(&mut commit_once)?
+            };
+            if transaction.is_some() {
+                bail!("goal start authority guard skipped durable commit");
+            }
+            Ok(outcome)
         })
     }
 
@@ -258,6 +293,20 @@ impl OrchestrationStateStore {
         orchestration_id: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<LongRunningGoal>> {
+        self.list_goals_filtered(tenant, status, orchestration_id, limit, |_| true)
+    }
+
+    /// Apply caller visibility before the limit so a page is not consumed by
+    /// goals that the caller cannot see. The predicate must be synchronous;
+    /// policy/grant projection happens before the store lock is acquired.
+    pub fn list_goals_filtered(
+        &self,
+        tenant: &TenantContext,
+        status: Option<&str>,
+        orchestration_id: Option<&str>,
+        limit: usize,
+        mut visible: impl FnMut(&LongRunningGoal) -> bool,
+    ) -> anyhow::Result<Vec<LongRunningGoal>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
                 "SELECT goal_id, goal_json FROM long_running_goals
@@ -281,6 +330,9 @@ impl OrchestrationStateStore {
                     }
                 }
                 if orchestration_id.is_some_and(|id| id != goal.orchestration_id) {
+                    continue;
+                }
+                if !visible(&goal) {
                     continue;
                 }
                 goals.push(goal);

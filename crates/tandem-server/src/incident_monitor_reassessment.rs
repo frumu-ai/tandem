@@ -524,7 +524,7 @@ pub async fn incident_monitor_reassessment_schedule_status(
 /// Background scheduler loop: after the runtime is ready, run any due scopes on
 /// a fixed tick. Change-triggered scopes are also picked up here.
 pub async fn run_incident_monitor_reassessment_scheduler(state: AppState) {
-    if !state.wait_until_ready_or_failed(120, 250).await {
+    if !state.wait_for_worker_ready_or_failed(120, 250).await {
         return;
     }
     loop {

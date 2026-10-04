@@ -9,5 +9,8 @@ use session_background::{
 
 include!("workflow_planner_parts/part01.rs");
 include!("workflow_planner_parts/part03.rs");
+include!("workflow_planner_parts/session_commit_authority.rs");
 include!("workflow_planner_parts/part04.rs");
+include!("workflow_planner_parts/session_crud.rs");
+include!("workflow_planner_parts/pack_security.rs");
 include!("workflow_planner_parts/part02.rs");

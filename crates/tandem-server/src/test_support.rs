@@ -24,6 +24,7 @@ use tandem_core::{
     AgentRegistry, CancellationRegistry, ConfigStore, EngineLoop, EventBus, PermissionManager,
     PluginRegistry, Storage,
 };
+use tandem_enterprise_contract::hosted_policy::HostedPolicyBundle;
 use tandem_providers::ProviderRegistry;
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
 use tandem_tools::{GovernedToolDispatcher, ToolRegistry};
@@ -49,6 +50,35 @@ pub fn install_hosted_assertion_security_for_test(
     let security = crate::context_assertion_security::RuntimeContextAssertionSecurity::
         from_test_metadata_keyring(raw_keyring, replay_path);
     *state.context_assertion_security.write().unwrap() = Some(Arc::new(security));
+}
+
+/// Install a validated hosted policy snapshot for cross-crate HTTP tests.
+/// Production code cannot call this feature-gated test seam.
+pub fn install_hosted_policy_snapshot(
+    state: &AppState,
+    bundle: HostedPolicyBundle,
+) -> Result<(), &'static str> {
+    state.enterprise.hosted_policy.install_test_bundle(bundle)
+}
+
+/// Configure a file-backed hosted policy for cross-crate tests and publish it
+/// through the production reload path, including its publication mutex.
+pub async fn configure_hosted_policy_file_for_test(
+    state: &AppState,
+    organization_id: &str,
+    deployment_id: &str,
+    path: std::path::PathBuf,
+) -> anyhow::Result<()> {
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source(organization_id, deployment_id, path);
+    state.reload_hosted_policy().await
+}
+
+/// Publish the next revision of a test's already-configured policy file.
+pub async fn reload_hosted_policy_file_for_test(state: &AppState) -> anyhow::Result<()> {
+    state.reload_hosted_policy().await
 }
 
 /// Build a ready [`AppState`] backed by per-call temp directories, with the

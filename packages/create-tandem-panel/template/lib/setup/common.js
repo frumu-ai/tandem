@@ -72,6 +72,20 @@ function shellEscape(token) {
   return `"${text.replace(/(["\\$`])/g, "\\$1")}"`;
 }
 
+function isLoopbackHost(host) {
+  const text = String(host || "").trim().toLowerCase();
+  if (!text) return false;
+  return text === "localhost" || text === "::1" || text.startsWith("127.");
+}
+
+function isLoopbackUrl(url) {
+  try {
+    return isLoopbackHost(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function log(msg) {
   console.log(`[Tandem Setup] ${msg}`);
 }
@@ -80,4 +94,4 @@ function err(msg) {
   console.error(`[Tandem Setup] ERROR: ${msg}`);
 }
 
-export { err, log, parseCliArgs, runCmd, shellEscape };
+export { err, isLoopbackHost, isLoopbackUrl, log, parseCliArgs, runCmd, shellEscape };

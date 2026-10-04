@@ -12,6 +12,10 @@ use crate::message_part_reducer::reduce_message_parts;
 
 use super::{QuestionRequest, SessionMeta, MAX_SESSION_SNAPSHOTS};
 
+#[cfg(test)]
+#[path = "session_repository_commit_guard_tests.rs"]
+mod commit_guard_tests;
+
 const JSON_IMPORT_MIGRATION: &str = "sessions_json_import_v1";
 
 /// Migration inputs are retained on disk. The transaction records their digest
@@ -172,14 +176,67 @@ impl SessionRepository {
         self.with_connection(|connection| load_session(connection, session_id))
     }
 
+    pub(crate) fn session_owner_read_guard(
+        &self,
+        session_ids: &[String],
+    ) -> Result<super::SessionOwnerReadGuard> {
+        super::SessionOwnerReadGuard::acquire(self.open_connection()?, session_ids)
+    }
+
     pub(crate) fn save_session(&self, session: &Session) -> Result<()> {
+        self.save_session_with_commit_guard(session, |commit| commit())
+    }
+
+    pub(crate) fn save_session_with_commit_guard(
+        &self,
+        session: &Session,
+        guard: impl FnOnce(&mut dyn FnMut() -> Result<()>) -> Result<()>,
+    ) -> Result<()> {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            replace_session(&transaction, session)?;
-            ensure_metadata(&transaction, &session.id)?;
+            let mut transaction = Some(transaction);
+            let mut committed = false;
+            let result = {
+                let mut commit = || {
+                    let transaction = transaction
+                        .take()
+                        .context("session transaction already consumed")?;
+                    replace_session(&transaction, session)?;
+                    ensure_metadata(&transaction, &session.id)?;
+                    transaction.commit()?;
+                    committed = true;
+                    Ok(())
+                };
+                guard(&mut commit)
+            };
+            if committed {
+                return result.context("session commit guard failed after session commit");
+            }
+            result?;
+            anyhow::bail!("session commit guard skipped commit")
+        })
+    }
+
+    pub(crate) fn update_session_authority(
+        &self,
+        session_id: &str,
+        expected_tenant: &tandem_types::TenantContext,
+        authority: Option<tandem_types::VerifiedTenantContext>,
+    ) -> Result<bool> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let Some(mut current) = load_session_header(&transaction, session_id)? else {
+                return Ok(false);
+            };
+            if &current.tenant_context != expected_tenant {
+                return Ok(false);
+            }
+            current.verified_tenant_context = authority;
+            update_session_header(&transaction, &current)?;
             transaction.commit()?;
-            Ok(())
+            Ok(true)
         })
     }
 
@@ -201,40 +258,75 @@ impl SessionRepository {
     }
 
     pub(crate) fn append_message(&self, session_id: &str, message: &Message) -> Result<()> {
+        self.append_message_with_commit_guard(session_id, message, |commit| commit())
+    }
+
+    pub(crate) fn append_message_with_commit_guard(
+        &self,
+        session_id: &str,
+        message: &Message,
+        guard: impl FnOnce(&mut dyn FnMut() -> Result<()>) -> Result<()>,
+    ) -> Result<()> {
+        self.append_messages_with_commit_guard(session_id, std::slice::from_ref(message), guard)
+    }
+
+    pub(crate) fn append_messages_with_commit_guard(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+        guard: impl FnOnce(&mut dyn FnMut() -> Result<()>) -> Result<()>,
+    ) -> Result<()> {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let next_ordinal: i64 = transaction.query_row(
-                "SELECT COALESCE(MAX(ordinal) + 1, 0) FROM session_messages WHERE session_id = ?1",
-                [session_id],
-                |row| row.get(0),
-            )?;
-            let exists = transaction
-                .query_row(
-                    "SELECT 1 FROM session_records WHERE session_id = ?1",
-                    [session_id],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some();
-            if !exists {
-                anyhow::bail!("session not found for append_message");
+            let mut transaction = Some(transaction);
+            let mut committed = false;
+            let result = {
+                let mut commit = || {
+                    let transaction = transaction.take().context("session transaction already consumed")?;
+                    let next_ordinal: i64 = transaction.query_row(
+                        "SELECT COALESCE(MAX(ordinal) + 1, 0) FROM session_messages WHERE session_id = ?1",
+                        [session_id],
+                        |row| row.get(0),
+                    )?;
+                    let exists = transaction
+                        .query_row(
+                            "SELECT 1 FROM session_records WHERE session_id = ?1",
+                            [session_id],
+                            |_| Ok(()),
+                        )
+                        .optional()?
+                        .is_some();
+                    if !exists {
+                        anyhow::bail!("session not found for append_message");
+                    }
+                    for (offset, message) in messages.iter().enumerate() {
+                        let ordinal = next_ordinal + offset as i64;
+                        transaction.execute(
+                            "INSERT INTO session_messages (session_id, ordinal, message_id, role, message_json)
+                             VALUES (?1, ?2, ?3, ?4, ?5)",
+                            params![
+                                session_id,
+                                ordinal,
+                                message.id,
+                                message_role_name(&message.role),
+                                serde_json::to_string(&message_header(message))?,
+                            ],
+                        )?;
+                        insert_message_parts(&transaction, session_id, ordinal, &message.parts)?;
+                    }
+                    touch_session(&transaction, session_id)?;
+                    transaction.commit()?;
+                    committed = true;
+                    Ok(())
+                };
+                guard(&mut commit)
+            };
+            if committed {
+                return result.context("session commit guard failed after message commit");
             }
-            transaction.execute(
-                "INSERT INTO session_messages (session_id, ordinal, message_id, role, message_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    session_id,
-                    next_ordinal,
-                    message.id,
-                    message_role_name(&message.role),
-                    serde_json::to_string(&message_header(message))?,
-                ],
-            )?;
-            insert_message_parts(&transaction, session_id, next_ordinal, &message.parts)?;
-            touch_session(&transaction, session_id)?;
-            transaction.commit()?;
-            Ok(())
+            result?;
+            anyhow::bail!("session commit guard skipped commit")
         })
     }
 
@@ -643,7 +735,12 @@ impl SessionRepository {
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T>,
     ) -> Result<T> {
-        let mut connection = Connection::open(&self.database_path).with_context(|| {
+        let mut connection = self.open_connection()?;
+        operation(&mut connection)
+    }
+
+    fn open_connection(&self) -> Result<Connection> {
+        let connection = Connection::open(&self.database_path).with_context(|| {
             format!(
                 "failed to open session store {}",
                 self.database_path.display()
@@ -651,7 +748,7 @@ impl SessionRepository {
         })?;
         connection.busy_timeout(Duration::from_secs(30))?;
         connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;")?;
-        operation(&mut connection)
+        Ok(connection)
     }
 }
 

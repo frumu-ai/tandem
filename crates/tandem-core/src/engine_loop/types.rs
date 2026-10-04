@@ -164,6 +164,17 @@ pub trait ToolPolicyHook: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
+    /// Called for every governed dispatch, including children of `batch`.
+    /// Server implementations can deny a canonical tool whose authority was
+    /// not carried by the exact prompt run. The default preserves non-server
+    /// engine embedders that do not require this additional host boundary.
+    fn revalidate_dispatch(
+        &self,
+        _context: tandem_tools::ToolDispatchPolicyContext,
+    ) -> BoxFuture<'static, anyhow::Result<Option<tandem_tools::ToolDispatchDecision>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn evaluate_tool(
         &self,
         ctx: ToolPolicyContext,

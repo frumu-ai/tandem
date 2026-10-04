@@ -47,6 +47,7 @@ pub(super) fn automation_create_to_routine(
             (Vec::new(), false, true)
         };
     Ok(RoutineSpec {
+        solution_owner: None,
         routine_id: input
             .automation_id
             .unwrap_or_else(|| format!("automation-{}", uuid::Uuid::new_v4().simple())),
@@ -77,6 +78,7 @@ pub(super) fn automation_create_to_routine(
 pub(super) async fn automations_create(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<AutomationCreateInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let mut routine = automation_create_to_routine(input).map_err(|detail| {
@@ -89,9 +91,24 @@ pub(super) async fn automations_create(
             })),
         )
     })?;
-    routine.tenant_context = tenant_context;
-    let saved = state
-        .put_routine(routine)
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    routine.tenant_context = tenant_context.clone();
+    if let Some(verified) = verified {
+        routine.creator_type = "user".to_string();
+        routine.creator_id = verified.human_actor.actor_id.trim().to_string();
+    }
+    let (saved, _) = state
+        .put_routine_checked(routine, |existing, incoming| {
+            if !state.legacy_routine_write_allowed(&tenant_context, verified, existing) {
+                return false;
+            }
+            if let Some(existing) = existing {
+                incoming.tenant_context = existing.tenant_context.clone();
+                incoming.creator_type = existing.creator_type.clone();
+                incoming.creator_id = existing.creator_id.clone();
+            }
+            true
+        })
         .await
         .map_err(routine_error_response)?;
     state
