@@ -25,6 +25,7 @@ async fn component_fixture(component: &str) -> Fixture {
             .unwrap()
             .remove("depends_on");
         blueprint.1 = serde_json::to_string(&document).unwrap();
+        entries.retain(|(path, _)| path != "agents/central-brain.json");
     }
     let mut fixture = Fixture::new_with_entries(entries).await;
     if component == "central-brain" {
@@ -78,13 +79,9 @@ async fn wait_for_claim(fixture: &Fixture, request: &SolutionStagingRequest, com
             let claimed = OrchestrationStateStore::from_automation_runs_path(
                 &fixture.state.automation_v2_runs_path,
             )
-            .ok()
-            .and_then(|store| {
-                store
-                    .solution_installation(&fixture.verified, &request.scope, crate::now_ms())
-                    .ok()
-                    .flatten()
-            })
+            .expect("the real staging store must open")
+            .solution_installation(&fixture.verified, &request.scope, crate::now_ms())
+            .expect("the controller must be authorized to read real staging progress")
             .is_some_and(|journal| {
                 matches!(
                     journal.components.get(component),
@@ -94,11 +91,32 @@ async fn wait_for_claim(fixture: &Fixture, request: &SolutionStagingRequest, com
             if claimed {
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
     .expect("real staging must claim the native component");
+}
+
+async fn stage_with_controller<F, C>(stage: F, controller: C) -> F::Output
+where
+    F: std::future::Future,
+    F::Output: std::fmt::Debug,
+    C: std::future::Future<Output = ()>,
+{
+    tokio::pin!(stage);
+    tokio::pin!(controller);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::select! {
+            biased;
+            () = &mut controller => stage.await,
+            result = &mut stage => panic!(
+                "staging returned before the controller released its native writer: {result:?}"
+            ),
+        }
+    })
+    .await
+    .expect("the admitted native staging attempt must finish after its writer is released")
 }
 
 async fn wait_for_guard(fixture: &Fixture, request: &SolutionStagingRequest, component: &str) {
@@ -144,11 +162,7 @@ async fn native_staging_rejects_revocation_published_while_target_writer_is_held
                     assert!(!native_exists(&fixture, &request, component));
                     drop(writer);
                 };
-                let (result, ()) = tokio::time::timeout(Duration::from_secs(20), async {
-                    tokio::join!(stage, controller)
-                })
-                .await
-                .unwrap();
+                let result = stage_with_controller(stage, controller).await;
                 assert!(result.is_err(), "revoked {component} staging must fail");
                 assert!(!native_exists(&fixture, &request, component));
             }
@@ -166,9 +180,11 @@ async fn native_staging_rechecks_assertion_expiry_after_target_writer_wait() {
         async {
             for component in COMPONENTS {
                 let mut fixture = component_fixture(component).await;
+                // Hosted grants inherit this expiry and enter the reviewed
+                // authority hash. Review the same identity that will stage.
+                fixture.verified.expires_at_ms = crate::now_ms() + 5_000;
                 let request = fixture.review_and_save().await;
                 let writer = hold_writer(&fixture.state, component).await;
-                fixture.verified.expires_at_ms = crate::now_ms() + 5_000;
                 let stage = fixture
                     .state
                     .stage_solution_installation(&fixture.verified, request.clone());
@@ -181,11 +197,7 @@ async fn native_staging_rechecks_assertion_expiry_after_target_writer_wait() {
                     tokio::time::sleep(Duration::from_millis(remaining + 1)).await;
                     drop(writer);
                 };
-                let (result, ()) = tokio::time::timeout(Duration::from_secs(20), async {
-                    tokio::join!(stage, controller)
-                })
-                .await
-                .unwrap();
+                let result = stage_with_controller(stage, controller).await;
                 assert!(
                     result.is_err(),
                     "expired {component} staging must fail after its wait"
@@ -224,12 +236,19 @@ async fn cancelled_native_staging_retains_guard_through_commit_or_routine_rollba
                 let state = fixture.state.clone();
                 let actor = fixture.verified.clone();
                 let intent = request.clone();
-                let stage = tokio::spawn(crate::encrypted_file_store::with_test_crypto_provider(
-                    tandem_memory::MemoryCryptoProvider::local_key([0x39; 32]),
-                    None,
-                    async move { state.stage_solution_installation(&actor, intent).await },
-                ));
-                wait_for_guard(&fixture, &request, component).await;
+                let mut stage =
+                    tokio::spawn(crate::encrypted_file_store::with_test_crypto_provider(
+                        tandem_memory::MemoryCryptoProvider::local_key([0x39; 32]),
+                        None,
+                        async move { state.stage_solution_installation(&actor, intent).await },
+                    ));
+                tokio::select! {
+                    biased;
+                    () = wait_for_guard(&fixture, &request, component) => (),
+                    result = &mut stage => panic!(
+                        "staging returned before cancellation at the native writer: {result:?}"
+                    ),
+                }
                 stage.abort();
                 assert!(stage.await.unwrap_err().is_cancelled());
                 fixture.write_policy(2, false);
