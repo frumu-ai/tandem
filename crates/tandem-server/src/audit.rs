@@ -363,6 +363,7 @@ async fn append_protected_audit_event_with_id(
     let _chain_guard = ProtectedAuditChainLock::acquire(&path).await?;
     crate::encrypted_file_store::with_audit_append_crypto(append_protected_audit_event_locked(
         state,
+        event_id,
         event_type,
         tenant_context,
         actor,
@@ -373,7 +374,8 @@ async fn append_protected_audit_event_with_id(
 
 async fn append_protected_audit_event_locked(
     state: &AppState,
-    event_type: impl Into<String>,
+    event_id: Option<&str>,
+    event_type: String,
     tenant_context: &TenantContext,
     actor: Option<String>,
     payload: Value,
