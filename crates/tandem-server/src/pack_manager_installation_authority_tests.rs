@@ -34,6 +34,10 @@ async fn component_fixture(component: &str) -> Fixture {
             .configuration
             .optional_components
             .clear();
+    } else {
+        // The isolated routine declares no model class. Global memory spaces
+        // and approved references remain declared by the signed blueprint.
+        fixture.configuration.configuration.models.clear();
     }
     fixture
 }
