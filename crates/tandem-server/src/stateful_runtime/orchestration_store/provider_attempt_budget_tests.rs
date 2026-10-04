@@ -162,28 +162,35 @@ fn policy(
         .unwrap()
 }
 
-async fn complete(
-    registry: &ProviderRegistry,
-    policy: tandem_providers::ProviderAttemptPolicy,
-) -> anyhow::Result<String> {
-    registry
-        .scope_tenant_provider_auth_with_recovery(
-            tandem_types::TenantContext::explicit_user_workspace(
-                "org-a",
-                "workspace-a",
-                Some("deployment-a".into()),
-                "owner-a",
-            ),
-            ProviderAuthRecovery::new(|_| async { Ok(false) }),
-            true,
-            policy.scope(registry.complete_for_provider(
-                Some("llama_cpp"),
-                "synthetic request",
-                None,
-            )),
-        )
-        .await
+#[cfg(test)]
+mod budget_test_dispatch {
+    use super::{ProviderAuthRecovery, ProviderRegistry};
+
+    pub(super) async fn complete(
+        registry: &ProviderRegistry,
+        policy: tandem_providers::ProviderAttemptPolicy,
+    ) -> anyhow::Result<String> {
+        registry
+            .scope_tenant_provider_auth_with_recovery(
+                tandem_types::TenantContext::explicit_user_workspace(
+                    "org-a",
+                    "workspace-a",
+                    Some("deployment-a".into()),
+                    "owner-a",
+                ),
+                ProviderAuthRecovery::new(|_| async { Ok(false) }),
+                true,
+                policy.scope(registry.complete_for_provider(
+                    Some("llama_cpp"),
+                    "synthetic request",
+                    None,
+                )),
+            )
+            .await
+    }
 }
+
+use budget_test_dispatch::complete;
 
 async fn request(socket: &mut tokio::net::TcpStream) -> serde_json::Value {
     let mut bytes = Vec::new();
