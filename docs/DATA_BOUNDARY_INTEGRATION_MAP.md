@@ -121,7 +121,7 @@ a finer-grained hook later (TAN-397).
 * Chunk visibility gate: `memory_chunk_visible_to_access_filter`
   (`manager_parts/part01.rs:1612`).
 * Governed global memory: `search_global_memory_for_tenant`
-  (`tandem-server/src/http/skills_memory_parts/part04.rs:818`); governed
+  (`tandem-server/src/http/skills_memory_parts/part04_b.rs`); governed
   memory injection fails closed when verified context is missing.
 * Design reference: `docs/DATA_BOUNDARY_ENFORCEMENT_DESIGN.md` (TAN-267);
   `StrictTenantContext::evaluate_access`

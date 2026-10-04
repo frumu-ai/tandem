@@ -237,7 +237,7 @@ Primary hooks for CT-12:
   `crates/tandem-memory/src/manager_parts/part01.rs` should stop returning
   `true` for missing targets when mode is `GovernedStrict`.
 - `global_memory_record_visible_to_access_filter` in
-  `crates/tandem-server/src/http/skills_memory_parts/part04.rs` should share the
+  `crates/tandem-server/src/http/skills_memory_parts/part04_b.rs` should share the
   same target normalization and missing-metadata behavior.
 - HTTP list/search surfaces should construct `GovernedReadMode` from runtime
   auth mode and verified tenant context instead of using `Option<MemoryAccessFilter>`
