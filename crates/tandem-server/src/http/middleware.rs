@@ -378,7 +378,7 @@ async fn denial_receipt_diagnostic_and_response_hide_error_content() {
     assert_eq!(json["error"], REQUIRED_DENIAL_RECEIPT_PUBLIC_ERROR);
 }
 
-pub(super) async fn enrich_verified_context_with_org_unit_grants(
+pub(crate) async fn enrich_verified_context_with_org_unit_grants(
     state: &AppState,
     verified: &mut VerifiedTenantContext,
     hosted_memberships: Option<Vec<OrganizationUnitMembership>>,

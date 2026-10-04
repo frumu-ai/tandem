@@ -118,7 +118,11 @@ mod tool_event_capture_tests {
             .iter()
             .filter(|r| r.source_type.starts_with("tool_"))
             .collect();
-        assert_eq!(tool_records.len(), 1, "summary keeps exactly one tool record");
+        assert_eq!(
+            tool_records.len(),
+            1,
+            "summary keeps exactly one tool record"
+        );
         assert_eq!(tool_records[0].source_type, "tool_event");
         assert_eq!(tool_records[0].content, "tool=bash outcome=ok");
         // The noisy verbatim payload must not have leaked into memory.

@@ -867,8 +867,8 @@ mod hosted_policy_grant_tests {
     use ed25519_dalek::Signer;
     use serde_json::json;
     use tandem_enterprise_contract::{
-        hosted_policy::{role_capabilities, HostedPolicyBundle}, AuthorityChain, HumanActor,
-        TenantContextAssertionClaims, TenantContextAssertionHeader,
+        hosted_policy::{role_capabilities, HostedPolicyBundle},
+        AuthorityChain, HumanActor, TenantContextAssertionClaims, TenantContextAssertionHeader,
     };
     use tower::ServiceExt;
 

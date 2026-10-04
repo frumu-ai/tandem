@@ -48,7 +48,12 @@ pub(super) fn seal_global_field(
     }
     let (policy, audit) = authorization_ids(id, field);
     let (stored, envelope) = crypto.encrypt_field_scoped(plaintext, scope, &policy, &audit)?;
-    Ok((stored, envelope.map(|value| serde_json::to_string(&value)).transpose()?))
+    Ok((
+        stored,
+        envelope
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    ))
 }
 
 pub(super) fn seal_global_record_fields(
@@ -56,8 +61,16 @@ pub(super) fn seal_global_record_fields(
     record: &GlobalMemoryRecord,
 ) -> MemoryResult<SealedGlobalRecordFields> {
     let scope = global_record_scope(record);
-    let metadata = record.metadata.as_ref().map(ToString::to_string).unwrap_or_default();
-    let provenance = record.provenance.as_ref().map(ToString::to_string).unwrap_or_default();
+    let metadata = record
+        .metadata
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    let provenance = record
+        .provenance
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
     let (content, content_envelope) =
         seal_global_field(crypto, &record.id, "content", &record.content, &scope)?;
     let (metadata, metadata_envelope) =
@@ -95,7 +108,11 @@ pub(super) fn seal_global_context_update(
     let Some((org_id, workspace_id, deployment_id, content_envelope)) = existing else {
         return Ok(None);
     };
-    let tenant = MemoryTenantScope { org_id, workspace_id, deployment_id };
+    let tenant = MemoryTenantScope {
+        org_id,
+        workspace_id,
+        deployment_id,
+    };
     let next_scope = memory_key_scope_from_metadata(&tenant, metadata)
         .with_owner_subject(owner_subject_from_metadata(metadata));
     if crypto.is_hosted() {
@@ -103,17 +120,22 @@ pub(super) fn seal_global_context_update(
             .and_then(|value| value.get("tenant_context"))
             .and_then(memory_tenant_scope_from_value);
         if provenance_scope
-            != Some((tenant.org_id.clone(), tenant.workspace_id.clone(), tenant.deployment_id.clone()))
+            != Some((
+                tenant.org_id.clone(),
+                tenant.workspace_id.clone(),
+                tenant.deployment_id.clone(),
+            ))
         {
             return Err(MemoryError::TenantScopeViolation(
                 "global record provenance cannot change its hosted tenant".to_string(),
             ));
         }
-        let old_envelope: MemoryEnvelopeMetadata = serde_json::from_str(
-            content_envelope.as_deref().ok_or_else(|| MemoryError::InvalidConfig(
-                "hosted global record context update requires encrypted content".to_string(),
-            ))?,
-        )?;
+        let old_envelope: MemoryEnvelopeMetadata =
+            serde_json::from_str(content_envelope.as_deref().ok_or_else(|| {
+                MemoryError::InvalidConfig(
+                    "hosted global record context update requires encrypted content".to_string(),
+                )
+            })?)?;
         if old_envelope.key_scope != next_scope {
             return Err(MemoryError::TenantScopeViolation(
                 "hosted global record scope change requires an authorized reseal".to_string(),
@@ -166,7 +188,9 @@ pub(super) fn open_global_field(
         let mut scope = value.key_scope.clone();
         scope.org_id.clone_from(&trusted_tenant.org_id);
         scope.workspace_id.clone_from(&trusted_tenant.workspace_id);
-        scope.deployment_id.clone_from(&trusted_tenant.deployment_id);
+        scope
+            .deployment_id
+            .clone_from(&trusted_tenant.deployment_id);
         scope.org_unit = trusted_org_unit.map(ToString::to_string);
         scope.owner_subject = trusted_owner.map(ToString::to_string);
         scope
@@ -199,10 +223,12 @@ pub(super) fn is_global_record_grant_denial(error: &rusqlite::Error) -> bool {
     let Some(MemoryError::InvalidConfig(reason)) = source.downcast_ref::<MemoryError>() else {
         return false;
     };
-    matches!(reason.as_str(),
+    matches!(
+        reason.as_str(),
         "Invalid configuration: memory decrypt principal lacks data-class grant"
             | "Invalid configuration: memory decrypt principal lacks source-binding grant"
-            | "Invalid configuration: memory decrypt principal lacks owner-subject grant")
+            | "Invalid configuration: memory decrypt principal lacks owner-subject grant"
+    )
 }
 
 impl MemoryDatabase {
@@ -242,7 +268,10 @@ impl MemoryDatabase {
         for row in rows {
             let record = row?;
             if hosted_global_text_matches(&record.content, query) {
-                hits.push(GlobalMemorySearchHit { record, score: 0.25 });
+                hits.push(GlobalMemorySearchHit {
+                    record,
+                    score: 0.25,
+                });
                 if hits.len() >= limit.clamp(1, 100) as usize {
                     break;
                 }
@@ -276,8 +305,9 @@ impl MemoryDatabase {
                AND (?3 IS NULL OR channel_tag = ?3)
              ORDER BY created_at_ms DESC",
         )?;
-        let rows = stmt.query_map(params![user_id, project_tag, channel_tag],
-            |row| row_to_global_record(row, &self.crypto))?;
+        let rows = stmt.query_map(params![user_id, project_tag, channel_tag], |row| {
+            row_to_global_record(row, &self.crypto)
+        })?;
         let query = query.to_lowercase();
         let mut skipped = 0i64;
         let mut out = Vec::new();

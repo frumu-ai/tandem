@@ -267,11 +267,8 @@ async fn memory_put_org_unit_stamp_requires_membership() {
 async fn governed_read_filter_threads_org_units_from_verified_context() {
     let tenant_context =
         tandem_types::TenantContext::explicit_user_workspace("acme", "north", None, "user-a");
-    let member = verified_org_unit_context(
-        tenant_context.clone(),
-        "user-a",
-        vec!["ou-eng".to_string()],
-    );
+    let member =
+        verified_org_unit_context(tenant_context.clone(), "user-a", vec!["ou-eng".to_string()]);
     let filter = crate::memory::read_policy::governed_memory_read_filter(
         tandem_types::RuntimeAuthMode::EnterpriseRequired,
         Some(&member),
@@ -454,22 +451,14 @@ fn org_unit_http_request_with_units(
     org_units: &[&str],
     body: Option<Value>,
 ) -> Request<Body> {
-    let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
-        "acme", "north", None, actor,
-    );
+    let tenant_context =
+        tandem_types::TenantContext::explicit_user_workspace("acme", "north", None, actor);
     let verified = verified_org_unit_context(
         tenant_context,
         actor,
         org_units.iter().map(|unit| (*unit).to_string()).collect(),
     );
-    let mut request = tenant_memory_request(
-        method,
-        uri,
-        "acme",
-        "north",
-        actor,
-        body,
-    );
+    let mut request = tenant_memory_request(method, uri, "acme", "north", actor, body);
     request.extensions_mut().insert(verified);
     request
 }
@@ -517,16 +506,41 @@ async fn memory_search_reads_all_verified_units_without_cross_unit_visibility() 
     };
     let alice_units = &["ou-alice-only", "ou-eng"];
     let rows = [
-        put("alice", alice_units, "engineering", false,
-            json!({"owner_org_unit_id": "ou-eng"})),
-        put("alice", alice_units, "alice-private", true,
-            json!({"owner_org_unit_id": "ou-alice-only"})),
-        put("alice", alice_units, "tenant-shared", false,
-            json!({"tenant_shared": true})),
-        put("bob", &["ou-eng"], "bob-private", true,
-            json!({"owner_org_unit_id": "ou-eng"})),
-        put("mallory", &["ou-finance"], "finance", false,
-            json!({"owner_org_unit_id": "ou-finance"})),
+        put(
+            "alice",
+            alice_units,
+            "engineering",
+            false,
+            json!({"owner_org_unit_id": "ou-eng"}),
+        ),
+        put(
+            "alice",
+            alice_units,
+            "alice-private",
+            true,
+            json!({"owner_org_unit_id": "ou-alice-only"}),
+        ),
+        put(
+            "alice",
+            alice_units,
+            "tenant-shared",
+            false,
+            json!({"tenant_shared": true}),
+        ),
+        put(
+            "bob",
+            &["ou-eng"],
+            "bob-private",
+            true,
+            json!({"owner_org_unit_id": "ou-eng"}),
+        ),
+        put(
+            "mallory",
+            &["ou-finance"],
+            "finance",
+            false,
+            json!({"owner_org_unit_id": "ou-finance"}),
+        ),
     ];
     let mut ids = Vec::new();
     for row in rows {
@@ -556,31 +570,53 @@ async fn memory_search_reads_all_verified_units_without_cross_unit_visibility() 
         )
     };
     let result_ids = |payload: &Value| {
-        payload["results"].as_array().expect("search results").iter()
+        payload["results"]
+            .as_array()
+            .expect("search results")
+            .iter()
             .map(|row| row["id"].as_str().expect("result id").to_string())
             .collect::<std::collections::BTreeSet<_>>()
     };
     let (status, alice) = memory_http_json(&app, search("alice", alice_units)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(alice["results"].as_array().map(Vec::len), Some(3));
-    assert_eq!(result_ids(&alice), [ids[0].clone(), ids[1].clone(), ids[2].clone()].into());
+    assert_eq!(
+        result_ids(&alice),
+        [ids[0].clone(), ids[1].clone(), ids[2].clone()].into()
+    );
 
     let (status, bob) = memory_http_json(&app, search("bob", &["ou-eng"])).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(bob["results"].as_array().map(Vec::len), Some(3));
-    assert_eq!(result_ids(&bob), [ids[0].clone(), ids[2].clone(), ids[3].clone()].into());
+    assert_eq!(
+        result_ids(&bob),
+        [ids[0].clone(), ids[2].clone(), ids[3].clone()].into()
+    );
 
     let (status, finance) = memory_http_json(&app, search("mallory", &["ou-finance"])).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(finance["results"].as_array().map(Vec::len), Some(2));
-    assert_eq!(result_ids(&finance), [ids[2].clone(), ids[4].clone()].into());
+    assert_eq!(
+        result_ids(&finance),
+        [ids[2].clone(), ids[4].clone()].into()
+    );
 
     let (status, _) = memory_http_json(&app, search("alice", &[])).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "missing verified membership must fail closed");
-    let too_many = (0..65).map(|index| format!("ou-{index:03}")).collect::<Vec<_>>();
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "missing verified membership must fail closed"
+    );
+    let too_many = (0..65)
+        .map(|index| format!("ou-{index:03}"))
+        .collect::<Vec<_>>();
     let refs = too_many.iter().map(String::as_str).collect::<Vec<_>>();
     let (status, _) = memory_http_json(&app, search("alice", &refs)).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "membership query count must be bounded");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "membership query count must be bounded"
+    );
 }
 
 #[tokio::test]
@@ -704,11 +740,8 @@ async fn memory_http_enforces_trusted_subject_and_active_org_unit_scopes() {
         Some(shared_id.as_str())
     );
 
-    let (status, other_department_search) = memory_http_json(
-        &app,
-        search("user-sales", "ou-sales", "scope-sales-search"),
-    )
-    .await;
+    let (status, other_department_search) =
+        memory_http_json(&app, search("user-sales", "ou-sales", "scope-sales-search")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(other_department_search
         .get("results")
@@ -849,14 +882,7 @@ async fn revoked_org_unit_membership_denies_reads_and_mutations() {
             "user-owner",
         );
         let verified = verified_org_unit_context(tenant_context, "user-owner", Vec::new());
-        let mut request = tenant_memory_request(
-            method,
-            uri,
-            "acme",
-            "north",
-            "user-owner",
-            body,
-        );
+        let mut request = tenant_memory_request(method, uri, "acme", "north", "user-owner", body);
         request.extensions_mut().insert(verified);
         request
     };

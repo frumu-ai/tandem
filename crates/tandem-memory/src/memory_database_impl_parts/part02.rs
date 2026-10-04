@@ -1545,7 +1545,6 @@ impl MemoryDatabase {
         .await
     }
 
-
     #[allow(clippy::too_many_arguments)]
     pub async fn search_global_memory(
         &self,
@@ -1558,9 +1557,16 @@ impl MemoryDatabase {
     ) -> MemoryResult<Vec<GlobalMemorySearchHit>> {
         self.deny_unscoped_global_in_hosted("global memory search")?;
         if !self.crypto.is_plaintext() {
-            return self.search_encrypted_global_memory_unscoped(
-                user_id, query, limit, project_tag, channel_tag, host_tag,
-            ).await;
+            return self
+                .search_encrypted_global_memory_unscoped(
+                    user_id,
+                    query,
+                    limit,
+                    project_tag,
+                    channel_tag,
+                    host_tag,
+                )
+                .await;
         }
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
@@ -1676,9 +1682,16 @@ impl MemoryDatabase {
     ) -> MemoryResult<Vec<GlobalMemoryRecord>> {
         self.deny_unscoped_global_in_hosted("global memory list")?;
         if !self.crypto.is_plaintext() && q.is_some_and(|value| !value.trim().is_empty()) {
-            return self.list_encrypted_global_memory_unscoped(
-                user_id, q.unwrap_or_default(), project_tag, channel_tag, limit, offset,
-            ).await;
+            return self
+                .list_encrypted_global_memory_unscoped(
+                    user_id,
+                    q.unwrap_or_default(),
+                    project_tag,
+                    channel_tag,
+                    limit,
+                    offset,
+                )
+                .await;
         }
         let conn = self.conn.lock().await;
         let query = q.unwrap_or("").trim();
@@ -1749,7 +1762,6 @@ impl MemoryDatabase {
         .await
     }
 
-
     pub async fn set_global_memory_visibility(
         &self,
         id: &str,
@@ -1812,7 +1824,9 @@ impl MemoryDatabase {
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
         let tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
-        let Some(sealed) = seal_global_context_update(&conn, &self.crypto, id, metadata, provenance)? else {
+        let Some(sealed) =
+            seal_global_context_update(&conn, &self.crypto, id, metadata, provenance)?
+        else {
             return Ok(false);
         };
         let changed = conn.execute(
@@ -1857,7 +1871,9 @@ impl MemoryDatabase {
         let owner_subject = crate::types::owner_subject_from_metadata(metadata);
         let private = owner_subject.is_some();
         let tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
-        let Some(sealed) = seal_global_context_update(&conn, &self.crypto, id, metadata, provenance)? else {
+        let Some(sealed) =
+            seal_global_context_update(&conn, &self.crypto, id, metadata, provenance)?
+        else {
             return Ok(false);
         };
         let changed = conn.execute(

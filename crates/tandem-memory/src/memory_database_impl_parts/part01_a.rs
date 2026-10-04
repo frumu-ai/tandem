@@ -9,9 +9,7 @@ impl MemoryDatabase {
         // as env-selected hosted mode in new(). Otherwise a caller can open a
         // plaintext DB locally and only then switch to hosted encryption.
         let conn = self.conn.try_lock().map_err(|_| {
-            MemoryError::Lock(
-                "cannot switch memory crypto while the database is busy".to_string(),
-            )
+            MemoryError::Lock("cannot switch memory crypto while the database is busy".to_string())
         })?;
         Self::reject_legacy_global_records_for_hosted_connection(&conn, &crypto, false)?;
         Self::promote_hosted_global_provenance(&conn, &crypto)?;
@@ -53,7 +51,9 @@ impl MemoryDatabase {
 
     fn deny_unscoped_global_in_hosted(&self, operation: &str) -> MemoryResult<()> {
         if self.crypto.is_hosted()
-            || self.strict_tenant_enforcement.load(std::sync::atomic::Ordering::SeqCst)
+            || self
+                .strict_tenant_enforcement
+                .load(std::sync::atomic::Ordering::SeqCst)
         {
             return Err(MemoryError::TenantScopeViolation(format!(
                 "{operation} requires an explicit tenant and owner scope in hosted mode"
@@ -66,11 +66,12 @@ impl MemoryDatabase {
     pub async fn new(db_path: &Path) -> MemoryResult<Self> {
         // A missing main file is not fresh if SQLite sidecars from an earlier
         // database remain at this path. Never assume their pages are clean.
-        let created_fresh = !db_path.exists() && ["-wal", "-shm"].iter().all(|suffix| {
-            let mut sidecar = db_path.as_os_str().to_os_string();
-            sidecar.push(suffix);
-            !Path::new(&sidecar).exists()
-        });
+        let created_fresh = !db_path.exists()
+            && ["-wal", "-shm"].iter().all(|suffix| {
+                let mut sidecar = db_path.as_os_str().to_os_string();
+                sidecar.push(suffix);
+                !Path::new(&sidecar).exists()
+            });
         if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -109,7 +110,8 @@ impl MemoryDatabase {
         // An in-place plaintext-to-hosted upgrade cannot erase old SQLite pages,
         // FTS segments, WAL frames or external backups. Require an explicit
         // offline migration into fresh storage before opening a legacy database.
-        db.reject_legacy_global_records_for_hosted(created_fresh).await?;
+        db.reject_legacy_global_records_for_hosted(created_fresh)
+            .await?;
 
         // Initialize schema
         db.init_schema(created_fresh).await?;
@@ -138,11 +140,7 @@ impl MemoryDatabase {
         created_fresh: bool,
     ) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
-        Self::reject_legacy_global_records_for_hosted_connection(
-            &conn,
-            &self.crypto,
-            created_fresh,
-        )
+        Self::reject_legacy_global_records_for_hosted_connection(&conn, &self.crypto, created_fresh)
     }
 
     fn reject_legacy_global_records_for_hosted_connection(
@@ -166,11 +164,13 @@ impl MemoryDatabase {
                 "hosted global memory requires a fresh database or an explicit offline migration; storage provenance is unknown".to_string(),
             ));
         }
-        let provenance: Option<String> = conn.query_row(
-            "SELECT state FROM memory_record_crypto_provenance WHERE id = 1",
-            [],
-            |row| row.get(0),
-        ).optional()?;
+        let provenance: Option<String> = conn
+            .query_row(
+                "SELECT state FROM memory_record_crypto_provenance WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
         if !matches!(provenance.as_deref(), Some("pristine" | "hosted")) {
             return Err(MemoryError::InvalidConfig(
                 "hosted global memory cannot reuse SQLite storage with plaintext history; migrate SQLite, FTS, WAL and backups offline".to_string(),
@@ -189,9 +189,13 @@ impl MemoryDatabase {
             let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
             rows.collect::<Result<_, _>>()?
         };
-        if !["content_envelope", "metadata_envelope", "provenance_envelope"]
-            .iter()
-            .all(|name| columns.contains(*name))
+        if ![
+            "content_envelope",
+            "metadata_envelope",
+            "provenance_envelope",
+        ]
+        .iter()
+        .all(|name| columns.contains(*name))
         {
             return Err(MemoryError::InvalidConfig(
                 "hosted global memory requires a fresh encrypted database; migrate legacy SQLite, WAL and backups offline".to_string(),
@@ -1393,7 +1397,11 @@ impl MemoryDatabase {
         )?;
         tx.execute(
             "INSERT OR IGNORE INTO memory_record_crypto_provenance (id, state) VALUES (1, ?1)",
-            params![if created_fresh { "pristine" } else { "legacy_unknown" }],
+            params![if created_fresh {
+                "pristine"
+            } else {
+                "legacy_unknown"
+            }],
         )?;
         tx.commit()?;
         Ok(())
@@ -1652,8 +1660,10 @@ impl MemoryDatabase {
             .as_ref()
             .map(|m| m.to_string())
             .unwrap_or_default();
-        let key_scope =
-            crate::types::memory_key_scope_from_metadata(&chunk.tenant_scope, chunk.metadata.as_ref());
+        let key_scope = crate::types::memory_key_scope_from_metadata(
+            &chunk.tenant_scope,
+            chunk.metadata.as_ref(),
+        );
         let (content_stored, metadata_str, crypto_envelope) =
             self.seal_row_columns(&chunk.content, &metadata_plain, &key_scope)?;
 

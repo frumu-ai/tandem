@@ -278,6 +278,19 @@ mod provider_auth_resolution_tests {
         }
     }
 
+    fn scoped_credential_revision(
+        state: &AppState,
+        tenant: &TenantContext,
+    ) -> tandem_core::ProviderCredentialRevision {
+        tandem_core::provider_credential_revision_for_tenant_in_dir(
+            &provider_auth_security_dir_for_state(state),
+            tenant,
+            tandem_core::ProviderCredentialKind::Credential,
+            OPENAI_CODEX_PROVIDER_ID,
+        )
+        .expect("current persisted credential revision")
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn expired_credentials_refresh_independently_for_local_and_hosted_tenants() {
@@ -287,6 +300,7 @@ mod provider_auth_resolution_tests {
         let tenant_b = TenantContext::explicit("org-b", "workspace-b", None);
         for (tenant, label) in [(&local, "local"), (&tenant_a, "a"), (&tenant_b, "b")] {
             save_scoped_codex_oauth(&state, tenant, scoped_codex_oauth(label, 1));
+            let before = scoped_credential_revision(&state, tenant);
             let refreshed_label = label.to_string();
             refresh_openai_codex_oauth_with(&state, tenant, true, move |mut credential| {
                 let refreshed_label = refreshed_label.clone();
@@ -299,6 +313,9 @@ mod provider_auth_resolution_tests {
             })
             .await
             .expect("refresh scoped credential");
+            let after = scoped_credential_revision(&state, tenant);
+            assert_eq!(before.authorization_revision, after.authorization_revision);
+            assert_ne!(before.material_revision, after.material_revision);
         }
 
         let security_dir = provider_auth_security_dir_for_state(&state);
@@ -434,6 +451,7 @@ mod provider_auth_resolution_tests {
         let tenant = TenantContext::local_implicit();
         let prior = scoped_codex_oauth("audit-prior", 1);
         save_scoped_codex_oauth(&state, &tenant, prior.clone());
+        let before = scoped_credential_revision(&state, &tenant);
         state.auth.write().await.insert(
             OPENAI_CODEX_PROVIDER_ID.to_string(),
             "api-audit-prior".to_string(),
@@ -460,6 +478,12 @@ mod provider_auth_resolution_tests {
             "refresh must fail when required audit append fails"
         );
         assert_eq!(openai_codex_oauth_credential(&state, &tenant), Some(prior));
+        let after = scoped_credential_revision(&state, &tenant);
+        assert_ne!(
+            before.authorization_revision, after.authorization_revision,
+            "audit compensation must not revive an earlier approval"
+        );
+        assert_ne!(before.material_revision, after.material_revision);
         assert_eq!(
             state
                 .auth

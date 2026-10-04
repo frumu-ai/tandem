@@ -27,6 +27,9 @@ pub struct CustomerConfigInput<'a> {
 
 /// Fresh trusted host inputs for resolving an immutable customer preparation.
 pub struct CustomerResolutionInput<'a> {
+    /// Digest of the current trusted source and provider routing snapshot.
+    /// Pure legacy plans may omit it; installation services supply it.
+    pub host_facts_sha256: Option<&'a str>,
     pub verified_context: &'a VerifiedTenantContext,
     pub now_ms: u64,
     pub engine_version: &'a str,
@@ -71,6 +74,7 @@ impl PreparedCustomerConfig {
         resolve(
             blueprint,
             ResolutionInput {
+                host_facts_sha256: input.host_facts_sha256,
                 request: &self.request,
                 verified_context: input.verified_context,
                 now_ms: input.now_ms,

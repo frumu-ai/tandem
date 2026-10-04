@@ -483,10 +483,10 @@ pub(super) async fn memory_put_impl_with_verified(
             require_scope_metadata,
             now,
         )
-    .map_err(|error| {
-        tracing::warn!("invalid knowledge scope metadata on memory put: {error}");
-        StatusCode::FORBIDDEN
-    })?;
+        .map_err(|error| {
+            tracing::warn!("invalid knowledge scope metadata on memory put: {error}");
+            StatusCode::FORBIDDEN
+        })?;
     if !scope_decision.allowed {
         emit_blocked_memory_put_guardrail(
             state,
@@ -857,8 +857,10 @@ mod retrieval_gateway_subject_tests {
             owner_org_unit_id_from_metadata(explicit.as_ref()).as_deref(),
             Some("eng")
         );
-        let invalid =
-            memory_metadata_with_owner_org_unit(Some(json!({"tenant_shared": "true"})), Some("eng"));
+        let invalid = memory_metadata_with_owner_org_unit(
+            Some(json!({"tenant_shared": "true"})),
+            Some("eng"),
+        );
         assert_eq!(
             owner_org_unit_id_from_metadata(invalid.as_ref()).as_deref(),
             Some("eng")
@@ -891,12 +893,8 @@ mod retrieval_gateway_subject_tests {
 
     #[test]
     fn unverified_channel_gateway_subject_still_rejected() {
-        let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
-            "acme",
-            "north",
-            None,
-            "user-a",
-        );
+        let tenant_context =
+            tandem_types::TenantContext::explicit_user_workspace("acme", "north", None, "user-a");
         let subject = "channel:slack:U999";
         let gateway = channel_gateway(subject);
         let err = validate_memory_capability_guardrail_context(

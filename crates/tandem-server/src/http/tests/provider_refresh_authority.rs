@@ -40,6 +40,13 @@ async fn request_triggered_oauth_refresh_stops_after_hosted_use_revocation() {
         original.clone(),
     )
     .expect("save original OAuth credential");
+    let original_revision = tandem_core::provider_credential_revision_for_tenant_in_dir(
+        &security_dir,
+        &tenant,
+        tandem_core::ProviderCredentialKind::Credential,
+        "openai-codex",
+    )
+    .expect("tracked original credential revision");
 
     let policy_path = policy_dir.path().join("policy.json");
     let reload_state = state.clone();
@@ -80,6 +87,16 @@ async fn request_triggered_oauth_refresh_stops_after_hosted_use_revocation() {
     .await;
     assert!(result.is_err(), "revoked refresh must not commit");
     assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        tandem_core::provider_credential_revision_for_tenant_in_dir(
+            &security_dir,
+            &tenant,
+            tandem_core::ProviderCredentialKind::Credential,
+            "openai-codex",
+        )
+        .expect("revoked refresh retains tracked credential"),
+        original_revision,
+    );
     assert_eq!(
         tandem_core::load_provider_oauth_credential_for_tenant_in_dir(
             &security_dir,
@@ -127,6 +144,76 @@ async fn request_triggered_oauth_refresh_stops_after_hosted_use_revocation() {
             .expect("revoked provider status response");
         assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
     }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn authorized_request_oauth_refresh_retains_model_account_authorization_revision() {
+    let (state, _policy_dir) = hosted_state().await;
+    let tenant = tenant("alice");
+    let mut identity = verified("alice", "member");
+    state
+        .enterprise
+        .hosted_policy
+        .project(&mut identity)
+        .expect("project hosted identity");
+    let security_dir = super::super::config_providers::provider_auth_security_dir_for_state(&state);
+    let original = tandem_core::OAuthProviderCredential {
+        provider_id: "openai-codex".into(),
+        access_token: "authorized-original-access".into(),
+        refresh_token: "authorized-original-refresh".into(),
+        expires_at_ms: 1,
+        account_id: Some("alice-account".into()),
+        email: None,
+        display_name: None,
+        managed_by: "tandem".into(),
+        api_key: Some("authorized-original-api-key".into()),
+    };
+    tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
+        &security_dir,
+        &tenant,
+        "openai-codex",
+        original,
+    )
+    .expect("save tracked OAuth credential");
+    let before = tandem_core::provider_credential_revision_for_tenant_in_dir(
+        &security_dir,
+        &tenant,
+        tandem_core::ProviderCredentialKind::Credential,
+        "openai-codex",
+    )
+    .expect("original revision");
+    super::super::config_providers::refresh_openai_codex_oauth_for_request_with(
+        &state,
+        &tenant,
+        &identity,
+        |mut credential| async move {
+            credential.access_token = "authorized-refreshed-access".into();
+            credential.refresh_token = "authorized-refreshed-refresh".into();
+            credential.api_key = Some("authorized-refreshed-api-key".into());
+            credential.expires_at_ms = crate::now_ms().saturating_add(60_000);
+            Ok(credential)
+        },
+    )
+    .await
+    .expect("authorized same-account refresh");
+    let after = tandem_core::provider_credential_revision_for_tenant_in_dir(
+        &security_dir,
+        &tenant,
+        tandem_core::ProviderCredentialKind::Credential,
+        "openai-codex",
+    )
+    .expect("refreshed revision");
+    assert_eq!(before.authorization_revision, after.authorization_revision);
+    assert_ne!(before.material_revision, after.material_revision);
+    let persisted = tandem_core::load_provider_oauth_credential_for_tenant_in_dir(
+        &security_dir,
+        &tenant,
+        "openai-codex",
+    )
+    .expect("persisted refreshed credential");
+    assert_eq!(persisted.access_token, "authorized-refreshed-access");
+    assert_eq!(persisted.account_id.as_deref(), Some("alice-account"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

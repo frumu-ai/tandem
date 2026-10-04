@@ -6,8 +6,10 @@
 mod contract;
 mod customer_config;
 mod customer_contract;
+mod model_profiles;
 mod resolve;
 mod validate;
+pub use model_profiles::*;
 
 pub use contract::*;
 pub use customer_config::*;

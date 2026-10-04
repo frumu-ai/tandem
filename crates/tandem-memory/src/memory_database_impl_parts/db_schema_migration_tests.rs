@@ -3,11 +3,9 @@ async fn schema_migration_ledger_records_bootstrap_once() {
     let (db, temp) = setup_test_db().await;
     let migration_count: i64 = {
         let conn = db.conn.lock().await;
-        conn.query_row(
-            "SELECT COUNT(*) FROM schema_migrations",
-            [],
-            |row| row.get(0),
-        )
+        conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
         .unwrap()
     };
     assert_eq!(migration_count, 7);
@@ -17,11 +15,9 @@ async fn schema_migration_ledger_records_bootstrap_once() {
     let reopened = MemoryDatabase::new(&db_path).await.unwrap();
     let reopened_migration_count: i64 = {
         let conn = reopened.conn.lock().await;
-        conn.query_row(
-            "SELECT COUNT(*) FROM schema_migrations",
-            [],
-            |row| row.get(0),
-        )
+        conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
         .unwrap()
     };
     assert_eq!(reopened_migration_count, 7);
@@ -328,10 +324,7 @@ async fn legacy_chunk_tables_gain_owner_org_unit_column_and_backfill() {
             [],
         )
         .unwrap();
-        let embedding = format!(
-            "[{}]",
-            vec!["0.0"; DEFAULT_EMBEDDING_DIMENSION].join(",")
-        );
+        let embedding = format!("[{}]", vec!["0.0"; DEFAULT_EMBEDDING_DIMENSION].join(","));
         conn.execute(
             "INSERT INTO session_memory_vectors (chunk_id, embedding) VALUES (?1, ?2)",
             params!["legacy-session", embedding],
@@ -443,10 +436,7 @@ async fn legacy_chunk_tables_gain_owner_org_unit_column_and_backfill() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(
-        session_private_scope,
-        (1, Some("legacy-user".to_string()))
-    );
+    assert_eq!(session_private_scope, (1, Some("legacy-user".to_string())));
 
     let vector_count: i64 = conn
         .query_row(

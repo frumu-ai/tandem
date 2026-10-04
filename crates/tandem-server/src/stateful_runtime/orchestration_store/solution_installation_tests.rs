@@ -11,12 +11,16 @@ use super::customer_config_tests::Fixture;
 use super::*;
 use crate::stateful_runtime::backend::{params, Executor, ExecutorRaw};
 
+#[path = "solution_budget_tests.rs"]
+pub(super) mod budget_tests;
+
 #[derive(Clone)]
 struct InstallationFixture {
     customer: Fixture,
     models: BTreeMap<String, ModelBinding>,
     artifacts: BTreeMap<String, Vec<u8>>,
     readiness: BTreeSet<String>,
+    host_facts: Option<String>,
 }
 
 #[cfg(feature = "storage-postgres")]
@@ -63,8 +67,8 @@ pub(super) fn assert_protected_installation_after_transfer(
             store
                 .with_connection(|connection| {
                     let count: i64 = connection.query_row(
-                        "SELECT COUNT(*) FROM solution_installation_versions WHERE org_id='org-b'",
-                        [],
+                        "SELECT COUNT(*) FROM solution_installation_versions WHERE org_id='org-b' AND instance_id=?1",
+                        [&expected.plan.instance_id],
                         |row| row.get(0),
                     )?;
                     assert_eq!(count, 2);
@@ -84,6 +88,7 @@ impl InstallationFixture {
             .insert("review-notes".into());
         Self {
             customer: fixture,
+            host_facts: None,
             models: [("local.fixture".into(), ModelBinding {
                 provider: "local".into(), model: "synthetic-model".into(),
                 credential_ref: "secret-ref:local-fixture".into(), uses_network: false,
@@ -131,6 +136,7 @@ impl InstallationFixture {
             .resolve(
                 &self.customer.blueprint,
                 CustomerResolutionInput {
+                    host_facts_sha256: self.host_facts.as_deref(),
                     verified_context: &self.customer.context,
                     now_ms: 1500,
                     engine_version: "0.7.2",
@@ -150,6 +156,7 @@ impl InstallationFixture {
         digest: &'a str,
     ) -> SolutionInstallationInput<'a> {
         SolutionInstallationInput {
+            host_facts_sha256: self.host_facts.as_deref(),
             configuration: self.configuration(),
             expected_config: &config.version,
             blueprint: &self.customer.blueprint,
@@ -537,7 +544,9 @@ fn solution_installation_schema_upgrade_preserves_configuration() {
             .with_connection(|connection| {
                 connection.execute_batch(
                     "DROP TABLE solution_installation_versions;
-                DROP TABLE solution_installations; UPDATE schema_metadata SET schema_version=6;",
+                DROP TABLE solution_installations;
+                DROP TABLE solution_budget_records; DROP TABLE solution_budget_versions;
+                UPDATE schema_metadata SET schema_version=6;",
                 )?;
                 Ok(())
             })
@@ -597,7 +606,8 @@ fn solution_installation_sqlite_migration_rechecks_concurrent_v6_reads() {
                         .unwrap();
                     assert_eq!(version, 6);
                     barrier.wait();
-                    super::solution_installations::migrate_sqlite(&mut connection)
+                    super::solution_installations::migrate_sqlite(&mut connection)?;
+                    super::solution_budget_records::migrate_sqlite(&mut connection)
                 })
             })
             .collect();
@@ -606,25 +616,87 @@ fn solution_installation_sqlite_migration_rechecks_concurrent_v6_reads() {
         }
     });
     let mut connection = rusqlite::Connection::open(path).unwrap();
-    // A waiter that originally observed v5 must accept both already-completed
+    // A waiter that originally observed v5 must accept all already-completed
     // steps without resetting the schema or recreating existing tables.
     super::customer_configs::migrate_sqlite(&mut connection).unwrap();
     super::solution_installations::migrate_sqlite(&mut connection).unwrap();
+    super::solution_budget_records::migrate_sqlite(&mut connection).unwrap();
     let version: i64 = connection
         .query_row("SELECT schema_version FROM schema_metadata", [], |row| {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     connection
         .execute("UPDATE schema_metadata SET schema_version=99", [])
         .unwrap();
     assert!(super::solution_installations::migrate_sqlite(&mut connection).is_err());
     assert!(super::customer_configs::migrate_sqlite(&mut connection).is_err());
+    assert!(super::solution_budget_records::migrate_sqlite(&mut connection).is_err());
     let version: i64 = connection
         .query_row("SELECT schema_version FROM schema_metadata", [], |row| {
             row.get(0)
         })
         .unwrap();
     assert_eq!(version, 99);
+}
+
+#[test]
+#[serial]
+fn solution_installation_rejects_host_rebinding_before_claim_or_receipt() {
+    for_each_backend(|_, store| {
+        let mut fixture = InstallationFixture::new("a");
+        fixture.host_facts = Some(sha256(b"approved endpoint and source revision 1"));
+        let (config, digest) = fixture.seed(store);
+        let begin = store
+            .transition_solution_installation(
+                fixture.input(&config, &digest),
+                None,
+                SolutionInstallationTransition::Begin,
+            )
+            .unwrap();
+        let mut rebound = fixture.clone();
+        rebound.host_facts = Some(sha256(b"same IDs, changed endpoint or source"));
+        assert!(store
+            .transition_solution_installation(
+                rebound.input(&config, &digest),
+                Some(begin.generation),
+                SolutionInstallationTransition::Claim {
+                    component_id: "central-brain",
+                    attempt_id: "one"
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("preview is stale"));
+        assert_eq!(fixture.read(store), begin);
+        let claimed = store
+            .transition_solution_installation(
+                fixture.input(&config, &digest),
+                Some(begin.generation),
+                SolutionInstallationTransition::Claim {
+                    component_id: "central-brain",
+                    attempt_id: "one",
+                },
+            )
+            .unwrap();
+        let receipt = sha256(b"disabled native component");
+        for host_facts in [rebound.host_facts.clone(), None] {
+            rebound.host_facts = host_facts;
+            assert!(store
+                .transition_solution_installation(
+                    rebound.input(&config, &digest),
+                    Some(claimed.generation),
+                    SolutionInstallationTransition::RecordStaged {
+                        component_id: "central-brain",
+                        attempt_id: "one",
+                        resource_sha256: &receipt,
+                    },
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("preview is stale"));
+            assert_eq!(fixture.read(store), claimed);
+        }
+    });
 }

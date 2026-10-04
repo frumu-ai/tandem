@@ -1577,7 +1577,11 @@ async fn retrieval_gateway_rejects_forged_channel_subject() {
             )
         })),
     );
-    let put_resp = app.clone().oneshot(put_channel).await.expect("put response");
+    let put_resp = app
+        .clone()
+        .oneshot(put_channel)
+        .await
+        .expect("put response");
     assert_eq!(put_resp.status(), StatusCode::OK);
 
     let forged_gateway = json!({

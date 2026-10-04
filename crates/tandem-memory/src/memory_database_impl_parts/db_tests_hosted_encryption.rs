@@ -2,7 +2,9 @@
 // per-scope DEK on write, stored as ciphertext + envelope, and decrypted on read
 // only when the caller's decrypt principal is authorized for that scope.
 
-use crate::decrypt_broker::{MemoryDecryptBroker, MemoryDecryptBrokerConfig, MemoryDecryptPrincipal};
+use crate::decrypt_broker::{
+    MemoryDecryptBroker, MemoryDecryptBrokerConfig, MemoryDecryptPrincipal,
+};
 use crate::decrypt_context::with_decrypt_principal;
 use crate::dek_cache::MemoryDekCache;
 use crate::envelope_crypto::HostedMemoryEnvelopeCrypto;
@@ -121,7 +123,8 @@ async fn hosted_chunk_round_trips_and_is_ciphertext_at_rest() {
     let db = MemoryDatabase::new(&path)
         .await
         .unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
 
     db.store_chunk(&finance_chunk(), &[0.1f32; DEFAULT_EMBEDDING_DIMENSION])
         .await
@@ -169,7 +172,8 @@ async fn hosted_read_without_a_principal_fails_closed() {
     let db = MemoryDatabase::new(&path)
         .await
         .unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     db.store_chunk(&finance_chunk(), &[0.1f32; DEFAULT_EMBEDDING_DIMENSION])
         .await
         .unwrap();
@@ -185,7 +189,8 @@ async fn cross_tenant_principal_cannot_read_another_tenants_memory() {
     let db = MemoryDatabase::new(&path)
         .await
         .unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     db.store_chunk(&finance_chunk(), &[0.1f32; DEFAULT_EMBEDDING_DIMENSION])
         .await
         .unwrap();
@@ -193,7 +198,8 @@ async fn cross_tenant_principal_cannot_read_another_tenants_memory() {
     // A principal for a different tenant is denied at the broker — a raw dump of
     // ACME's rows cannot be decrypted with another tenant's authorization.
     let other_tenant = principal("hooli", vec![DataClass::FinancialRecord]);
-    let result = with_decrypt_principal(other_tenant, db.get_session_chunks("session-hosted")).await;
+    let result =
+        with_decrypt_principal(other_tenant, db.get_session_chunks("session-hosted")).await;
     assert!(result.is_err(), "cross-tenant read must be denied");
 }
 
@@ -204,14 +210,16 @@ async fn wrong_data_class_principal_is_denied() {
     let db = MemoryDatabase::new(&path)
         .await
         .unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     db.store_chunk(&finance_chunk(), &[0.1f32; DEFAULT_EMBEDDING_DIMENSION])
         .await
         .unwrap();
 
     // Right tenant, but no grant for the row's FinancialRecord class → denied.
     let under_scoped = principal("acme", vec![DataClass::Internal]);
-    let result = with_decrypt_principal(under_scoped, db.get_session_chunks("session-hosted")).await;
+    let result =
+        with_decrypt_principal(under_scoped, db.get_session_chunks("session-hosted")).await;
     assert!(result.is_err(), "data-class denial must hold");
 }
 
@@ -252,7 +260,8 @@ async fn hosted_layer_seals_content_and_reads_back_under_principal() {
     let db = MemoryDatabase::new(&path)
         .await
         .unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     let tenant = acme_finance_scope();
 
     let node_id = db
@@ -332,7 +341,8 @@ async fn hosted_global_chunk_is_returned_by_vector_search() {
     let db = MemoryDatabase::new(&path)
         .await
         .unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
 
     let mut global = finance_chunk();
     global.id = "hosted-global-1".to_string();
@@ -372,7 +382,8 @@ async fn source_binding_data_class_drives_the_key_scope() {
     let db = MemoryDatabase::new(&path)
         .await
         .unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
 
     // Sealing succeeds only because the key scope's data class now matches the
     // binding's — the envelope validator rejects a mismatch, so an Internal
@@ -412,7 +423,11 @@ async fn source_binding_data_class_drives_the_key_scope() {
     );
 }
 
-fn hosted_global_record(content: &str, metadata_note: &str, provenance_note: &str) -> GlobalMemoryRecord {
+fn hosted_global_record(
+    content: &str,
+    metadata_note: &str,
+    provenance_note: &str,
+) -> GlobalMemoryRecord {
     let now = Utc::now().timestamp_millis() as u64;
     GlobalMemoryRecord {
         id: format!("hosted-record-{}", uuid::Uuid::new_v4()),
@@ -458,7 +473,9 @@ fn assert_bytes_absent(path: &std::path::Path, needles: &[&str]) {
     let bytes = std::fs::read(path).unwrap();
     for needle in needles {
         assert!(
-            !bytes.windows(needle.len()).any(|window| window == needle.as_bytes()),
+            !bytes
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes()),
             "{} contains plaintext canary {needle}",
             path.display(),
         );
@@ -474,48 +491,88 @@ async fn hosted_global_record_cold_decrypt_search_and_sqlite_artifacts_are_seale
     let metadata_note = format!("metadata lantern {}", uuid::Uuid::new_v4());
     let provenance_note = format!("provenance lantern {}", uuid::Uuid::new_v4());
     let record = hosted_global_record(&content, &metadata_note, &provenance_note);
-    let db = MemoryDatabase::new(&path).await.unwrap().with_crypto_provider(hosted_provider()).unwrap();
+    let db = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     db.put_global_memory_record(&record).await.unwrap();
 
-    let reader = principal("acme", vec![DataClass::Internal])
-        .with_owner_subjects(vec!["alice".to_string()]);
+    let reader =
+        principal("acme", vec![DataClass::Internal]).with_owner_subjects(vec!["alice".to_string()]);
     let hits = with_decrypt_principal(
         reader.clone(),
         db.search_global_memory_for_tenant_scoped(
-            "acme", "hq", Some("prod"), Some("alice"), "alice", "lantern", 10,
-            None, None, None, None,
+            "acme",
+            "hq",
+            Some("prod"),
+            Some("alice"),
+            "alice",
+            "lantern",
+            10,
+            None,
+            None,
+            None,
+            None,
         ),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].record.content, content);
 
     // A different subject is filtered before decrypt; a wrong key cannot
     // reconstruct the DEK even when its principal has the correct scope.
-    let bob = principal("acme", vec![DataClass::Internal])
-        .with_owner_subjects(vec!["bob".to_string()]);
+    let bob =
+        principal("acme", vec![DataClass::Internal]).with_owner_subjects(vec!["bob".to_string()]);
     let bob_hits = with_decrypt_principal(
         bob,
         db.search_global_memory_for_tenant_scoped(
-            "acme", "hq", Some("prod"), Some("bob"), "bob", "lantern", 10,
-            None, None, None, None,
+            "acme",
+            "hq",
+            Some("prod"),
+            Some("bob"),
+            "bob",
+            "lantern",
+            10,
+            None,
+            None,
+            None,
+            None,
         ),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert!(bob_hits.is_empty());
 
     {
         let conn = db.conn.lock().await;
-        let (stored, metadata, provenance, fts, user_id): (String, String, String, String, String) = conn.query_row(
-            "SELECT m.content, m.metadata, m.provenance, f.content, m.user_id
+        let (stored, metadata, provenance, fts, user_id): (String, String, String, String, String) =
+            conn.query_row(
+                "SELECT m.content, m.metadata, m.provenance, f.content, m.user_id
              FROM memory_records m JOIN memory_records_fts f ON f.id = m.id WHERE m.id = ?1",
-            params![record.id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-        ).unwrap();
+                params![record.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
         assert!(stored.starts_with("tce1:"));
         assert!(metadata.starts_with("tce1:"));
         assert!(provenance.starts_with("tce1:"));
         assert_eq!(fts, stored);
-        assert_eq!(user_id, "alice", "indexed identity remains plaintext by contract");
-        conn.execute("VACUUM INTO ?1", params![backup.to_str().unwrap()]).unwrap();
+        assert_eq!(
+            user_id, "alice",
+            "indexed identity remains plaintext by contract"
+        );
+        conn.execute("VACUUM INTO ?1", params![backup.to_str().unwrap()])
+            .unwrap();
     }
     let needles = [&*content, &*metadata_note, &*provenance_note];
     assert_bytes_absent(&path, &needles);
@@ -525,26 +582,48 @@ async fn hosted_global_record_cold_decrypt_search_and_sqlite_artifacts_are_seale
     assert_bytes_absent(&backup, &needles);
     drop(db);
 
-    let cold = MemoryDatabase::new(&path).await.unwrap().with_crypto_provider(hosted_provider()).unwrap();
+    let cold = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     let loaded = with_decrypt_principal(
         reader.clone(),
         cold.get_global_memory_for_tenant_scoped(
-            &record.id, "acme", "hq", Some("prod"), None, Some("alice"),
+            &record.id,
+            "acme",
+            "hq",
+            Some("prod"),
+            None,
+            Some("alice"),
         ),
-    ).await.unwrap().unwrap();
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(loaded.content, content);
     assert_eq!(loaded.metadata.unwrap()["note"], metadata_note);
     assert_eq!(loaded.provenance.unwrap()["note"], provenance_note);
     drop(cold);
 
-    let wrong = MemoryDatabase::new(&path).await.unwrap()
-        .with_crypto_provider(hosted_provider_with_fingerprint(0xA5)).unwrap();
+    let wrong = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider_with_fingerprint(0xA5))
+        .unwrap();
     assert!(with_decrypt_principal(
         reader,
         wrong.get_global_memory_for_tenant_scoped(
-            &record.id, "acme", "hq", Some("prod"), None, Some("alice"),
+            &record.id,
+            "acme",
+            "hq",
+            Some("prod"),
+            None,
+            Some("alice"),
         ),
-    ).await.is_err());
+    )
+    .await
+    .is_err());
 }
 
 #[tokio::test]
@@ -566,28 +645,49 @@ async fn hosted_global_record_rejects_plaintext_legacy_and_scope_change() {
     let emptied = MemoryDatabase::new(&path).await.unwrap();
     assert!(emptied.with_crypto_provider(hosted_provider()).is_err());
 
-    let clean = MemoryDatabase::new(&temp.path().join("clean.sqlite")).await.unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+    let clean = MemoryDatabase::new(&temp.path().join("clean.sqlite"))
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     clean.put_global_memory_record(&record).await.unwrap();
     let mut changed = record.metadata.clone().unwrap();
     changed["owner_subject"] = serde_json::json!("bob");
-    assert!(clean.update_global_memory_context_for_tenant_scoped(
-        &record.id, "acme", "hq", Some("prod"), None, Some("alice"),
-        "private", false, Some(&changed), record.provenance.as_ref(),
-    ).await.is_err());
-    assert!(clean.search_global_memory("alice", "secret", 10, None, None, None).await.is_err());
+    assert!(clean
+        .update_global_memory_context_for_tenant_scoped(
+            &record.id,
+            "acme",
+            "hq",
+            Some("prod"),
+            None,
+            Some("alice"),
+            "private",
+            false,
+            Some(&changed),
+            record.provenance.as_ref(),
+        )
+        .await
+        .is_err());
+    assert!(clean
+        .search_global_memory("alice", "secret", 10, None, None, None)
+        .await
+        .is_err());
 }
 
 #[tokio::test]
 async fn hosted_atomic_global_write_and_context_update_remain_sealed() {
     use crate::store::{
-        MemoryReadAccess, MemoryReadScope, MemoryStoreBatchOperation,
-        MemoryStoreMutationRequest, MemoryStoreWriteRequest, MemoryWriteScope,
+        MemoryReadAccess, MemoryReadScope, MemoryStoreBatchOperation, MemoryStoreMutationRequest,
+        MemoryStoreWriteRequest, MemoryWriteScope,
     };
 
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("atomic.sqlite");
-    let db = MemoryDatabase::new(&path).await.unwrap().with_crypto_provider(hosted_provider()).unwrap();
+    let db = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     let content = format!("atomic lantern {}", uuid::Uuid::new_v4());
     let record = hosted_global_record(&content, "initial note", "initial origin");
     let tenant = acme_finance_scope();
@@ -601,32 +701,55 @@ async fn hosted_atomic_global_write_and_context_update_remain_sealed() {
     });
     db.execute_atomic_store_batch(vec![
         MemoryStoreBatchOperation::Write(MemoryStoreWriteRequest::GlobalRecord {
-            scope: MemoryWriteScope { tenant: tenant.clone(), org_unit: None, subject: Some("alice".to_string()) },
-            record: record.clone(),
-        }),
-        MemoryStoreBatchOperation::Mutation(MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-            scope: MemoryReadScope {
-                tenant,
+            scope: MemoryWriteScope {
+                tenant: tenant.clone(),
                 org_unit: None,
                 subject: Some("alice".to_string()),
-                access: MemoryReadAccess::Scoped,
             },
-            id: record.id.clone(),
-            visibility: "private".to_string(),
-            demoted: false,
-            metadata: Some(metadata.clone()),
-            provenance: Some(provenance.clone()),
+            record: record.clone(),
         }),
-    ]).await.unwrap();
-    let reader = principal("acme", vec![DataClass::Internal])
-        .with_owner_subjects(vec!["alice".to_string()]);
-    let loaded = with_decrypt_principal(reader,
-        db.get_global_memory_for_tenant_scoped(&record.id, "acme", "hq", Some("prod"), None, Some("alice")),
-    ).await.unwrap().unwrap();
+        MemoryStoreBatchOperation::Mutation(
+            MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+                scope: MemoryReadScope {
+                    tenant,
+                    org_unit: None,
+                    subject: Some("alice".to_string()),
+                    access: MemoryReadAccess::Scoped,
+                },
+                id: record.id.clone(),
+                visibility: "private".to_string(),
+                demoted: false,
+                metadata: Some(metadata.clone()),
+                provenance: Some(provenance.clone()),
+            },
+        ),
+    ])
+    .await
+    .unwrap();
+    let reader =
+        principal("acme", vec![DataClass::Internal]).with_owner_subjects(vec!["alice".to_string()]);
+    let loaded = with_decrypt_principal(
+        reader,
+        db.get_global_memory_for_tenant_scoped(
+            &record.id,
+            "acme",
+            "hq",
+            Some("prod"),
+            None,
+            Some("alice"),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(loaded.content, content);
     assert_eq!(loaded.metadata, Some(metadata.clone()));
     assert_eq!(loaded.provenance, Some(provenance.clone()));
-    let needles = [content.as_str(), metadata["note"].as_str().unwrap(), provenance["note"].as_str().unwrap()];
+    let needles = [
+        content.as_str(),
+        metadata["note"].as_str().unwrap(),
+        provenance["note"].as_str().unwrap(),
+    ];
     assert_bytes_absent(&path.with_extension("sqlite-wal"), &needles);
 }
 
@@ -634,19 +757,39 @@ async fn hosted_atomic_global_write_and_context_update_remain_sealed() {
 async fn local_key_global_search_still_matches_decrypted_content() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("local_key.sqlite");
-    let db = MemoryDatabase::new(&path).await.unwrap()
-        .with_crypto_provider(crate::crypto::MemoryCryptoProvider::local_key([7u8; 32])).unwrap();
+    let db = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(crate::crypto::MemoryCryptoProvider::local_key([7u8; 32]))
+        .unwrap();
     let content = format!("local encrypted lantern {}", uuid::Uuid::new_v4());
     let record = hosted_global_record(&content, "local metadata", "local provenance");
     db.put_global_memory_record(&record).await.unwrap();
-    let hits = db.search_global_memory("alice", "lantern", 10, None, None, None).await.unwrap();
+    let hits = db
+        .search_global_memory("alice", "lantern", 10, None, None, None)
+        .await
+        .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].record.content, content);
-    let scoped_hits = db.search_global_memory_for_tenant(
-        "acme", "hq", Some("prod"), "alice", "lantern", 10, None, None, None,
-    ).await.unwrap();
+    let scoped_hits = db
+        .search_global_memory_for_tenant(
+            "acme",
+            "hq",
+            Some("prod"),
+            "alice",
+            "lantern",
+            10,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     assert_eq!(scoped_hits.len(), 1);
-    let listed = db.list_global_memory("alice", Some("lantern"), None, None, 10, 0).await.unwrap();
+    let listed = db
+        .list_global_memory("alice", Some("lantern"), None, None, 10, 0)
+        .await
+        .unwrap();
     assert_eq!(listed.len(), 1);
     assert_bytes_absent(&path.with_extension("sqlite-wal"), &[&content]);
 }
@@ -655,54 +798,99 @@ async fn local_key_global_search_still_matches_decrypted_content() {
 async fn hosted_global_optional_metadata_removal_is_detected() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("tamper.sqlite");
-    let db = MemoryDatabase::new(&path).await.unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+    let db = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     let mut record = hosted_global_record("non-scope note", "private note", "origin");
     record.metadata = Some(serde_json::json!({"note": "non-scope note"}));
     db.put_global_memory_record(&record).await.unwrap();
     let reader = principal("acme", vec![DataClass::Internal]);
-    assert!(with_decrypt_principal(reader.clone(), db.get_global_memory_for_tenant_scoped(
-        &record.id, "acme", "hq", Some("prod"), None, None,
-    )).await.unwrap().is_some());
+    assert!(with_decrypt_principal(
+        reader.clone(),
+        db.get_global_memory_for_tenant_scoped(&record.id, "acme", "hq", Some("prod"), None, None,)
+    )
+    .await
+    .unwrap()
+    .is_some());
     {
         let conn = db.conn.lock().await;
         conn.execute(
             "UPDATE memory_records SET metadata = '', metadata_envelope = NULL WHERE id = ?1",
             params![record.id],
-        ).unwrap();
+        )
+        .unwrap();
     }
-    assert!(with_decrypt_principal(reader, db.get_global_memory_for_tenant_scoped(
-        &record.id, "acme", "hq", Some("prod"), None, None,
-    )).await.is_err());
+    assert!(with_decrypt_principal(
+        reader,
+        db.get_global_memory_for_tenant_scoped(&record.id, "acme", "hq", Some("prod"), None, None,)
+    )
+    .await
+    .is_err());
     drop(db);
-    assert!(MemoryDatabase::new(&path).await.unwrap()
-        .with_crypto_provider(hosted_provider()).is_err());
+    assert!(MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider())
+        .is_err());
 }
 
 #[tokio::test]
 async fn hosted_mixed_class_search_skips_denied_rows_but_rejects_corruption() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("mixed_classes.sqlite");
-    let db = MemoryDatabase::new(&path).await.unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+    let db = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     let internal = hosted_global_record("internal lantern", "internal note", "origin");
     let mut financial = hosted_global_record("financial ledger", "finance note", "origin");
     financial.metadata.as_mut().unwrap()["classification"] = serde_json::json!("financial_record");
     db.put_global_memory_record(&internal).await.unwrap();
     db.put_global_memory_record(&financial).await.unwrap();
-    let reader = principal("acme", vec![DataClass::Internal])
-        .with_owner_subjects(vec!["alice".to_string()]);
-    let hits = with_decrypt_principal(reader.clone(), db.search_global_memory_for_tenant_scoped(
-        "acme", "hq", Some("prod"), Some("alice"), "alice", "lantern", 10,
-        None, None, None, None,
-    )).await.unwrap();
+    let reader =
+        principal("acme", vec![DataClass::Internal]).with_owner_subjects(vec!["alice".to_string()]);
+    let hits = with_decrypt_principal(
+        reader.clone(),
+        db.search_global_memory_for_tenant_scoped(
+            "acme",
+            "hq",
+            Some("prod"),
+            Some("alice"),
+            "alice",
+            "lantern",
+            10,
+            None,
+            None,
+            None,
+            None,
+        ),
+    )
+    .await
+    .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].record.id, internal.id);
 
-    let listed = with_decrypt_principal(reader.clone(), db.list_global_memory_for_tenant_scoped(
-        "acme", "hq", Some("prod"), Some("alice"), "alice", None,
-        None, None, 10, 0, None,
-    )).await.unwrap();
+    let listed = with_decrypt_principal(
+        reader.clone(),
+        db.list_global_memory_for_tenant_scoped(
+            "acme",
+            "hq",
+            Some("prod"),
+            Some("alice"),
+            "alice",
+            None,
+            None,
+            None,
+            10,
+            0,
+            None,
+        ),
+    )
+    .await
+    .unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, internal.id);
 
@@ -712,12 +900,27 @@ async fn hosted_mixed_class_search_skips_denied_rows_but_rejects_corruption() {
         conn.execute(
             "UPDATE memory_records SET content_envelope = '{}' WHERE id = ?1",
             params![financial.id],
-        ).unwrap();
+        )
+        .unwrap();
     }
-    assert!(with_decrypt_principal(reader, db.search_global_memory_for_tenant_scoped(
-        "acme", "hq", Some("prod"), Some("alice"), "alice", "lantern", 10,
-        None, None, None, None,
-    )).await.is_err());
+    assert!(with_decrypt_principal(
+        reader,
+        db.search_global_memory_for_tenant_scoped(
+            "acme",
+            "hq",
+            Some("prod"),
+            Some("alice"),
+            "alice",
+            "lantern",
+            10,
+            None,
+            None,
+            None,
+            None,
+        )
+    )
+    .await
+    .is_err());
 }
 
 #[tokio::test]
@@ -738,8 +941,11 @@ async fn reset_keeps_plaintext_history_unusable_for_hosted() {
 async fn hosted_reset_requires_fresh_storage() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("hosted_reset.sqlite");
-    let db = MemoryDatabase::new(&path).await.unwrap()
-        .with_crypto_provider(hosted_provider()).unwrap();
+    let db = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider())
+        .unwrap();
     assert!(db.reset_all_memory_tables().await.is_err());
 }
 #[tokio::test]
@@ -749,29 +955,34 @@ async fn reopened_legacy_unknown_still_accepts_local_writes() {
     let first = MemoryDatabase::new(&path).await.unwrap();
     {
         let conn = first.conn.lock().await;
-        conn.execute("DROP TABLE memory_record_crypto_provenance", []).unwrap();
+        conn.execute("DROP TABLE memory_record_crypto_provenance", [])
+            .unwrap();
     }
     drop(first);
 
     let legacy = MemoryDatabase::new(&path).await.unwrap();
     {
         let conn = legacy.conn.lock().await;
-        let state: String = conn.query_row(
-            "SELECT state FROM memory_record_crypto_provenance WHERE id = 1",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM memory_record_crypto_provenance WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(state, "legacy_unknown");
     }
     let record = hosted_global_record("legacy local write", "note", "origin");
     legacy.put_global_memory_record(&record).await.unwrap();
     {
         let conn = legacy.conn.lock().await;
-        let state: String = conn.query_row(
-            "SELECT state FROM memory_record_crypto_provenance WHERE id = 1",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM memory_record_crypto_provenance WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(state, "plaintext_history");
     }
 }

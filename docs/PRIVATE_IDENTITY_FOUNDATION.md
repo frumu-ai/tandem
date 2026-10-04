@@ -158,3 +158,19 @@ core, provider and MCP hosted-policy tests. Cross-repository process acceptance
 uses the source-pinned enterprise engine and copied authenticated policy agent
 in `tandem-agents`. Release-image verification, clean-host encrypted recovery
 and full two-user/two-department governed-memory acceptance remain required.
+
+## Joined runtime integration boundary
+
+The joined engine includes protected signing-key reload, current hosted grant
+publication and durable encrypted global memory records. Grant changes retain
+current scoped administrative authorization and persist their protected snapshot
+before becoming visible. Hosted records seal content and metadata before SQLite
+or atomic writes and retain conservative provenance during schema upgrades.
+Local plaintext and local-key modes remain available without a hosted control
+plane, policy producer, KMS or either add-on repository.
+
+These runtime changes and the already-tested add-on consumers are implementation
+slices. Production image approval, live KMS/storage evidence, independent recovery
+authority and old-host fencing, actual clean-host restore, supported user recovery
+and full selected-surface customer acceptance remain separate requirements.
+TAN-836 and TAN-840 remain open until their complete acceptance evidence exists.

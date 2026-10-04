@@ -674,10 +674,9 @@ pub(super) async fn open_memory_manager_for_state(
     #[cfg(not(test))]
     let embedding_service = tandem_memory::embeddings::EmbeddingService::new();
     #[cfg(test)]
-    let embedding_service =
-        tandem_memory::embeddings::EmbeddingService::deterministic_for_tests(
-            tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION,
-        );
+    let embedding_service = tandem_memory::embeddings::EmbeddingService::deterministic_for_tests(
+        tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION,
+    );
     tandem_memory::MemoryManager::new_with_store(store, embedding_service).ok()
 }
 
@@ -799,10 +798,8 @@ pub(super) async fn persist_global_memory_record(
             )
             .then(|| record.user_id.clone())
         });
-    record.metadata = memory_metadata_with_owner_subject(
-        record.metadata.take(),
-        owner_subject.as_deref(),
-    );
+    record.metadata =
+        memory_metadata_with_owner_subject(record.metadata.take(), owner_subject.as_deref());
     let scope = tandem_memory::MemoryWriteScope {
         tenant: MemoryTenantScope {
             org_id: tenant_context.org_id.clone(),
@@ -813,7 +810,10 @@ pub(super) async fn persist_global_memory_record(
         subject: tandem_memory::types::owner_subject_from_metadata(record.metadata.as_ref()),
     };
     match store
-        .write(tandem_memory::MemoryStoreWriteRequest::GlobalRecord { scope, record: record.clone() })
+        .write(tandem_memory::MemoryStoreWriteRequest::GlobalRecord {
+            scope,
+            record: record.clone(),
+        })
         .await
     {
         Ok(tandem_memory::MemoryStoreWriteResult::GlobalRecord(write)) => {
@@ -1357,7 +1357,7 @@ pub(super) async fn run_global_memory_ingestor(state: AppState) {
                 "session.run.finished" => {
                     if let Some(session_id) = event_session_id(&event) {
                         if let Some(ctx) = by_session.remove(&session_id) {
-                    ingest_run_messages(&state, store.as_ref(), &session_id, &ctx).await;
+                            ingest_run_messages(&state, store.as_ref(), &session_id, &ctx).await;
                         }
                     }
                 }
@@ -1911,14 +1911,15 @@ async fn source_objects_seen_since(
 ) -> Result<Vec<SourceObjectLifecycleRecord>, tandem_memory::types::MemoryError> {
     let records = manager
         .store()
-        .query(tandem_memory::MemoryStoreQueryRequest::SourceObjectLifecyclesForBinding {
-            scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
-            source_binding_id: binding_id.to_string(),
-        })
+        .query(
+            tandem_memory::MemoryStoreQueryRequest::SourceObjectLifecyclesForBinding {
+                scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
+                source_binding_id: binding_id.to_string(),
+            },
+        )
         .await
         .map_err(tandem_memory::types::MemoryError::from)?;
-    let tandem_memory::MemoryStoreQueryResult::SourceObjectLifecycles(mut records) = records
-    else {
+    let tandem_memory::MemoryStoreQueryResult::SourceObjectLifecycles(mut records) = records else {
         return Err(tandem_memory::types::MemoryError::InvalidConfig(
             "memory store returned an unexpected source lifecycle result".to_string(),
         ));
@@ -1939,39 +1940,45 @@ async fn quarantine_source_bound_import(
     for record in source_objects {
         manager
             .store()
-            .mutate(tandem_memory::MemoryStoreMutationRequest::DeleteChunksBySourcePath {
-                scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
-                selector: tandem_memory::MemoryChunkSelector {
-                    tier: record.tier,
-                    project_id: record.project_id.clone(),
-                    session_id: record.session_id.clone(),
+            .mutate(
+                tandem_memory::MemoryStoreMutationRequest::DeleteChunksBySourcePath {
+                    scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
+                    selector: tandem_memory::MemoryChunkSelector {
+                        tier: record.tier,
+                        project_id: record.project_id.clone(),
+                        session_id: record.session_id.clone(),
+                    },
+                    source_path: record.indexed_path.clone(),
                 },
-                source_path: record.indexed_path.clone(),
-            })
+            )
             .await
             .map_err(tandem_memory::types::MemoryError::from)?;
         manager
             .store()
-            .mutate(tandem_memory::MemoryStoreMutationRequest::DeleteImportIndexEntry {
-                scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
-                selector: tandem_memory::MemoryChunkSelector {
-                    tier: record.tier,
-                    project_id: record.project_id.clone(),
-                    session_id: record.session_id.clone(),
+            .mutate(
+                tandem_memory::MemoryStoreMutationRequest::DeleteImportIndexEntry {
+                    scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
+                    selector: tandem_memory::MemoryChunkSelector {
+                        tier: record.tier,
+                        project_id: record.project_id.clone(),
+                        session_id: record.session_id.clone(),
+                    },
+                    path: record.indexed_path.clone(),
                 },
-                path: record.indexed_path.clone(),
-            })
+            )
             .await
             .map_err(tandem_memory::types::MemoryError::from)?;
         manager
             .store()
-            .mutate(tandem_memory::MemoryStoreMutationRequest::SetSourceObjectLifecycleState {
-                scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
-                source_binding_id: binding_id.to_string(),
-                source_object_id: record.source_object_id.clone(),
-                state: SourceObjectLifecycleState::Quarantined,
-                changed_at_ms,
-            })
+            .mutate(
+                tandem_memory::MemoryStoreMutationRequest::SetSourceObjectLifecycleState {
+                    scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
+                    source_binding_id: binding_id.to_string(),
+                    source_object_id: record.source_object_id.clone(),
+                    state: SourceObjectLifecycleState::Quarantined,
+                    changed_at_ms,
+                },
+            )
             .await
             .map_err(tandem_memory::types::MemoryError::from)?;
     }

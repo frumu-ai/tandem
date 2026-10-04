@@ -279,9 +279,7 @@ impl MemoryDatabase {
             // Vector rows first: once the chunk rows are gone the subquery can
             // no longer name the orphaned vector entries.
             tx.execute(
-                &format!(
-                    "DELETE FROM project_memory_vectors WHERE chunk_id IN ({oldest_sql})"
-                ),
+                &format!("DELETE FROM project_memory_vectors WHERE chunk_id IN ({oldest_sql})"),
                 params![
                     project_id,
                     tenant_scope.org_id.as_str(),

@@ -27,11 +27,21 @@ impl MemoryDatabase {
         owner_org_unit_id: Option<&str>,
     ) -> MemoryResult<Vec<GlobalMemorySearchHit>> {
         if !self.crypto.is_plaintext() {
-            return self.search_encrypted_global_memory_for_tenant_scoped(
-                tenant_org_id, tenant_workspace_id, tenant_deployment_id, caller_subject,
-                legacy_user_id, query, limit, project_tag, channel_tag, host_tag,
-                owner_org_unit_id,
-            ).await;
+            return self
+                .search_encrypted_global_memory_for_tenant_scoped(
+                    tenant_org_id,
+                    tenant_workspace_id,
+                    tenant_deployment_id,
+                    caller_subject,
+                    legacy_user_id,
+                    query,
+                    limit,
+                    project_tag,
+                    channel_tag,
+                    host_tag,
+                    owner_org_unit_id,
+                )
+                .await;
         }
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
@@ -206,9 +216,18 @@ impl MemoryDatabase {
              ORDER BY created_at_ms DESC",
         )?;
         let rows = stmt.query_map(
-            params![tenant_org_id, tenant_workspace_id, tenant_deployment_id,
-                caller_subject, now_ms, project_tag, channel_tag, host_tag,
-                owner_org_unit_id, legacy_user_id],
+            params![
+                tenant_org_id,
+                tenant_workspace_id,
+                tenant_deployment_id,
+                caller_subject,
+                now_ms,
+                project_tag,
+                channel_tag,
+                host_tag,
+                owner_org_unit_id,
+                legacy_user_id
+            ],
             |row| row_to_global_record(row, &self.crypto),
         )?;
         let mut hits = Vec::new();
@@ -221,7 +240,10 @@ impl MemoryDatabase {
                 Err(error) => return Err(error.into()),
             };
             if hosted_global_text_matches(&record.content, query) {
-                hits.push(GlobalMemorySearchHit { record, score: 0.25 });
+                hits.push(GlobalMemorySearchHit {
+                    record,
+                    score: 0.25,
+                });
                 if hits.len() >= limit.clamp(1, 100) as usize {
                     break;
                 }
@@ -253,11 +275,21 @@ impl MemoryDatabase {
         // filtering before LIMIT/OFFSET so one denied row cannot hide later
         // authorized rows or turn the whole listing into an error.
         if !self.crypto.is_plaintext() {
-            return self.list_encrypted_global_memory_for_tenant_scoped(
-                tenant_org_id, tenant_workspace_id, tenant_deployment_id, caller_subject,
-                legacy_user_id, q.unwrap_or_default().trim(), project_tag, channel_tag, limit,
-                offset, owner_org_unit_id,
-            ).await;
+            return self
+                .list_encrypted_global_memory_for_tenant_scoped(
+                    tenant_org_id,
+                    tenant_workspace_id,
+                    tenant_deployment_id,
+                    caller_subject,
+                    legacy_user_id,
+                    q.unwrap_or_default().trim(),
+                    project_tag,
+                    channel_tag,
+                    limit,
+                    offset,
+                    owner_org_unit_id,
+                )
+                .await;
         }
         let conn = self.conn.lock().await;
         let query = q.unwrap_or("").trim();
@@ -348,8 +380,16 @@ impl MemoryDatabase {
              ORDER BY created_at_ms DESC",
         )?;
         let rows = stmt.query_map(
-            params![tenant_org_id, tenant_workspace_id, tenant_deployment_id,
-                caller_subject, project_tag, channel_tag, owner_org_unit_id, legacy_user_id],
+            params![
+                tenant_org_id,
+                tenant_workspace_id,
+                tenant_deployment_id,
+                caller_subject,
+                project_tag,
+                channel_tag,
+                owner_org_unit_id,
+                legacy_user_id
+            ],
             |row| row_to_global_record(row, &self.crypto),
         )?;
         let query_lower = query.to_lowercase();
@@ -445,7 +485,9 @@ impl MemoryDatabase {
         let next_owner_subject = crate::types::owner_subject_from_metadata(metadata);
         let next_private = next_owner_subject.is_some();
         let next_tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
-        let Some(sealed) = seal_global_context_update(&conn, &self.crypto, id, metadata, provenance)? else {
+        let Some(sealed) =
+            seal_global_context_update(&conn, &self.crypto, id, metadata, provenance)?
+        else {
             return Ok(false);
         };
         let changed = conn.execute(

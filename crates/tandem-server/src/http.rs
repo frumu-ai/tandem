@@ -100,6 +100,7 @@ pub(crate) mod mcp_inventory;
 pub(crate) mod mcp_run_as;
 pub(crate) mod memory_audit_store;
 mod middleware;
+pub(crate) use middleware::enrich_verified_context_with_org_unit_grants;
 #[cfg(feature = "test-support")]
 pub use middleware::hosted_test_ingress;
 mod mission_builder;

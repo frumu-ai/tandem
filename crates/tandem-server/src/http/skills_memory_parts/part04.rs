@@ -118,8 +118,8 @@ async fn memory_promote_impl_with_verified(
             id: request.source_memory_id.clone(),
         }),
     )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
         tandem_memory::MemoryStoreReadResult::GlobalRecord(record) => record,
         _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -615,18 +615,23 @@ async fn memory_promote_impl_with_verified(
     .await?;
     let updated = with_verified_memory_decrypt_principal(
         verified_tenant_context,
-        store.mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-            scope,
-            id: new_id.clone(),
-            visibility: "shared".to_string(),
-            demoted: false,
-            metadata: next_metadata.clone(),
-            provenance: Some(next_provenance.clone()),
-        }),
+        store.mutate(
+            tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+                scope,
+                id: new_id.clone(),
+                visibility: "shared".to_string(),
+                demoted: false,
+                metadata: next_metadata.clone(),
+                provenance: Some(next_provenance.clone()),
+            },
+        ),
     )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !matches!(
+        updated,
+        tandem_memory::MemoryStoreMutationResult::Changed(true)
+    ) {
         return Err(StatusCode::NOT_FOUND);
     }
     publish_tenant_event(
@@ -899,10 +904,8 @@ pub(super) async fn memory_search(
         // read authority of a member in several departments. Query each
         // current verified membership under the same tenant and subject scope;
         // never run an unrestricted tenant query for a verified caller.
-        let org_units = trusted_memory_search_org_units(
-            verified_tenant_context.as_deref(),
-            active_org_unit,
-        )?;
+        let org_units =
+            trusted_memory_search_org_units(verified_tenant_context.as_deref(), active_org_unit)?;
         let mut hits = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for org_unit in org_units {
@@ -915,16 +918,18 @@ pub(super) async fn memory_search(
             scope.subject = caller_subject.clone();
             let scoped_hits = match with_verified_memory_decrypt_principal(
                 verified_tenant_context.as_deref(),
-                store.query(tandem_memory::MemoryStoreQueryRequest::SearchGlobalRecords {
-                    scope,
-                    user_id: capability.subject.clone(),
-                    query: request.query.clone(),
-                    limit: candidate_limit,
-                    project_tag: Some(request.partition.project_id.clone()),
-                }),
+                store.query(
+                    tandem_memory::MemoryStoreQueryRequest::SearchGlobalRecords {
+                        scope,
+                        user_id: capability.subject.clone(),
+                        query: request.query.clone(),
+                        limit: candidate_limit,
+                        project_tag: Some(request.partition.project_id.clone()),
+                    },
+                ),
             )
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             {
                 tandem_memory::MemoryStoreQueryResult::GlobalSearchHits(hits) => hits,
                 _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -1489,8 +1494,8 @@ pub(super) async fn memory_demote(
             id: input.id.clone(),
         }),
     )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
         tandem_memory::MemoryStoreReadResult::GlobalRecord(record) => record,
         _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -1551,20 +1556,22 @@ pub(super) async fn memory_demote(
     .await?;
     let changed = match with_verified_memory_decrypt_principal(
         verified_tenant_context.as_deref(),
-        store.mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-            scope,
-            id: input.id.clone(),
-            visibility: "private".to_string(),
-            demoted: true,
-            metadata: memory_metadata_with_owner_subject(
-                record.metadata.clone(),
-                Some(record.user_id.as_str()),
-            ),
-            provenance: record.provenance.clone(),
-        }),
+        store.mutate(
+            tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+                scope,
+                id: input.id.clone(),
+                visibility: "private".to_string(),
+                demoted: true,
+                metadata: memory_metadata_with_owner_subject(
+                    record.metadata.clone(),
+                    Some(record.user_id.as_str()),
+                ),
+                provenance: record.provenance.clone(),
+            },
+        ),
     )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
         tandem_memory::MemoryStoreMutationResult::Changed(changed) => changed,
         _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -1809,8 +1816,12 @@ pub(super) async fn context_distill(
     .map_err(|_| StatusCode::FORBIDDEN)?
     .subject;
     workflow_learning_distillation_source_binding(
-        &state, &tenant_context, verified_tenant_context.as_deref(),
-        input.workflow_id.as_deref(), &input.session_id, &subject,
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        input.workflow_id.as_deref(),
+        &input.session_id,
+        &subject,
     )
     .await?;
     let runtime_state = state.runtime.wait();
@@ -1981,7 +1992,11 @@ pub(super) async fn workflow_learning_candidate_review(
     };
     let reviewed_at_ms = crate::now_ms();
     if !workflow_learning_candidate_access(
-        &state, &tenant_context, verified_tenant_context.as_deref(), &candidate, true,
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &candidate,
+        true,
     )
     .await
     {

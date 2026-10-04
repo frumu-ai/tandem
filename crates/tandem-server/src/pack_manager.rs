@@ -1699,3 +1699,7 @@ mod tests;
 #[cfg(test)]
 #[path = "pack_manager_solution_tests.rs"]
 mod solution_tests;
+
+#[cfg(test)]
+#[path = "pack_manager_installation_tests.rs"]
+mod installation_tests;

@@ -93,6 +93,13 @@ impl Fixture {
         &self,
         prepared: &PreparedCustomerConfig,
     ) -> Result<ResolvedPlan, SolutionError> {
+        self.resolve_prepared_with_host_facts(prepared, None)
+    }
+    fn resolve_prepared_with_host_facts(
+        &self,
+        prepared: &PreparedCustomerConfig,
+        host_facts_sha256: Option<&str>,
+    ) -> Result<ResolvedPlan, SolutionError> {
         let models = serde_json::from_str(include_str!(
             "../fixtures/company-brain-text/host-models.json"
         ))
@@ -104,6 +111,7 @@ impl Fixture {
         prepared.resolve(
             &self.blueprint,
             CustomerResolutionInput {
+                host_facts_sha256,
                 verified_context: &self.context,
                 now_ms: 1500,
                 engine_version: "0.7.2",
@@ -114,6 +122,34 @@ impl Fixture {
             },
         )
     }
+}
+
+#[test]
+fn prepared_customer_configuration_binds_current_host_facts() {
+    let fixture = Fixture::new(A, "a");
+    let prepared = fixture.prepare(None, None).unwrap();
+    let first = sha256(b"current source and provider routes");
+    let second = sha256(b"changed source or provider routes");
+    let plain = fixture.resolve_prepared(&prepared).unwrap();
+    let bound = fixture
+        .resolve_prepared_with_host_facts(&prepared, Some(&first))
+        .unwrap();
+    let rebound = fixture
+        .resolve_prepared_with_host_facts(&prepared, Some(&second))
+        .unwrap();
+    assert_eq!(plain.host_facts_sha256, None);
+    assert_eq!(bound.host_facts_sha256.as_deref(), Some(first.as_str()));
+    assert_ne!(
+        plain.composition_hash().unwrap(),
+        bound.composition_hash().unwrap()
+    );
+    assert_ne!(
+        bound.composition_hash().unwrap(),
+        rebound.composition_hash().unwrap()
+    );
+    assert!(fixture
+        .resolve_prepared_with_host_facts(&prepared, Some("invalid"))
+        .is_err());
 }
 
 #[test]

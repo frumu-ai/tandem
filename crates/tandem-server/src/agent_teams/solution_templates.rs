@@ -42,6 +42,61 @@ impl AgentTeamRuntime {
         Ok(())
     }
 
+    /// Observe an already staged receipt without recreating a missing file or
+    /// trusting a stale cache. Ownership is checked before exposing a digest.
+    pub async fn observe_solution_template(
+        &self,
+        workspace_root: &str,
+        resource_id: &str,
+        owner: &SolutionTemplateOwner,
+    ) -> anyhow::Result<String> {
+        ensure!(
+            resource_id.starts_with("solution-")
+                && resource_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte)),
+            "invalid solution resource ID"
+        );
+        let _operation = self.template_persistence.lock().await;
+        let workspace = PathBuf::from(workspace_root);
+        let owner = owner.clone();
+        let resource_id = resource_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            // Observe through the same retained, nonredirectable directory
+            // capability as staging, without creating any missing parent.
+            let mut directory = Dir::open_ambient_dir(&workspace, cap_std::ambient_authority())?;
+            for component in [".tandem", "agent-team", "templates"] {
+                directory = directory.open_dir_nofollow(component)?;
+            }
+            let path = existing_template_path(&directory, &workspace, &resource_id)?
+                .ok_or_else(|| anyhow::anyhow!("staged solution template is missing"))?;
+            let mut raw = Vec::new();
+            open_regular(&directory, &path)?
+                .take(MAX_ARTIFACT_BYTES as u64 + 1)
+                .read_to_end(&mut raw)?;
+            ensure!(
+                raw.len() <= MAX_ARTIFACT_BYTES,
+                "solution template is too large"
+            );
+            let observed: AgentTemplate = serde_yaml::from_slice(&raw)?;
+            let document: serde_json::Value = serde_yaml::from_slice(&raw)?;
+            ensure!(
+                !observed.enabled
+                    && observed.template_id == resource_id
+                    && observed.solution_owner.as_ref() == Some(&owner),
+                "solution template ownership or activation conflict"
+            );
+            let canonical = canonical_json(&observed)?;
+            ensure!(
+                canonical_json(&document)? == canonical,
+                "solution template contains unrecognized content"
+            );
+            ensure_directory_binding(&directory, &workspace)?;
+            Ok(sha256(&canonical))
+        })
+        .await?
+    }
+
     /// Create or reconcile an exact disabled template without replacing a
     /// pre-existing resource. Generic template mutation cannot activate it.
     pub async fn stage_solution_template(
@@ -477,10 +532,18 @@ mod tests {
                 managed.solution_owner = Some(owner.clone());
                 let original = canonical_json(&managed).unwrap();
                 std::fs::write(&alias, &original).unwrap();
-                runtime
-                    .stage_solution_template(workspace, template.clone(), owner)
+                let fingerprint = runtime
+                    .stage_solution_template(workspace, template.clone(), owner.clone())
                     .await
                     .unwrap();
+                assert_eq!(
+                    runtime
+                        .observe_solution_template(workspace, &template.template_id, &owner)
+                        .await
+                        .unwrap(),
+                    fingerprint,
+                    "observation must preserve the actual managed filename alias"
+                );
                 let cached = canonical_json(&runtime.list_templates().await).unwrap();
                 let denied = if delete {
                     runtime.delete_template(workspace, "worker").await.is_err()
@@ -503,6 +566,8 @@ mod tests {
             }
         }
     }
+
+    include!("solution_template_observation_tests.rs");
 
     #[tokio::test]
     async fn generic_mutations_validate_actual_destination_before_changing_cache() {

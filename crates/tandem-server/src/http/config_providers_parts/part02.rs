@@ -418,23 +418,24 @@ async fn compare_and_set_openai_codex_oauth_credential(
     .await
 }
 
-async fn compare_and_set_openai_codex_oauth_credential_for_caller(
+async fn refresh_openai_codex_oauth_credential_for_caller(
     state: &AppState,
     tenant_context: &TenantContext,
-    expected: Option<&tandem_core::OAuthProviderCredential>,
-    replacement: Option<tandem_core::OAuthProviderCredential>,
+    expected: &tandem_core::OAuthProviderCredential,
+    replacement: tandem_core::OAuthProviderCredential,
     caller: OAuthRefreshCaller<'_>,
 ) -> anyhow::Result<bool> {
     if matches!(caller, OAuthRefreshCaller::Internal) {
-        return compare_and_set_openai_codex_oauth_credential(
-            state,
+        return tandem_core::refresh_provider_oauth_credential_for_tenant_in_dir_serialized(
+            &provider_auth_security_dir_for_state(state),
             tenant_context,
+            OPENAI_CODEX_PROVIDER_ID,
             expected,
             replacement,
         )
         .await;
     }
-    tandem_core::compare_and_set_optional_provider_oauth_credential_for_tenant_in_dir_serialized_guarded(
+    tandem_core::refresh_provider_oauth_credential_for_tenant_in_dir_serialized_guarded(
         &provider_auth_security_dir_for_state(state),
         tenant_context,
         OPENAI_CODEX_PROVIDER_ID,
@@ -1001,11 +1002,11 @@ async fn persist_refreshed_openai_codex_oauth(
         .map(str::to_string);
     let api_key = credential.api_key.clone();
     let managed_by = credential.managed_by.clone();
-    if !compare_and_set_openai_codex_oauth_credential_for_caller(
+    if !refresh_openai_codex_oauth_credential_for_caller(
         state,
         tenant_context,
-        Some(previous),
-        Some(credential.clone()),
+        previous,
+        credential.clone(),
         caller,
     )
     .await?

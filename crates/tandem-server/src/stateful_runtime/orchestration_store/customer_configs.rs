@@ -210,8 +210,8 @@ pub(super) fn migrate_sqlite(connection: &mut rusqlite::Connection) -> anyhow::R
     )?;
     match version {
         5 => transaction.execute_batch(SCHEMA_V6)?,
-        // A concurrent initializer may also have completed the v7 step.
-        6 | 7 => {}
+        // A concurrent initializer may also have completed later additive steps.
+        6..=8 => {}
         _ => anyhow::bail!("unsupported schema version for customer config migration: {version}"),
     }
     transaction.commit()?;

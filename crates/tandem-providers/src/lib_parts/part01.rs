@@ -72,9 +72,9 @@ async fn resolve_provider_request_target(
         .try_with(|allowed| *allowed)
         .unwrap_or(false)
         && matches!(
-        provider_id.trim().to_ascii_lowercase().as_str(),
-        "ollama" | "llama_cpp" | "llama.cpp"
-    );
+            provider_id.trim().to_ascii_lowercase().as_str(),
+            "ollama" | "llama_cpp" | "llama.cpp"
+        );
     let insecure_http = url.scheme() == "http";
     if url.scheme() != "https" && !(insecure_http && local_provider) {
         anyhow::bail!("provider endpoint must use https");
@@ -838,6 +838,23 @@ pub struct TokenUsage {
 }
 #[async_trait]
 pub trait Provider: Send + Sync {
+    /// Only adapters with admission on every actual send may run in a budget scope.
+    fn supports_attempt_accounting(&self) -> bool {
+        false
+    }
+
+    fn runtime_transport_binding(
+        &self,
+        _auth: &ProviderAuthOverride,
+    ) -> anyhow::Result<ProviderTransportBinding> {
+        anyhow::bail!("provider does not describe a current runtime binding")
+    }
+
+    /// Unknown adapters remain usable by legacy callers, but cannot be
+    /// approved for solution installation until they describe their route.
+    fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
+        None
+    }
     fn info(&self) -> ProviderInfo;
     async fn complete(&self, prompt: &str, model_override: Option<&str>) -> anyhow::Result<String>;
     async fn complete_with_auth_override(
@@ -1156,7 +1173,10 @@ impl ProviderRegistry {
         let mut committed = None;
         {
             let mut commit = || {
-                anyhow::ensure!(committed.is_none(), "provider bearer clear already attempted");
+                anyhow::ensure!(
+                    committed.is_none(),
+                    "provider bearer clear already attempted"
+                );
                 let removed = match (snapshot.token.as_ref(), tokens.get(&key)) {
                     (Some(expected), Some(current)) if Arc::ptr_eq(expected, current) => {
                         tokens.remove(&key);
@@ -1195,17 +1215,27 @@ impl ProviderRegistry {
     }
 
     async fn auth_override_for_provider(&self, provider_id: &str) -> ProviderAuthOverride {
+        let tenant_context = PROVIDER_TENANT_CONTEXT.try_with(Clone::clone).ok();
+        self.auth_override_for_tenant(provider_id, tenant_context.as_ref())
+            .await
+    }
+
+    async fn auth_override_for_tenant(
+        &self,
+        provider_id: &str,
+        tenant_context: Option<&TenantContext>,
+    ) -> ProviderAuthOverride {
         if !provider_id.eq_ignore_ascii_case("openai-codex") {
             return ProviderAuthOverride::Inherit;
         }
-        let Some(tenant_context) = PROVIDER_TENANT_CONTEXT.try_with(Clone::clone).ok() else {
+        let Some(tenant_context) = tenant_context else {
             return ProviderAuthOverride::Inherit;
         };
         if let Some(token) = self
             .tenant_bearer_tokens
             .read()
             .await
-            .get(&tenant_provider_auth_key(&tenant_context, provider_id))
+            .get(&tenant_provider_auth_key(tenant_context, provider_id))
             .cloned()
         {
             ProviderAuthOverride::Bearer(token.to_string())
@@ -1262,6 +1292,17 @@ impl ProviderRegistry {
             .collect()
     }
 
+    pub async fn installation_models(
+        &self,
+    ) -> Vec<(ProviderInfo, Option<ProviderInstallationMetadata>)> {
+        self.providers
+            .read()
+            .await
+            .iter()
+            .map(|provider| (provider.info(), provider.installation_metadata()))
+            .collect()
+    }
+
     pub async fn default_complete(&self, prompt: &str) -> anyhow::Result<String> {
         self.complete_for_provider(None, prompt, None).await
     }
@@ -1273,6 +1314,7 @@ impl ProviderRegistry {
         model_id: Option<&str>,
     ) -> anyhow::Result<String> {
         let provider = self.select_provider(provider_id).await?;
+        attempt_accounting::ensure_supported(provider.as_ref())?;
         let resolved_provider_id = provider.info().id;
         let auth_override = self
             .auth_override_for_provider(resolved_provider_id.as_str())
@@ -1332,6 +1374,7 @@ impl ProviderRegistry {
         model_id: Option<&str>,
     ) -> anyhow::Result<ResolvedProviderRoute> {
         let provider = self.select_provider(provider_id).await?;
+        attempt_accounting::ensure_supported(provider.as_ref())?;
         Ok(ResolvedProviderRoute {
             provider_id: provider.info().id,
             model_id: model_id.map(str::to_string),
@@ -1414,6 +1457,7 @@ impl ProviderRegistry {
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let provider = self.select_provider(provider_id).await?;
+        attempt_accounting::ensure_supported(provider.as_ref())?;
         let resolved_provider_id = provider.info().id;
         let auth_override = self
             .auth_override_for_provider(resolved_provider_id.as_str())
@@ -1640,7 +1684,7 @@ fn build_providers(config: &AppConfig) -> Vec<Arc<dyn Provider>> {
                 .default_model
                 .clone()
                 .unwrap_or_else(|| "claude-sonnet-4-6".to_string()),
-            client: Client::new(),
+            client: dispatch_authority::provider_client(),
         }));
     }
     if let Some(cohere) = config.providers.get("cohere") {
@@ -1783,7 +1827,7 @@ fn add_openai_responses_provider(
                 context_window,
             }]
         },
-        client: Client::new(),
+        client: dispatch_authority::provider_client(),
     }));
 }
 
@@ -1909,6 +1953,9 @@ struct LocalEchoProvider;
 
 #[async_trait]
 impl Provider for LocalEchoProvider {
+    fn installation_metadata(&self) -> Option<ProviderInstallationMetadata> {
+        Some(ProviderInstallationMetadata::local_echo())
+    }
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             id: "local".to_string(),
