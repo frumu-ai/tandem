@@ -44,7 +44,7 @@ pub struct QuestionRequest {
 pub struct Storage {
     base: PathBuf,
     repository: session_repository::SessionRepository,
-    question_write_lock: tokio::sync::Mutex<()>,
+    question_write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -307,7 +307,7 @@ impl Storage {
         Ok(Self {
             base,
             repository,
-            question_write_lock: tokio::sync::Mutex::new(()),
+            question_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -596,9 +596,7 @@ impl Storage {
     }
 
     pub async fn set_todos(&self, id: &str, todos: Vec<Value>) -> anyhow::Result<()> {
-        let id = id.to_string();
-        let todos = normalize_todo_items(todos);
-        self.run_blocking(move |repository| repository.set_todos(&id, todos)).await
+        self.set_todos_with_commit_guard(id, todos, |_, commit| commit()).await
     }
 
     pub async fn get_todos(&self, id: &str) -> Vec<Value> {
@@ -614,42 +612,7 @@ impl Storage {
         message_id: &str,
         questions: Vec<Value>,
     ) -> anyhow::Result<QuestionRequest> {
-        if questions.is_empty() {
-            anyhow::bail!("cannot add empty question request for session {}", session_id);
-        }
-        let tenant_context = self
-            .get_session(session_id)
-            .await
-            .map(|session| session.tenant_context)
-            .unwrap_or_else(TenantContext::local_implicit);
-        let requested_at_ms = now_ms_u64();
-        let tool = QuestionToolRef {
-            call_id: format!("call-{}", Uuid::new_v4()),
-            message_id: message_id.to_string(),
-        };
-        let digest_payload = json!({
-            "tenant": &tenant_context,
-            "sessionID": session_id,
-            "questions": &questions,
-            "tool": &tool,
-        });
-        let request = QuestionRequest {
-            id: format!("q-{}", Uuid::new_v4()),
-            requested_by: tenant_context.actor_id.clone(),
-            tenant_context,
-            action_digest: format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&digest_payload).unwrap_or_default())
-            ),
-            expires_at_ms: requested_at_ms.saturating_add(QUESTION_REQUEST_TTL_MS),
-            session_id: session_id.to_string(),
-            questions,
-            tool: Some(tool),
-        };
-        let request_for_store = request.clone();
-        let _write_guard = self.question_write_lock.lock().await;
-        self.run_blocking(move |repository| repository.add_question(&request_for_store)).await?;
-        Ok(request)
+        self.add_question_request_with_commit_guard(session_id, message_id, questions, |_, commit| commit()).await
     }
 
     pub async fn list_question_requests(&self) -> Vec<QuestionRequest> {

@@ -22,6 +22,72 @@ jobs:
         with:
           cache-profile: hosted-policy
           components: rustfmt
+      - name: Verify native planning fallback regressions actually execute
+        run: |
+          set -euo pipefail
+          cargo test -p tandem-core --locked --lib hosted_plan_fallback_ -- --list > "$RUNNER_TEMP/hosted-plan-fallback-tests.txt"
+          for tandem_plan_test_name in \
+            hosted_plan_fallback_todo_writer_wait_rechecks_revocation \
+            hosted_plan_fallback_question_writer_wait_rechecks_revocation \
+            hosted_plan_fallback_todo_preserves_current_authority \
+            hosted_plan_fallback_question_preserves_current_authority \
+            hosted_plan_fallback_todo_preserves_standalone_without_hook \
+            hosted_plan_fallback_question_preserves_standalone_without_hook \
+            hosted_plan_fallback_todo_sql_failure_has_no_final_success \
+            hosted_plan_fallback_question_sql_failure_has_no_synthetic_question \
+            hosted_plan_fallback_todo_retains_original_prompt_authority \
+            hosted_plan_fallback_question_retains_original_prompt_authority \
+            hosted_plan_fallback_todo_keeps_write_and_events_inside_authority \
+            hosted_plan_fallback_question_keeps_write_and_events_inside_authority
+          do
+            if ! grep -Fxq "engine_loop::tests::plan_fallback_authority::$tandem_plan_test_name: test" "$RUNNER_TEMP/hosted-plan-fallback-tests.txt"; then
+              echo "Missing planning fallback regression: $tandem_plan_test_name" >&2
+              exit 1
+            fi
+          done
+          cargo test -p tandem-core --locked --lib hosted_plan_fallback_ -- --nocapture --test-threads=1
+      - name: Verify narrow planning storage and repository guards
+        run: |
+          set -euo pipefail
+          cargo test -p tandem-core --locked --lib plan_write_tests:: -- --list > "$RUNNER_TEMP/plan-write-tests.txt"
+          for tandem_plan_test_name in \
+            storage::session_repository::plan_write_tests::guarded_plan_repository_denial_and_skipped_commit_preserve_existing_rows \
+            storage::session_repository::plan_write_tests::guarded_plan_repository_sql_failure_rolls_back_without_success_publication \
+            storage::session_repository::plan_write_tests::guarded_plan_repository_double_continuation_reports_committed_first_result \
+            storage::session_repository::plan_write_tests::guarded_todo_repository_loads_latest_metadata_after_sqlite_writer_release \
+            storage::plan_write_tests::guarded_plan_storage_todos_publish_exact_normalized_persisted_values \
+            storage::plan_write_tests::guarded_plan_storage_question_publishes_exact_prepared_tenant_digest_tool_and_ttl \
+            storage::plan_write_tests::guarded_plan_storage_denial_skipped_commit_and_empty_question_publish_nothing \
+            storage::plan_write_tests::guarded_plan_storage_cancellation_retains_question_writer_through_commit_and_callback \
+            storage::plan_write_tests::guarded_plan_storage_cancelled_denial_rolls_back_before_question_writer_release
+          do
+            if ! grep -Fxq "$tandem_plan_test_name: test" "$RUNNER_TEMP/plan-write-tests.txt"; then
+              echo "Missing native planning storage regression: $tandem_plan_test_name" >&2
+              exit 1
+            fi
+          done
+          cargo test -p tandem-core --locked --lib plan_write_tests::
+          cargo test -p tandem-core --locked --lib fallback_correlation
+      - name: Verify planning fallbacks with real hosted policy
+        run: |
+          set -euo pipefail
+          cargo test -p tandem-server --locked --lib hosted_policy::tests::session_commit::planning_commit:: -- --list > "$RUNNER_TEMP/hosted-plan-server-tests.txt"
+          for tandem_plan_test_name in \
+            hosted_plan_todo_real_policy_writer_wait_rejects_v5_revocation \
+            hosted_plan_question_real_policy_fifo_writer_wait_rejects_v5_revocation \
+            hosted_plan_todo_real_policy_preserves_current_authority_and_publication \
+            hosted_plan_question_real_policy_preserves_current_authority_and_publication \
+            hosted_plan_todo_real_policy_uses_original_assertion_after_header_renewal \
+            hosted_plan_question_real_policy_uses_original_assertion_after_header_renewal \
+            hosted_plan_todo_real_sql_failure_preserves_canonical_state \
+            hosted_plan_question_real_sql_failure_emits_no_synthetic_success
+          do
+            if ! grep -Fxq "hosted_policy::tests::session_commit::planning_commit::$tandem_plan_test_name: test" "$RUNNER_TEMP/hosted-plan-server-tests.txt"; then
+              echo "Missing real hosted planning regression: $tandem_plan_test_name" >&2
+              exit 1
+            fi
+          done
+          cargo test -p tandem-server --locked --lib hosted_policy::tests::session_commit::planning_commit:: -- --nocapture --test-threads=1
       - name: Validate hosted policy contract
         run: cargo test -p tandem-enterprise-contract hosted_policy --lib
       - name: Verify global memory sharing and conservative schema upgrade

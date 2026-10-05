@@ -1,3 +1,6 @@
+use super::super::plan_fallback::{
+    emit_plan_question_fallback, emit_plan_todo_fallback, PlanFallbackAuthority,
+};
 use super::*;
 use tandem_types::EngineEvent;
 
@@ -32,14 +35,16 @@ async fn plan_todo_fallback_preserves_run_id_for_live_and_persisted_events() {
         .take_session_part_receiver()
         .expect("session part persistence receiver");
     emit_plan_todo_fallback(
-        storage,
+        storage.clone(),
         &bus,
         &session_id,
         "message-plan-todo",
         Some("run-plan-todo"),
         "- [ ] Preserve fallback correlation",
+        PlanFallbackAuthority::default(),
     )
-    .await;
+    .await
+    .expect("persist todo fallback");
 
     let mut live_events = Vec::new();
     while let Ok(event) = live_rx.try_recv() {
@@ -59,6 +64,18 @@ async fn plan_todo_fallback_preserves_run_id_for_live_and_persisted_events() {
     for event in &live_events {
         assert_run_correlation(event, &session_id, "run-plan-todo");
     }
+    let canonical = storage.get_todos(&session_id).await;
+    assert_eq!(
+        live_events[0].properties["part"]["id"],
+        live_events[1].properties["part"]["id"]
+    );
+    assert_eq!(
+        live_events[1].properties["part"]["result"]["todos"],
+        json!(canonical)
+    );
+    assert_eq!(live_events[2].properties["todos"], json!(canonical));
+    assert!(!canonical[0]["id"].as_str().unwrap().is_empty());
+    assert_eq!(canonical[0]["status"], "pending");
 
     let persisted_event = persistence_rx
         .try_recv()
@@ -99,8 +116,10 @@ async fn plan_question_fallback_preserves_run_id_on_question_event() {
         "message-plan-question",
         Some("run-plan-question"),
         "I need more detail before I can produce a task list.",
+        PlanFallbackAuthority::default(),
     )
-    .await;
+    .await
+    .expect("persist question fallback");
 
     let event = live_rx.try_recv().expect("question fallback event");
     assert_eq!(event.event_type, "question.asked");
@@ -109,6 +128,24 @@ async fn plan_question_fallback_preserves_run_id_on_question_event() {
         live_rx.try_recv().is_err(),
         "only one question event emitted"
     );
-    assert_eq!(storage.list_question_requests().await.len(), 1);
+    let requests = storage.list_question_requests().await;
+    assert_eq!(requests.len(), 1);
+    let canonical = serde_json::to_value(&requests[0]).unwrap();
+    assert_eq!(event.properties["id"], canonical["id"]);
+    assert_eq!(event.properties["questions"], canonical["questions"]);
+    assert_eq!(event.properties["tool"], canonical["tool"]);
+    assert_eq!(
+        event.properties["messageID"],
+        canonical["tool"]["messageID"]
+    );
+    assert!(storage
+        .get_question_request_for_tenant(
+            &requests[0].id,
+            &requests[0].tenant_context,
+            Some(&session_id)
+        )
+        .await
+        .unwrap()
+        .is_some());
     let _ = std::fs::remove_dir_all(base);
 }

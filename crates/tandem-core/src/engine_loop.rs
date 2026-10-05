@@ -28,6 +28,7 @@ pub use data_boundary_gate::{
 mod final_response;
 mod loop_guards;
 mod loop_tuning;
+mod plan_fallback;
 mod prewrite_gate;
 mod prewrite_mode;
 mod prompt_context;
