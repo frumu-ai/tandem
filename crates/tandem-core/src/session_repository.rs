@@ -12,6 +12,13 @@ use crate::message_part_reducer::reduce_message_parts;
 
 use super::{QuestionRequest, SessionMeta, MAX_SESSION_SNAPSHOTS};
 
+#[path = "session_repository_plan_writes.rs"]
+mod plan_writes;
+
+#[cfg(test)]
+#[path = "session_repository_plan_write_tests.rs"]
+mod plan_write_tests;
+
 #[cfg(test)]
 #[path = "session_repository_commit_guard_tests.rs"]
 mod commit_guard_tests;
@@ -610,22 +617,13 @@ impl SessionRepository {
         })
     }
 
-    pub(crate) fn set_todos(&self, session_id: &str, todos: Vec<Value>) -> Result<()> {
-        self.update_metadata(session_id, |metadata| metadata.todos = todos)
-    }
-
     pub(crate) fn get_todos(&self, session_id: &str) -> Result<Vec<Value>> {
         self.with_connection(|connection| Ok(load_metadata(connection, session_id)?.todos))
     }
 
+    #[cfg(test)]
     pub(crate) fn add_question(&self, request: &QuestionRequest) -> Result<()> {
-        self.with_connection(|connection| {
-            let transaction =
-                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            upsert_question(&transaction, request)?;
-            transaction.commit()?;
-            Ok(())
-        })
+        self.add_question_with_commit_guard(request, |_, commit| commit())
     }
 
     pub(crate) fn list_questions(&self) -> Result<Vec<QuestionRequest>> {

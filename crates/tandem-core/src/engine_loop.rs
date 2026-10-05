@@ -28,6 +28,7 @@ pub use data_boundary_gate::{
 mod final_response;
 mod loop_guards;
 mod loop_tuning;
+mod plan_fallback;
 mod prewrite_gate;
 mod prewrite_mode;
 mod prompt_context;
@@ -50,6 +51,7 @@ use loop_tuning::{
     provider_stream_decode_retry_attempts, provider_stream_idle_timeout_ms,
     strict_write_retry_max_attempts, tool_exec_timeout_ms, tool_result_keep_recent,
 };
+use plan_fallback::*;
 use prewrite_gate::{evaluate_prewrite_gate, PrewriteProgress};
 use prewrite_mode::*;
 use prompt_context::{

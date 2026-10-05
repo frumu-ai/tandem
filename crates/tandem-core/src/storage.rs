@@ -20,6 +20,13 @@ use crate::{
 #[path = "session_repository.rs"]
 mod session_repository;
 
+#[path = "storage_plan_writes.rs"]
+mod plan_writes;
+
+#[cfg(test)]
+#[path = "storage_plan_write_tests.rs"]
+mod plan_write_tests;
+
 #[path = "session_owner_read_guard.rs"]
 mod session_owner_read_guard;
 pub use session_owner_read_guard::SessionOwnerReadGuard;

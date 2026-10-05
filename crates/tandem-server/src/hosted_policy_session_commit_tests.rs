@@ -23,6 +23,9 @@ use tandem_types::{
 use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
+#[path = "hosted_policy_planning_commit_tests.rs"]
+mod planning_commit;
+
 const PROVIDER: &str = "held-final-assistant";
 const FINAL_TEXT: &str = "authorized final assistant response";
 

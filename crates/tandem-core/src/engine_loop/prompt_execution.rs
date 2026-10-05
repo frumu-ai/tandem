@@ -1731,27 +1731,25 @@ impl EngineLoop {
                 detail: Some("provider stream complete"),
             },
         );
+        let original_verified = session_record
+            .as_ref()
+            .and_then(|session| session.verified_tenant_context.clone());
         if active_agent.name.eq_ignore_ascii_case("plan") {
-            emit_plan_todo_fallback(
-                self.storage.clone(),
-                &self.event_bus,
-                &session_id,
-                &user_message_id,
-                run_ref,
-                &completion,
-            )
-            .await;
-            let todos_after_fallback = self.storage.get_todos(&session_id).await;
-            if todos_after_fallback.is_empty() && !question_tool_used {
-                emit_plan_question_fallback(
-                    self.storage.clone(),
-                    &self.event_bus,
+            if let Err(error) = self
+                .emit_plan_fallbacks(
                     &session_id,
                     &user_message_id,
                     run_ref,
                     &completion,
+                    original_verified.clone(),
+                    question_tool_used,
                 )
-                .await;
+                .await
+            {
+                cancel.cancel();
+                self.mark_session_run_failed(&session_id, &error.to_string())
+                    .await;
+                return Err(error);
             }
         }
         if cancel.is_cancelled() {
@@ -1766,9 +1764,6 @@ impl EngineLoop {
             cancel.cancel();
             return Err(error);
         }
-        let original_verified = session_record
-            .as_ref()
-            .and_then(|session| session.verified_tenant_context.clone());
         if let Err(error) = self
             .append_final_response(
                 &session_id,
