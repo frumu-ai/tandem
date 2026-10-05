@@ -201,6 +201,13 @@ async fn memory_promote_impl_with_verified(
             policy_decision_id: None,
         });
     };
+    if source.metadata.as_ref().is_some_and(|metadata| metadata.get("derived_memory_lineage").is_some())
+        && !global_memory_record_visible_to_verified_request(
+            state, tenant_context, verified_tenant_context, store.as_ref(), &scope, &source,
+            Some(&distillation_access_filter(verified_tenant_context, &capability.subject)),
+        ).await {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let scrub_report = scrub_content(&source.content);
     let audit_id = Uuid::new_v4().to_string();
     let now = crate::now_ms();

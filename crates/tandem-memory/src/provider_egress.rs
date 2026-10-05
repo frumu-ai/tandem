@@ -56,6 +56,8 @@ pub struct MemoryProviderEgressContext {
     pub authority: ProviderEgressAuthority,
     pub audit_sink: Option<MemoryProviderEgressAuditSink>,
     pub approval_handler: Option<MemoryProviderEgressApprovalHandler>,
+    /// Semantic classes inherited from canonical source restrictions.
+    pub additional_data_classes: Vec<SensitiveDataClass>,
 }
 
 impl MemoryProviderEgressContext {
@@ -64,6 +66,7 @@ impl MemoryProviderEgressContext {
             authority,
             audit_sink: None,
             approval_handler: None,
+            additional_data_classes: Vec::new(),
         }
     }
 
@@ -77,6 +80,18 @@ impl MemoryProviderEgressContext {
         approval_handler: MemoryProviderEgressApprovalHandler,
     ) -> Self {
         self.approval_handler = Some(approval_handler);
+        self
+    }
+
+    pub fn with_additional_data_classes(
+        mut self,
+        classes: impl IntoIterator<Item = SensitiveDataClass>,
+    ) -> Self {
+        for class in classes {
+            if !self.additional_data_classes.contains(&class) {
+                self.additional_data_classes.push(class);
+            }
+        }
         self
     }
 }
@@ -101,6 +116,15 @@ pub(crate) async fn complete_memory_prompt(
         .map(|context| &context.authority)
         .unwrap_or(&default_authority);
     let fields = [ProviderEgressField::transformable("prompt", prompt)];
+    let mut data_classes = kind.data_classes().to_vec();
+    if let Some(context) = egress {
+        if context.additional_data_classes.len() > 32 {
+            return Err(MemoryError::InvalidConfig("too many inherited provider data classes".to_string()));
+        }
+        for class in &context.additional_data_classes {
+            if !data_classes.contains(class) { data_classes.push(*class); }
+        }
+    }
     let request = ProviderEgressRequest {
         authority,
         operation_id,
@@ -108,7 +132,7 @@ pub(crate) async fn complete_memory_prompt(
         provider_id: route.provider_id.as_str(),
         model_id: route.model_id.as_deref(),
         fields: &fields,
-        data_classes: kind.data_classes(),
+        data_classes: &data_classes,
         action_tags: &[],
     };
     let mut evaluation = evaluate_provider_egress(&request);
@@ -176,52 +200,21 @@ pub(crate) async fn complete_memory_prompt(
 }
 
 #[cfg(test)]
+#[path = "provider_egress_test_environment.rs"]
+pub(crate) mod test_environment;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use std::ffi::OsString;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
+    use super::test_environment::{env_lock,EnvRestore};
     use tandem_data_boundary::DataBoundaryTenantRef;
     use tandem_providers::{AppConfig, Provider};
     use tandem_types::ProviderInfo;
 
     struct CaptureProvider {
         prompt: Arc<Mutex<Option<String>>>,
-    }
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    struct EnvRestore(Vec<(&'static str, Option<OsString>)>);
-
-    impl EnvRestore {
-        fn set(values: &[(&'static str, &str)]) -> Self {
-            let restore = Self(
-                values
-                    .iter()
-                    .map(|(name, _)| (*name, std::env::var_os(name)))
-                    .collect(),
-            );
-            for (name, value) in values {
-                std::env::set_var(name, value);
-            }
-            restore
-        }
-    }
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (name, value) in self.0.drain(..) {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
     }
 
     #[test]
@@ -446,5 +439,39 @@ mod tests {
         .expect_err("audit failure must block provider dispatch");
         assert!(error.to_string().contains("protected ledger unavailable"));
         assert!(captured.lock().expect("capture lock").is_none());
+    }
+
+    #[tokio::test]
+    async fn inherited_source_classes_reach_the_real_egress_audit_without_detector_spans() {
+        let _guard = env_lock();
+        let _env = EnvRestore::set(&[
+            ("TANDEM_DATA_BOUNDARY_MODE", "enforce"),
+            ("TANDEM_DATA_BOUNDARY_STRICT", "1"),
+            ("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", "capture=approved_external"),
+            ("TANDEM_DATA_BOUNDARY_REDACT_CLASSES", "pii,credential"),
+        ]);
+        let captured = Arc::new(Mutex::new(None));
+        let classes = Arc::new(Mutex::new(None));
+        let providers = ProviderRegistry::new(AppConfig::default());
+        providers.replace_for_test(vec![Arc::new(CaptureProvider {prompt:captured.clone()})], Some("capture".into())).await;
+        let audit_classes = classes.clone();
+        let context = MemoryProviderEgressContext::new(ProviderEgressAuthority::new(DataBoundaryTenantRef {
+            organization_id:Some("org-a".into()),workspace_id:Some("workspace-a".into()),deployment_id:None,
+        }).with_run_id("lineage-class-proof").with_session_id("session-a"))
+            .with_additional_data_classes([SensitiveDataClass::SourceCode,SensitiveDataClass::Financial,SensitiveDataClass::SourceCode])
+            .with_audit_sink(Arc::new(move |event| {
+                *audit_classes.lock().unwrap() = Some(event.semantic_data_classes);
+                Box::pin(async { Err("lineage semantic audit witness".into()) })
+            }));
+        let result = complete_memory_prompt(&providers,"orchard lighthouse",None,None,Some(&context),
+            MemoryProviderEgressKind::Distillation,"lineage-class-proof","memory.canonical-sources").await;
+        assert!(result.is_err());
+        let classes = classes.lock().unwrap().clone().expect("actual egress audit was emitted");
+        for class in [SensitiveDataClass::CustomerData,SensitiveDataClass::ProprietaryBusinessData,
+            SensitiveDataClass::SourceCode,SensitiveDataClass::Financial] {
+            assert!(classes.contains(&class),"missing canonical or existing semantic class: {class:?}");
+        }
+        assert_eq!(classes.iter().filter(|class| **class == SensitiveDataClass::SourceCode).count(),1);
+        assert!(captured.lock().unwrap().is_none(),"audit failure must precede provider dispatch");
     }
 }

@@ -25,6 +25,12 @@ pub(super) async fn workflow_learning_candidate_promote(
     if candidate.kind != WorkflowLearningCandidateKind::MemoryFact {
         return Err(StatusCode::BAD_REQUEST);
     }
+    let candidate_lineage = crate::memory::derived_lineage::candidate_lineage(&candidate)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let candidate_classification = candidate_lineage.as_ref().map(distillation_classification)
+        .unwrap_or(tandem_memory::MemoryClassification::Internal);
+    let candidate_data_class = candidate_lineage.as_ref().map(DerivedMemoryLineage::output_data_class)
+        .unwrap_or(tandem_types::DataClass::Internal);
     if !matches!(
         candidate.status,
         WorkflowLearningCandidateStatus::Approved | WorkflowLearningCandidateStatus::Applied
@@ -73,8 +79,8 @@ pub(super) async fn workflow_learning_candidate_promote(
                 task_id: Some(candidate.candidate_id.clone()),
                 purpose: "promote approved workflow learning candidate".to_string(),
                 source_binding_id: Some(format!("workflow:{}", candidate.workflow_id)),
-                data_class: Some(tandem_types::DataClass::Internal),
-                classification: tandem_memory::MemoryClassification::Internal,
+                data_class: Some(candidate_data_class),
+                classification: candidate_classification,
                 operation,
                 source_memory_ids,
                 artifact_refs: candidate.artifact_refs.clone(),
@@ -148,21 +154,21 @@ pub(super) async fn workflow_learning_candidate_promote(
             &tenant_context,
             verified_tenant_context.as_deref(),
             MemoryPutRequest {
-                private: false,
+                private: candidate_lineage.as_ref().is_some_and(|lineage| lineage.owner_subject.is_some()),
                 run_id: run_id.clone(),
                 partition: session_partition.clone(),
                 kind: tandem_memory::MemoryContentKind::Fact,
                 content,
                 artifact_refs: candidate.artifact_refs.clone(),
-                classification: tandem_memory::MemoryClassification::Internal,
+                classification: candidate_classification,
                 authority_job_context: Some(authority_job_context),
                 metadata: tandem_memory::metadata_with_knowledge_scope(
-                    Some(json!({
+                    workflow_learning_candidate_memory_metadata(&candidate, Some(json!({
                         "origin": "workflow_learning_candidate",
                         "candidate_id": candidate.candidate_id,
                         "workflow_id": candidate.workflow_id,
                         "kind": workflow_learning_kind_label(candidate.kind),
-                    })),
+                    })))?,
                     &knowledge_scope_policy,
                 ),
             },
@@ -691,10 +697,10 @@ pub(super) async fn memory_list(
             };
             let row_count = rows.len();
             for row in rows {
-                if !global_memory_record_visible_to_access_filter(
-                    &row,
-                    source_access_filter.as_ref(),
-                ) {
+                if !global_memory_record_visible_to_verified_request(
+                    &state, &tenant_context, verified_tenant_context, store.as_ref(), &scope,
+                    &row, source_access_filter.as_ref(),
+                ).await {
                     continue;
                 }
                 if authorized_seen >= offset && authorized_page.len() < limit {

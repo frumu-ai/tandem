@@ -680,6 +680,16 @@ pub(super) async fn open_memory_manager_for_state(
     tandem_memory::MemoryManager::new_with_store(store, embedding_service).ok()
 }
 
+async fn open_memory_manager_for_request(
+    state: &AppState, tenant: &TenantContext, verified: Option<&VerifiedTenantContext>,
+) -> Option<tandem_memory::MemoryManager> {
+    open_memory_manager_for_state(state).await.map(|manager| {
+        manager.with_derived_memory_access_resolver(crate::memory::derived_lineage::lineage_resolver(
+            state.clone(), tenant.clone(), verified.cloned(),
+        ))
+    })
+}
+
 pub(super) fn event_run_id(event: &EngineEvent) -> Option<String> {
     event
         .properties
@@ -746,7 +756,16 @@ pub(super) const MAX_MEMORY_RECORD_CONTENT_CHARS: usize = 8_000;
 pub(super) async fn persist_global_memory_record(
     state: &AppState,
     store: &dyn tandem_memory::MemoryStore,
+    record: GlobalMemoryRecord,
+) -> Option<tandem_memory::types::GlobalMemoryWriteResult> {
+    persist_global_memory_record_with_commit_authority(state, store, record, None).await
+}
+
+async fn persist_global_memory_record_with_commit_authority(
+    state: &AppState,
+    store: &dyn tandem_memory::MemoryStore,
     mut record: GlobalMemoryRecord,
+    authority: Option<tandem_memory::MemoryCommitAuthority>,
 ) -> Option<tandem_memory::types::GlobalMemoryWriteResult> {
     let tenant_context = record_tenant_context(&record);
     publish_tenant_event(
@@ -809,13 +828,15 @@ pub(super) async fn persist_global_memory_record(
         org_unit: tandem_memory::types::owner_org_unit_id_from_metadata(record.metadata.as_ref()),
         subject: tandem_memory::types::owner_subject_from_metadata(record.metadata.as_ref()),
     };
-    match store
-        .write(tandem_memory::MemoryStoreWriteRequest::GlobalRecord {
-            scope,
-            record: record.clone(),
-        })
-        .await
-    {
+    let request = tandem_memory::MemoryStoreWriteRequest::GlobalRecord {
+        scope,
+        record: record.clone(),
+    };
+    let result = match authority {
+        Some(authority) => store.write_with_commit_authority(request, authority).await,
+        None => store.write(request).await,
+    };
+    match result {
         Ok(tandem_memory::MemoryStoreWriteResult::GlobalRecord(write)) => {
             let event_name = if write.deduped {
                 "memory.write.skipped"

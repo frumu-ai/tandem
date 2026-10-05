@@ -32,6 +32,7 @@ use tokio::sync::Mutex;
 /// High-level memory manager that coordinates database, embeddings, and chunking
 pub struct MemoryManager {
     store: Arc<dyn MemoryStore>,
+    derived_memory_access_resolver: Option<crate::derived_lineage::DerivedMemoryAccessResolver>,
     #[cfg(test)]
     compatibility_db: Option<Arc<MemoryDatabase>>,
     embedding_service: Arc<Mutex<EmbeddingService>>,
@@ -132,11 +133,19 @@ impl MemoryManager {
 
         Ok(Self {
             store,
+            derived_memory_access_resolver: None,
             #[cfg(test)]
             compatibility_db: None,
             embedding_service,
             tokenizer,
         })
+    }
+
+    pub fn with_derived_memory_access_resolver(
+        mut self, resolver: crate::derived_lineage::DerivedMemoryAccessResolver,
+    ) -> Self {
+        self.derived_memory_access_resolver = Some(resolver);
+        self
     }
 
     fn read_scope(tenant_scope: &MemoryTenantScope) -> MemoryReadScope {
@@ -282,6 +291,7 @@ impl MemoryManager {
     /// 2. Generate embeddings for each chunk
     /// 3. Store chunks and embeddings in the database
     pub async fn store_message(&self, request: StoreMessageRequest) -> MemoryResult<Vec<String>> {
+        crate::derived_lineage::reject_reserved_derived_metadata(request.metadata.as_ref())?;
         validate_memory_envelope_for_write(&request.tenant_scope, request.metadata.as_ref())?;
 
         if self.repair_store().await {
@@ -513,7 +523,7 @@ impl MemoryManager {
             };
 
             for (chunk, distance) in tier_results {
-                if !memory_chunk_visible_to_access_filter(&chunk, access_filter) {
+                if !self.memory_chunk_visible_with_resolved_sources(&chunk, access_filter, &scope).await {
                     continue;
                 }
                 // Convert distance to similarity (cosine similarity)
@@ -634,15 +644,20 @@ impl MemoryManager {
 
         // Get recent session chunks
         let current_session = if let Some(sid) = session_id {
-            self.read_chunks(
+            let scope = Self::search_scope(tenant_scope, access_filter);
+            let chunks = self.read_chunks(
                 MemoryChunkSelector::session(sid),
-                Self::search_scope(tenant_scope, access_filter),
+                scope.clone(),
                 None,
             )
-            .await?
-            .into_iter()
-            .filter(|chunk| memory_chunk_visible_to_access_filter(chunk, access_filter))
-            .collect()
+            .await?;
+            let mut visible = Vec::with_capacity(chunks.len());
+            for chunk in chunks {
+                if self.memory_chunk_visible_with_resolved_sources(&chunk, access_filter, &scope).await {
+                    visible.push(chunk);
+                }
+            }
+            visible
         } else {
             Vec::new()
         };
@@ -989,6 +1004,7 @@ impl MemoryManager {
         metadata: Option<serde_json::Value>,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<String> {
+        crate::derived_lineage::reject_reserved_derived_metadata(metadata.as_ref())?;
         let parsed_uri =
             ContextUri::parse(uri).map_err(|e| MemoryError::InvalidConfig(e.message))?;
         let parent_uri = parsed_uri.parent().map(|p| p.to_string());
@@ -1318,184 +1334,4 @@ impl MemoryManager {
         }
     }
 
-    /// Consolidate visible session memory into a summary with the same trusted
-    /// ownership scope. Summary creation and source cleanup commit atomically.
-    pub async fn consolidate_scoped_session(
-        &self,
-        request: &ScopedMemoryConsolidationRequest,
-        providers: &ProviderRegistry,
-        config: &MemoryConsolidationConfig,
-        provider_egress: &MemoryProviderEgressContext,
-    ) -> MemoryResult<Option<String>> {
-        if !config.enabled {
-            return Ok(None);
-        }
-        if request.session_id.trim().is_empty() || request.project_id.trim().is_empty() {
-            return Err(MemoryError::InvalidConfig(
-                "memory consolidation requires non-empty session and project ids".to_string(),
-            ));
-        }
-
-        let read_scope = MemoryReadScope {
-            tenant: request.tenant_scope.clone(),
-            org_unit: request.org_unit.clone(),
-            subject: request.subject.clone(),
-            access: crate::store::MemoryReadAccess::Scoped,
-        };
-
-        let chunks = self
-            .read_chunks(
-                MemoryChunkSelector::session_in_project(
-                    &request.session_id,
-                    &request.project_id,
-                ),
-                read_scope.clone(),
-                None,
-            )
-            .await?;
-        let chunks = chunks
-            .into_iter()
-            .filter(|chunk| consolidation_chunk_has_exact_ownership(chunk, request))
-            .collect::<Vec<_>>();
-        if chunks.is_empty() {
-            return Ok(None);
-        }
-
-        // Assemble text
-        let mut text_parts = Vec::new();
-        for chunk in &chunks {
-            text_parts.push(chunk.content.clone());
-        }
-        let full_text = text_parts.join("\n\n---\n\n");
-
-        // Build prompt
-        let prompt = format!(
-            "Please provide a concise but comprehensive summary of the following chat session. \
-            Focus on the key decisions, technical details, code changes, and unresolved issues. \
-            Do NOT include conversational filler, greetings, or sign-offs. \
-            This summary will be used as long-term memory to recall the context of this work.\n\n\
-            Session transcripts:\n\n{}",
-            full_text
-        );
-
-        let provider_override = config.provider.as_deref().filter(|s| !s.is_empty());
-        let model_override = config.model.as_deref().filter(|s| !s.is_empty());
-
-        let operation_id = format!("{}:memory_consolidation", request.session_id);
-        let summary_text = match complete_memory_prompt(
-            providers,
-            &prompt,
-            provider_override,
-            model_override,
-            Some(provider_egress),
-            MemoryProviderEgressKind::Consolidation,
-            &operation_id,
-            "memory.session_consolidation",
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(error @ MemoryError::TenantScopeViolation(_)) => return Err(error),
-            Err(e) => {
-                tracing::warn!(
-                    "Memory consolidation LLM failed for session {}: {e}",
-                    request.session_id
-                );
-                return Ok(None);
-            }
-        };
-
-        if summary_text.trim().is_empty() {
-            return Ok(None);
-        }
-
-        // Generate embedding for the summary
-        let embedding = {
-            let service = self.embedding_service.lock().await;
-            service
-                .embed(&summary_text)
-                .await
-                .map_err(|e| crate::types::MemoryError::Embedding(e.to_string()))?
-        };
-
-        // Store the summary chunk
-        let source_chunk_ids = chunks
-            .iter()
-            .map(|chunk| chunk.id.clone())
-            .collect::<Vec<_>>();
-        let mut metadata = serde_json::Map::new();
-        if let Some(org_unit) = request.org_unit.as_ref() {
-            metadata.insert(
-                crate::types::OWNER_ORG_UNIT_METADATA_KEY.to_string(),
-                serde_json::Value::String(org_unit.clone()),
-            );
-        }
-        if let Some(subject) = request.subject.as_ref() {
-            metadata.insert(
-                crate::types::OWNER_SUBJECT_METADATA_KEY.to_string(),
-                serde_json::Value::String(subject.clone()),
-            );
-        } else if request.org_unit.is_none() {
-            metadata.insert(
-                crate::types::TENANT_SHARED_METADATA_KEY.to_string(),
-                serde_json::Value::Bool(true),
-            );
-        }
-        metadata.insert(
-            "consolidation_provenance".to_string(),
-            serde_json::json!({
-                "session_id": request.session_id,
-                "source_chunk_ids": source_chunk_ids,
-                "source_count": chunks.len(),
-                "tenant_context": {
-                    "org_id": request.tenant_scope.org_id,
-                    "workspace_id": request.tenant_scope.workspace_id,
-                    "deployment_id": request.tenant_scope.deployment_id,
-                }
-            }),
-        );
-
-        let chunk = MemoryChunk {
-            id: uuid::Uuid::new_v4().to_string(),
-            content: summary_text.clone(),
-            tier: MemoryTier::Project,
-            session_id: None,
-            project_id: Some(request.project_id.clone()),
-            created_at: Utc::now(),
-            source: "consolidation".to_string(),
-            token_count: self.count_tokens(&summary_text) as i64,
-            source_path: None,
-            source_mtime: None,
-            source_size: None,
-            source_hash: None,
-            tenant_scope: request.tenant_scope.clone(),
-            subject: request.subject.clone(),
-            metadata: Some(serde_json::Value::Object(metadata)),
-        };
-
-        match self
-            .store
-            .mutate(MemoryStoreMutationRequest::ReplaceSessionWithSummary {
-                scope: read_scope,
-                session_id: request.session_id.clone(),
-                project_id: request.project_id.clone(),
-                source_chunk_ids,
-                summary_scope: Self::chunk_write_scope(&chunk),
-                summary: Box::new(chunk),
-                embedding,
-            })
-            .await
-            .map_err(MemoryError::from)?
-        {
-            MemoryStoreMutationResult::Affected(_) => {}
-            _ => return Err(Self::unexpected_store_result("consolidate session")),
-        }
-
-        tracing::info!(
-            "Session {} consolidated into a scoped summary chunk",
-            request.session_id
-        );
-
-        Ok(Some(summary_text))
-    }
 }

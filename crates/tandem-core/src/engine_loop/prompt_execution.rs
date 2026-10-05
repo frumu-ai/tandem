@@ -30,6 +30,12 @@ impl EngineLoop {
         trusted_data_classes: Vec<tandem_data_boundary::SensitiveDataClass>,
     ) -> anyhow::Result<()> {
         let session_record = self.storage.get_session(&session_id).await;
+        let mut native_lineage = super::message_lineage::MessageLineageAccumulator::new(
+            session_record
+                .as_ref()
+                .and_then(|session| session.verified_tenant_context.as_ref()),
+            run_id.as_deref(),
+        );
         let session_model = session_record
             .as_ref()
             .and_then(|session| session.model.clone());
@@ -184,6 +190,7 @@ impl EngineLoop {
 
         let mut question_tool_used = false;
         let completion = if let Some((tool, args)) = parse_tool_invocation(&text) {
+            native_lineage.mark_incomplete();
             if normalize_tool_name(&tool) == "question" {
                 question_tool_used = true;
             }
@@ -313,7 +320,10 @@ impl EngineLoop {
                 let compacted_tool_result_chars = loaded_history.compacted_tool_result_chars;
                 let demoted_tool_invocations = loaded_history.demoted_tool_invocations;
                 let demoted_tool_invocation_chars = loaded_history.demoted_tool_invocation_chars;
+                let canonical_history = loaded_history.canonical_messages;
                 let mut messages = loaded_history.messages;
+                let mut iteration_memory = Vec::new();
+                let mut iteration_lineage_complete = runtime_attachments.is_empty();
                 let mut attachment_count = 0usize;
                 let mut attachment_chars = 0usize;
                 if iteration == 1 && !runtime_attachments.is_empty() {
@@ -370,6 +380,7 @@ impl EngineLoop {
                 );
                 let mut followup_chars = 0usize;
                 if let Some(extra) = followup_context.take() {
+                    iteration_lineage_complete = false;
                     followup_chars = extra.len();
                     messages.push(ChatMessage {
                         role: "user".to_string(),
@@ -397,6 +408,8 @@ impl EngineLoop {
                     .await
                     {
                         Ok(Ok(result)) => {
+                            iteration_memory = result.included_memory;
+                            iteration_lineage_complete &= result.lineage_complete;
                             messages = result.messages;
                             hook_stats = result.stats;
                             // TAN-397: audit-only boundary scan of what the
@@ -426,6 +439,7 @@ impl EngineLoop {
                             }
                         }
                         Ok(Err(err)) => {
+                            iteration_lineage_complete = false;
                             self.event_bus.publish(EngineEvent::new(
                                 "memory.context.error",
                                 json!({
@@ -437,6 +451,7 @@ impl EngineLoop {
                             ));
                         }
                         Err(_) => {
+                            iteration_lineage_complete = false;
                             self.event_bus.publish(EngineEvent::new(
                                 "memory.context.error",
                                 json!({
@@ -1107,7 +1122,14 @@ impl EngineLoop {
                     })
                     .and_then(|result| result);
                     let mut stream = match stream_result {
-                        Ok(stream) => stream,
+                        Ok(stream) => {
+                            native_lineage.accept_provider_input(
+                                &canonical_history,
+                                &iteration_memory,
+                                iteration_lineage_complete,
+                            );
+                            stream
+                        }
                         Err(err) => {
                             let error_text = err.to_string();
                             if is_transient_provider_stream_error(&error_text)
@@ -1541,6 +1563,9 @@ impl EngineLoop {
                         call_id: None,
                     }];
                 }
+                if !tool_calls.is_empty() {
+                    native_lineage.mark_incomplete();
+                }
                 include!("prompt_execution_parts/tool_processing.rs");
                 break;
             }
@@ -1770,6 +1795,7 @@ impl EngineLoop {
                 &completion,
                 run_id.as_deref(),
                 original_verified,
+                native_lineage.into_lineage(),
             )
             .await
         {

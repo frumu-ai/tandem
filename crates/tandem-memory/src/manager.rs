@@ -1,5 +1,6 @@
 include!("manager_parts/part01.rs");
 include!("manager_parts/part01_support.rs");
+include!("manager_parts/lineage_consolidation.rs");
 include!("manager_parts/part01_store.rs");
 include!("manager_parts/part01_knowledge.rs");
 include!("manager_parts/part02.rs");
@@ -12,3 +13,7 @@ mod store_migration_tests;
 #[cfg(test)]
 #[path = "manager_parts/consolidation_tests.rs"]
 mod consolidation_tests;
+
+#[cfg(test)]
+#[path = "manager_parts/lineage_consolidation_tests.rs"]
+mod lineage_consolidation_tests;

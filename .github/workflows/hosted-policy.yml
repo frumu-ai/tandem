@@ -94,6 +94,190 @@ jobs:
         run: |
           cargo test -p tandem-memory global_sharing --lib
           cargo test -p tandem-server tenant_shared_stamp_keeps_private_owner_and_explicit_department --lib
+      - name: Verify canonical native message digest tests actually execute
+        run: |
+          set -euo pipefail
+          prefix='memory_lineage::tests::'
+          cargo test -p tandem-types --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/tan829-types-lineage-list.txt"
+          for test_name in \
+            digest_binds_role_ordered_parts_and_nested_tool_values \
+            digest_excludes_lineage_and_lineage_survives_header_json_roundtrip \
+            digest_canonicalizes_nested_object_key_order
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-types-lineage-list.txt" || {
+              echo "Missing native message digest regression: $test_name" >&2
+              exit 1
+            }
+          done
+          cargo test -p tandem-types --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-types-lineage-results.txt"
+          grep -Eq 'test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-types-lineage-results.txt"
+      - name: Verify real engine message lineage tests actually execute
+        run: |
+          set -euo pipefail
+          prefix='engine_loop::message_lineage::tests::'
+          cargo test -p tandem-core --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/tan829-core-lineage-list.txt"
+          for test_name in \
+            accepted_input_inherits_valid_canonical_assistant_sources_transitively \
+            modified_or_foreign_assistant_manifest_is_not_complete_or_inherited \
+            legacy_assistant_unknown_tools_and_incomplete_hooks_keep_private_floor \
+            unaccepted_or_malformed_source_input_cannot_claim_completeness \
+            lineage_keeps_original_verified_subject_and_tenant_after_context_changes \
+            compact_history_tracks_only_actual_selected_native_inputs \
+            real_engine_final_lineage_survives_native_header_storage_and_cold_reopen \
+            rejected_provider_input_does_not_persist_a_prepared_source_manifest
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-core-lineage-list.txt" || {
+              echo "Missing real engine message lineage regression: $test_name" >&2
+              exit 1
+            }
+          done
+          cargo test -p tandem-core --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-core-lineage-results.txt"
+          grep -Eq 'test result: ok\. 8 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-core-lineage-results.txt"
+      - name: Verify prompt memory inclusion lineage tests actually execute
+        run: |
+          set -euo pipefail
+          prefix='app::state::prompt_memory_context::lineage_tests::'
+          cargo test -p tandem-server --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/tan829-prompt-lineage-list.txt"
+          for test_name in \
+            manifest_contains_only_budget_included_canonical_records \
+            whole_block_deferral_has_no_source_manifest_or_provider_text \
+            malformed_included_restriction_preserves_rendering_but_is_incomplete \
+            successful_memory_gate_captures_reference_but_unknown_docs_are_incomplete
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-prompt-lineage-list.txt" || {
+              echo "Missing prompt memory inclusion regression: $test_name" >&2
+              exit 1
+            }
+          done
+          cargo test -p tandem-server --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-prompt-lineage-results.txt"
+          grep -Eq 'test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-prompt-lineage-results.txt"
+      - name: Verify derived memory storage lineage tests actually execute
+        run: |
+          set -euo pipefail
+          prefix='derived_lineage::tests::'
+          cargo test -p tandem-memory --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/tan829-memory-lineage-list.txt"
+          for test_name in \
+            private_owner_is_additional_to_source_grants_and_knowledge_scope \
+            canonical_department_shared_source_allows_peer_and_denies_foreign_department \
+            tenant_shared_source_does_not_need_an_invented_department_floor \
+            deleted_source_is_hidden_by_read_list_search_and_cold_reopen \
+            tombstoned_connector_object_invalidates_derivative_without_deleting_memory \
+            manager_resolver_seam_preserves_private_chunk_positive_and_denial \
+            source_privacy_tightening_invalidates_the_old_derivative \
+            identical_shared_private_and_distinct_lineage_writes_do_not_dedupe \
+            unresolved_or_malformed_lineage_cannot_disclose_records_or_copied_chunks \
+            native_inputs_and_private_sources_cannot_be_relabelled_shared \
+            nested_class_union_retains_specific_sources_and_native_internal_floor \
+            output_policy_cannot_erase_inherited_write_promotion_or_retention_limits \
+            current_source_grant_is_required_after_proof_resolution \
+            knowledge_registry_grant_without_connector_binding_remains_a_shared_positive
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-memory-lineage-list.txt" || {
+              echo "Missing derived memory storage regression: $test_name" >&2
+              exit 1
+            }
+          done
+          cargo test -p tandem-memory --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-memory-lineage-results.txt"
+          grep -Eq 'test result: ok\. 14 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-memory-lineage-results.txt"
+      - name: Verify SQLite derived-memory commit guards actually execute
+        run: |
+          set -euo pipefail
+          prefix='db::sqlite_commit_authority::tests::'
+          cargo test -p tandem-memory --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/tan829-sqlite-commit-list.txt"
+          for test_name in \
+            guarded_sqlite_insert_and_context_update_rollback_on_precommit_denial \
+            guarded_sqlite_context_update_preserves_lineage_dedupe_and_private_owner
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-sqlite-commit-list.txt" || {
+              echo "Missing SQLite commit authority regression: $test_name" >&2
+              exit 1
+            }
+          done
+          cargo test -p tandem-memory --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-sqlite-commit-results.txt"
+          grep -Eq 'test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-sqlite-commit-results.txt"
+      - name: Verify derived memory consolidation tests actually execute
+        run: |
+          set -euo pipefail
+          prefix='manager::lineage_consolidation_tests::'
+          cargo test -p tandem-memory --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/tan829-memory-consolidation-list.txt"
+          for test_name in \
+            consolidation_preserves_lineage_classes_and_hides_summary_after_source_deletion \
+            consolidation_denied_grant_or_missing_native_resolver_never_dispatches_provider \
+            consolidation_rechecks_source_after_provider_before_summary_write
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-memory-consolidation-list.txt" || {
+              echo "Missing derived memory consolidation regression: $test_name" >&2
+              exit 1
+            }
+          done
+          cargo test -p tandem-memory --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-memory-consolidation-results.txt"
+          grep -Eq 'test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-memory-consolidation-results.txt"
+      - name: Verify governed memory provider egress tests actually execute
+        run: |
+          set -euo pipefail
+          prefix='provider_egress::tests::'
+          cargo test -p tandem-memory --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/tan829-memory-egress-list.txt"
+          for test_name in \
+            memory_kinds_carry_trusted_semantic_classes \
+            strict_redaction_never_sends_raw_memory_prompt \
+            semantic_approval_uses_continuation_and_missing_continuation_fails_closed \
+            required_audit_failure_blocks_memory_provider_dispatch \
+            inherited_source_classes_reach_the_real_egress_audit_without_detector_spans
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-memory-egress-list.txt" || {
+              echo "Missing governed memory provider egress regression: $test_name" >&2
+              exit 1
+            }
+          done
+          cargo test -p tandem-memory --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-memory-egress-results.txt"
+          grep -Eq 'test result: ok\. 5 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-memory-egress-results.txt"
+      - name: Verify canonical derived-memory lineage regressions actually execute
+        run: |
+          set -euo pipefail
+          cargo test -p tandem-server --locked --lib 'http::tests::workflow_learning::derived_memory_lineage::' -- --list > "$RUNNER_TEMP/tan829-derived-lineage-tests.txt"
+          for tan829_test_name in \
+            tan_829_private_canonical_session_fact_survives_cold_reopen_without_peer_access \
+            tan_829_shared_only_canonical_source_remains_visible_to_same_department \
+            tan_829_financial_source_grant_preserves_class_and_cross_department_recall \
+            tan_829_mixed_sources_use_separate_provider_prompts_and_separate_acls \
+            tan_829_client_lineage_and_modified_conversation_cannot_authorize_a_write \
+            tan_829_omitted_selectors_still_use_only_owned_canonical_private_text \
+            tan_829_foreign_session_and_private_source_fail_before_extraction \
+            tan_829_incomplete_assistant_and_modified_durable_lineage_fail_closed \
+            tan_829_complete_canonical_assistant_inherits_private_input_scope \
+            tan_829_privacy_compatible_dedupe_never_reuses_a_broader_record \
+            tan_829_approved_private_promotion_preserves_owner_on_cold_http_recall \
+            tan_829_deleted_shared_source_hides_derived_recall_and_candidate \
+            tan_829_corrected_private_message_hides_retained_derived_output \
+            tan_829_workflow_injection_uses_current_execution_identity_and_source_scope \
+            tan_829_revocation_during_real_provider_extraction_persists_nothing
+          do
+            if ! grep -Fxq "http::tests::workflow_learning::derived_memory_lineage::$tan829_test_name: test" "$RUNNER_TEMP/tan829-derived-lineage-tests.txt"; then
+              echo "Missing derived-memory lineage regression: $tan829_test_name" >&2
+              exit 1
+            fi
+          done
+          cargo test -p tandem-server --locked --lib 'http::tests::workflow_learning::derived_memory_lineage::' -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-derived-lineage-results.txt"
+          grep -Eq 'test result: ok\. 15 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-derived-lineage-results.txt"
+      - name: Verify hosted derived-memory writer-wait regressions actually execute
+        run: |
+          set -euo pipefail
+          prefix='http::skills_memory::derived_lineage_commit_tests::'
+          cargo test -p tandem-server --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/tan829-server-commit-list.txt"
+          for test_name in \
+            tan_829_memory_insert_rechecks_original_identity_after_actual_sqlite_writer_wait \
+            tan_829_memory_insert_rechecks_snapshot_expiry_after_actual_sqlite_writer_wait \
+            tan_829_memory_update_rechecks_original_identity_after_actual_sqlite_writer_wait \
+            tan_829_cancelled_memory_wait_retains_policy_guard_until_native_commit \
+            tan_829_memory_commit_preserves_standalone_without_skipping_configured_hosted_authority
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-server-commit-list.txt" || {
+              echo "Missing hosted derived-memory writer-wait regression: $test_name" >&2
+              exit 1
+            }
+          done
+          cargo test -p tandem-server --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-server-commit-results.txt"
+          grep -Eq 'test result: ok\. 5 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-server-commit-results.txt"
       - name: Validate scoped key lifecycle and administrative authority
         run: |
           cargo test -p tandem-server context_assertion_security --lib
@@ -172,7 +356,26 @@ jobs:
       - name: Verify production approval route with scoped dispatch
         run: cargo test -p tandem-server --features acme-demo acme_slack_demo --lib
       - name: Check formatting
+        id: fmt
+        if: ${{ always() }}
         run: cargo fmt --check
+      - name: Prepare formatting repair patch on hosted runner
+        id: fmt_repair
+        if: ${{ always() && steps.fmt.outcome == 'failure' }}
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git diff --binary -- '*.rs' > "$RUNNER_TEMP/hosted-policy-fmt-repair.patch"
+          test -s "$RUNNER_TEMP/hosted-policy-fmt-repair.patch"
+          test "$(wc -c < "$RUNNER_TEMP/hosted-policy-fmt-repair.patch")" -le 1048576
+      - name: Upload formatting repair patch
+        if: ${{ always() && steps.fmt.outcome == 'failure' && steps.fmt_repair.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-policy-fmt-repair-${{ github.sha }}
+          path: ${{ runner.temp }}/hosted-policy-fmt-repair.patch
+          if-no-files-found: error
+          retention-days: 7
       - name: Check enterprise server compatibility
         run: cargo check -p tandem-enterprise-server
       - name: Verify hosted registry ownership boundary

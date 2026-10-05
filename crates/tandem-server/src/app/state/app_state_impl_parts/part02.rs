@@ -1316,6 +1316,9 @@ impl AppState {
                     && row.kind == candidate.kind
                     && row.fingerprint == candidate.fingerprint
                     && row.source_binding == candidate.source_binding
+                    && matches!((crate::memory::derived_lineage::candidate_lineage(row),
+                        crate::memory::derived_lineage::candidate_lineage(&candidate)),
+                        (Ok(left), Ok(right)) if left == right)
             }) {
                 existing.summary = candidate.summary.clone();
                 existing.confidence = existing.confidence.max(candidate.confidence);
@@ -1409,6 +1412,15 @@ impl AppState {
         automation: &AutomationV2Spec,
         node: &AutomationFlowNode,
     ) -> (Vec<String>, Option<String>) {
+        self.workflow_learning_context_for_automation_node_session(automation, node, None).await
+    }
+
+    pub async fn workflow_learning_context_for_automation_node_session(
+        &self,
+        automation: &AutomationV2Spec,
+        node: &AutomationFlowNode,
+        execution_session_id: Option<&str>,
+    ) -> (Vec<String>, Option<String>) {
         let project_id = crate::app::state::automation::workflow_learning_project_id(automation);
         let node_kind = node
             .stage_kind
@@ -1435,6 +1447,32 @@ impl AppState {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let execution_session = match execution_session_id {
+            Some(id) => self.storage.get_session(id).await,
+            None => None,
+        };
+        let automation_tenant = automation.tenant_context();
+        let mut authorized_candidates = Vec::new();
+        for candidate in candidates {
+            match crate::memory::derived_lineage::candidate_lineage(&candidate) {
+                Ok(None) => authorized_candidates.push(candidate),
+                Err(_) => {},
+                Ok(Some(_)) => {
+                    let (tenant, verified) = match execution_session.as_ref() {
+                        Some(session) if session.tenant_context.org_id == automation_tenant.org_id
+                            && session.tenant_context.workspace_id == automation_tenant.workspace_id
+                            && session.tenant_context.deployment_id == automation_tenant.deployment_id =>
+                            (&session.tenant_context, session.verified_tenant_context.as_ref()),
+                        _ if automation_tenant.is_local_implicit() => (&automation_tenant, None),
+                        _ => continue,
+                    };
+                    if crate::memory::derived_lineage::candidate_lineage_readable(
+                        self, tenant, verified, &candidate,
+                    ).await { authorized_candidates.push(candidate); }
+                }
+            }
+        }
+        let candidates = authorized_candidates;
         let mut ordered = Vec::new();
         let mut push_unique = |candidate: WorkflowLearningCandidate| {
             if ordered.iter().any(|existing: &WorkflowLearningCandidate| {

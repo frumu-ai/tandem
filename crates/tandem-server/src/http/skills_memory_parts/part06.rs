@@ -405,6 +405,11 @@ pub(super) async fn memory_put(
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<MemoryPutInput>,
 ) -> Result<Json<MemoryPutResponse>, StatusCode> {
+    if input.request.metadata.as_ref().is_some_and(|metadata| {
+        metadata.get(tandem_memory::derived_lineage::DERIVED_MEMORY_LINEAGE_METADATA_KEY).is_some()
+    }) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let response = memory_put_impl_with_verified(
         &state,
         &tenant_context,
@@ -440,6 +445,19 @@ pub(super) async fn memory_put_impl_with_verified(
         capability,
     )
     .await?;
+    let derived_lineage = DerivedMemoryLineage::from_metadata(request.metadata.as_ref())
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    if let Some(lineage) = &derived_lineage {
+        // Trusted derived writes must retain the resolver's exact owner floor.
+        // The public endpoint rejects this reserved metadata before reaching us.
+        if request.private != lineage.owner_subject.is_some()
+            || lineage.owner_subject.as_ref().is_some_and(|owner| owner != &capability.subject)
+            || tandem_memory::types::owner_org_unit_id_from_metadata(request.metadata.as_ref())
+                != lineage.owner_org_unit_id
+        {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
     if !capability
         .memory
         .write_tiers
@@ -553,7 +571,7 @@ pub(super) async fn memory_put_impl_with_verified(
     // so the governed read filter denies any other caller. Default (not private)
     // leaves the record department/tenant-governed.
     let owner_subject = request.private.then(|| user_id.clone());
-    let metadata = memory_metadata_with_owner_subject(
+    let mut metadata = memory_metadata_with_owner_subject(
         memory_metadata_with_owner_org_unit(
             memory_metadata_with_trust_fields(
                 memory_metadata_with_storage_fields(
@@ -567,6 +585,19 @@ pub(super) async fn memory_put_impl_with_verified(
         ),
         owner_subject.as_deref(),
     );
+    if let Some(lineage) = &derived_lineage {
+        // MemoryClassification has only Internal/Restricted write categories.
+        // Persist an actual contributing DataClass for read grants and KMS;
+        // the complete source conjunction remains in the canonical lineage.
+        let object = metadata.as_mut().and_then(Value::as_object_mut)
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        object.insert("classification".to_owned(), json!(lineage.output_data_class()));
+        if tandem_memory::types::owner_org_unit_id_from_metadata(metadata.as_ref())
+            != lineage.owner_org_unit_id
+        {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
     let provenance = memory_provenance_with_trust(
         memory_put_provenance(&request, &partition_key, &artifact_refs, tenant_context),
         trust_label,
@@ -610,9 +641,30 @@ pub(super) async fn memory_put_impl_with_verified(
         partition_key,
         memory_linkage_detail(&memory_linkage_value)
     );
-    let write = persist_global_memory_record(&state, store.as_ref(), record)
-        .await
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let write = if let Some(lineage) = &derived_lineage {
+        let subject = capability.subject.clone();
+        let scope = distillation_read_scope(tenant_context, verified_tenant_context, &subject)?;
+        with_verified_memory_decrypt_principal(verified_tenant_context,
+            crate::memory::derived_lineage::resolved_filter_for_lineage(
+                state, tenant_context, store.as_ref(), &scope, lineage,
+                distillation_access_filter(verified_tenant_context, &subject),
+            ),
+        ).await.ok_or(StatusCode::FORBIDDEN)?;
+        let owned_state = state.clone();
+        let owned_verified = verified_tenant_context.cloned();
+        let authority = derived_memory_commit_authority(state, tenant_context, verified_tenant_context);
+        commit_derived_memory_with_current_policy(state, tenant_context, verified_tenant_context,
+            async move {
+                with_verified_memory_decrypt_principal(owned_verified.as_ref(),
+                    persist_global_memory_record_with_commit_authority(
+                        &owned_state, store.as_ref(), record, Some(authority),
+                    ),
+                ).await
+            },
+        ).await?
+    } else {
+        persist_global_memory_record(state, store.as_ref(), record).await
+    }.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let id = write.id;
     let stored = write.stored;
     append_memory_audit(

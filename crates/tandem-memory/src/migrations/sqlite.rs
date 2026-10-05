@@ -129,11 +129,24 @@ fn translate(tx: &Transaction<'_>, migration: &LogicalMigration) -> MemoryResult
         PRIVATE_OWNER_MIGRATION_VERSION => migrate_private_owner_scope(tx),
         6 => migrate_global_sharing(tx),
         7 => migrate_global_record_envelopes(tx),
+        8 => migrate_derived_lineage_dedupe(tx),
         version => Err(MemoryError::InvalidConfig(format!(
             "no SQLite translator for executable memory migration {version} ('{}')",
             migration.name
         ))),
     }
+}
+
+fn migrate_derived_lineage_dedupe(tx: &Transaction<'_>) -> MemoryResult<()> {
+    if !table_columns(tx, "memory_records")?.contains("derived_lineage_digest") {
+        tx.execute("ALTER TABLE memory_records ADD COLUMN derived_lineage_digest TEXT NOT NULL DEFAULT ''", [])?;
+    }
+    tx.execute("DROP INDEX IF EXISTS idx_memory_records_dedup", [])?;
+    tx.execute("CREATE UNIQUE INDEX idx_memory_records_dedup ON memory_records(
+        tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), user_id, source_type, content_hash,
+        run_id, IFNULL(session_id, ''), IFNULL(message_id, ''), IFNULL(tool_name, ''),
+        IFNULL(owner_org_unit_id, ''), private, IFNULL(owner_subject, ''), tenant_shared, derived_lineage_digest)", [])?;
+    Ok(())
 }
 
 fn migrate_global_record_envelopes(tx: &Transaction<'_>) -> MemoryResult<()> {

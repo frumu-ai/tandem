@@ -3,6 +3,7 @@
 mod read_query;
 mod schema;
 mod write_mutate;
+mod commit_authority;
 
 use std::str::FromStr;
 use std::time::Duration;
@@ -407,18 +408,32 @@ fn from_json<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Memory
 
 #[async_trait]
 impl MemoryStore for PostgresMemoryStore {
+    async fn write_with_commit_authority(&self,request:MemoryStoreWriteRequest,authority:MemoryCommitAuthority)
+        -> MemoryStoreResult<MemoryStoreWriteResult> {
+        self.guarded_write_impl(request,authority).await
+    }
+
+    async fn mutate_with_commit_authority(&self,request:MemoryStoreMutationRequest,authority:MemoryCommitAuthority)
+        -> MemoryStoreResult<MemoryStoreMutationResult> {
+        self.guarded_mutate_impl(request,authority).await
+    }
+
     async fn read(
         &self,
         request: MemoryStoreReadRequest,
     ) -> MemoryStoreResult<MemoryStoreReadResult> {
-        self.read_impl(request).await
+        let scope = request.scope().clone();
+        let result = self.read_impl(request).await?;
+        crate::derived_lineage_store::filter_read_result(self, &scope, result).await
     }
 
     async fn query(
         &self,
         request: MemoryStoreQueryRequest,
     ) -> MemoryStoreResult<MemoryStoreQueryResult> {
-        self.query_impl(request).await
+        let scope = request.scope().clone();
+        let result = self.query_impl(request).await?;
+        crate::derived_lineage_store::filter_query_result(self, &scope, result).await
     }
 
     async fn write(

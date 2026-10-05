@@ -197,6 +197,17 @@ pub enum MemoryStoreReadRequest {
     },
 }
 
+impl MemoryStoreReadRequest {
+    pub(crate) fn scope(&self) -> &MemoryReadScope {
+        match self {
+            Self::Chunks {scope, ..} | Self::GlobalRecord {scope, ..} | Self::ProjectConfig {scope, ..}
+            | Self::Stats {scope} | Self::ProjectStats {scope, ..} | Self::KnowledgeSpace {scope, ..}
+            | Self::KnowledgeItem {scope, ..} | Self::KnowledgeCoverage {scope, ..}
+            | Self::ImportIndexEntry {scope, ..} | Self::ContextNode {scope, ..} | Self::ContextLayer {scope, ..} => scope,
+        }
+    }
+}
+
 /// Typed values returned by [`MemoryStoreReadRequest`].
 #[derive(Debug, Clone)]
 pub enum MemoryStoreReadResult {
@@ -276,6 +287,17 @@ pub enum MemoryStoreQueryRequest {
         scope: MemoryReadScope,
         source_binding_id: String,
     },
+}
+
+impl MemoryStoreQueryRequest {
+    pub(crate) fn scope(&self) -> &MemoryReadScope {
+        match self {
+            Self::SimilarChunks {scope, ..} | Self::SearchGlobalRecords {scope, ..} | Self::ListGlobalRecords {scope, ..}
+            | Self::KnowledgeSpaces {scope, ..} | Self::KnowledgeItems {scope, ..} | Self::ImportIndexPaths {scope, ..}
+            | Self::CleanupLog {scope, ..} | Self::ContextNodes {scope, ..} | Self::ContextTree {scope, ..}
+            | Self::SourceObjectLifecyclesForBinding {scope, ..} => scope,
+        }
+    }
 }
 
 /// Typed values returned by [`MemoryStoreQueryRequest`].

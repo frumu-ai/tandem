@@ -298,11 +298,28 @@ impl PromptContextHookStats {
 pub struct PromptContextHookResult {
     pub messages: Vec<ChatMessage>,
     pub stats: PromptContextHookStats,
+    pub included_memory: Vec<tandem_types::MemorySourceReference>,
+    pub lineage_complete: bool,
 }
 
 impl PromptContextHookResult {
     pub fn new(messages: Vec<ChatMessage>, stats: PromptContextHookStats) -> Self {
-        Self { messages, stats }
+        Self {
+            messages,
+            stats,
+            included_memory: Vec::new(),
+            lineage_complete: false,
+        }
+    }
+
+    pub fn with_memory_lineage(
+        mut self,
+        sources: Vec<tandem_types::MemorySourceReference>,
+        complete: bool,
+    ) -> Self {
+        self.included_memory = sources;
+        self.lineage_complete = complete;
+        self
     }
 }
 

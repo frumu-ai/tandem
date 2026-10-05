@@ -30,6 +30,9 @@ impl From<rusqlite::Error> for MemoryError {
 #[path = "sqlite_atomic_batch.rs"]
 mod sqlite_atomic_batch;
 
+#[path = "sqlite_commit_authority.rs"]
+mod sqlite_commit_authority;
+
 type ProjectIndexStatusRow = (
     Option<String>,
     Option<i64>,

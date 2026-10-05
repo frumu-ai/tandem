@@ -480,13 +480,25 @@ impl MemoryDatabase {
         provenance: Option<&serde_json::Value>,
     ) -> MemoryResult<bool> {
         let conn = self.conn.lock().await;
+        self.update_global_memory_context_on_connection(&conn,id,tenant_org_id,tenant_workspace_id,
+            tenant_deployment_id,owner_org_unit_id,caller_subject,visibility,demoted,metadata,provenance,false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_global_memory_context_on_connection(
+        &self, conn: &Connection, id: &str, tenant_org_id: &str, tenant_workspace_id: &str,
+        tenant_deployment_id: Option<&str>, owner_org_unit_id: Option<&str>, caller_subject: Option<&str>,
+        visibility: &str, demoted: bool, metadata: Option<&serde_json::Value>, provenance: Option<&serde_json::Value>,
+        trusted_unrestricted: bool,
+    ) -> MemoryResult<bool> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let next_owner_org_unit_id = owner_org_unit_id_from_metadata(metadata);
         let next_owner_subject = crate::types::owner_subject_from_metadata(metadata);
         let next_private = next_owner_subject.is_some();
         let next_tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
+        let lineage_digest = crate::derived_lineage::derived_lineage_dedupe_digest(metadata)?;
         let Some(sealed) =
-            seal_global_context_update(&conn, &self.crypto, id, metadata, provenance)?
+            seal_global_context_update(conn, &self.crypto, id, metadata, provenance)?
         else {
             return Ok(false);
         };
@@ -495,13 +507,13 @@ impl MemoryDatabase {
              SET visibility = ?7, demoted = ?8, metadata = ?9, provenance = ?10,
                  updated_at_ms = ?11, owner_org_unit_id = ?12, private = ?13,
                  owner_subject = ?14, tenant_shared = ?15,
-                 metadata_envelope = ?16, provenance_envelope = ?17
+                 metadata_envelope = ?16, provenance_envelope = ?17, derived_lineage_digest = ?18
              WHERE id = ?1
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
                AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')
-               AND (?5 IS NULL OR owner_org_unit_id = ?5 OR (owner_org_unit_id IS NULL AND tenant_shared = 1))
-               AND (private = 0 OR owner_subject = ?6)",
+               AND (?19 = 1 OR ((?5 IS NULL OR owner_org_unit_id = ?5 OR (owner_org_unit_id IS NULL AND tenant_shared = 1))
+                    AND (private = 0 OR owner_subject = ?6)))",
             params![
                 id,
                 tenant_org_id,
@@ -520,6 +532,8 @@ impl MemoryDatabase {
                 i64::from(next_tenant_shared),
                 sealed.metadata_envelope,
                 sealed.provenance_envelope,
+                lineage_digest,
+                i64::from(trusted_unrestricted),
             ],
         )?;
         Ok(changed > 0)

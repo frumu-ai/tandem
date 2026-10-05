@@ -28,6 +28,17 @@ async fn workflow_learning_candidate_access(
     candidate: &WorkflowLearningCandidate,
     mutation: bool,
 ) -> bool {
+    workflow_learning_candidate_source_access(state, tenant, verified, candidate, mutation).await
+        && crate::memory::derived_lineage::candidate_lineage_readable(state, tenant, verified, candidate).await
+}
+
+async fn workflow_learning_candidate_source_access(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    candidate: &WorkflowLearningCandidate,
+    mutation: bool,
+) -> bool {
     if tenant.is_local_implicit() {
         return true;
     }

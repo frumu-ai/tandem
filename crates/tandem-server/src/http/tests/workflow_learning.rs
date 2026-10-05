@@ -7,6 +7,8 @@ use super::*;
 mod session_exports_security;
 #[path = "workflow_learning/session_security.rs"]
 mod session_security;
+#[path = "workflow_learning/derived_memory_lineage.rs"]
+mod derived_memory_lineage;
 
 fn current_test_ms() -> u64 {
     std::time::SystemTime::now()
@@ -182,7 +184,7 @@ fn sample_plan_package_bundle() -> tandem_plan_compiler::api::PlanPackageImportB
     }
 }
 
-fn hosted_learning_tenant(actor: &str) -> TenantContext {
+pub(super) fn hosted_learning_tenant(actor: &str) -> TenantContext {
     TenantContext::explicit_user_workspace(
         "org-learning",
         "dep-learning",
@@ -191,7 +193,7 @@ fn hosted_learning_tenant(actor: &str) -> TenantContext {
     )
 }
 
-fn hosted_learning_verified(state: &AppState, actor: &str) -> tandem_types::VerifiedTenantContext {
+pub(super) fn hosted_learning_verified(state: &AppState, actor: &str) -> tandem_types::VerifiedTenantContext {
     use tandem_types::{AuthorityChain, HumanActor, TenantContextAssertionClaims};
 
     let now = crate::now_ms();
@@ -1471,13 +1473,28 @@ async fn context_distill_persists_and_dedupes_session_memory_facts() {
     )
     .await;
 
+    let conversation = vec![
+        "We are reviewing the release train, the workflow learning rollout, and the API notes in enough detail to preserve durable context for future runs.".to_string(),
+        "Please remember that the user prefers concise release summaries with explicit validation notes, risk callouts, and direct references to workflow-learning status.".to_string(),
+    ];
+    let mut session = tandem_types::Session::new(Some("distillation".to_string()), None);
+    session.id = "distill-session-1".to_string();
+    session.project_id = Some("proj-distill-1".to_string());
+    session.messages = conversation
+        .iter()
+        .map(|text| {
+            tandem_types::Message::new(
+                tandem_types::MessageRole::User,
+                vec![tandem_types::MessagePart::Text { text: text.clone() }],
+            )
+        })
+        .collect();
+    state.storage.save_session(session).await.expect("canonical distillation session");
+
     let app = app_router(state.clone());
     let request_body = json!({
         "session_id": "distill-session-1",
-        "conversation": [
-            "We are reviewing the release train, the workflow learning rollout, and the API notes in enough detail to preserve durable context for future runs.",
-            "Please remember that the user prefers concise release summaries with explicit validation notes, risk callouts, and direct references to workflow-learning status."
-        ],
+        "conversation": conversation,
         "run_id": "distill-run-1",
         "workflow_id": "workflow-distill-1",
         "project_id": "proj-distill-1",

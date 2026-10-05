@@ -8,13 +8,18 @@ impl EngineLoop {
         completion: &str,
         run_id: Option<&str>,
         original_verified: Option<VerifiedTenantContext>,
+        source_lineage: Option<tandem_types::NativeMessageLineage>,
     ) -> anyhow::Result<()> {
-        let assistant = Message::new(
+        let mut assistant = Message::new(
             MessageRole::Assistant,
             vec![MessagePart::Text {
                 text: completion.to_string(),
             }],
         );
+        assistant.source_lineage = source_lineage.map(|mut lineage| {
+            lineage.message_digest = tandem_types::canonical_message_digest(&assistant);
+            lineage
+        });
         let final_part =
             WireMessagePart::text(session_id, &assistant.id, truncate_text(completion, 16_000));
         let mut props = json!({"part": final_part, "sessionID": session_id});

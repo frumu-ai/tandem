@@ -140,6 +140,10 @@ impl MemoryWriteScope {
 /// could suppress (see `docs/STORAGE_PORTABILITY_DESIGN.md`, Decision 2).
 /// A backend that cannot enforce a requested scope dimension or operation mode
 /// MUST return a contract error rather than silently weaken the request.
+/// Synchronous authority check performed after the real database writer wait
+/// and again immediately before committing the owned transaction.
+pub type MemoryCommitAuthority = Arc<dyn Fn() -> MemoryStoreResult<()> + Send + Sync>;
+
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
     /// Execute a scoped point/list read using backend-neutral request and result
@@ -166,6 +170,24 @@ pub trait MemoryStore: Send + Sync {
         &self,
         request: MemoryStoreMutationRequest,
     ) -> MemoryStoreResult<MemoryStoreMutationResult>;
+
+    /// A backend must implement a real guarded transaction or refuse the
+    /// operation; delegating to an ordinary write would lose commit authority.
+    async fn write_with_commit_authority(
+        &self,
+        _request: MemoryStoreWriteRequest,
+        _authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreWriteResult> {
+        Err(MemoryStoreError::unsupported("this memory backend does not support guarded writes"))
+    }
+
+    async fn mutate_with_commit_authority(
+        &self,
+        _request: MemoryStoreMutationRequest,
+        _authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreMutationResult> {
+        Err(MemoryStoreError::unsupported("this memory backend does not support guarded mutations"))
+    }
 
     /// Execute multiple writes/mutations under explicit commit semantics.
     async fn batch(

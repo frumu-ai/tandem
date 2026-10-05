@@ -453,6 +453,17 @@ pub const MEMORY_SCHEMA_MIGRATIONS: &[LogicalMigration] = &[
         sqlite_mode: SqliteMigrationMode::Executable,
         changes: GLOBAL_RECORD_ENVELOPE_CHANGES,
     },
+    LogicalMigration {
+        version: 8,
+        name: "derived_memory_lineage_dedupe",
+        status: MigrationStatus::Current,
+        sqlite_mode: SqliteMigrationMode::Executable,
+        changes: &[LogicalChange::AddColumns {
+            tables: &[LogicalTable::MemoryRecords],
+            columns: &[LogicalColumn::new("derived_lineage_digest", LogicalType::Text, false,
+                Some(LogicalDefault::EmptyText))],
+        }],
+    },
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -498,7 +509,7 @@ mod tests {
     fn fresh_backend_receives_all_current_migrations_in_order() {
         let pending = MEMORY_SCHEMA_REGISTRY.pending_current(&[]);
 
-        assert_eq!(versions(&pending), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(versions(&pending), vec![1, 2, 3, 4, 5, 6, 7, 8]);
         assert!(MEMORY_SCHEMA_MIGRATIONS
             .windows(2)
             .all(|pair| pair[0].version < pair[1].version));
@@ -514,7 +525,7 @@ mod tests {
     fn legacy_ledger_receives_only_missing_current_migrations() {
         let pending = MEMORY_SCHEMA_REGISTRY.pending_current(&[1, 2, 3]);
 
-        assert_eq!(versions(&pending), vec![4, 5, 6, 7]);
+        assert_eq!(versions(&pending), vec![4, 5, 6, 7, 8]);
         assert_eq!(pending[0].name, "memory_crypto_envelope");
     }
 
@@ -526,7 +537,7 @@ mod tests {
 
         assert!(second.is_empty());
         assert!(MEMORY_SCHEMA_REGISTRY
-            .pending_current(&[1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7])
+            .pending_current(&[1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8])
             .is_empty());
     }
 
@@ -560,6 +571,7 @@ mod tests {
             "provenance_envelope",
             "private",
             "owner_subject",
+            "derived_lineage_digest",
         ] {
             assert!(fields.contains(&required), "missing field {required}");
         }
@@ -582,6 +594,7 @@ mod tests {
                 (5, SqliteMigrationMode::Executable),
                 (6, SqliteMigrationMode::Executable),
                 (7, SqliteMigrationMode::Executable),
+                (8, SqliteMigrationMode::Executable),
             ]
         );
     }
