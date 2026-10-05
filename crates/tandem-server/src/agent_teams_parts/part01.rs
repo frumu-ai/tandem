@@ -720,6 +720,22 @@ fn receipt_matches_tenant(
 }
 
 impl ToolPolicyHook for ServerToolPolicyHook {
+    fn with_session_commit_authority(
+        &self,
+        verified: Option<tandem_types::VerifiedTenantContext>,
+        commit: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        self.state
+            .enterprise
+            .hosted_policy
+            .with_current_permission(
+                verified.as_ref(),
+                tandem_enterprise_contract::AccessPermission::HostedUse,
+                || commit(),
+            )
+            .map_err(anyhow::Error::msg)?
+    }
+
     fn revalidate_session(
         &self,
         verified: Option<tandem_types::VerifiedTenantContext>,
