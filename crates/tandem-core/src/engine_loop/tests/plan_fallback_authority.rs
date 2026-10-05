@@ -142,7 +142,7 @@ impl BlockingGate {
         gate
     }
 
-    async fn complete(mut self) {
+    async fn release_and_join(mut self) {
         self.release.take().unwrap().send(()).unwrap();
         self.worker.take().unwrap().await.unwrap();
     }
@@ -151,7 +151,7 @@ impl BlockingGate {
         // The prompt's read was queued before this sentinel. Since there is
         // one worker, sentinel entry proves that actual read has finished.
         let (next, entered) = Self::queue();
-        self.complete().await;
+        self.release_and_join().await;
         tokio::time::timeout(Duration::from_secs(10), entered)
             .await
             .expect("native read finishes before its FIFO sentinel")
@@ -555,7 +555,7 @@ async fn run_planning(fallback: Fallback, mode: AuthorityMode) -> PlanningResult
             "fallback payload must not publish before the native guarded commit"
         );
     }
-    gate.complete().await;
+    gate.release_and_join().await;
     if matches!(mode, AuthorityMode::Revoked) {
         revoked.store(true, Ordering::SeqCst);
     }

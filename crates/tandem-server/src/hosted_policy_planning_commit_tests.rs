@@ -125,14 +125,14 @@ impl BlockingGate {
         gate
     }
 
-    async fn complete(mut self) {
+    async fn release_and_join(mut self) {
         self.release.take().unwrap().send(()).unwrap();
         self.worker.take().unwrap().await.unwrap();
     }
 
     async fn after_read(self) -> Self {
         let (next, entered) = Self::queue();
-        self.complete().await;
+        self.release_and_join().await;
         tokio::time::timeout(Duration::from_secs(10), entered)
             .await
             .unwrap()
@@ -447,7 +447,7 @@ async fn run_plan(kind: PlanFallback, mode: PlanMode) -> PlanOutcome {
         );
         reload_from_another_runtime(fixture.state.clone());
     }
-    gate.complete().await;
+    gate.release_and_join().await;
     writer.execute_batch("COMMIT").unwrap();
     let result = tokio::time::timeout(Duration::from_secs(10), prompt.as_mut())
         .await
