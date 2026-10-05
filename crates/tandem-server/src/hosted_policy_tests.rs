@@ -6,6 +6,9 @@ use tandem_enterprise_contract::{
     AuthorityChain, HumanActor, RequestPrincipal, TenantContextAssertionClaims,
 };
 
+#[path = "hosted_policy_session_commit_tests.rs"]
+mod session_commit;
+
 #[tokio::test]
 #[serial_test::serial(data_boundary_env)]
 async fn hosted_policy_direct_provider_rechecks_after_real_approval() {

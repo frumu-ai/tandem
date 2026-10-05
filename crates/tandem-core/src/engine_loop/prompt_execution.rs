@@ -1766,39 +1766,23 @@ impl EngineLoop {
             cancel.cancel();
             return Err(error);
         }
-        let assistant = Message::new(
-            MessageRole::Assistant,
-            vec![MessagePart::Text {
-                text: completion.clone(),
-            }],
-        );
-        let assistant_message_id = assistant.id.clone();
-        self.storage.append_message(&session_id, assistant).await?;
-        let final_part = WireMessagePart::text(
-            &session_id,
-            &assistant_message_id,
-            truncate_text(&completion, 16_000),
-        );
-        let mut props = json!({
-            "part": final_part,
-            "sessionID": session_id
-        });
-        if let Some(run_id) = &run_id {
-            props
-                .as_object_mut()
-                .unwrap()
-                .insert("runID".to_string(), json!(run_id));
+        let original_verified = session_record
+            .as_ref()
+            .and_then(|session| session.verified_tenant_context.clone());
+        if let Err(error) = self
+            .append_final_response(
+                &session_id,
+                &completion,
+                run_id.as_deref(),
+                original_verified,
+            )
+            .await
+        {
+            cancel.cancel();
+            self.mark_session_run_failed(&session_id, &error.to_string())
+                .await;
+            return Err(error);
         }
-        self.event_bus
-            .publish(EngineEvent::new("message.part.updated", props));
-        self.event_bus.publish(EngineEvent::new(
-            "session.updated",
-            json!({"sessionID": session_id, "status":"idle"}),
-        ));
-        self.event_bus.publish(EngineEvent::new(
-            "session.status",
-            json!({"sessionID": session_id, "status":"idle"}),
-        ));
         self.cancellations.remove(&session_id).await;
         Ok(())
     }

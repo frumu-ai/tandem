@@ -65,6 +65,39 @@ jobs:
         run: cargo test -p tandem-server hosted_policy --lib
       - name: Verify revocation after approval and before provider dispatch
         run: cargo test -p tandem-core hosted_policy --lib
+      - name: Verify final response commit regressions actually execute
+        run: |
+          set -euo pipefail
+          cargo test -p tandem-core --locked --lib hosted_final_assistant_writer_wait -- --list > "$RUNNER_TEMP/hosted-final-response-tests.txt"
+          for tandem_final_test_name in \
+            hosted_final_assistant_writer_wait_rechecks_revoked_authority \
+            hosted_final_assistant_writer_wait_preserves_current_authority \
+            hosted_final_assistant_writer_wait_preserves_standalone_without_hook \
+            hosted_final_assistant_writer_wait_keeps_commit_and_success_events_inside_authority \
+            hosted_final_assistant_writer_wait_insert_failure_has_no_final_success \
+            hosted_final_assistant_writer_wait_retains_original_prompt_authority_after_renewal
+          do
+            if ! grep -Fxq "engine_loop::tests::hosted_policy::$tandem_final_test_name: test" "$RUNNER_TEMP/hosted-final-response-tests.txt"; then
+              echo "Missing final response commit regression: $tandem_final_test_name" >&2
+              exit 1
+            fi
+          done
+          cargo test -p tandem-core --locked --lib hosted_final_assistant_writer_wait
+      - name: Verify real hosted final response commit regressions actually execute
+        run: |
+          set -euo pipefail
+          cargo test -p tandem-server --locked --lib hosted_policy::tests::session_commit -- --list > "$RUNNER_TEMP/hosted-final-response-server-tests.txt"
+          for tandem_final_test_name in \
+            hosted_final_assistant_rechecks_real_policy_after_sqlite_writer_wait \
+            hosted_final_assistant_holds_policy_through_events_and_cancelled_caller \
+            hosted_final_commit_preserves_local_and_fails_closed_without_policy_or_identity
+          do
+            if ! grep -Fxq "hosted_policy::tests::session_commit::$tandem_final_test_name: test" "$RUNNER_TEMP/hosted-final-response-server-tests.txt"; then
+              echo "Missing real hosted final response commit regression: $tandem_final_test_name" >&2
+              exit 1
+            fi
+          done
+          cargo test -p tandem-server --locked --lib hosted_policy::tests::session_commit
       - name: Verify direct provider and recovery compatibility
         run: |
           cargo test -p tandem-server session_run_retry --lib

@@ -164,6 +164,20 @@ pub trait ToolPolicyHook: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
+    /// Recheck the original prompt authority after a native write lock is
+    /// acquired, retaining that authority through commit and success events.
+    /// Invoke and return the continuation exactly once without awaiting or
+    /// repeating tool approval/audit. A committed write cannot be rolled back
+    /// by an error returned afterward. The default preserves engine embedders
+    /// without a synchronous host authority boundary.
+    fn with_session_commit_authority(
+        &self,
+        _verified: Option<VerifiedTenantContext>,
+        commit: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        commit()
+    }
+
     /// Called for every governed dispatch, including children of `batch`.
     /// Server implementations can deny a canonical tool whose authority was
     /// not carried by the exact prompt run. The default preserves non-server
