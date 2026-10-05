@@ -22,6 +22,30 @@ jobs:
         with:
           cache-profile: hosted-policy
           components: rustfmt
+      - name: Verify native planning fallback regressions actually execute
+        run: |
+          set -euo pipefail
+          cargo test -p tandem-core --locked --lib hosted_plan_fallback_ -- --list > "$RUNNER_TEMP/hosted-plan-fallback-tests.txt"
+          for tandem_plan_test_name in \
+            hosted_plan_fallback_todo_writer_wait_rechecks_revocation \
+            hosted_plan_fallback_question_writer_wait_rechecks_revocation \
+            hosted_plan_fallback_todo_preserves_current_authority \
+            hosted_plan_fallback_question_preserves_current_authority \
+            hosted_plan_fallback_todo_preserves_standalone_without_hook \
+            hosted_plan_fallback_question_preserves_standalone_without_hook \
+            hosted_plan_fallback_todo_sql_failure_has_no_final_success \
+            hosted_plan_fallback_question_sql_failure_has_no_synthetic_question \
+            hosted_plan_fallback_todo_retains_original_prompt_authority \
+            hosted_plan_fallback_question_retains_original_prompt_authority \
+            hosted_plan_fallback_todo_keeps_write_and_events_inside_authority \
+            hosted_plan_fallback_question_keeps_write_and_events_inside_authority
+          do
+            if ! grep -Fxq "engine_loop::tests::plan_fallback_authority::$tandem_plan_test_name: test" "$RUNNER_TEMP/hosted-plan-fallback-tests.txt"; then
+              echo "Missing planning fallback regression: $tandem_plan_test_name" >&2
+              exit 1
+            fi
+          done
+          cargo test -p tandem-core --locked --lib hosted_plan_fallback_ -- --nocapture --test-threads=1
       - name: Validate hosted policy contract
         run: cargo test -p tandem-enterprise-contract hosted_policy --lib
       - name: Verify global memory sharing and conservative schema upgrade
