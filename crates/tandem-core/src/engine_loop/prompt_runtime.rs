@@ -1,6 +1,5 @@
 use serde_json::{json, Value};
 use tandem_providers::{ChatAttachment, ChatMessage};
-use tandem_wire::WireMessagePart;
 
 use crate::{EventBus, Storage};
 use tandem_types::{EngineEvent, MessagePart, MessagePartInput};

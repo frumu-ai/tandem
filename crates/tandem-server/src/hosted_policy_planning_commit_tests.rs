@@ -79,14 +79,9 @@ fn canonical(database: &Path, session_id: &str) -> Canonical {
     Canonical { todos, questions }
 }
 
-fn completed_todo(event: &EngineEvent) -> bool {
-    event.event_type == "message.part.updated"
-        && event.properties["part"]["tool"] == "todo_write"
-        && event.properties["part"]["state"] == "completed"
-}
-
-fn success_event(event: &EngineEvent) -> bool {
-    completed_todo(event) || matches!(event.event_type.as_str(), "todo.updated" | "question.asked")
+fn fallback_payload_event(event: &EngineEvent) -> bool {
+    (event.event_type == "message.part.updated" && event.properties["part"]["tool"] == "todo_write")
+        || matches!(event.event_type.as_str(), "todo.updated" | "question.asked")
 }
 
 fn idle_event(event: &EngineEvent) -> bool {
@@ -438,6 +433,13 @@ async fn run_plan(kind: PlanFallback, mode: PlanMode) -> PlanOutcome {
         "the canonical fallback cannot appear before the held native writer"
     );
     assert!(!observed.load(Ordering::SeqCst));
+    while let Ok(event) = receiver.try_recv() {
+        events.push(event);
+    }
+    assert!(
+        !events.iter().any(fallback_payload_event),
+        "no planning payload may publish before the guarded native commit"
+    );
     if matches!(mode, PlanMode::Revoked) {
         write_input(
             &fixture.directory.path().join("policy.json"),
@@ -513,6 +515,16 @@ fn assert_no_final(outcome: &PlanOutcome) {
         .iter()
         .any(|message| matches!(message.role, MessageRole::Assistant)));
     assert!(!outcome.events.iter().any(idle_event));
+    assert!(
+        !outcome.events.iter().any(|event| {
+            event.event_type == "message.part.updated"
+                && event.properties.get("delta").is_none()
+                && event.properties["part"]["text"]
+                    .as_str()
+                    .is_some_and(|text| matches!(text, TODO_TEXT | QUESTION_TEXT))
+        }),
+        "failed fallback must not publish final completion text"
+    );
 }
 
 fn assert_failure(kind: PlanFallback, mode: PlanMode) {
@@ -522,8 +534,8 @@ fn assert_failure(kind: PlanFallback, mode: PlanMode) {
         "denied/failed {kind:?} mutated the canonical row"
     );
     assert!(
-        !outcome.events.iter().any(success_event),
-        "denied/failed fallback published success"
+        !outcome.events.iter().any(fallback_payload_event),
+        "denied/failed fallback published a planning payload"
     );
     assert_no_final(&outcome);
     assert!(outcome.cancelled);

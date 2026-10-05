@@ -1,3 +1,6 @@
+use super::super::plan_fallback::{
+    emit_plan_question_fallback, emit_plan_todo_fallback, PlanFallbackAuthority,
+};
 use super::*;
 use tandem_types::EngineEvent;
 
