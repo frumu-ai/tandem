@@ -248,8 +248,9 @@ impl PostgresMemoryStore {
                 Ok(MemoryStoreWriteResult::Stored)
             }
             MemoryStoreWriteRequest::GlobalRecord { scope, record } => {
-                let lineage_digest = crate::derived_lineage::derived_lineage_dedupe_digest(record.metadata.as_ref())
-                    .map_err(MemoryStoreError::from)?;
+                let lineage_digest =
+                    crate::derived_lineage::derived_lineage_dedupe_digest(record.metadata.as_ref())
+                        .map_err(MemoryStoreError::from)?;
                 let tenant = tenant_scope_from_global_record(&record);
                 let owner_org = owner_org_unit_id_from_metadata(record.metadata.as_ref());
                 let owner_subject = owner_subject_from_metadata(record.metadata.as_ref());
@@ -1043,7 +1044,9 @@ impl PostgresMemoryStore {
                 let (data_class, source_binding_id) = Self::key_scope_columns(&next_key_scope)?;
                 let (data, cipher, envelope, policy, audit) =
                     self.encode_payload(&record, &next_key_scope, &id)?;
-                let lineage_digest = crate::derived_lineage::derived_lineage_dedupe_digest(record.metadata.as_ref()).map_err(MemoryStoreError::from)?;
+                let lineage_digest =
+                    crate::derived_lineage::derived_lineage_dedupe_digest(record.metadata.as_ref())
+                        .map_err(MemoryStoreError::from)?;
                 client.execute("UPDATE tandem_memory_global_records SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6,demoted=$7,owner_org_unit_id=$8,owner_subject=$9,private=$10,data_class=$11,source_binding_id=$12,tenant_shared=$13,derived_lineage_digest=$14 WHERE id=$1",
                     &[&id,&data,&cipher,&envelope,&policy,&audit,&record.demoted,&next_org,&next_subject,&next_subject.is_some(),&data_class,&source_binding_id,&tenant_shared_from_metadata(record.metadata.as_ref()),&lineage_digest]).await.map_err(|error| store_error("update PostgreSQL global memory", error, true))?;
                 Ok(MemoryStoreMutationResult::Changed(true))
@@ -1494,8 +1497,10 @@ impl PostgresMemoryStore {
                         scope,
                         record,
                     }) => {
-                        let lineage_digest = crate::derived_lineage::derived_lineage_dedupe_digest(record.metadata.as_ref())
-                            .map_err(MemoryStoreError::from)?;
+                        let lineage_digest = crate::derived_lineage::derived_lineage_dedupe_digest(
+                            record.metadata.as_ref(),
+                        )
+                        .map_err(MemoryStoreError::from)?;
                         let tenant = tenant_scope_from_global_record(&record);
                         let owner_org = owner_org_unit_id_from_metadata(record.metadata.as_ref());
                         let owner_subject = owner_subject_from_metadata(record.metadata.as_ref());
@@ -1656,7 +1661,11 @@ impl PostgresMemoryStore {
                                 Self::key_scope_columns(&next_key_scope)?;
                             let (data, cipher, envelope, policy, audit) =
                                 self.encode_payload(&record, &next_key_scope, &id)?;
-                            let lineage_digest = crate::derived_lineage::derived_lineage_dedupe_digest(record.metadata.as_ref()).map_err(MemoryStoreError::from)?;
+                            let lineage_digest =
+                                crate::derived_lineage::derived_lineage_dedupe_digest(
+                                    record.metadata.as_ref(),
+                                )
+                                .map_err(MemoryStoreError::from)?;
                             transaction.execute("UPDATE tandem_memory_global_records SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6,demoted=$7,owner_org_unit_id=$8,owner_subject=$9,private=$10,data_class=$11,source_binding_id=$12,tenant_shared=$13,derived_lineage_digest=$14 WHERE id=$1", &[&id,&data,&cipher,&envelope,&policy,&audit,&record.demoted,&owner_org,&owner_subject,&owner_subject.is_some(),&data_class,&source_binding_id,&tenant_shared_from_metadata(record.metadata.as_ref()),&lineage_digest]).await.map_err(|error| store_error("update atomic PostgreSQL global memory", error, false))?;
                             MemoryStoreBatchValue::Mutation(MemoryStoreMutationResult::Changed(
                                 true,

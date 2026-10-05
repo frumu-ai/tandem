@@ -29,7 +29,10 @@ async fn workflow_learning_candidate_access(
     mutation: bool,
 ) -> bool {
     workflow_learning_candidate_source_access(state, tenant, verified, candidate, mutation).await
-        && crate::memory::derived_lineage::candidate_lineage_readable(state, tenant, verified, candidate).await
+        && crate::memory::derived_lineage::candidate_lineage_readable(
+            state, tenant, verified, candidate,
+        )
+        .await
 }
 
 async fn workflow_learning_candidate_source_access(

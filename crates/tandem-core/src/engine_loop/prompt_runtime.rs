@@ -877,9 +877,8 @@ pub(super) fn compact_chat_history_sourced(
                 .iter()
                 .filter_map(|message| message.source_id.clone())
                 .collect();
-            let mut loaded = LoadedChatHistory::from_messages(
-                sourced.into_iter().map(|m| m.message).collect(),
-            );
+            let mut loaded =
+                LoadedChatHistory::from_messages(sourced.into_iter().map(|m| m.message).collect());
             loaded.source_message_ids = source_message_ids;
             return loaded;
         }

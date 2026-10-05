@@ -403,42 +403,80 @@ impl MemoryDatabase {
             }
         }
     }
-
 }
 
 #[async_trait]
 impl MemoryStore for MemoryDatabase {
-    async fn write_with_commit_authority(&self,request:MemoryStoreWriteRequest,authority:MemoryCommitAuthority)
-        -> MemoryStoreResult<MemoryStoreWriteResult> {
+    async fn write_with_commit_authority(
+        &self,
+        request: MemoryStoreWriteRequest,
+        authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreWriteResult> {
         match request {
-            MemoryStoreWriteRequest::GlobalRecord {scope,record} => {
-                self.enforce_store_tenant_scope("guarded global memory write",&scope.tenant)?;
-                validate_global_write_scope(&scope,&record)?;
-                Ok(MemoryStoreWriteResult::GlobalRecord(self.put_global_record_with_authority(&record,authority).await?))
+            MemoryStoreWriteRequest::GlobalRecord { scope, record } => {
+                self.enforce_store_tenant_scope("guarded global memory write", &scope.tenant)?;
+                validate_global_write_scope(&scope, &record)?;
+                Ok(MemoryStoreWriteResult::GlobalRecord(
+                    self.put_global_record_with_authority(&record, authority)
+                        .await?,
+                ))
             }
-            _ => Err(MemoryStoreError::unsupported("SQLite guarded write supports GlobalRecord only")),
+            _ => Err(MemoryStoreError::unsupported(
+                "SQLite guarded write supports GlobalRecord only",
+            )),
         }
     }
 
-    async fn mutate_with_commit_authority(&self,request:MemoryStoreMutationRequest,authority:MemoryCommitAuthority)
-        -> MemoryStoreResult<MemoryStoreMutationResult> {
+    async fn mutate_with_commit_authority(
+        &self,
+        request: MemoryStoreMutationRequest,
+        authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreMutationResult> {
         match request {
-            MemoryStoreMutationRequest::UpdateGlobalRecordContext {scope,id,visibility,demoted,metadata,provenance} => {
-                self.enforce_store_tenant_scope("guarded global memory context update",&scope.tenant)?;
-                Ok(MemoryStoreMutationResult::Changed(self.update_global_context_with_authority(&scope,&id,&visibility,
-                    demoted,metadata.as_ref(),provenance.as_ref(),authority).await?))
+            MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+                scope,
+                id,
+                visibility,
+                demoted,
+                metadata,
+                provenance,
+            } => {
+                self.enforce_store_tenant_scope(
+                    "guarded global memory context update",
+                    &scope.tenant,
+                )?;
+                Ok(MemoryStoreMutationResult::Changed(
+                    self.update_global_context_with_authority(
+                        &scope,
+                        &id,
+                        &visibility,
+                        demoted,
+                        metadata.as_ref(),
+                        provenance.as_ref(),
+                        authority,
+                    )
+                    .await?,
+                ))
             }
-            _ => Err(MemoryStoreError::unsupported("SQLite guarded mutation supports UpdateGlobalRecordContext only")),
+            _ => Err(MemoryStoreError::unsupported(
+                "SQLite guarded mutation supports UpdateGlobalRecordContext only",
+            )),
         }
     }
 
-    async fn read(&self, request: MemoryStoreReadRequest) -> MemoryStoreResult<MemoryStoreReadResult> {
+    async fn read(
+        &self,
+        request: MemoryStoreReadRequest,
+    ) -> MemoryStoreResult<MemoryStoreReadResult> {
         let scope = request.scope().clone();
         let result = self.read_store_raw(request).await?;
         crate::derived_lineage_store::filter_read_result(self, &scope, result).await
     }
 
-    async fn query(&self, request: MemoryStoreQueryRequest) -> MemoryStoreResult<MemoryStoreQueryResult> {
+    async fn query(
+        &self,
+        request: MemoryStoreQueryRequest,
+    ) -> MemoryStoreResult<MemoryStoreQueryResult> {
         let scope = request.scope().clone();
         let result = self.query_store_raw(request).await?;
         crate::derived_lineage_store::filter_query_result(self, &scope, result).await

@@ -338,8 +338,9 @@ fn put_global_record(
     let owner_subject = owner_subject_from_metadata(record.metadata.as_ref());
     let private = owner_subject.is_some();
     let tenant_shared = crate::types::tenant_shared_from_metadata(record.metadata.as_ref());
-    let lineage_digest = crate::derived_lineage::derived_lineage_dedupe_digest(record.metadata.as_ref())
-        .map_err(MemoryStoreError::from)?;
+    let lineage_digest =
+        crate::derived_lineage::derived_lineage_dedupe_digest(record.metadata.as_ref())
+            .map_err(MemoryStoreError::from)?;
 
     let existing: Option<String> = conn
         .query_row(

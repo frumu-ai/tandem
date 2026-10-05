@@ -178,7 +178,9 @@ pub trait MemoryStore: Send + Sync {
         _request: MemoryStoreWriteRequest,
         _authority: MemoryCommitAuthority,
     ) -> MemoryStoreResult<MemoryStoreWriteResult> {
-        Err(MemoryStoreError::unsupported("this memory backend does not support guarded writes"))
+        Err(MemoryStoreError::unsupported(
+            "this memory backend does not support guarded writes",
+        ))
     }
 
     async fn mutate_with_commit_authority(
@@ -186,7 +188,9 @@ pub trait MemoryStore: Send + Sync {
         _request: MemoryStoreMutationRequest,
         _authority: MemoryCommitAuthority,
     ) -> MemoryStoreResult<MemoryStoreMutationResult> {
-        Err(MemoryStoreError::unsupported("this memory backend does not support guarded mutations"))
+        Err(MemoryStoreError::unsupported(
+            "this memory backend does not support guarded mutations",
+        ))
     }
 
     /// Execute multiple writes/mutations under explicit commit semantics.

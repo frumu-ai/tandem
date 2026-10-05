@@ -40,9 +40,11 @@ impl MessageLineageAccumulator {
             if message.id.trim().is_empty() || message.id != message.id.trim() {
                 self.complete = false;
             }
-            if message.parts.iter().any(|part| {
-                matches!(part, MessagePart::ToolInvocation { .. })
-            }) {
+            if message
+                .parts
+                .iter()
+                .any(|part| matches!(part, MessagePart::ToolInvocation { .. }))
+            {
                 self.complete = false;
             }
             match message.role {
@@ -117,16 +119,28 @@ fn lineage_subject(verified: &VerifiedTenantContext) -> Option<String> {
         .strict_projection
         .as_ref()
         .and_then(|strict| {
-            strict.principal.tenant_actor_id.as_deref().and_then(normalized)
+            strict
+                .principal
+                .tenant_actor_id
+                .as_deref()
+                .and_then(normalized)
                 .or_else(|| normalized(&strict.principal.id))
         })
-        .or_else(|| verified.tenant_context.actor_id.as_deref().and_then(normalized))
+        .or_else(|| {
+            verified
+                .tenant_context
+                .actor_id
+                .as_deref()
+                .and_then(normalized)
+        })
         .or_else(|| normalized(&verified.human_actor.actor_id))
 }
 
 fn valid_digest(value: &str) -> bool {
     value.len() == 64
-        && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]

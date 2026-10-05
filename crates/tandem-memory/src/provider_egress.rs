@@ -119,10 +119,14 @@ pub(crate) async fn complete_memory_prompt(
     let mut data_classes = kind.data_classes().to_vec();
     if let Some(context) = egress {
         if context.additional_data_classes.len() > 32 {
-            return Err(MemoryError::InvalidConfig("too many inherited provider data classes".to_string()));
+            return Err(MemoryError::InvalidConfig(
+                "too many inherited provider data classes".to_string(),
+            ));
         }
         for class in &context.additional_data_classes {
-            if !data_classes.contains(class) { data_classes.push(*class); }
+            if !data_classes.contains(class) {
+                data_classes.push(*class);
+            }
         }
     }
     let request = ProviderEgressRequest {
@@ -205,10 +209,10 @@ pub(crate) mod test_environment;
 
 #[cfg(test)]
 mod tests {
+    use super::test_environment::{env_lock, EnvRestore};
     use super::*;
     use async_trait::async_trait;
     use std::sync::Mutex;
-    use super::test_environment::{env_lock,EnvRestore};
     use tandem_data_boundary::DataBoundaryTenantRef;
     use tandem_providers::{AppConfig, Provider};
     use tandem_types::ProviderInfo;
@@ -447,31 +451,80 @@ mod tests {
         let _env = EnvRestore::set(&[
             ("TANDEM_DATA_BOUNDARY_MODE", "enforce"),
             ("TANDEM_DATA_BOUNDARY_STRICT", "1"),
-            ("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", "capture=approved_external"),
+            (
+                "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+                "capture=approved_external",
+            ),
             ("TANDEM_DATA_BOUNDARY_REDACT_CLASSES", "pii,credential"),
         ]);
         let captured = Arc::new(Mutex::new(None));
         let classes = Arc::new(Mutex::new(None));
         let providers = ProviderRegistry::new(AppConfig::default());
-        providers.replace_for_test(vec![Arc::new(CaptureProvider {prompt:captured.clone()})], Some("capture".into())).await;
+        providers
+            .replace_for_test(
+                vec![Arc::new(CaptureProvider {
+                    prompt: captured.clone(),
+                })],
+                Some("capture".into()),
+            )
+            .await;
         let audit_classes = classes.clone();
-        let context = MemoryProviderEgressContext::new(ProviderEgressAuthority::new(DataBoundaryTenantRef {
-            organization_id:Some("org-a".into()),workspace_id:Some("workspace-a".into()),deployment_id:None,
-        }).with_run_id("lineage-class-proof").with_session_id("session-a"))
-            .with_additional_data_classes([SensitiveDataClass::SourceCode,SensitiveDataClass::Financial,SensitiveDataClass::SourceCode])
-            .with_audit_sink(Arc::new(move |event| {
-                *audit_classes.lock().unwrap() = Some(event.semantic_data_classes);
-                Box::pin(async { Err("lineage semantic audit witness".into()) })
-            }));
-        let result = complete_memory_prompt(&providers,"orchard lighthouse",None,None,Some(&context),
-            MemoryProviderEgressKind::Distillation,"lineage-class-proof","memory.canonical-sources").await;
+        let context = MemoryProviderEgressContext::new(
+            ProviderEgressAuthority::new(DataBoundaryTenantRef {
+                organization_id: Some("org-a".into()),
+                workspace_id: Some("workspace-a".into()),
+                deployment_id: None,
+            })
+            .with_run_id("lineage-class-proof")
+            .with_session_id("session-a"),
+        )
+        .with_additional_data_classes([
+            SensitiveDataClass::SourceCode,
+            SensitiveDataClass::Financial,
+            SensitiveDataClass::SourceCode,
+        ])
+        .with_audit_sink(Arc::new(move |event| {
+            *audit_classes.lock().unwrap() = Some(event.semantic_data_classes);
+            Box::pin(async { Err("lineage semantic audit witness".into()) })
+        }));
+        let result = complete_memory_prompt(
+            &providers,
+            "orchard lighthouse",
+            None,
+            None,
+            Some(&context),
+            MemoryProviderEgressKind::Distillation,
+            "lineage-class-proof",
+            "memory.canonical-sources",
+        )
+        .await;
         assert!(result.is_err());
-        let classes = classes.lock().unwrap().clone().expect("actual egress audit was emitted");
-        for class in [SensitiveDataClass::CustomerData,SensitiveDataClass::ProprietaryBusinessData,
-            SensitiveDataClass::SourceCode,SensitiveDataClass::Financial] {
-            assert!(classes.contains(&class),"missing canonical or existing semantic class: {class:?}");
+        let classes = classes
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("actual egress audit was emitted");
+        for class in [
+            SensitiveDataClass::CustomerData,
+            SensitiveDataClass::ProprietaryBusinessData,
+            SensitiveDataClass::SourceCode,
+            SensitiveDataClass::Financial,
+        ] {
+            assert!(
+                classes.contains(&class),
+                "missing canonical or existing semantic class: {class:?}"
+            );
         }
-        assert_eq!(classes.iter().filter(|class| **class == SensitiveDataClass::SourceCode).count(),1);
-        assert!(captured.lock().unwrap().is_none(),"audit failure must precede provider dispatch");
+        assert_eq!(
+            classes
+                .iter()
+                .filter(|class| **class == SensitiveDataClass::SourceCode)
+                .count(),
+            1
+        );
+        assert!(
+            captured.lock().unwrap().is_none(),
+            "audit failure must precede provider dispatch"
+        );
     }
 }

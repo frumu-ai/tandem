@@ -215,11 +215,15 @@ pub fn memory_write_scope_decision_for_context_with_enterprise_mode(
     require_scope_metadata: bool,
     now_ms: u64,
 ) -> Result<KnowledgeScopeDecision, String> {
-    if let Some(lineage) = crate::DerivedMemoryLineage::from_metadata(metadata)
-        .map_err(|error| error.to_string())? {
-        let decision = lineage.write_scope_decision(partition, now_ms)
+    if let Some(lineage) =
+        crate::DerivedMemoryLineage::from_metadata(metadata).map_err(|error| error.to_string())?
+    {
+        let decision = lineage
+            .write_scope_decision(partition, now_ms)
             .map_err(|error| error.to_string())?;
-        if !decision.allowed { return Ok(decision); }
+        if !decision.allowed {
+            return Ok(decision);
+        }
     }
     let Some(policy) = KnowledgeScopePolicy::from_metadata(metadata)? else {
         if source_bound_scope_required(metadata, authority_job_context, require_scope_metadata) {
@@ -285,10 +289,14 @@ pub fn memory_promotion_scope_decision_for_context_with_enterprise_mode(
     now_ms: u64,
 ) -> Result<KnowledgeScopeDecision, String> {
     if let Some(lineage) = crate::DerivedMemoryLineage::from_metadata(source_metadata)
-        .map_err(|error| error.to_string())? {
-        let decision = lineage.promotion_scope_decision(partition, to_tier, review, now_ms)
+        .map_err(|error| error.to_string())?
+    {
+        let decision = lineage
+            .promotion_scope_decision(partition, to_tier, review, now_ms)
             .map_err(|error| error.to_string())?;
-        if !decision.allowed { return Ok(decision); }
+        if !decision.allowed {
+            return Ok(decision);
+        }
     }
     let Some(policy) = KnowledgeScopePolicy::from_metadata(source_metadata)? else {
         if source_bound_scope_required(

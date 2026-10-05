@@ -7,7 +7,9 @@ fn digest_binds_role_ordered_parts_and_nested_tool_values() {
     let message = Message::new(
         MessageRole::Assistant,
         vec![
-            MessagePart::Text { text: "native answer".into() },
+            MessagePart::Text {
+                text: "native answer".into(),
+            },
             MessagePart::ToolInvocation {
                 tool: "memory_search".into(),
                 args: json!({"query": "canonical", "nested": {"a": 1, "z": 2}}),
@@ -36,7 +38,12 @@ fn digest_binds_role_ordered_parts_and_nested_tool_values() {
 
 #[test]
 fn digest_excludes_lineage_and_lineage_survives_header_json_roundtrip() {
-    let mut message = Message::new(MessageRole::Assistant, vec![MessagePart::Text { text: "answer".into() }]);
+    let mut message = Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::Text {
+            text: "answer".into(),
+        }],
+    );
     let digest = canonical_message_digest(&message);
     message.source_lineage = Some(NativeMessageLineage {
         schema_version: 1,
@@ -57,15 +64,31 @@ fn digest_excludes_lineage_and_lineage_survives_header_json_roundtrip() {
     assert_eq!(restored.source_lineage.unwrap().message_digest, digest);
     let mut legacy = serde_json::to_value(&message).unwrap();
     legacy.as_object_mut().unwrap().remove("source_lineage");
-    assert!(serde_json::from_value::<Message>(legacy).unwrap().source_lineage.is_none());
+    assert!(serde_json::from_value::<Message>(legacy)
+        .unwrap()
+        .source_lineage
+        .is_none());
 }
 
 #[test]
 fn digest_canonicalizes_nested_object_key_order() {
-    let first: serde_json::Value = serde_json::from_str(r#"{"z":{"two":2,"one":1},"a":0}"#).unwrap();
-    let second: serde_json::Value = serde_json::from_str(r#"{"a":0,"z":{"one":1,"two":2}}"#).unwrap();
-    let make = |args| Message::new(MessageRole::User, vec![MessagePart::ToolInvocation {
-        tool: "lookup".into(), args, result: None, error: None,
-    }]);
-    assert_eq!(canonical_message_digest(&make(first)), canonical_message_digest(&make(second)));
+    let first: serde_json::Value =
+        serde_json::from_str(r#"{"z":{"two":2,"one":1},"a":0}"#).unwrap();
+    let second: serde_json::Value =
+        serde_json::from_str(r#"{"a":0,"z":{"one":1,"two":2}}"#).unwrap();
+    let make = |args| {
+        Message::new(
+            MessageRole::User,
+            vec![MessagePart::ToolInvocation {
+                tool: "lookup".into(),
+                args,
+                result: None,
+                error: None,
+            }],
+        )
+    };
+    assert_eq!(
+        canonical_message_digest(&make(first)),
+        canonical_message_digest(&make(second))
+    );
 }

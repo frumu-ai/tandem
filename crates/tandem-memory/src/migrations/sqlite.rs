@@ -139,7 +139,10 @@ fn translate(tx: &Transaction<'_>, migration: &LogicalMigration) -> MemoryResult
 
 fn migrate_derived_lineage_dedupe(tx: &Transaction<'_>) -> MemoryResult<()> {
     if !table_columns(tx, "memory_records")?.contains("derived_lineage_digest") {
-        tx.execute("ALTER TABLE memory_records ADD COLUMN derived_lineage_digest TEXT NOT NULL DEFAULT ''", [])?;
+        tx.execute(
+            "ALTER TABLE memory_records ADD COLUMN derived_lineage_digest TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
     }
     tx.execute("DROP INDEX IF EXISTS idx_memory_records_dedup", [])?;
     tx.execute("CREATE UNIQUE INDEX idx_memory_records_dedup ON memory_records(

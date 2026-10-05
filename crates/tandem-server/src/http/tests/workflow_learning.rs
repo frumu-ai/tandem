@@ -3,12 +3,12 @@
 
 use super::*;
 
+#[path = "workflow_learning/derived_memory_lineage.rs"]
+mod derived_memory_lineage;
 #[path = "workflow_learning/session_exports_security.rs"]
 mod session_exports_security;
 #[path = "workflow_learning/session_security.rs"]
 mod session_security;
-#[path = "workflow_learning/derived_memory_lineage.rs"]
-mod derived_memory_lineage;
 
 fn current_test_ms() -> u64 {
     std::time::SystemTime::now()
@@ -193,7 +193,10 @@ pub(super) fn hosted_learning_tenant(actor: &str) -> TenantContext {
     )
 }
 
-pub(super) fn hosted_learning_verified(state: &AppState, actor: &str) -> tandem_types::VerifiedTenantContext {
+pub(super) fn hosted_learning_verified(
+    state: &AppState,
+    actor: &str,
+) -> tandem_types::VerifiedTenantContext {
     use tandem_types::{AuthorityChain, HumanActor, TenantContextAssertionClaims};
 
     let now = crate::now_ms();
@@ -1489,7 +1492,11 @@ async fn context_distill_persists_and_dedupes_session_memory_facts() {
             )
         })
         .collect();
-    state.storage.save_session(session).await.expect("canonical distillation session");
+    state
+        .storage
+        .save_session(session)
+        .await
+        .expect("canonical distillation session");
 
     let app = app_router(state.clone());
     let request_body = json!({

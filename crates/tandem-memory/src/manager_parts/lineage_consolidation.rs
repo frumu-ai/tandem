@@ -70,10 +70,38 @@ fn consolidation_semantic_classes(lineage: &crate::DerivedMemoryLineage)
     Ok(classes)
 }
 
+fn plain_ordinary_consolidation_chunk(chunk: &MemoryChunk) -> bool {
+    // The canonical lineage DTO names memory rows and native session messages,
+    // not arbitrary legacy chunks. Only default/Internal, exactly scoped chat
+    // chunks have no additional disposition to carry into the summary.
+    if chunk.source_path.is_some() || chunk.source_mtime.is_some()
+        || chunk.source_size.is_some() || chunk.source_hash.is_some() {
+        return false;
+    }
+    let Some(metadata) = chunk.metadata.as_ref() else { return true; };
+    let Some(object) = metadata.as_object() else { return false; };
+    if object.keys().any(|key| !matches!(key.as_str(),
+        "owner_subject" | "owner_org_unit_id" | "tenant_shared" | "classification")) {
+        return false;
+    }
+    if object.get("classification").is_some()
+        && crate::types::data_class_from_metadata(Some(metadata))
+            != Some(tandem_enterprise_contract::DataClass::Internal) {
+        return false;
+    }
+    for key in ["owner_subject", "owner_org_unit_id"] {
+        if object.get(key).is_some_and(|value| !value.is_null()
+            && !value.as_str().is_some_and(|owner| !owner.trim().is_empty() && owner.trim() == owner)) {
+            return false;
+        }
+    }
+    !object.get("tenant_shared").is_some_and(|value| !value.is_boolean())
+}
+
 impl MemoryManager {
     async fn authorize_consolidation_lineage(&self, lineage: &crate::DerivedMemoryLineage,
         scope: &MemoryReadScope, request: &ScopedMemoryConsolidationRequest,
-        access_filter: Option<&crate::types::MemoryAccessFilter>) -> MemoryResult<()> {
+        access_filter: Option<&crate::types::MemoryAccessFilter>) -> MemoryResult<crate::types::MemoryAccessFilter> {
         let filter = access_filter.ok_or_else(|| MemoryError::InvalidConfig(
             "derived consolidation requires governed access authority".into()))?;
         if filter.mode == crate::types::GovernedReadMode::GovernedStrict
@@ -105,6 +133,45 @@ impl MemoryManager {
         if !decision.allowed {
             return Err(MemoryError::InvalidConfig(format!("consolidation lineage write denied:{}",decision.reason_code)));
         }
+        Ok(resolved)
+    }
+
+    async fn authorize_consolidation_contributors(&self, chunks: &[MemoryChunk],
+        scope: &MemoryReadScope, request: &ScopedMemoryConsolidationRequest,
+        access_filter: Option<&crate::types::MemoryAccessFilter>) -> MemoryResult<()> {
+        let Some(filter) = access_filter else { return Ok(()); };
+        let mut derived = false;
+        let mut ordinary = false;
+        let mut restricted_ordinary = false;
+        for chunk in chunks {
+            let mut current = filter.clone();
+            current.now_ms = Utc::now().timestamp_millis().max(0) as u64;
+            match crate::DerivedMemoryLineage::from_metadata(chunk.metadata.as_ref())? {
+                Some(lineage) => {
+                    derived = true;
+                    current = self.authorize_consolidation_lineage(
+                        &lineage, scope, request, Some(&current)).await?;
+                }
+                None => {
+                    ordinary = true;
+                    restricted_ordinary |= !plain_ordinary_consolidation_chunk(chunk);
+                }
+            }
+            current.now_ms = Utc::now().timestamp_millis().max(0) as u64;
+            let decision = current.decision_for_chunk(chunk);
+            if !decision.allowed {
+                return Err(MemoryError::InvalidConfig(format!("consolidation contributor denied:{}",
+                    decision.reason.as_deref().unwrap_or("denied"))));
+            }
+        }
+        if derived && ordinary {
+            return Err(MemoryError::InvalidConfig(
+                "consolidation mixed contributors lack canonical lineage".into()));
+        }
+        if restricted_ordinary {
+            return Err(MemoryError::InvalidConfig(
+                "consolidation ordinary restrictions lack canonical lineage".into()));
+        }
         Ok(())
     }
 }
@@ -124,6 +191,9 @@ impl MemoryManager {
 
     /// Authorized derived contributors retain their complete source conjunction.
     /// The compatibility wrapper remains sufficient for ordinary scoped chunks.
+    /// Governed consolidation accepts all-derived contributors, or only plain
+    /// default/Internal ordinary chunks. Mixed and restricted ordinary inputs
+    /// fail closed until their canonical chunk dispositions can be represented.
     pub async fn consolidate_scoped_session_with_access_filter(
         &self,
         request: &ScopedMemoryConsolidationRequest,
@@ -165,6 +235,7 @@ impl MemoryManager {
         if chunks.is_empty() {
             return Ok(None);
         }
+        self.authorize_consolidation_contributors(&chunks,&read_scope,request,access_filter).await?;
         let lineage = merge_consolidation_lineage(&chunks,request)?;
         let mut effective_egress = provider_egress.clone();
         if let Some(lineage) = &lineage {
@@ -291,6 +362,7 @@ impl MemoryManager {
             metadata: output_metadata,
         };
 
+        self.authorize_consolidation_contributors(&chunks,&read_scope,request,access_filter).await?;
         if let Some(lineage) = &lineage {
             self.authorize_consolidation_lineage(lineage,&read_scope,request,access_filter).await?;
         }

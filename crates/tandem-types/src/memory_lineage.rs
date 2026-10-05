@@ -32,7 +32,8 @@ pub fn canonical_message_digest(message: &Message) -> String {
     let mut body = serde_json::to_value((&message.role, &message.parts))
         .expect("native message body is JSON serializable");
     sort_objects(&mut body);
-    let bytes = serde_json::to_vec(&body).expect("canonical native message body is JSON serializable");
+    let bytes =
+        serde_json::to_vec(&body).expect("canonical native message body is JSON serializable");
     format!("{:x}", Sha256::digest(bytes))
 }
 

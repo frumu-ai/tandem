@@ -196,10 +196,14 @@ impl PostgresMemoryStore {
             .map_err(|error| {
                 store_error("record PostgreSQL global sharing migration", error, false)
             })?;
-        transaction.execute(
-            "INSERT INTO tandem_memory_schema_migrations(version, name)
-             VALUES (8, 'derived_memory_lineage_dedupe') ON CONFLICT (version) DO NOTHING", &[],
-        ).await.map_err(|error| store_error("record PostgreSQL lineage migration", error, false))?;
+        transaction
+            .execute(
+                "INSERT INTO tandem_memory_schema_migrations(version, name)
+             VALUES (8, 'derived_memory_lineage_dedupe') ON CONFLICT (version) DO NOTHING",
+                &[],
+            )
+            .await
+            .map_err(|error| store_error("record PostgreSQL lineage migration", error, false))?;
         let vector_type: String = transaction
             .query_one(
                 "SELECT format_type(atttypid, atttypmod) FROM pg_attribute

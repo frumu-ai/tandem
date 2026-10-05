@@ -203,7 +203,10 @@ jobs:
           for test_name in \
             consolidation_preserves_lineage_classes_and_hides_summary_after_source_deletion \
             consolidation_denied_grant_or_missing_native_resolver_never_dispatches_provider \
-            consolidation_rechecks_source_after_provider_before_summary_write
+            consolidation_rechecks_source_after_provider_before_summary_write \
+            consolidation_mixed_denied_ordinary_source_never_dispatches_or_replaces \
+            consolidation_governed_unrepresentable_ordinary_and_mixed_inputs_fail_closed \
+            consolidation_plain_ordinary_current_and_legacy_paths_remain_private_positives
           do
             grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-memory-consolidation-list.txt" || {
               echo "Missing derived memory consolidation regression: $test_name" >&2
@@ -211,7 +214,7 @@ jobs:
             }
           done
           cargo test -p tandem-memory --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-memory-consolidation-results.txt"
-          grep -Eq 'test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-memory-consolidation-results.txt"
+          grep -Eq 'test result: ok\. 6 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-memory-consolidation-results.txt"
       - name: Verify governed memory provider egress tests actually execute
         run: |
           set -euo pipefail

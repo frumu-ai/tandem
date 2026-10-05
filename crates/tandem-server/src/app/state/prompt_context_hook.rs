@@ -123,7 +123,11 @@ impl PromptHookBudget {
             );
         (
             injected,
-            if injected { block.included_memory.clone() } else { Vec::new() },
+            if injected {
+                block.included_memory.clone()
+            } else {
+                Vec::new()
+            },
             !injected || block.lineage_complete,
         )
     }
@@ -134,10 +138,14 @@ impl PromptHookBudget {
         sources: Vec<tandem_types::MemorySourceReference>,
         complete: bool,
     ) -> PromptContextHookResult {
-        let complete = complete && self.stats.sources.iter().all(|(source, stats)| {
-            stats.injected_count == 0
-                || matches!(source.as_str(), SOURCE_IDENTITY | SOURCE_MEMORY_SCOPE | SOURCE_GLOBAL_MEMORY)
-        });
+        let complete = complete
+            && self.stats.sources.iter().all(|(source, stats)| {
+                stats.injected_count == 0
+                    || matches!(
+                        source.as_str(),
+                        SOURCE_IDENTITY | SOURCE_MEMORY_SCOPE | SOURCE_GLOBAL_MEMORY
+                    )
+            });
         PromptContextHookResult::new(messages, self.finish()).with_memory_lineage(sources, complete)
     }
     pub(super) fn new() -> Self {
@@ -236,8 +244,12 @@ impl ServerPromptContextHook {
         Vec<tandem_memory::types::GlobalMemorySearchHit>,
     ) {
         let PromptMemoryAccess::Governed {
-            subject, access_filter, decrypt_principal, ..
-        } = access else {
+            subject,
+            access_filter,
+            decrypt_principal,
+            ..
+        } = access
+        else {
             return Self::search_prompt_global_memory(store, access, query, project_id).await;
         };
         let mut scope = tandem_memory::MemoryReadScope::tenant(access.canonical_tenant_scope());
@@ -247,7 +259,8 @@ impl ServerPromptContextHook {
             .as_ref()
             .and_then(|units| (units.len() == 1).then(|| units.iter().next().cloned()))
             .flatten();
-        let search = Self::search_prompt_memory_with_scope(store, scope, subject, query, project_id);
+        let search =
+            Self::search_prompt_memory_with_scope(store, scope, subject, query, project_id);
         let (project_hits, global_hits) = match decrypt_principal.clone() {
             Some(principal) => {
                 tandem_memory::decrypt_context::with_decrypt_principal(principal, search).await
@@ -257,8 +270,10 @@ impl ServerPromptContextHook {
         // Derived rows need their canonical-source proof before the governed
         // filter runs; an unresolved first pass would wrongly remove positives.
         (
-            self.resolve_current_hit_lineage(store, access, project_hits).await,
-            self.resolve_current_hit_lineage(store, access, global_hits).await,
+            self.resolve_current_hit_lineage(store, access, project_hits)
+                .await,
+            self.resolve_current_hit_lineage(store, access, global_hits)
+                .await,
         )
     }
     async fn resolve_current_hit_lineage(
@@ -268,8 +283,13 @@ impl ServerPromptContextHook {
         hits: Vec<tandem_memory::types::GlobalMemorySearchHit>,
     ) -> Vec<tandem_memory::types::GlobalMemorySearchHit> {
         let PromptMemoryAccess::Governed {
-            tenant_context, subject, access_filter, decrypt_principal, ..
-        } = access else {
+            tenant_context,
+            subject,
+            access_filter,
+            decrypt_principal,
+            ..
+        } = access
+        else {
             return hits;
         };
         let mut scope = tandem_memory::MemoryReadScope::tenant(access.canonical_tenant_scope());
@@ -289,7 +309,9 @@ impl ServerPromptContextHook {
                     &scope,
                     &hit.record,
                     access_filter.clone(),
-                ).await {
+                )
+                .await
+                {
                     if filter.allows_global_record(&hit.record) {
                         visible.push(hit);
                     }
@@ -1000,13 +1022,14 @@ impl PromptContextHook for ServerPromptContextHook {
             let Some(store) = this.open_memory_store().await else {
                 return Ok(budget.finish_result(messages, Vec::new(), true));
             };
-            let (project_hits, global_hits) = this.search_current_prompt_memory(
-                store.as_ref(),
-                &memory_access,
-                &query,
-                project_id.as_deref(),
-            )
-            .await;
+            let (project_hits, global_hits) = this
+                .search_current_prompt_memory(
+                    store.as_ref(),
+                    &memory_access,
+                    &query,
+                    project_id.as_deref(),
+                )
+                .await;
             let project_hits = this
                 .resolve_current_hit_lineage(store.as_ref(), &memory_access, project_hits)
                 .await;

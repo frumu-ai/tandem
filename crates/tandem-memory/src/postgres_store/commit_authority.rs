@@ -1,30 +1,52 @@
 use super::*;
-use crate::types::{memory_key_scope_from_metadata,owner_org_unit_id_from_metadata,owner_subject_from_metadata,
-    tenant_shared_from_metadata,GlobalMemoryRecord,GlobalMemoryWriteResult};
+use crate::types::{
+    memory_key_scope_from_metadata, owner_org_unit_id_from_metadata, owner_subject_from_metadata,
+    tenant_shared_from_metadata, GlobalMemoryRecord, GlobalMemoryWriteResult,
+};
 
-fn deployment(tenant:&crate::types::MemoryTenantScope)->&str { tenant.deployment_id.as_deref().unwrap_or("") }
+fn deployment(tenant: &crate::types::MemoryTenantScope) -> &str {
+    tenant.deployment_id.as_deref().unwrap_or("")
+}
 
 impl PostgresMemoryStore {
-    pub(super) async fn guarded_write_impl(&self,request:MemoryStoreWriteRequest,authority:MemoryCommitAuthority)
-        -> MemoryStoreResult<MemoryStoreWriteResult> {
-        let MemoryStoreWriteRequest::GlobalRecord {scope,record} = request else {
-            return Err(MemoryStoreError::unsupported("PostgreSQL guarded write supports GlobalRecord only"));
+    pub(super) async fn guarded_write_impl(
+        &self,
+        request: MemoryStoreWriteRequest,
+        authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreWriteResult> {
+        let MemoryStoreWriteRequest::GlobalRecord { scope, record } = request else {
+            return Err(MemoryStoreError::unsupported(
+                "PostgreSQL guarded write supports GlobalRecord only",
+            ));
         };
         let tenant = tenant_scope_from_global_record(&record);
         let owner_org = owner_org_unit_id_from_metadata(record.metadata.as_ref());
         let owner_subject = owner_subject_from_metadata(record.metadata.as_ref());
         if tenant != scope.tenant || owner_org != scope.org_unit || owner_subject != scope.subject {
-            return Err(MemoryStoreError::new(MemoryStoreErrorKind::ScopeViolation,
-                "global record ownership does not match the PostgreSQL write scope"));
+            return Err(MemoryStoreError::new(
+                MemoryStoreErrorKind::ScopeViolation,
+                "global record ownership does not match the PostgreSQL write scope",
+            ));
         }
-        let lineage_digest = crate::derived_lineage_dedupe_digest(record.metadata.as_ref()).map_err(MemoryStoreError::from)?;
+        let lineage_digest = crate::derived_lineage_dedupe_digest(record.metadata.as_ref())
+            .map_err(MemoryStoreError::from)?;
         let mut client = self.client().await?;
-        let tx = client.transaction().await.map_err(|error| store_error("begin guarded PostgreSQL write",error,true))?;
+        let tx = client
+            .transaction()
+            .await
+            .map_err(|error| store_error("begin guarded PostgreSQL write", error, true))?;
         authority()?;
-        let key_scope = memory_key_scope_from_metadata(&tenant,record.metadata.as_ref()).with_owner_subject(owner_subject.clone());
-        let (data_class,source_binding_id) = Self::key_scope_columns(&key_scope)?;
-        let (data,cipher,envelope,policy,audit) = self.encode_payload(&record,&key_scope,&record.id)?;
-        let search_content = if self.search_surface_mode==PostgresSearchSurfaceMode::PlaintextPgvector {record.content.as_str()} else {""};
+        let key_scope = memory_key_scope_from_metadata(&tenant, record.metadata.as_ref())
+            .with_owner_subject(owner_subject.clone());
+        let (data_class, source_binding_id) = Self::key_scope_columns(&key_scope)?;
+        let (data, cipher, envelope, policy, audit) =
+            self.encode_payload(&record, &key_scope, &record.id)?;
+        let search_content =
+            if self.search_surface_mode == PostgresSearchSurfaceMode::PlaintextPgvector {
+                record.content.as_str()
+            } else {
+                ""
+            };
         let inserted = tx.query_opt(
             "INSERT INTO tandem_memory_global_records
              (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,owner_org_unit_id,
@@ -46,7 +68,11 @@ impl PostgresMemoryStore {
         // INSERT may have waited for an independent transaction's row/index lock.
         authority()?;
         let result = if let Some(row) = inserted {
-            GlobalMemoryWriteResult {id:row.get(0),stored:true,deduped:false}
+            GlobalMemoryWriteResult {
+                id: row.get(0),
+                stored: true,
+                deduped: false,
+            }
         } else {
             let row = tx.query_one(
                 "SELECT id FROM tandem_memory_global_records WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
@@ -59,20 +85,42 @@ impl PostgresMemoryStore {
                   &record.run_id,&record.session_id,&record.message_id,&record.tool_name,&owner_org,&owner_subject.is_some(),&owner_subject,
                   &data_class,&source_binding_id,&tenant_shared_from_metadata(record.metadata.as_ref()),&lineage_digest]
             ).await.map_err(|error| store_error("guarded PostgreSQL dedupe",error,false))?;
-            GlobalMemoryWriteResult {id:row.get(0),stored:false,deduped:true}
+            GlobalMemoryWriteResult {
+                id: row.get(0),
+                stored: false,
+                deduped: true,
+            }
         };
         authority()?;
-        tx.commit().await.map_err(|error| store_error("commit guarded PostgreSQL write",error,false))?;
+        tx.commit()
+            .await
+            .map_err(|error| store_error("commit guarded PostgreSQL write", error, false))?;
         Ok(MemoryStoreWriteResult::GlobalRecord(result))
     }
 
-    pub(super) async fn guarded_mutate_impl(&self,request:MemoryStoreMutationRequest,authority:MemoryCommitAuthority)
-        -> MemoryStoreResult<MemoryStoreMutationResult> {
-        let MemoryStoreMutationRequest::UpdateGlobalRecordContext {scope,id,visibility,demoted,metadata,provenance} = request else {
-            return Err(MemoryStoreError::unsupported("PostgreSQL guarded mutation supports UpdateGlobalRecordContext only"));
+    pub(super) async fn guarded_mutate_impl(
+        &self,
+        request: MemoryStoreMutationRequest,
+        authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreMutationResult> {
+        let MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+            scope,
+            id,
+            visibility,
+            demoted,
+            metadata,
+            provenance,
+        } = request
+        else {
+            return Err(MemoryStoreError::unsupported(
+                "PostgreSQL guarded mutation supports UpdateGlobalRecordContext only",
+            ));
         };
         let mut client = self.client().await?;
-        let tx = client.transaction().await.map_err(|error| store_error("begin guarded PostgreSQL mutation",error,true))?;
+        let tx = client
+            .transaction()
+            .await
+            .map_err(|error| store_error("begin guarded PostgreSQL mutation", error, true))?;
         authority()?;
         let row = tx.query_opt(
             "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id
@@ -85,19 +133,40 @@ impl PostgresMemoryStore {
         authority()?;
         let Some(row) = row else {
             authority()?;
-            tx.commit().await.map_err(|error| store_error("commit guarded PostgreSQL no-op",error,false))?;
+            tx.commit()
+                .await
+                .map_err(|error| store_error("commit guarded PostgreSQL no-op", error, false))?;
             return Ok(MemoryStoreMutationResult::Changed(false));
         };
-        let stored_key_scope = Self::persisted_key_scope(&scope.tenant,row.get(5),row.get(6),row.get(7),row.get(8))?;
-        let mut record:GlobalMemoryRecord = self.decode_payload(row.get(0),row.get(1),row.get(2),&stored_key_scope,row.get(3),row.get(4))?;
-        record.visibility = visibility; record.demoted = demoted; record.metadata = metadata; record.provenance = provenance;
+        let stored_key_scope = Self::persisted_key_scope(
+            &scope.tenant,
+            row.get(5),
+            row.get(6),
+            row.get(7),
+            row.get(8),
+        )?;
+        let mut record: GlobalMemoryRecord = self.decode_payload(
+            row.get(0),
+            row.get(1),
+            row.get(2),
+            &stored_key_scope,
+            row.get(3),
+            row.get(4),
+        )?;
+        record.visibility = visibility;
+        record.demoted = demoted;
+        record.metadata = metadata;
+        record.provenance = provenance;
         record.updated_at_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
         let owner_org = owner_org_unit_id_from_metadata(record.metadata.as_ref());
         let owner_subject = owner_subject_from_metadata(record.metadata.as_ref());
-        let key_scope = memory_key_scope_from_metadata(&scope.tenant,record.metadata.as_ref()).with_owner_subject(owner_subject.clone());
-        let (data_class,source_binding_id) = Self::key_scope_columns(&key_scope)?;
-        let (data,cipher,envelope,policy,audit) = self.encode_payload(&record,&key_scope,&id)?;
-        let lineage_digest = crate::derived_lineage_dedupe_digest(record.metadata.as_ref()).map_err(MemoryStoreError::from)?;
+        let key_scope = memory_key_scope_from_metadata(&scope.tenant, record.metadata.as_ref())
+            .with_owner_subject(owner_subject.clone());
+        let (data_class, source_binding_id) = Self::key_scope_columns(&key_scope)?;
+        let (data, cipher, envelope, policy, audit) =
+            self.encode_payload(&record, &key_scope, &id)?;
+        let lineage_digest = crate::derived_lineage_dedupe_digest(record.metadata.as_ref())
+            .map_err(MemoryStoreError::from)?;
         tx.execute("UPDATE tandem_memory_global_records SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,
             data_audit_id=$6,demoted=$7,owner_org_unit_id=$8,owner_subject=$9,private=$10,data_class=$11,source_binding_id=$12,
             tenant_shared=$13,derived_lineage_digest=$14 WHERE id=$1",
@@ -105,7 +174,9 @@ impl PostgresMemoryStore {
               &data_class,&source_binding_id,&tenant_shared_from_metadata(record.metadata.as_ref()),&lineage_digest]
         ).await.map_err(|error| store_error("guarded PostgreSQL context update",error,false))?;
         authority()?;
-        tx.commit().await.map_err(|error| store_error("commit guarded PostgreSQL mutation",error,false))?;
+        tx.commit()
+            .await
+            .map_err(|error| store_error("commit guarded PostgreSQL mutation", error, false))?;
         Ok(MemoryStoreMutationResult::Changed(true))
     }
 }

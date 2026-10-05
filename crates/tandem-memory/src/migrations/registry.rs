@@ -460,8 +460,12 @@ pub const MEMORY_SCHEMA_MIGRATIONS: &[LogicalMigration] = &[
         sqlite_mode: SqliteMigrationMode::Executable,
         changes: &[LogicalChange::AddColumns {
             tables: &[LogicalTable::MemoryRecords],
-            columns: &[LogicalColumn::new("derived_lineage_digest", LogicalType::Text, false,
-                Some(LogicalDefault::EmptyText))],
+            columns: &[LogicalColumn::new(
+                "derived_lineage_digest",
+                LogicalType::Text,
+                false,
+                Some(LogicalDefault::EmptyText),
+            )],
         }],
     },
 ];
