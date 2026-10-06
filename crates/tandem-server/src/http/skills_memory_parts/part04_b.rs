@@ -792,6 +792,26 @@ pub(super) async fn memory_demote(
     let commit = async move {
         let state = &commit_state;
         let tenant_context = &commit_tenant;
+        let mut success_audit = crate::MemoryAuditEvent {
+            audit_id: audit_id.clone(),
+            action: "memory_demote".to_string(),
+            run_id: input.run_id.clone(),
+            tenant_context: tenant_context.clone(),
+            memory_id: Some(input.id.clone()),
+            source_memory_id: None,
+            to_tier: None,
+            partition_key: partition_key.clone(),
+            actor: "system".to_string(),
+            status: "ok".to_string(),
+            detail: Some(demote_detail),
+            created_at_ms: crate::now_ms(),
+        };
+        if let Some((authority, _)) = authority.as_ref() {
+            authority().map_err(derived_memory_commit_error_status)?;
+        }
+        crate::http::memory_audit_store::append_memory_mutation_admission(
+            state, tenant_context, &success_audit,
+        ).await?;
         let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
             scope, id: input.id.clone(), visibility: "private".to_string(), demoted: true,
             metadata: memory_metadata_with_owner_subject(record.metadata.clone(), Some(record.user_id.as_str())),
@@ -806,25 +826,8 @@ pub(super) async fn memory_demote(
         if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
             return Err(StatusCode::NOT_FOUND);
         }
-    append_memory_audit(
-        state,
-        tenant_context,
-        crate::MemoryAuditEvent {
-            audit_id: audit_id.clone(),
-            action: "memory_demote".to_string(),
-            run_id: input.run_id.clone(),
-            tenant_context: tenant_context.clone(),
-            memory_id: Some(input.id.clone()),
-            source_memory_id: None,
-            to_tier: None,
-            partition_key: partition_key.clone(),
-            actor: "system".to_string(),
-            status: "ok".to_string(),
-            detail: Some(demote_detail),
-            created_at_ms: crate::now_ms(),
-        },
-    )
-    .await?;
+        success_audit.created_at_ms = crate::now_ms();
+        append_memory_audit(state, tenant_context, success_audit).await?;
     publish_tenant_event(
         state,
         tenant_context,

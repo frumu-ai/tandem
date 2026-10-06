@@ -284,7 +284,10 @@ jobs:
             side_effect_tests::tan_829_derived_promotion_rechecks_original_identity_after_actual_sqlite_writer_wait \
             side_effect_tests::tan_829_derived_promotion_rechecks_source_and_capability_deadlines_after_actual_sqlite_writer_wait \
             side_effect_tests::tan_829_derived_promotion_rechecks_snapshot_expiry_after_actual_sqlite_writer_wait \
-            side_effect_tests::tan_829_derived_demotion_rechecks_original_identity_after_actual_sqlite_writer_wait
+            side_effect_tests::tan_829_derived_demotion_rechecks_original_identity_after_actual_sqlite_writer_wait \
+            side_effect_tests::audit_admission_tests::tan_829_derived_promotion_audit_admission_failure_preserves_cold_record_and_no_success \
+            side_effect_tests::audit_admission_tests::tan_829_derived_demotion_audit_admission_failure_preserves_cold_record_and_no_success \
+            side_effect_tests::audit_admission_tests::tan_829_derived_mutation_admission_is_pending_until_actual_writer_commit
           do
             grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-server-commit-list.txt" || {
               echo "Missing hosted derived-memory writer-wait regression: $test_name" >&2
@@ -292,7 +295,23 @@ jobs:
             }
           done
           cargo test -p tandem-server --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-server-commit-results.txt"
-          grep -Eq 'test result: ok\. 15 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-server-commit-results.txt"
+          grep -Eq 'test result: ok\. 18 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-server-commit-results.txt"
+      - name: Verify unchanged ordinary promotion and demotion audit failure controls
+        run: |
+          set -euo pipefail
+          prefix='http::tests::memory::'
+          cargo test -p tandem-server --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/ordinary-memory-audit-tests.txt"
+          for test_name in \
+            memory_promote_audit_failure_leaves_record_unchanged \
+            memory_demote_audit_failure_leaves_record_unchanged
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/ordinary-memory-audit-tests.txt" || {
+              echo "Missing ordinary memory audit failure regression: $test_name" >&2
+              exit 1
+            }
+            cargo test -p tandem-server --locked --lib "${prefix}${test_name}" -- --exact --nocapture --test-threads=1 | tee "$RUNNER_TEMP/${test_name}-results.txt"
+            grep -Eq 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/${test_name}-results.txt"
+          done
       - name: Validate scoped key lifecycle and administrative authority
         run: |
           cargo test -p tandem-server context_assertion_security --lib

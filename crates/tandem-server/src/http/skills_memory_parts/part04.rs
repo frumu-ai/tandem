@@ -639,23 +639,7 @@ async fn memory_promote_impl_with_verified(
     let commit = async move {
         let state = &commit_state;
         let tenant_context = &commit_tenant;
-        let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-            scope, id: new_id.clone(), visibility: "shared".to_string(), demoted: false,
-            metadata: next_metadata.clone(), provenance: Some(next_provenance.clone()),
-        };
-        let updated = if let Some((authority, expected)) = authority {
-            with_verified_memory_decrypt_principal(commit_verified.as_ref(),
-                store.mutate_with_commit_authority_if_unchanged(mutation, expected, authority)).await
-        } else {
-            with_verified_memory_decrypt_principal(commit_verified.as_ref(), store.mutate(mutation)).await
-        }.map_err(derived_memory_commit_error_status)?;
-        if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
-            return Err(StatusCode::NOT_FOUND);
-        }
-    append_memory_audit(
-        &state,
-        tenant_context,
-        crate::MemoryAuditEvent {
+        let mut success_audit = crate::MemoryAuditEvent {
             audit_id: audit_id.clone(),
             action: "memory_promote".to_string(),
             run_id: request.run_id.clone(),
@@ -673,10 +657,29 @@ async fn memory_promote_impl_with_verified(
             actor: capability.subject,
             status: "ok".to_string(),
             detail: Some(promote_detail),
-            created_at_ms: now,
-        },
-    )
-    .await?;
+            created_at_ms: crate::now_ms(),
+        };
+        if let Some((authority, _)) = authority.as_ref() {
+            authority().map_err(derived_memory_commit_error_status)?;
+        }
+        crate::http::memory_audit_store::append_memory_mutation_admission(
+            state, tenant_context, &success_audit,
+        ).await?;
+        let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+            scope, id: new_id.clone(), visibility: "shared".to_string(), demoted: false,
+            metadata: next_metadata.clone(), provenance: Some(next_provenance.clone()),
+        };
+        let updated = if let Some((authority, expected)) = authority {
+            with_verified_memory_decrypt_principal(commit_verified.as_ref(),
+                store.mutate_with_commit_authority_if_unchanged(mutation, expected, authority)).await
+        } else {
+            with_verified_memory_decrypt_principal(commit_verified.as_ref(), store.mutate(mutation)).await
+        }.map_err(derived_memory_commit_error_status)?;
+        if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        success_audit.created_at_ms = crate::now_ms();
+        append_memory_audit(state, tenant_context, success_audit).await?;
     publish_tenant_event(
         state,
         tenant_context,

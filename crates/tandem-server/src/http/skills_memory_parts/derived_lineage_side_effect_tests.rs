@@ -4,6 +4,9 @@
 use super::*;
 use std::future::Future;
 
+#[path = "derived_lineage_audit_admission_tests.rs"]
+mod audit_admission_tests;
+
 fn candidate(id: &str, summary: &str) -> WorkflowLearningCandidate {
     WorkflowLearningCandidate {
         candidate_id: id.into(), workflow_id: "session:commit-candidate-session".into(),

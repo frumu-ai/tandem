@@ -32,3 +32,33 @@ test("guide repair rejects missing, vulnerable and prerelease contributing packa
   assert.throws(() => assertPatchedLock(workspace, lock.replace("katex@0.18.2:\n", "")), /not resolved/);
   assert.throws(() => assertPatchedLock(workspace, lock.replace("katex@0.18.2", "katex@0.18.2-alpha")), /not resolved/);
 });
+
+test("pnpm override declarations cannot masquerade as resolved package versions", () => {
+  const workspace = repairWorkspaces.find(({ lockfile }) => lockfile === "guide/pnpm-lock.yaml");
+  const lock = [
+    "lockfileVersion: '9.0'",
+    "overrides:",
+    "  smol-toml@<=1.8.0: 1.9.0",
+    "  postcss-selector-parser@<7.1.6: 7.1.6",
+    "packages:",
+    "  source-map-js@1.2.2:",
+    "  'smol-toml@1.9.0':",
+    "  katex@0.18.2:",
+    "  postcss-selector-parser@7.1.6:",
+    "snapshots:",
+    '  "smol-toml@1.9.0": {}',
+    "",
+  ].join("\n");
+  assert.deepEqual(assertPatchedLock(workspace, lock), {
+    "source-map-js": ["1.2.2"],
+    "smol-toml": ["1.9.0"],
+    katex: ["0.18.2"],
+    "postcss-selector-parser": ["7.1.6"],
+  });
+  assert.throws(() => assertPatchedLock(workspace,
+    lock.replace('"smol-toml@1.9.0": {}', '"smol-toml@1.8.0": {}')), /not resolved/);
+  assert.throws(() => assertPatchedLock(workspace,
+    lock.replace("  'smol-toml@1.9.0':\n", "").replace('  "smol-toml@1.9.0": {}\n', "")), /not resolved/);
+  assert.throws(() => assertPatchedLock(workspace,
+    lock + "  smol-toml@<=1.8.0: {}\n"), /not resolved/);
+});

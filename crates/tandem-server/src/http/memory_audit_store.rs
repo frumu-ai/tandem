@@ -40,6 +40,34 @@ pub(crate) async fn append_memory_audit(
     Ok(())
 }
 
+/// Record protected audit admission before starting a memory mutation. This is
+/// an attempt, not a successful mutation: it advances the audit head and cache
+/// with a distinct pending event correlated to the planned success audit ID.
+/// It checks the real chain/encryption/anchor append path, but does not reserve
+/// future filesystem or KMS availability or make the file audit and SQL atomic.
+pub(crate) async fn append_memory_mutation_admission(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    success_event: &crate::MemoryAuditEvent,
+) -> Result<(), StatusCode> {
+    if success_event.status != "ok"
+        || !matches!(success_event.action.as_str(), "memory_promote" | "memory_demote")
+    {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let mut admission = success_event.clone();
+    admission.audit_id = uuid::Uuid::new_v4().to_string();
+    admission.action = format!("{}_admission", success_event.action);
+    admission.status = "pending".to_string();
+    admission.detail = Some(
+        serde_json::json!({"success_audit_id": success_event.audit_id}).to_string(),
+    );
+    admission.created_at_ms = crate::now_ms();
+    // append_memory_audit releases its file/process/cache locks before return;
+    // no audit lock may be held across the subsequent target-store transaction.
+    append_memory_audit(state, tenant_context, admission).await
+}
+
 pub(crate) async fn load_memory_audit_events_strict(
     state: &AppState,
 ) -> anyhow::Result<Vec<crate::MemoryAuditEvent>> {

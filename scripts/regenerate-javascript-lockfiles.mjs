@@ -64,6 +64,27 @@ function lockGuardDiagnostics(workspace, content, name, found) {
   };
 }
 
+function resolvedPnpmVersions(content, escapedName) {
+  // pnpm uses the same indentation for override selectors and resolved keys.
+  // Only packages and snapshots prove a resolved package version.
+  const entry = new RegExp(
+    "^  (?:" + escapedName + "@([^\\s:]+)|'" + escapedName +
+      "@([^']+)'|\"" + escapedName + "@([^\"]+)\"):",
+  );
+  let section = "";
+  const versions = [];
+  for (const line of content.split(/\r?\n/)) {
+    if (/^\S/.test(line)) {
+      section = /^([A-Za-z][A-Za-z0-9_-]*):\s*$/.exec(line)?.[1] || "";
+      continue;
+    }
+    if (section !== "packages" && section !== "snapshots") continue;
+    const match = entry.exec(line);
+    if (match) versions.push((match[1] ?? match[2] ?? match[3]).split("(")[0]);
+  }
+  return versions;
+}
+
 export function assertPatchedLock(workspace, content) {
   const required = workspace.lockfile === "guide/pnpm-lock.yaml"
     ? Object.keys(patchedVersions)
@@ -82,8 +103,7 @@ export function assertPatchedLock(workspace, content) {
         .map(([, pkg]) => pkg.version);
     } else {
       const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      found = [...content.matchAll(new RegExp(`^  ${escapedName}@([^\\s:]+):`, "gm"))]
-        .map((match) => match[1].split("(")[0]);
+      found = resolvedPnpmVersions(content, escapedName);
     }
     if (!found.length || found.some((version) => !atLeast(version, patchedVersions[name]))) {
       const error = new Error(`Patched ${name} not resolved in ${workspace.lockfile}`);
