@@ -311,6 +311,44 @@ impl LineageFixture {
         self.router_with_verified(actor, verified)
     }
 
+    /// Promotion backfills a grant-governed binding for this canonical session.
+    /// This trusted fixture grant supplies only read authority for that exact
+    /// binding; it cannot override the derived row's private owner restriction.
+    fn router_with_session_memory_read(&self, actor: &str, session: &Session) -> axum::Router {
+        use tandem_types::{
+            AccessPermission, DataBoundary, DataClass, GrantSource, PrincipalRef, ResourceKind,
+            ResourceRef, ScopedGrant,
+        };
+
+        assert_eq!(session.project_id.as_deref(), Some(PROJECT));
+        let mut verified = self.verified(actor);
+        let mut strict = verified
+            .strict_projection
+            .take()
+            .expect("current hosted projection");
+        strict.grants.push(
+            ScopedGrant::new(
+                format!("tan-829-session-memory-read-{actor}-{}", session.id),
+                PrincipalRef::human_user(actor),
+                ResourceRef::new(
+                    "org-learning",
+                    "dep-learning",
+                    ResourceKind::SourceBinding,
+                    format!("workflow:session:{}", session.id),
+                )
+                .with_project_id(PROJECT),
+                GrantSource::Direct,
+            )
+            .with_permissions(vec![AccessPermission::Read])
+            .with_data_classes(vec![DataClass::Internal])
+            .with_expires_at_ms(crate::now_ms() + 60_000),
+        );
+        verified.strict_projection = Some(strict.with_data_boundary(DataBoundary::allow(vec![
+            DataClass::Internal,
+        ])));
+        self.router_with_verified(actor, verified)
+    }
+
     async fn session(&self, actor: &str, messages: Vec<Message>) -> Session {
         let mut session = Session::new(Some("derived lineage".to_owned()), Some(".".to_owned()));
         session.project_id = Some(PROJECT.to_owned());
@@ -336,8 +374,17 @@ impl LineageFixture {
     }
 
     async fn memory_list(&self, actor: &str) -> Value {
+        self.memory_list_with_router(self.router(actor)).await
+    }
+
+    async fn memory_list_with_session_memory_read(&self, actor: &str, session: &Session) -> Value {
+        self.memory_list_with_router(self.router_with_session_memory_read(actor, session))
+            .await
+    }
+
+    async fn memory_list_with_router(&self, router: axum::Router) -> Value {
         let (status, payload) = super::hosted_learning_request(
-            self.router(actor),
+            router,
             "GET",
             "/memory/list?project_id=tan-829-derived-memory",
             None,

@@ -558,8 +558,9 @@ async fn consolidation_mixed_denied_ordinary_source_never_dispatches_or_replaces
         let proof = crate::resolve_derived_lineage(store.as_ref(), &read_scope(), &lineage)
             .await
             .unwrap();
-        let access = filter_with_data_classes(&[DataClass::FinancialRecord, DataClass::Confidential])
-            .with_resolved_derived_lineage(proof);
+        let access =
+            filter_with_data_classes(&[DataClass::FinancialRecord, DataClass::Confidential])
+                .with_resolved_derived_lineage(proof);
         let derived = chunks(
             store.as_ref(),
             MemoryChunkSelector::session("lineage-session"),

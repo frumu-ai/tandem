@@ -536,8 +536,13 @@ async fn tan_829_approved_private_promotion_preserves_owner_on_cold_http_recall(
         "Alice approved current private candidate: {reviewed}"
     );
     assert_eq!(reviewed["candidate"]["status"], "approved");
+    assert_eq!(
+        reviewed["candidate"]["workflow_id"],
+        format!("session:{}", session.id)
+    );
+    assert_eq!(reviewed["candidate"]["project_id"], PROJECT);
     let (status, promoted) = super::hosted_learning_request(
-        fixture.router("alice"),
+        fixture.router_with_session_memory_read("alice", &session),
         "POST",
         &format!("/workflow-learning/candidates/{candidate_id}/promote"),
         Some(json!({
@@ -563,19 +568,46 @@ async fn tan_829_approved_private_promotion_preserves_owner_on_cold_http_recall(
         .await
         .expect("cold promoted owner row");
     assert_eq!(owner.metadata.as_ref().unwrap()["owner_subject"], "alice");
+    let policy = tandem_memory::KnowledgeScopePolicy::from_metadata(owner.metadata.as_ref())
+        .expect("valid backfilled knowledge scope")
+        .expect("promotion retains its grant-governed knowledge scope");
+    assert_eq!(
+        policy.resource_ref.resource_kind,
+        tandem_types::ResourceKind::SourceBinding
+    );
+    assert_eq!(
+        policy.resource_ref.resource_id,
+        format!("workflow:session:{}", session.id)
+    );
+    assert_eq!(policy.resource_ref.project_id.as_deref(), Some(PROJECT));
     lineage_mentions(&owner, &message.id);
     assert!(fixture.record_for(&id, "bob").await.is_none());
     assert!(fixture.record_for(&id, "cara").await.is_none());
     assert!(
-        listed(&fixture.memory_list("alice").await, &id),
+        listed(
+            &fixture
+                .memory_list_with_session_memory_read("alice", &session)
+                .await,
+            &id
+        ),
         "Alice HTTP recall"
     );
     assert!(
-        !listed(&fixture.memory_list("bob").await, &id),
+        !listed(
+            &fixture
+                .memory_list_with_session_memory_read("bob", &session)
+                .await,
+            &id
+        ),
         "Bob HTTP denial"
     );
     assert!(
-        !listed(&fixture.memory_list("cara").await, &id),
+        !listed(
+            &fixture
+                .memory_list_with_session_memory_read("cara", &session)
+                .await,
+            &id
+        ),
         "other unit HTTP denial"
     );
 }
