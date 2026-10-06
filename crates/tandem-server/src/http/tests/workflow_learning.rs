@@ -3,10 +3,10 @@
 
 use super::*;
 
-#[path = "workflow_learning/derived_memory_lineage.rs"]
-mod derived_memory_lineage;
 #[path = "workflow_learning/candidate_store_integration.rs"]
 mod candidate_store_integration;
+#[path = "workflow_learning/derived_memory_lineage.rs"]
+mod derived_memory_lineage;
 #[path = "workflow_learning/session_exports_security.rs"]
 mod session_exports_security;
 #[path = "workflow_learning/session_security.rs"]
@@ -365,8 +365,8 @@ pub(super) async fn hosted_learning_request(
     let response = crate::app::state::tests::encrypted_file_stores::with_hosted_candidate_crypto(
         app.oneshot(request),
     )
-        .await
-        .expect("hosted learning response");
+    .await
+    .expect("hosted learning response");
     let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
@@ -682,7 +682,9 @@ async fn workflow_learning_hosted_list_only_exposes_owned_source_workflows() {
             .put_automation_v2(hosted_learning_automation(&root, &workflow_id, owner))
             .await
             .expect("hosted source workflow");
-        put_hosted_learning_candidate(&state, candidate_for_workflow(
+        put_hosted_learning_candidate(
+            &state,
+            candidate_for_workflow(
                 sample_candidate(
                     &format!("candidate-{owner}"),
                     &workflow_id,
@@ -690,9 +692,10 @@ async fn workflow_learning_hosted_list_only_exposes_owned_source_workflows() {
                     crate::WorkflowLearningCandidateStatus::Proposed,
                 ),
                 &source,
-            ))
-            .await
-            .expect("hosted candidate");
+            ),
+        )
+        .await
+        .expect("hosted candidate");
     }
     let mut shared = hosted_learning_automation(&root, "workflow-shared", "bob");
     shared.metadata.as_mut().unwrap()["resource_access"]["visibility"] = json!("org");
@@ -700,7 +703,9 @@ async fn workflow_learning_hosted_list_only_exposes_owned_source_workflows() {
         .put_automation_v2(shared)
         .await
         .expect("org-visible source workflow");
-    put_hosted_learning_candidate(&state, candidate_for_workflow(
+    put_hosted_learning_candidate(
+        &state,
+        candidate_for_workflow(
             sample_candidate(
                 "candidate-shared",
                 "workflow-shared",
@@ -708,17 +713,21 @@ async fn workflow_learning_hosted_list_only_exposes_owned_source_workflows() {
                 crate::WorkflowLearningCandidateStatus::Proposed,
             ),
             &shared,
-        ))
-        .await
-        .expect("shared candidate");
-    put_hosted_learning_candidate(&state, sample_candidate(
+        ),
+    )
+    .await
+    .expect("shared candidate");
+    put_hosted_learning_candidate(
+        &state,
+        sample_candidate(
             "candidate-orphan",
             "workflow-deleted",
             crate::WorkflowLearningCandidateKind::MemoryFact,
             crate::WorkflowLearningCandidateStatus::Proposed,
-        ))
-        .await
-        .expect("orphan candidate");
+        ),
+    )
+    .await
+    .expect("orphan candidate");
 
     let alice = hosted_learning_router(state.clone(), "alice");
     let (status, payload) =

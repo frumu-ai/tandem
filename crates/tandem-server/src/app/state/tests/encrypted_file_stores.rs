@@ -5,7 +5,7 @@ use super::*;
 
 use serial_test::serial;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tandem_enterprise_contract::authority::fixtures;
 use tandem_memory::decrypt_broker::{MemoryDecryptBroker, MemoryDecryptBrokerConfig};
@@ -26,6 +26,7 @@ const KEK_ID: &str = "projects/test/locations/global/keyRings/tandem/cryptoKeys/
 struct XorFixtureKms {
     fail_encrypt: bool,
     fail_decrypt: bool,
+    fail_decrypt_switch: Option<Arc<AtomicBool>>,
     decrypt_count: Option<Arc<AtomicUsize>>,
 }
 
@@ -43,13 +44,18 @@ impl GoogleCloudKmsEncryptClient for XorFixtureKms {
 
 impl GoogleCloudKmsDecryptClient for XorFixtureKms {
     fn decrypt(&self, request: &GoogleCloudKmsDecryptRequest) -> MemoryResult<Vec<u8>> {
-        if self.fail_decrypt {
+        if let Some(count) = &self.decrypt_count {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+        if self.fail_decrypt
+            || self
+                .fail_decrypt_switch
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
             return Err(MemoryError::InvalidConfig(
                 "fixture KMS decrypt unavailable".to_string(),
             ));
-        }
-        if let Some(count) = &self.decrypt_count {
-            count.fetch_add(1, Ordering::Relaxed);
         }
         assert!(!request.additional_authenticated_data.is_empty());
         Ok(request.ciphertext.iter().map(|byte| byte ^ 0x5a).collect())
@@ -65,11 +71,21 @@ fn hosted_provider_with_decrypt_count(
     fail_decrypt: bool,
     decrypt_count: Option<Arc<AtomicUsize>>,
 ) -> MemoryCryptoProvider {
+    hosted_provider_with_decrypt_control(fail_encrypt, fail_decrypt, decrypt_count, None)
+}
+
+fn hosted_provider_with_decrypt_control(
+    fail_encrypt: bool,
+    fail_decrypt: bool,
+    decrypt_count: Option<Arc<AtomicUsize>>,
+    fail_decrypt_switch: Option<Arc<AtomicBool>>,
+) -> MemoryCryptoProvider {
     let config = MemoryDecryptBrokerConfig::hosted(PROVIDER_ID, RUNTIME_PRINCIPAL).expect("config");
     let broker = MemoryDecryptBroker::new(config).expect("broker");
     let kms = XorFixtureKms {
         fail_encrypt,
         fail_decrypt,
+        fail_decrypt_switch,
         decrypt_count,
     };
     let wrap =

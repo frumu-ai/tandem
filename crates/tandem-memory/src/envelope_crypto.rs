@@ -161,6 +161,19 @@ impl HostedMemoryEnvelopeCrypto {
         )))
     }
 
+    /// Bind a protected-file runtime caller to this captured hosted handle and
+    /// its broker. Generic retrieval callers deliberately retain distinct ids.
+    pub(crate) fn validate_runtime_principal(&self, principal_id: &str) -> MemoryResult<()> {
+        self.broker
+            .validate_hosted_runtime_identity(&self.provider_id, &self.runtime_principal_id)?;
+        if principal_id != self.runtime_principal_id {
+            return Err(MemoryError::InvalidConfig(
+                "hosted memory runtime principal does not match captured provider".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Seal a plaintext memory field under a fresh per-scope DEK. `policy_decision_id`
     /// and `audit_id` are the write-time authorization anchors stamped into the
     /// envelope; the broker later requires an unwrap to present the same ids.

@@ -325,7 +325,11 @@ jobs:
             ordinary_put_upsert_update_seal_and_cold_roundtrip \
             injected_write_and_sync_failures_preserve_cache_durable_bytes_and_cleanup \
             prepared_file_real_rename_failure_preserves_original_and_cleans_temp \
-            startup_rejects_malformed_candidate_store_without_erasing_source
+            startup_rejects_malformed_candidate_store_without_erasing_source \
+            warm_hosted_key_failure_after_prepared_file_refuses_publication \
+            queued_local_capture_rejects_current_hosted_policy_after_writer_wait \
+            absent_standalone_store_needs_no_key_until_first_required_write \
+            missing_initialized_candidate_store_refuses_load_and_ordinary_mutations
           do
             grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/candidate-store-tests.txt" || {
               echo "Missing candidate encryption regression: $test_name" >&2
@@ -333,13 +337,40 @@ jobs:
             }
           done
           cargo test -p tandem-server --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/candidate-store-results.txt"
-          grep -Eq 'test result: ok\. 8 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/candidate-store-results.txt"
+          grep -Eq 'test result: ok\. 12 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/candidate-store-results.txt"
           prefix='http::tests::workflow_learning::candidate_store_integration::'
           test_name='hosted_review_storage_failure_is_500_without_publishing_candidate'
           cargo test -p tandem-server --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/candidate-store-http-tests.txt"
           grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/candidate-store-http-tests.txt"
           cargo test -p tandem-server --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/candidate-store-http-results.txt"
           grep -Eq 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/candidate-store-http-results.txt"
+          prefix='encrypted_file_store::runtime_identity_tests::'
+          cargo test -p tandem-server --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/file-runtime-identity-tests.txt"
+          for test_name in \
+            hosted_file_seal_rejects_missing_or_wrong_runtime_before_kms_or_cache \
+            hosted_file_cold_unseal_rejects_wrong_runtime_before_kms \
+            hosted_file_warm_unseal_rejects_wrong_runtime_without_cache_bypass \
+            hosted_file_incoherent_runtime_handles_deny_seal_and_unseal \
+            hosted_file_provider_aliases_preserve_exact_runtime_binding \
+            local_file_crypto_keeps_standalone_roundtrip_without_runtime_principal \
+            generic_scoped_retrieval_keeps_distinct_caller_identity
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/file-runtime-identity-tests.txt"
+          done
+          cargo test -p tandem-server --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/file-runtime-identity-results.txt"
+          grep -Eq 'test result: ok\. 7 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/file-runtime-identity-results.txt"
+      - name: Verify hosted candidate owner and export fixture controls
+        run: |
+          set -euo pipefail
+          for test_name in \
+            http::tests::workflow_learning::session_exports_security::hosted_pack_artifacts_and_plan_materialization_follow_current_owner \
+            http::tests::workflow_learning::session_security::hosted_spawned_revision_session_hides_private_evidence_from_another_actor
+          do
+            cargo test -p tandem-server --locked --lib "$test_name" -- --list > "$RUNNER_TEMP/candidate-owner-fixture-tests.txt"
+            grep -Fxq "${test_name}: test" "$RUNNER_TEMP/candidate-owner-fixture-tests.txt"
+            cargo test -p tandem-server --locked --lib "$test_name" -- --exact --nocapture --test-threads=1 | tee "$RUNNER_TEMP/candidate-owner-fixture-results.txt"
+            grep -Eq 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/candidate-owner-fixture-results.txt"
+          done
       - name: Validate scoped key lifecycle and administrative authority
         run: |
           cargo test -p tandem-server context_assertion_security --lib

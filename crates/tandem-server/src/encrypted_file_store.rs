@@ -19,6 +19,8 @@ use tokio::fs;
 
 mod captured;
 mod integrity;
+#[cfg(test)]
+mod runtime_identity_tests;
 
 pub(crate) use captured::{CapturedFileCryptoConfiguration, CapturedRequiredFileCrypto};
 
@@ -158,12 +160,25 @@ impl ProtectedFileCrypto {
         Ok(())
     }
 
+    fn validate_hosted_runtime_principal(&self) -> anyhow::Result<()> {
+        if self.provider.is_hosted() {
+            let principal_id = self.principal_id.as_deref().context(
+                "protected file-store hosted crypto requires a configured runtime principal",
+            )?;
+            self.provider
+                .validate_hosted_runtime_principal(principal_id)
+                .context("validate protected file-store runtime principal")?;
+        }
+        Ok(())
+    }
+
     fn encrypt_record(
         &self,
         plaintext: &str,
         context: &ProtectedRecordContext,
     ) -> anyhow::Result<String> {
         Self::validate_context(context)?;
+        self.validate_hosted_runtime_principal()?;
         if self.provider.is_plaintext() {
             return Ok(plaintext.to_string());
         }
@@ -204,6 +219,7 @@ impl ProtectedFileCrypto {
         expected: &ProtectedRecordContext,
     ) -> anyhow::Result<String> {
         Self::validate_context(expected)?;
+        self.validate_hosted_runtime_principal()?;
         if let Some(encoded) = stored.strip_prefix(SCOPED_RECORD_PREFIX) {
             let record = serde_json::from_str::<ScopedEncryptedRecord>(encoded)
                 .context("parse scoped protected file-store envelope")?;

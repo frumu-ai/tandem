@@ -77,8 +77,9 @@ async fn hosted_spawned_revision_session_hides_private_evidence_from_another_act
         .put_automation_v2(source)
         .await
         .expect("Alice workflow");
-    state
-        .put_workflow_learning_candidate(candidate_for_workflow(
+    put_hosted_learning_candidate(
+        &state,
+        candidate_for_workflow(
             sample_candidate(
                 "alice-revision-evidence",
                 &source.automation_id,
@@ -86,9 +87,10 @@ async fn hosted_spawned_revision_session_hides_private_evidence_from_another_act
                 crate::WorkflowLearningCandidateStatus::Approved,
             ),
             &source,
-        ))
-        .await
-        .expect("Alice candidate");
+        ),
+    )
+    .await
+    .expect("Alice candidate");
 
     let alice = hosted_revision_router(state.clone(), "alice");
     let (status, payload) = hosted_learning_request(
