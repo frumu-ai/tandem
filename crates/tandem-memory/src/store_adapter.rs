@@ -113,9 +113,8 @@ fn validate_source_object_write_scope(
     Ok(())
 }
 
-#[async_trait]
-impl MemoryStore for MemoryDatabase {
-    async fn read(
+impl MemoryDatabase {
+    async fn read_store_raw(
         &self,
         request: MemoryStoreReadRequest,
     ) -> MemoryStoreResult<MemoryStoreReadResult> {
@@ -252,7 +251,7 @@ impl MemoryStore for MemoryDatabase {
         }
     }
 
-    async fn query(
+    async fn query_store_raw(
         &self,
         request: MemoryStoreQueryRequest,
     ) -> MemoryStoreResult<MemoryStoreQueryResult> {
@@ -403,6 +402,129 @@ impl MemoryStore for MemoryDatabase {
                 ))
             }
         }
+    }
+}
+
+#[async_trait]
+impl MemoryStore for MemoryDatabase {
+    #[cfg(feature = "test-hooks")]
+    fn observe_sqlite_writer_wait_for_test(
+        &self,
+        observer: MemorySqliteWriterWaitObserver,
+    ) -> MemoryStoreResult<MemorySqliteWriterWaitGuard> {
+        MemoryDatabase::observe_sqlite_writer_wait_for_test(self, observer)
+    }
+
+    async fn write_with_commit_authority(
+        &self,
+        request: MemoryStoreWriteRequest,
+        authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreWriteResult> {
+        match request {
+            MemoryStoreWriteRequest::GlobalRecord { scope, record } => {
+                self.enforce_store_tenant_scope("guarded global memory write", &scope.tenant)?;
+                validate_global_write_scope(&scope, &record)?;
+                Ok(MemoryStoreWriteResult::GlobalRecord(
+                    self.put_global_record_with_authority(&record, authority)
+                        .await?,
+                ))
+            }
+            _ => Err(MemoryStoreError::unsupported(
+                "SQLite guarded write supports GlobalRecord only",
+            )),
+        }
+    }
+
+    async fn mutate_with_commit_authority(
+        &self,
+        request: MemoryStoreMutationRequest,
+        authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreMutationResult> {
+        match request {
+            MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+                scope,
+                id,
+                visibility,
+                demoted,
+                metadata,
+                provenance,
+            } => {
+                self.enforce_store_tenant_scope(
+                    "guarded global memory context update",
+                    &scope.tenant,
+                )?;
+                Ok(MemoryStoreMutationResult::Changed(
+                    self.update_global_context_with_authority(
+                        &scope,
+                        &id,
+                        &visibility,
+                        demoted,
+                        metadata.as_ref(),
+                        provenance.as_ref(),
+                        None,
+                        authority,
+                    )
+                    .await?,
+                ))
+            }
+            _ => Err(MemoryStoreError::unsupported(
+                "SQLite guarded mutation supports UpdateGlobalRecordContext only",
+            )),
+        }
+    }
+
+    async fn mutate_with_commit_authority_if_unchanged(
+        &self,
+        request: MemoryStoreMutationRequest,
+        expected: tandem_types::MemorySourceReference,
+        authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreMutationResult> {
+        match request {
+            MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+                scope,
+                id,
+                visibility,
+                demoted,
+                metadata,
+                provenance,
+            } => {
+                self.enforce_store_tenant_scope("guarded compare-and-swap", &scope.tenant)?;
+                Ok(MemoryStoreMutationResult::Changed(
+                    self.update_global_context_with_authority(
+                        &scope,
+                        &id,
+                        &visibility,
+                        demoted,
+                        metadata.as_ref(),
+                        provenance.as_ref(),
+                        Some(&expected),
+                        authority,
+                    )
+                    .await?,
+                ))
+            }
+            _ => Err(MemoryStoreError::unsupported(
+                "SQLite guarded compare-and-swap supports UpdateGlobalRecordContext only",
+            )),
+        }
+    }
+
+    async fn read(
+        &self,
+        request: MemoryStoreReadRequest,
+    ) -> MemoryStoreResult<MemoryStoreReadResult> {
+        let scope = request.scope().clone();
+        let result = self.read_store_raw(request).await?;
+        crate::derived_lineage_store::filter_read_result(self, &scope, result).await
+    }
+
+    async fn query(
+        &self,
+        request: MemoryStoreQueryRequest,
+    ) -> MemoryStoreResult<MemoryStoreQueryResult> {
+        let scope = request.scope().clone();
+        let result = self.query_store_raw(request).await?;
+        crate::derived_lineage_store::filter_query_result(self, &scope, result).await
     }
 
     async fn write(

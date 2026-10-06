@@ -146,7 +146,8 @@ impl GovernedReadDecision {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GovernedReadEvidence {
     SourceBinding,
     TenantLocalMemory,
@@ -165,7 +166,7 @@ impl GovernedReadEvidence {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernedReadTarget {
     pub resource_ref: ResourceRef,
     pub data_class: DataClass,
@@ -202,6 +203,8 @@ pub struct MemoryAccessFilter {
     /// subject information is available: any subject-restricted record is
     /// denied, fail closed.
     pub caller_subject: Option<String>,
+    /// Ephemeral, server-resolved canonical source proofs; never serialized.
+    pub resolved_derived_lineages: crate::derived_lineage::ResolvedDerivedLineage,
 }
 
 impl MemoryAccessFilter {
@@ -225,6 +228,7 @@ impl MemoryAccessFilter {
             workflow_phase: None,
             caller_org_units: None,
             caller_subject: None,
+            resolved_derived_lineages: Default::default(),
         }
     }
 
@@ -244,6 +248,7 @@ impl MemoryAccessFilter {
             workflow_phase: None,
             caller_org_units: None,
             caller_subject: None,
+            resolved_derived_lineages: Default::default(),
         }
     }
 
@@ -284,6 +289,15 @@ impl MemoryAccessFilter {
     }
 
     pub fn decision_for_chunk(&self, chunk: &MemoryChunk) -> GovernedReadDecision {
+        if let Some(decision) = self.decision_for_owner_subject(chunk.subject.as_deref()) {
+            return decision;
+        }
+        if let Some(decision) = self.decision_for_owner_metadata(chunk.metadata.as_ref()) {
+            return decision;
+        }
+        if let Some(decision) = self.decision_for_lineage_metadata(chunk.metadata.as_ref()) {
+            return decision;
+        }
         if let Some(decision) = self.decision_for_knowledge_scope_metadata(chunk.metadata.as_ref())
         {
             return decision;
@@ -300,6 +314,12 @@ impl MemoryAccessFilter {
     }
 
     pub fn decision_for_global_record(&self, record: &GlobalMemoryRecord) -> GovernedReadDecision {
+        if let Some(decision) = self.decision_for_owner_metadata(record.metadata.as_ref()) {
+            return decision;
+        }
+        if let Some(decision) = self.decision_for_lineage_metadata(record.metadata.as_ref()) {
+            return decision;
+        }
         if let Some(decision) = self.decision_for_knowledge_scope_metadata(record.metadata.as_ref())
         {
             return decision;
@@ -381,7 +401,7 @@ impl MemoryAccessFilter {
         }
     }
 
-    fn decision_for_target(&self, target: &GovernedReadTarget) -> GovernedReadDecision {
+    pub(crate) fn decision_for_target(&self, target: &GovernedReadTarget) -> GovernedReadDecision {
         if self.mode == GovernedReadMode::LocalNoop {
             return GovernedReadDecision::allow("local_noop");
         }
@@ -398,6 +418,11 @@ impl MemoryAccessFilter {
 
         if strict_context.is_expired_at(self.now_ms) {
             return GovernedReadDecision::deny("context_expired");
+        }
+
+        // Private ownership adds a restriction even on grant-governed sources.
+        if let Some(decision) = self.decision_for_owner_subject(target.owner_subject.as_deref()) {
+            return decision;
         }
 
         if !target.evidence.requires_grant() {
@@ -417,18 +442,6 @@ impl MemoryAccessFilter {
                     .is_some_and(|units| units.contains(owner_org_unit_id));
                 if !is_member {
                     return GovernedReadDecision::deny("org_unit_scope_mismatch");
-                }
-            }
-            // Per-user restriction: a record owned by a subject is readable only
-            // by that subject. As with org units, absent caller-subject
-            // information denies, fail closed.
-            if let Some(owner_subject) = target.owner_subject.as_deref() {
-                let is_owner = self
-                    .caller_subject
-                    .as_deref()
-                    .is_some_and(|subject| subject == owner_subject);
-                if !is_owner {
-                    return GovernedReadDecision::deny("subject_scope_mismatch");
                 }
             }
             // Fail-closed default for a record governed by **neither** department
@@ -571,7 +584,7 @@ fn governed_read_target_from_chunk(
     })
 }
 
-fn governed_read_target_from_global_record(
+pub(crate) fn governed_read_target_from_global_record(
     record: &GlobalMemoryRecord,
     strict_context: Option<&StrictTenantContext>,
 ) -> Result<GovernedReadTarget, &'static str> {
@@ -796,7 +809,7 @@ fn memory_chunk_resource_id(chunk: &MemoryChunk) -> String {
     }
 }
 
-fn global_memory_record_resource_id(record: &GlobalMemoryRecord) -> String {
+pub(crate) fn global_memory_record_resource_id(record: &GlobalMemoryRecord) -> String {
     if record.visibility.eq_ignore_ascii_case("shared") {
         record
             .project_tag

@@ -19,6 +19,8 @@ pub struct Message {
     #[serde(default)]
     pub parts: Vec<MessagePart>,
     pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_lineage: Option<crate::NativeMessageLineage>,
 }
 
 impl Message {
@@ -28,6 +30,7 @@ impl Message {
             role,
             parts,
             created_at: Utc::now(),
+            source_lineage: None,
         }
     }
 }

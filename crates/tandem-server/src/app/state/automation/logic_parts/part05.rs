@@ -2267,7 +2267,7 @@ pub(crate) async fn execute_automation_v2_node(
     let knowledge_preflight =
         automation_knowledge_preflight(state, automation, node, run_id, &project_id).await;
     let (approved_learning_ids, workflow_learning_context) = state
-        .workflow_learning_context_for_automation_node(automation, node)
+        .workflow_learning_context_for_automation_node_session(automation, node, Some(&session_id))
         .await;
     let knowledge_context = {
         let base = knowledge_preflight.as_ref().and_then(|preflight| {

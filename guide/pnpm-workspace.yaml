@@ -17,7 +17,10 @@ overrides:
   'picomatch@>=4.0.0 <4.0.4': 4.0.4
   'postcss@<=8.5.22': 8.5.25
   'sharp@<0.35.4': 0.35.4
-  'smol-toml@<1.7.1': 1.7.1
+  'smol-toml@<=1.8.0': 1.9.0
+  'source-map-js@>=1.0.0 <1.2.2': 1.2.2
+  'katex@>=0.11.0 <0.18.2': 0.18.2
+  'postcss-selector-parser@<7.1.6': 7.1.6
   'svgo@<4.1.0': 4.1.0
   'devalue@<5.9.3': 5.9.3
   'uuid@<11.1.1': 11.1.1

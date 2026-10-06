@@ -18,6 +18,11 @@ mod contract;
 
 pub use contract::*;
 
+#[cfg(feature = "test-hooks")]
+pub use crate::db::sqlite_writer_wait_test_hooks::{
+    MemorySqliteWriterWaitGuard, MemorySqliteWriterWaitObserver,
+};
+
 /// Open Tandem's bundled SQLite implementation behind the portable contract.
 /// Runtime callers use this assembly point rather than depending on the
 /// concrete database adapter.
@@ -140,8 +145,24 @@ impl MemoryWriteScope {
 /// could suppress (see `docs/STORAGE_PORTABILITY_DESIGN.md`, Decision 2).
 /// A backend that cannot enforce a requested scope dimension or operation mode
 /// MUST return a contract error rather than silently weaken the request.
+/// Synchronous authority check performed after the real database writer wait
+/// and again immediately before committing the owned transaction.
+pub type MemoryCommitAuthority = Arc<dyn Fn() -> MemoryStoreResult<()> + Send + Sync>;
+
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
+    /// Observe an actual SQLite busy callback during a guarded writer wait.
+    /// This opt-in, per-store fixture API is unavailable in normal builds.
+    #[cfg(feature = "test-hooks")]
+    fn observe_sqlite_writer_wait_for_test(
+        &self,
+        _observer: MemorySqliteWriterWaitObserver,
+    ) -> MemoryStoreResult<MemorySqliteWriterWaitGuard> {
+        Err(MemoryStoreError::unsupported(
+            "this memory backend does not expose a SQLite writer-wait observer",
+        ))
+    }
+
     /// Execute a scoped point/list read using backend-neutral request and result
     /// values.
     async fn read(
@@ -166,6 +187,41 @@ pub trait MemoryStore: Send + Sync {
         &self,
         request: MemoryStoreMutationRequest,
     ) -> MemoryStoreResult<MemoryStoreMutationResult>;
+
+    /// A backend must implement a real guarded transaction or refuse the
+    /// operation; delegating to an ordinary write would lose commit authority.
+    async fn write_with_commit_authority(
+        &self,
+        _request: MemoryStoreWriteRequest,
+        _authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreWriteResult> {
+        Err(MemoryStoreError::unsupported(
+            "this memory backend does not support guarded writes",
+        ))
+    }
+
+    async fn mutate_with_commit_authority(
+        &self,
+        _request: MemoryStoreMutationRequest,
+        _authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreMutationResult> {
+        Err(MemoryStoreError::unsupported(
+            "this memory backend does not support guarded mutations",
+        ))
+    }
+
+    /// Compare canonical target content/disposition after acquiring the native
+    /// writer lock, in the same transaction as a guarded context mutation.
+    async fn mutate_with_commit_authority_if_unchanged(
+        &self,
+        _request: MemoryStoreMutationRequest,
+        _expected: tandem_types::MemorySourceReference,
+        _authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreMutationResult> {
+        Err(MemoryStoreError::unsupported(
+            "this memory backend does not support guarded compare-and-swap",
+        ))
+    }
 
     /// Execute multiple writes/mutations under explicit commit semantics.
     async fn batch(

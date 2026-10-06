@@ -147,7 +147,7 @@ pub(super) async fn memory_search(
                 verified_tenant_context.as_deref(),
                 store.query(
                     tandem_memory::MemoryStoreQueryRequest::SearchGlobalRecords {
-                        scope,
+                        scope: scope.clone(),
                         user_id: capability.subject.clone(),
                         query: request.query.clone(),
                         limit: candidate_limit,
@@ -162,6 +162,15 @@ pub(super) async fn memory_search(
                 _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
             };
             for hit in scoped_hits {
+                let source_projection_allows = global_memory_record_visible_to_verified_request(
+                    &state, &tenant_context, verified_tenant_context.as_deref(), store.as_ref(), &scope,
+                    &hit.record, source_access_filter.as_ref(),
+                ).await;
+                let derived = hit.record.metadata.as_ref().is_some_and(|metadata| metadata.get("derived_memory_lineage").is_some());
+                if !source_projection_allows
+                    && (derived || strict_source_projection_active || request.retrieval_gateway.is_none()) {
+                    continue;
+                }
                 if seen.insert(hit.record.id.clone()) {
                     hits.push(hit);
                 }
@@ -187,17 +196,6 @@ pub(super) async fn memory_search(
                     .unwrap_or_else(|| {
                         scopes_used.contains(&tandem_memory::GovernedMemoryTier::Session)
                     })
-            })
-            .filter(|hit| {
-                let source_projection_allows = global_memory_record_visible_to_access_filter(
-                    &hit.record,
-                    source_access_filter.as_ref(),
-                );
-                if strict_source_projection_active {
-                    source_projection_allows
-                } else {
-                    source_projection_allows || request.retrieval_gateway.is_some()
-                }
             })
             .filter(|hit| memory_retrieval_gateway_allows_record(&request, &hit.record))
             .collect::<Vec<_>>();
@@ -750,6 +748,12 @@ pub(super) async fn memory_demote(
         verified_tenant_context.as_deref(),
         &record.user_id,
     )?;
+    let derived = record.metadata.as_ref().and_then(|value|
+        value.get(tandem_memory::DERIVED_MEMORY_LINEAGE_METADATA_KEY)).is_some();
+    let target_reference = if derived {
+        Some(tandem_memory::CanonicalMemoryRestriction::from_global_record(&record, &scope.tenant)
+            .map_err(|_| StatusCode::FORBIDDEN)?.source_reference())
+    } else { None };
     let partition_key = memory_linkage(&record)
         .get("partition_key")
         .and_then(Value::as_str)
@@ -769,10 +773,26 @@ pub(super) async fn memory_demote(
         memory_linkage_detail(&memory_linkage(&record))
     );
     let audit_id = Uuid::new_v4().to_string();
-    append_memory_audit(
-        &state,
-        &tenant_context,
-        crate::MemoryAuditEvent {
+    let authority = if derived {
+        let lineage = DerivedMemoryLineage::from_metadata(record.metadata.as_ref())
+            .map_err(|_| StatusCode::FORBIDDEN)?.ok_or(StatusCode::FORBIDDEN)?;
+        let filter = with_verified_memory_decrypt_principal(verified_tenant_context.as_deref(),
+            crate::memory::derived_lineage::resolved_filter_for_lineage(
+                &state, &tenant_context, store.as_ref(), &scope, &lineage,
+                distillation_access_filter(verified_tenant_context.as_deref(), &record.user_id),
+            ),
+        ).await.ok_or(StatusCode::NOT_FOUND)?;
+        Some((derived_memory_commit_authority_with_lineage(
+            &state, &tenant_context, verified_tenant_context.as_deref(), lineage, filter, Some(record.clone()), |_| true,
+        ), target_reference.ok_or(StatusCode::FORBIDDEN)?))
+    } else { None };
+    let commit_state = state.clone();
+    let commit_tenant = tenant_context.clone();
+    let commit_verified = verified_tenant_context.as_deref().cloned();
+    let commit = async move {
+        let state = &commit_state;
+        let tenant_context = &commit_tenant;
+        let mut success_audit = crate::MemoryAuditEvent {
             audit_id: audit_id.clone(),
             action: "memory_demote".to_string(),
             run_id: input.run_id.clone(),
@@ -785,37 +805,32 @@ pub(super) async fn memory_demote(
             status: "ok".to_string(),
             detail: Some(demote_detail),
             created_at_ms: crate::now_ms(),
-        },
-    )
-    .await?;
-    let changed = match with_verified_memory_decrypt_principal(
-        verified_tenant_context.as_deref(),
-        store.mutate(
-            tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-                scope,
-                id: input.id.clone(),
-                visibility: "private".to_string(),
-                demoted: true,
-                metadata: memory_metadata_with_owner_subject(
-                    record.metadata.clone(),
-                    Some(record.user_id.as_str()),
-                ),
-                provenance: record.provenance.clone(),
-            },
-        ),
-    )
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    {
-        tandem_memory::MemoryStoreMutationResult::Changed(changed) => changed,
-        _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
-    if !changed {
-        return Err(StatusCode::NOT_FOUND);
-    }
+        };
+        if let Some((authority, _)) = authority.as_ref() {
+            authority().map_err(derived_memory_commit_error_status)?;
+        }
+        crate::http::memory_audit_store::append_memory_mutation_admission(
+            state, tenant_context, &success_audit,
+        ).await?;
+        let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+            scope, id: input.id.clone(), visibility: "private".to_string(), demoted: true,
+            metadata: memory_metadata_with_owner_subject(record.metadata.clone(), Some(record.user_id.as_str())),
+            provenance: record.provenance.clone(),
+        };
+        let updated = if let Some((authority, expected)) = authority {
+            with_verified_memory_decrypt_principal(commit_verified.as_ref(),
+                store.mutate_with_commit_authority_if_unchanged(mutation, expected, authority)).await
+        } else {
+            with_verified_memory_decrypt_principal(commit_verified.as_ref(), store.mutate(mutation)).await
+        }.map_err(derived_memory_commit_error_status)?;
+        if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        success_audit.created_at_ms = crate::now_ms();
+        append_memory_audit(state, tenant_context, success_audit).await?;
     publish_tenant_event(
-        &state,
-        &tenant_context,
+        state,
+        tenant_context,
         "memory.updated",
         json!({
             "memoryID": input.id,
@@ -836,6 +851,14 @@ pub(super) async fn memory_demote(
         "ok": true,
         "audit_id": audit_id,
     })))
+    };
+    if derived {
+        commit_derived_memory_with_current_policy(
+            &state, &tenant_context, verified_tenant_context.as_deref(), commit,
+        ).await?
+    } else {
+        commit.await
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -855,9 +878,15 @@ pub(super) struct ContextGenerateLayersRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ContextDistillRequest {
     session_id: String,
+    #[serde(default)]
     conversation: Vec<String>,
+    #[serde(default)]
+    message_ids: Vec<String>,
+    #[serde(default)]
+    source_memory_ids: Vec<String>,
     #[serde(default)]
     run_id: Option<String>,
     #[serde(default)]
@@ -928,7 +957,7 @@ pub(super) async fn context_resolve_uri(
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<ContextResolveUriRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    let manager = open_memory_manager_for_state(&state)
+    let manager = open_memory_manager_for_request(&state, &tenant_context, verified_tenant_context.as_deref())
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -950,7 +979,7 @@ pub(super) async fn context_tree(
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<ContextTreeQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let manager = open_memory_manager_for_state(&state)
+    let manager = open_memory_manager_for_request(&state, &tenant_context, verified_tenant_context.as_deref())
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -978,7 +1007,7 @@ pub(super) async fn context_generate_layers(
     let runtime_state = state.runtime.wait();
     let providers = runtime_state.providers.clone();
 
-    let manager = open_memory_manager_for_state(&state)
+    let manager = open_memory_manager_for_request(&state, &tenant_context, verified_tenant_context.as_deref())
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -1023,115 +1052,8 @@ pub(super) async fn context_generate_layers(
     Ok(Json(json!({ "ok": true })))
 }
 
-pub(super) async fn context_distill(
-    State(state): State<AppState>,
-    Extension(tenant_context): Extension<TenantContext>,
-    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
-    Json(input): Json<ContextDistillRequest>,
-) -> Result<Json<Value>, StatusCode> {
-    let run_id = input
-        .run_id
-        .clone()
-        .unwrap_or_else(|| format!("distill-{}", input.session_id));
-    let provider_auth_run_id = run_id.clone();
-    let project_id = input
-        .project_id
-        .clone()
-        .or_else(|| input.workflow_id.clone())
-        .unwrap_or_else(|| input.session_id.clone());
-    let subject = crate::memory::subject::request_memory_subject(
-        &tenant_context,
-        verified_tenant_context.as_deref(),
-        input
-            .subject
-            .as_deref()
-            .or(tenant_context.actor_id.as_deref()),
-    )
-    .map_err(|_| StatusCode::FORBIDDEN)?
-    .subject;
-    workflow_learning_distillation_source_binding(
-        &state,
-        &tenant_context,
-        verified_tenant_context.as_deref(),
-        input.workflow_id.as_deref(),
-        &input.session_id,
-        &subject,
-    )
-    .await?;
-    let runtime_state = state.runtime.wait();
-    let providers = runtime_state.providers.clone();
-    let partition = tandem_memory::MemoryPartition {
-        org_id: tenant_context.org_id.clone(),
-        workspace_id: tenant_context.workspace_id.clone(),
-        project_id,
-        tier: tandem_memory::GovernedMemoryTier::Session,
-    };
-    let capability = issue_run_memory_capability(
-        &run_id,
-        Some(subject.as_str()),
-        &partition,
-        RunMemoryCapabilityPolicy::CoderWorkflow,
-    );
-    let provider_egress = crate::provider_egress::memory_egress_context(
-        &state,
-        Some(&tenant_context),
-        verified_tenant_context.as_deref(),
-        Some(&run_id),
-        Some(&input.session_id),
-    );
-    let writer = GovernedDistillationWriter {
-        state: state.clone(),
-        tenant_context: tenant_context.clone(),
-        verified_tenant_context: verified_tenant_context.as_deref().cloned(),
-        partition,
-        capability,
-        run_id,
-        workflow_id: input.workflow_id.clone(),
-        artifact_refs: input.artifact_refs.clone(),
-        subject,
-    };
-    let threshold = input.importance_threshold.unwrap_or(0.5).clamp(0.0, 1.0);
-    let distiller = tandem_memory::SessionDistiller::with_threshold(Arc::new(providers), threshold)
-        .with_provider_egress(provider_egress);
-    let distillation_future =
-        distiller.distill_with_writer(&input.session_id, &input.conversation, &writer);
-    let report = crate::http::session_run_retry::scope_provider_auth_for_tenant(
-        &state,
-        &tenant_context,
-        verified_tenant_context.as_deref(),
-        crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
-        Some(&input.session_id),
-        Some(&provider_auth_run_id),
-        None,
-        distillation_future,
-    )
-    .await
-    .map_err(|e| {
-        tracing::warn!("Failed to distill session: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let distillation_id = report.distillation_id.clone();
-    let session_id = report.session_id.clone();
-    let facts_extracted = report.facts_extracted;
-    let stored_count = report.stored_count;
-    let deduped_count = report.deduped_count;
-    let memory_ids = report.memory_ids.clone();
-    let candidate_ids = report.candidate_ids.clone();
-    let status = report.status.clone();
-
-    Ok(Json(json!({
-        "ok": true,
-        "distillation_id": distillation_id,
-        "session_id": session_id,
-        "facts_extracted": facts_extracted,
-        "stored_count": stored_count,
-        "deduped_count": deduped_count,
-        "memory_ids": memory_ids,
-        "candidate_ids": candidate_ids,
-        "status": status,
-        "report": report,
-    })))
-}
+include!("distillation_sources.rs");
+include!("distillation_handler.rs");
 
 pub(super) async fn workflow_learning_candidates_list(
     State(state): State<AppState>,

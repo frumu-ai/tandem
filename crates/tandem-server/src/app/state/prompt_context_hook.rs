@@ -43,6 +43,16 @@ pub(super) enum PromptMemoryAccess {
 }
 
 impl PromptMemoryAccess {
+    fn canonical_tenant_scope(&self) -> tandem_memory::types::MemoryTenantScope {
+        match self {
+            Self::Governed { tenant_context, .. } => tandem_memory::types::MemoryTenantScope {
+                org_id: tenant_context.org_id.clone(),
+                workspace_id: tenant_context.workspace_id.clone(),
+                deployment_id: tenant_context.deployment_id.clone(),
+            },
+            _ => tandem_memory::types::MemoryTenantScope::local(),
+        }
+    }
     fn mode(&self) -> &'static str {
         match self {
             Self::Local { .. } => "local",
@@ -98,6 +108,46 @@ pub(super) struct DocsContextBlock {
 }
 
 impl PromptHookBudget {
+    pub(super) fn push_memory_context(
+        &mut self,
+        messages: &mut Vec<ChatMessage>,
+        block: &prompt_memory_context::MemoryContextBlock,
+    ) -> (bool, Vec<tandem_types::MemorySourceReference>, bool) {
+        let injected = block.included_count > 0
+            && self.push_system_message(
+                messages,
+                SOURCE_GLOBAL_MEMORY,
+                block.content.clone(),
+                block.included_count,
+                false,
+            );
+        (
+            injected,
+            if injected {
+                block.included_memory.clone()
+            } else {
+                Vec::new()
+            },
+            !injected || block.lineage_complete,
+        )
+    }
+
+    pub(super) fn finish_result(
+        self,
+        messages: Vec<ChatMessage>,
+        sources: Vec<tandem_types::MemorySourceReference>,
+        complete: bool,
+    ) -> PromptContextHookResult {
+        let complete = complete
+            && self.stats.sources.iter().all(|(source, stats)| {
+                stats.injected_count == 0
+                    || matches!(
+                        source.as_str(),
+                        SOURCE_IDENTITY | SOURCE_MEMORY_SCOPE | SOURCE_GLOBAL_MEMORY
+                    )
+            });
+        PromptContextHookResult::new(messages, self.finish()).with_memory_lineage(sources, complete)
+    }
     pub(super) fn new() -> Self {
         let budget_chars = prompt_hook_context_budget_chars();
         Self {
@@ -183,6 +233,99 @@ pub(super) fn memory_context_budget_chars() -> usize {
 }
 
 impl ServerPromptContextHook {
+    async fn search_current_prompt_memory(
+        &self,
+        store: &dyn tandem_memory::MemoryStore,
+        access: &PromptMemoryAccess,
+        query: &str,
+        project_id: Option<&str>,
+    ) -> (
+        Vec<tandem_memory::types::GlobalMemorySearchHit>,
+        Vec<tandem_memory::types::GlobalMemorySearchHit>,
+    ) {
+        let PromptMemoryAccess::Governed {
+            subject,
+            access_filter,
+            decrypt_principal,
+            ..
+        } = access
+        else {
+            return Self::search_prompt_global_memory(store, access, query, project_id).await;
+        };
+        let mut scope = tandem_memory::MemoryReadScope::tenant(access.canonical_tenant_scope());
+        scope.subject = Some(subject.clone());
+        scope.org_unit = access_filter
+            .caller_org_units
+            .as_ref()
+            .and_then(|units| (units.len() == 1).then(|| units.iter().next().cloned()))
+            .flatten();
+        let search =
+            Self::search_prompt_memory_with_scope(store, scope, subject, query, project_id);
+        let (project_hits, global_hits) = match decrypt_principal.clone() {
+            Some(principal) => {
+                tandem_memory::decrypt_context::with_decrypt_principal(principal, search).await
+            }
+            None => search.await,
+        };
+        // Derived rows need their canonical-source proof before the governed
+        // filter runs; an unresolved first pass would wrongly remove positives.
+        (
+            self.resolve_current_hit_lineage(store, access, project_hits)
+                .await,
+            self.resolve_current_hit_lineage(store, access, global_hits)
+                .await,
+        )
+    }
+    async fn resolve_current_hit_lineage(
+        &self,
+        store: &dyn tandem_memory::MemoryStore,
+        access: &PromptMemoryAccess,
+        hits: Vec<tandem_memory::types::GlobalMemorySearchHit>,
+    ) -> Vec<tandem_memory::types::GlobalMemorySearchHit> {
+        let PromptMemoryAccess::Governed {
+            tenant_context,
+            subject,
+            access_filter,
+            decrypt_principal,
+            ..
+        } = access
+        else {
+            return hits;
+        };
+        let mut scope = tandem_memory::MemoryReadScope::tenant(access.canonical_tenant_scope());
+        scope.subject = Some(subject.clone());
+        scope.org_unit = access_filter
+            .caller_org_units
+            .as_ref()
+            .and_then(|units| (units.len() == 1).then(|| units.iter().next().cloned()))
+            .flatten();
+        let resolve = async {
+            let mut visible = Vec::new();
+            for hit in hits {
+                if let Some(filter) = crate::memory::derived_lineage::resolved_filter_for_record(
+                    &self.state,
+                    tenant_context,
+                    store,
+                    &scope,
+                    &hit.record,
+                    access_filter.clone(),
+                )
+                .await
+                {
+                    if filter.allows_global_record(&hit.record) {
+                        visible.push(hit);
+                    }
+                }
+            }
+            visible
+        };
+        match decrypt_principal.clone() {
+            Some(principal) => {
+                tandem_memory::decrypt_context::with_decrypt_principal(principal, resolve).await
+            }
+            None => resolve.await,
+        }
+    }
     pub(super) fn new(state: AppState) -> Self {
         Self { state }
     }
@@ -724,10 +867,10 @@ impl PromptContextHook for ServerPromptContextHook {
                 .map(|m| m.content.clone())
                 .unwrap_or_default();
             if query.trim().is_empty() {
-                return Ok(PromptContextHookResult::new(messages, budget.finish()));
+                return Ok(budget.finish_result(messages, Vec::new(), true));
             }
             if Self::should_skip_memory_injection(&query) {
-                return Ok(PromptContextHookResult::new(messages, budget.finish()));
+                return Ok(budget.finish_result(messages, Vec::new(), true));
             }
             if matches!(
                 tandem_core::tool_router::classify_intent(&query),
@@ -874,18 +1017,25 @@ impl PromptContextHook for ServerPromptContextHook {
                         "tenantDeploymentID": tenant_context.as_ref().and_then(|tenant| tenant.deployment_id.clone()),
                     }),
                 ));
-                return Ok(PromptContextHookResult::new(messages, budget.finish()));
+                return Ok(budget.finish_result(messages, Vec::new(), true));
             }
             let Some(store) = this.open_memory_store().await else {
-                return Ok(PromptContextHookResult::new(messages, budget.finish()));
+                return Ok(budget.finish_result(messages, Vec::new(), true));
             };
-            let (project_hits, global_hits) = Self::search_prompt_global_memory(
-                store.as_ref(),
-                &memory_access,
-                &query,
-                project_id.as_deref(),
-            )
-            .await;
+            let (project_hits, global_hits) = this
+                .search_current_prompt_memory(
+                    store.as_ref(),
+                    &memory_access,
+                    &query,
+                    project_id.as_deref(),
+                )
+                .await;
+            let project_hits = this
+                .resolve_current_hit_lineage(store.as_ref(), &memory_access, project_hits)
+                .await;
+            let global_hits = this
+                .resolve_current_hit_lineage(store.as_ref(), &memory_access, global_hits)
+                .await;
             let (hits, deferred_global_hits, project_scope_used) =
                 Self::select_memory_hits_for_context(project_hits, global_hits);
             let latency_ms = now_ms().saturating_sub(started);
@@ -920,12 +1070,15 @@ impl PromptContextHook for ServerPromptContextHook {
             ));
 
             if hits.is_empty() {
-                return Ok(PromptContextHookResult::new(messages, budget.finish()));
+                return Ok(budget.finish_result(messages, Vec::new(), true));
             }
 
             let memory_budget = memory_context_budget_chars().min(budget.remaining_chars());
-            let memory_block =
-                prompt_memory_context::build_memory_block_with_budget(&hits, memory_budget);
+            let memory_block = prompt_memory_context::build_memory_block_with_lineage(
+                &hits,
+                memory_budget,
+                &memory_access.canonical_tenant_scope(),
+            );
             if memory_block.dropped_count > 0 {
                 budget.record_dropped(
                     SOURCE_GLOBAL_MEMORY,
@@ -933,14 +1086,8 @@ impl PromptContextHook for ServerPromptContextHook {
                     memory_block.dropped_chars,
                 );
             }
-            let injected = memory_block.included_count > 0
-                && budget.push_system_message(
-                    &mut messages,
-                    SOURCE_GLOBAL_MEMORY,
-                    memory_block.content.clone(),
-                    memory_block.included_count,
-                    false,
-                );
+            let (injected, included_memory, lineage_complete) =
+                budget.push_memory_context(&mut messages, &memory_block);
             this.state.event_bus.publish(EngineEvent::new(
                 "memory.context.injected",
                 json!({
@@ -970,7 +1117,7 @@ impl PromptContextHook for ServerPromptContextHook {
                     "tenantScope": memory_access.tenant_scope(),
                 }),
             ));
-            Ok(PromptContextHookResult::new(messages, budget.finish()))
+            Ok(budget.finish_result(messages, included_memory, lineage_complete))
         })
     }
 }

@@ -201,6 +201,19 @@ async fn memory_promote_impl_with_verified(
             policy_decision_id: None,
         });
     };
+    let derived = source.metadata.as_ref().is_some_and(|metadata|
+        metadata.get(tandem_memory::DERIVED_MEMORY_LINEAGE_METADATA_KEY).is_some());
+    let target_reference = if derived {
+        Some(tandem_memory::CanonicalMemoryRestriction::from_global_record(&source, &scope.tenant)
+            .map_err(|_| StatusCode::FORBIDDEN)?.source_reference())
+    } else { None };
+    if derived
+        && !global_memory_record_visible_to_verified_request(
+            state, tenant_context, verified_tenant_context, store.as_ref(), &scope, &source,
+            Some(&distillation_access_filter(verified_tenant_context, &capability.subject)),
+        ).await {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let scrub_report = scrub_content(&source.content);
     let audit_id = Uuid::new_v4().to_string();
     let now = crate::now_ms();
@@ -588,10 +601,45 @@ async fn memory_promote_impl_with_verified(
             Some(&next_provenance),
         ))
     );
-    append_memory_audit(
-        &state,
-        tenant_context,
-        crate::MemoryAuditEvent {
+    let authority = if derived {
+        // Canonical source reads must stay outside publication/target writer
+        // locks. Repeat after the awaited policy/audit preparation above.
+        let lineage = DerivedMemoryLineage::from_metadata(source.metadata.as_ref())
+            .map_err(|_| StatusCode::FORBIDDEN)?.ok_or(StatusCode::FORBIDDEN)?;
+        let filter = with_verified_memory_decrypt_principal(verified_tenant_context,
+            crate::memory::derived_lineage::resolved_filter_for_lineage(
+                state, tenant_context, store.as_ref(), &scope, &lineage,
+                distillation_access_filter(verified_tenant_context, &capability.subject),
+            ),
+        ).await.ok_or(StatusCode::NOT_FOUND)?;
+        let decision = tandem_memory::memory_promotion_scope_decision_for_context_with_enterprise_mode(
+            &request.partition, request.to_tier, &request.review, source.metadata.as_ref(),
+            request.authority_job_context.as_ref(), require_scope_metadata, crate::now_ms(),
+        ).map_err(|_| StatusCode::FORBIDDEN)?;
+        if !decision.allowed { return Err(StatusCode::FORBIDDEN); }
+        let operation_request = request.clone();
+        let operation_metadata = source.metadata.clone();
+        let capability_expires_at_ms = capability.expires_at;
+        let authority = derived_memory_commit_authority_with_lineage(
+            state, tenant_context, verified_tenant_context, lineage, filter, Some(source.clone()),
+            move |now| now < capability_expires_at_ms
+                && tandem_memory::memory_promotion_scope_decision_for_context_with_enterprise_mode(
+                &operation_request.partition, operation_request.to_tier, &operation_request.review,
+                operation_metadata.as_ref(), operation_request.authority_job_context.as_ref(),
+                require_scope_metadata, now,
+            ).is_ok_and(|decision| decision.allowed),
+        );
+        Some((authority, target_reference.ok_or(StatusCode::FORBIDDEN)?))
+    } else { None };
+    let commit_state = state.clone();
+    let commit_tenant = tenant_context.clone();
+    let commit_verified = verified_tenant_context.cloned();
+    let classification = classification.to_owned();
+    let kind = kind.to_owned();
+    let commit = async move {
+        let state = &commit_state;
+        let tenant_context = &commit_tenant;
+        let mut success_audit = crate::MemoryAuditEvent {
             audit_id: audit_id.clone(),
             action: "memory_promote".to_string(),
             run_id: request.run_id.clone(),
@@ -609,31 +657,29 @@ async fn memory_promote_impl_with_verified(
             actor: capability.subject,
             status: "ok".to_string(),
             detail: Some(promote_detail),
-            created_at_ms: now,
-        },
-    )
-    .await?;
-    let updated = with_verified_memory_decrypt_principal(
-        verified_tenant_context,
-        store.mutate(
-            tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-                scope,
-                id: new_id.clone(),
-                visibility: "shared".to_string(),
-                demoted: false,
-                metadata: next_metadata.clone(),
-                provenance: Some(next_provenance.clone()),
-            },
-        ),
-    )
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !matches!(
-        updated,
-        tandem_memory::MemoryStoreMutationResult::Changed(true)
-    ) {
-        return Err(StatusCode::NOT_FOUND);
-    }
+            created_at_ms: crate::now_ms(),
+        };
+        if let Some((authority, _)) = authority.as_ref() {
+            authority().map_err(derived_memory_commit_error_status)?;
+        }
+        crate::http::memory_audit_store::append_memory_mutation_admission(
+            state, tenant_context, &success_audit,
+        ).await?;
+        let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+            scope, id: new_id.clone(), visibility: "shared".to_string(), demoted: false,
+            metadata: next_metadata.clone(), provenance: Some(next_provenance.clone()),
+        };
+        let updated = if let Some((authority, expected)) = authority {
+            with_verified_memory_decrypt_principal(commit_verified.as_ref(),
+                store.mutate_with_commit_authority_if_unchanged(mutation, expected, authority)).await
+        } else {
+            with_verified_memory_decrypt_principal(commit_verified.as_ref(), store.mutate(mutation)).await
+        }.map_err(derived_memory_commit_error_status)?;
+        if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        success_audit.created_at_ms = crate::now_ms();
+        append_memory_audit(state, tenant_context, success_audit).await?;
     publish_tenant_event(
         state,
         tenant_context,
@@ -705,6 +751,12 @@ async fn memory_promote_impl_with_verified(
         audit_id,
         policy_decision_id,
     })
+    };
+    if derived {
+        commit_derived_memory_with_current_policy(state, tenant_context, verified_tenant_context, commit).await?
+    } else {
+        commit.await
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

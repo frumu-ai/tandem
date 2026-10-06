@@ -99,6 +99,7 @@ windows-sys = { version = "0.60", features = [
 ] }
 
 [dev-dependencies]
+tandem-memory = { path = "../tandem-memory", version = "0.7.2", features = ["test-hooks"] }
 tempfile = "3"
 tower = "0.5"
 serial_test = "3"

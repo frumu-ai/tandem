@@ -338,6 +338,9 @@ fn put_global_record(
     let owner_subject = owner_subject_from_metadata(record.metadata.as_ref());
     let private = owner_subject.is_some();
     let tenant_shared = crate::types::tenant_shared_from_metadata(record.metadata.as_ref());
+    let lineage_digest =
+        crate::derived_lineage::derived_lineage_dedupe_digest(record.metadata.as_ref())
+            .map_err(MemoryStoreError::from)?;
 
     let existing: Option<String> = conn
         .query_row(
@@ -356,6 +359,7 @@ fn put_global_record(
                AND private = ?12
                AND IFNULL(owner_subject, '') = IFNULL(?13, '')
                AND tenant_shared = ?14
+               AND derived_lineage_digest = ?15
              LIMIT 1",
             params![
                 tenant_org_id,
@@ -372,6 +376,7 @@ fn put_global_record(
                 i64::from(private),
                 owner_subject.as_deref(),
                 i64::from(tenant_shared),
+                lineage_digest,
             ],
             |row| row.get(0),
         )
@@ -395,13 +400,13 @@ fn put_global_record(
             project_tag, channel_tag, host_tag, metadata, provenance, redaction_status, redaction_count,
             visibility, demoted, score_boost, created_at_ms, updated_at_ms, expires_at_ms, owner_org_unit_id,
             private, owner_subject, tenant_shared,
-            content_envelope, metadata_envelope, provenance_envelope
+            content_envelope, metadata_envelope, provenance_envelope, derived_lineage_digest
         ) VALUES (
             ?1, ?2, ?3, ?4,
             ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
             ?13, ?14, ?15, ?16, ?17, ?18, ?19,
             ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29,
-            ?30, ?31, ?32
+            ?30, ?31, ?32, ?33
         )",
         params![
             record.id,
@@ -436,6 +441,7 @@ fn put_global_record(
             sealed.content_envelope,
             sealed.metadata_envelope,
             sealed.provenance_envelope,
+            lineage_digest,
         ],
     )
     .map_err(store_database_error)?;
@@ -463,6 +469,8 @@ fn update_global_record_context(
     let next_owner_subject = owner_subject_from_metadata(metadata);
     let next_private = next_owner_subject.is_some();
     let next_tenant_shared = crate::types::tenant_shared_from_metadata(metadata);
+    let lineage_digest = crate::derived_lineage::derived_lineage_dedupe_digest(metadata)
+        .map_err(MemoryStoreError::from)?;
     let Some(sealed) = super::seal_global_context_update(conn, crypto, id, metadata, provenance)
         .map_err(MemoryStoreError::from)?
     else {
@@ -474,7 +482,7 @@ fn update_global_record_context(
              SET visibility = ?7, demoted = ?8, metadata = ?9, provenance = ?10,
                  updated_at_ms = ?11, owner_org_unit_id = ?12, private = ?13,
                  owner_subject = ?14, tenant_shared = ?15,
-                 metadata_envelope = ?16, provenance_envelope = ?17
+                 metadata_envelope = ?16, provenance_envelope = ?17, derived_lineage_digest = ?18
              WHERE id = ?1
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
@@ -499,6 +507,7 @@ fn update_global_record_context(
                 i64::from(next_tenant_shared),
                 sealed.metadata_envelope,
                 sealed.provenance_envelope,
+                lineage_digest,
             ],
         )
         .map_err(store_database_error)?;

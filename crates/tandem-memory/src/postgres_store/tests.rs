@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "commit_authority_tests.rs"]
+mod commit_authority_tests;
 use crate::types::{
     GlobalMemoryRecord, LayerType, MemoryChunk, MemoryTenantScope, MemoryTier, NodeType,
     SourceObjectLifecycleRecord, SourceObjectLifecycleState,

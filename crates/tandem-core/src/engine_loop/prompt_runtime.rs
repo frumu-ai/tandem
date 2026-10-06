@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use tandem_providers::{ChatAttachment, ChatMessage};
 
 use crate::{EventBus, Storage};
-use tandem_types::{EngineEvent, MessagePart, MessagePartInput};
+use tandem_types::{EngineEvent, Message, MessagePart, MessagePartInput};
 
 use super::{tool_result_keep_recent, truncate_text};
 
@@ -28,6 +28,8 @@ impl ChatHistoryProfile {
 #[derive(Debug)]
 pub(super) struct LoadedChatHistory {
     pub(super) messages: Vec<ChatMessage>,
+    pub(super) source_message_ids: Vec<String>,
+    pub(super) canonical_messages: Vec<Message>,
     pub(super) dropped_messages: usize,
     pub(super) dropped_chars: usize,
     pub(super) pinned_messages: usize,
@@ -41,6 +43,8 @@ impl LoadedChatHistory {
     fn from_messages(messages: Vec<ChatMessage>) -> Self {
         LoadedChatHistory {
             messages,
+            source_message_ids: Vec::new(),
+            canonical_messages: Vec::new(),
             dropped_messages: 0,
             dropped_chars: 0,
             pinned_messages: 0,
@@ -104,17 +108,17 @@ pub(super) async fn load_chat_history(
     let mut tool_invocation_ordinal = 0usize;
     let sourced = session
         .messages
-        .into_iter()
+        .iter()
         .enumerate()
         .map(|(source_index, m)| {
             let role = format!("{:?}", m.role).to_lowercase();
             let source_id = m.id.clone();
             let content = m
                 .parts
-                .into_iter()
+                .iter()
                 .map(|part| match part {
-                    MessagePart::Text { text } => text,
-                    MessagePart::Reasoning { text } => text,
+                    MessagePart::Text { text } => text.clone(),
+                    MessagePart::Reasoning { text } => text.clone(),
                     MessagePart::ToolInvocation {
                         tool,
                         args,
@@ -125,8 +129,8 @@ pub(super) async fn load_chat_history(
                         tool_invocation_ordinal += 1;
                         if stale {
                             demote_stale_tool_invocation_for_history(
-                                &tool,
-                                &args,
+                                tool,
+                                args,
                                 result.as_ref(),
                                 error.as_deref(),
                                 &source_id,
@@ -134,8 +138,8 @@ pub(super) async fn load_chat_history(
                             )
                         } else {
                             summarize_tool_invocation_for_history(
-                                &tool,
-                                &args,
+                                tool,
+                                args,
                                 result.as_ref(),
                                 error.as_deref(),
                                 &mut tool_compaction,
@@ -157,6 +161,17 @@ pub(super) async fn load_chat_history(
         })
         .collect::<Vec<_>>();
     let mut loaded = compact_chat_history_sourced(sourced, profile);
+    let selected_ids = loaded
+        .source_message_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    loaded.canonical_messages = session
+        .messages
+        .into_iter()
+        .filter(|message| selected_ids.contains(message.id.as_str()))
+        .collect();
+    drop(selected_ids);
     loaded.compacted_tool_results = tool_compaction.compacted;
     loaded.compacted_tool_result_chars = tool_compaction.chars_saved;
     loaded.demoted_tool_invocations = tool_compaction.demoted;
@@ -858,9 +873,14 @@ pub(super) fn compact_chat_history_sourced(
             .map(|m| m.message.content.len())
             .sum::<usize>();
         if total_chars <= max_context_chars {
-            return LoadedChatHistory::from_messages(
-                sourced.into_iter().map(|m| m.message).collect(),
-            );
+            let source_message_ids = sourced
+                .iter()
+                .filter_map(|message| message.source_id.clone())
+                .collect();
+            let mut loaded =
+                LoadedChatHistory::from_messages(sourced.into_iter().map(|m| m.message).collect());
+            loaded.source_message_ids = source_message_ids;
+            return loaded;
         }
     }
 
@@ -904,6 +924,11 @@ pub(super) fn compact_chat_history_sourced(
     }
 
     let pinned_count = pinned.len();
+    let source_message_ids = pinned
+        .iter()
+        .chain(kept.iter())
+        .filter_map(|message| message.source_id.clone())
+        .collect();
     let mut projected = Vec::with_capacity(kept.len() + pinned_count + 1);
     if dropped_count > 0 || pinned_count > 0 {
         let range = match (prefix_first_index, prefix_last_index) {
@@ -945,6 +970,8 @@ pub(super) fn compact_chat_history_sourced(
 
     LoadedChatHistory {
         messages: projected,
+        source_message_ids,
+        canonical_messages: Vec::new(),
         dropped_messages: dropped_count,
         dropped_chars,
         pinned_messages: pinned_count,

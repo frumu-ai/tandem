@@ -610,6 +610,7 @@ include!("app_state_impl_parts/part13.rs");
 include!("app_state_impl_parts/part15.rs");
 include!("app_state_impl_parts/part16.rs");
 include!("app_state_impl_parts/part02.rs");
+include!("app_state_impl_parts/workflow_learning_commit.rs");
 include!("app_state_impl_parts/part21.rs");
 include!("app_state_impl_parts/part19.rs");
 include!("app_state_impl_parts/part10.rs");

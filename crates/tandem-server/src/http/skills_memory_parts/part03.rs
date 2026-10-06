@@ -25,6 +25,12 @@ pub(super) async fn workflow_learning_candidate_promote(
     if candidate.kind != WorkflowLearningCandidateKind::MemoryFact {
         return Err(StatusCode::BAD_REQUEST);
     }
+    let candidate_lineage = crate::memory::derived_lineage::candidate_lineage(&candidate)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let candidate_classification = candidate_lineage.as_ref().map(distillation_classification)
+        .unwrap_or(tandem_memory::MemoryClassification::Internal);
+    let candidate_data_class = candidate_lineage.as_ref().map(DerivedMemoryLineage::output_data_class)
+        .unwrap_or(tandem_types::DataClass::Internal);
     if !matches!(
         candidate.status,
         WorkflowLearningCandidateStatus::Approved | WorkflowLearningCandidateStatus::Applied
@@ -73,8 +79,8 @@ pub(super) async fn workflow_learning_candidate_promote(
                 task_id: Some(candidate.candidate_id.clone()),
                 purpose: "promote approved workflow learning candidate".to_string(),
                 source_binding_id: Some(format!("workflow:{}", candidate.workflow_id)),
-                data_class: Some(tandem_types::DataClass::Internal),
-                classification: tandem_memory::MemoryClassification::Internal,
+                data_class: Some(candidate_data_class),
+                classification: candidate_classification,
                 operation,
                 source_memory_ids,
                 artifact_refs: candidate.artifact_refs.clone(),
@@ -119,6 +125,9 @@ pub(super) async fn workflow_learning_candidate_promote(
             &capability.subject,
             &memory_id,
             &knowledge_scope_policy,
+            DerivedMemoryBackfillCommitContext {
+                partition: session_partition.clone(), capability_expires_at_ms: capability.expires_at,
+            },
         )
         .await?;
         memory_id
@@ -148,21 +157,21 @@ pub(super) async fn workflow_learning_candidate_promote(
             &tenant_context,
             verified_tenant_context.as_deref(),
             MemoryPutRequest {
-                private: false,
+                private: candidate_lineage.as_ref().is_some_and(|lineage| lineage.owner_subject.is_some()),
                 run_id: run_id.clone(),
                 partition: session_partition.clone(),
                 kind: tandem_memory::MemoryContentKind::Fact,
                 content,
                 artifact_refs: candidate.artifact_refs.clone(),
-                classification: tandem_memory::MemoryClassification::Internal,
+                classification: candidate_classification,
                 authority_job_context: Some(authority_job_context),
                 metadata: tandem_memory::metadata_with_knowledge_scope(
-                    Some(json!({
+                    workflow_learning_candidate_memory_metadata(&candidate, Some(json!({
                         "origin": "workflow_learning_candidate",
                         "candidate_id": candidate.candidate_id,
                         "workflow_id": candidate.workflow_id,
                         "kind": workflow_learning_kind_label(candidate.kind),
-                    })),
+                    })))?,
                     &knowledge_scope_policy,
                 ),
             },
@@ -251,6 +260,11 @@ pub(super) async fn workflow_learning_candidate_promote(
     })))
 }
 
+struct DerivedMemoryBackfillCommitContext {
+    partition: tandem_memory::MemoryPartition,
+    capability_expires_at_ms: u64,
+}
+
 async fn backfill_workflow_learning_source_memory_scope(
     state: &AppState,
     tenant_context: &TenantContext,
@@ -258,6 +272,7 @@ async fn backfill_workflow_learning_source_memory_scope(
     caller_subject: &str,
     memory_id: &str,
     knowledge_scope_policy: &tandem_memory::KnowledgeScopePolicy,
+    commit_context: DerivedMemoryBackfillCommitContext,
 ) -> Result<(), StatusCode> {
     let store = open_global_memory_store_for_state(state)
         .await
@@ -311,21 +326,47 @@ async fn backfill_workflow_learning_source_memory_scope(
         knowledge_scope_policy,
     )
     .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let updated = with_verified_memory_decrypt_principal(
-        verified_tenant_context,
-        store.mutate(
-            tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-                scope,
-                id: source.id.clone(),
-                visibility: source.visibility.clone(),
-                demoted: source.demoted,
-                metadata: Some(metadata),
-                provenance: source.provenance.clone(),
-            },
-        ),
-    )
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let derived = source.metadata.as_ref().is_some_and(|value|
+        value.get(tandem_memory::DERIVED_MEMORY_LINEAGE_METADATA_KEY).is_some());
+    let target_reference = if derived {
+        Some(tandem_memory::CanonicalMemoryRestriction::from_global_record(&source, &scope.tenant)
+            .map_err(|_| StatusCode::FORBIDDEN)?.source_reference())
+    } else { None };
+    let source_authority = if derived {
+        let lineage = DerivedMemoryLineage::from_metadata(source.metadata.as_ref())
+            .map_err(|_| StatusCode::FORBIDDEN)?.ok_or(StatusCode::FORBIDDEN)?;
+        let filter = with_verified_memory_decrypt_principal(verified_tenant_context,
+            crate::memory::derived_lineage::resolved_filter_for_lineage(
+                state, tenant_context, store.as_ref(), &scope, &lineage,
+                distillation_access_filter(verified_tenant_context, caller_subject),
+            ),
+        ).await.ok_or(StatusCode::NOT_FOUND)?;
+        let operation_lineage = lineage.clone();
+        let operation_partition = commit_context.partition;
+        let capability_expires_at_ms = commit_context.capability_expires_at_ms;
+        let operation_policy = knowledge_scope_policy.clone();
+        Some(derived_memory_commit_authority_with_lineage(
+            state, tenant_context, verified_tenant_context, lineage, filter, Some(source.clone()),
+            move |now| now < capability_expires_at_ms
+                && operation_lineage.write_scope_decision(&operation_partition, now).is_ok_and(|decision| decision.allowed)
+                && operation_policy.write_decision(&operation_partition, now).allowed,
+        ))
+    } else { None };
+    let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+        scope, id: source.id.clone(), visibility: source.visibility.clone(), demoted: source.demoted,
+        metadata: Some(metadata), provenance: source.provenance.clone(),
+    };
+    let updated = if derived {
+        let original = verified_tenant_context.cloned();
+        let authority = source_authority.ok_or(StatusCode::FORBIDDEN)?;
+        let expected = target_reference.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        commit_derived_memory_with_current_policy(state, tenant_context, verified_tenant_context,
+            async move { with_verified_memory_decrypt_principal(original.as_ref(),
+                store.mutate_with_commit_authority_if_unchanged(mutation, expected, authority)).await },
+        ).await?
+    } else {
+        with_verified_memory_decrypt_principal(verified_tenant_context, store.mutate(mutation)).await
+    }.map_err(derived_memory_commit_error_status)?;
     if !matches!(
         updated,
         tandem_memory::MemoryStoreMutationResult::Changed(true)
@@ -691,10 +732,10 @@ pub(super) async fn memory_list(
             };
             let row_count = rows.len();
             for row in rows {
-                if !global_memory_record_visible_to_access_filter(
-                    &row,
-                    source_access_filter.as_ref(),
-                ) {
+                if !global_memory_record_visible_to_verified_request(
+                    &state, &tenant_context, verified_tenant_context, store.as_ref(), &scope,
+                    &row, source_access_filter.as_ref(),
+                ).await {
                     continue;
                 }
                 if authorized_seen >= offset && authorized_page.len() < limit {

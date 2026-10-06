@@ -31,6 +31,7 @@ pub struct SessionDistiller {
     providers: Arc<ProviderRegistry>,
     importance_threshold: f64,
     provider_egress: Option<MemoryProviderEgressContext>,
+    source_message_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -83,6 +84,7 @@ impl SessionDistiller {
             providers,
             importance_threshold: 0.5,
             provider_egress: None,
+            source_message_ids: Vec::new(),
         }
     }
 
@@ -91,11 +93,19 @@ impl SessionDistiller {
             providers,
             importance_threshold,
             provider_egress: None,
+            source_message_ids: Vec::new(),
         }
     }
 
     pub fn with_provider_egress(mut self, provider_egress: MemoryProviderEgressContext) -> Self {
         self.provider_egress = Some(provider_egress);
+        self
+    }
+
+    /// Only the server's canonical input resolver assigns these identifiers.
+    /// IDs returned by the model are deliberately ignored during parsing.
+    pub fn with_source_message_ids(mut self, source_message_ids: Vec<String>) -> Self {
+        self.source_message_ids = source_message_ids;
         self
     }
 
@@ -258,7 +268,7 @@ impl SessionDistiller {
                 content: e.content,
                 category: parse_category(&e.category),
                 importance_score: e.importance,
-                source_message_ids: Vec::new(),
+                source_message_ids: self.source_message_ids.clone(),
                 contradicts_fact_id: None,
             })
             .collect();

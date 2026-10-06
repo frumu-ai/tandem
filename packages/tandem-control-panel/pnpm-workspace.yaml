@@ -6,6 +6,7 @@ allowBuilds:
   '@frumu/tandem': true
   esbuild: true
 overrides:
+  'source-map-js@>=1.0.0 <1.2.2': 1.2.2
   'esbuild@>=0.27.3 <0.28.1': 0.28.1
   'nanoid@>=3.0.0 <3.3.18': 3.3.18
   'postcss@<=8.5.22': 8.5.23

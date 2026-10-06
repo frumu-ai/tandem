@@ -74,8 +74,8 @@ impl PostgresMemoryStore {
                 private BOOLEAN NOT NULL,
                 tenant_shared BOOLEAN NOT NULL DEFAULT false,
                 data_class TEXT NOT NULL DEFAULT 'internal',
-                source_binding_id TEXT,
-                user_id TEXT NOT NULL,
+                 source_binding_id TEXT,
+                 user_id TEXT NOT NULL,
                 source_type TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
                 run_id TEXT NOT NULL,
@@ -92,7 +92,7 @@ impl PostgresMemoryStore {
                 data_ciphertext TEXT,
                 data_envelope JSONB,
                 data_policy_decision_id TEXT,
-                data_audit_id TEXT
+                 data_audit_id TEXT
             );
             CREATE INDEX IF NOT EXISTS tandem_memory_global_scope_idx ON tandem_memory_global_records
                 (tenant_org_id, tenant_workspace_id, tenant_deployment_id,
@@ -155,6 +155,7 @@ impl PostgresMemoryStore {
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_audit_id TEXT;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_class TEXT NOT NULL DEFAULT 'internal';
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS source_binding_id TEXT;
+                 ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS derived_lineage_digest TEXT NOT NULL DEFAULT '';
                  DROP INDEX IF EXISTS tandem_memory_global_dedupe_idx;
                  CREATE UNIQUE INDEX tandem_memory_global_dedupe_idx
                    ON tandem_memory_global_records (
@@ -162,7 +163,7 @@ impl PostgresMemoryStore {
                      source_type, content_hash, run_id, COALESCE(session_id, ''),
                      COALESCE(message_id, ''), COALESCE(tool_name, ''),
                      COALESCE(owner_org_unit_id, ''), private, COALESCE(owner_subject, ''),
-                     data_class, COALESCE(source_binding_id, ''), tenant_shared);
+                      data_class, COALESCE(source_binding_id, ''), tenant_shared, derived_lineage_digest);
                  ALTER TABLE tandem_memory_entities ALTER COLUMN data DROP NOT NULL;
                  ALTER TABLE tandem_memory_entities ADD COLUMN IF NOT EXISTS data_ciphertext TEXT;
                  ALTER TABLE tandem_memory_entities ADD COLUMN IF NOT EXISTS data_envelope JSONB;
@@ -195,6 +196,14 @@ impl PostgresMemoryStore {
             .map_err(|error| {
                 store_error("record PostgreSQL global sharing migration", error, false)
             })?;
+        transaction
+            .execute(
+                "INSERT INTO tandem_memory_schema_migrations(version, name)
+             VALUES (8, 'derived_memory_lineage_dedupe') ON CONFLICT (version) DO NOTHING",
+                &[],
+            )
+            .await
+            .map_err(|error| store_error("record PostgreSQL lineage migration", error, false))?;
         let vector_type: String = transaction
             .query_one(
                 "SELECT format_type(atttypid, atttypmod) FROM pg_attribute

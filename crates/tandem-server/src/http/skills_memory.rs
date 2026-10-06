@@ -28,6 +28,20 @@ async fn workflow_learning_candidate_access(
     candidate: &WorkflowLearningCandidate,
     mutation: bool,
 ) -> bool {
+    workflow_learning_candidate_source_access(state, tenant, verified, candidate, mutation).await
+        && crate::memory::derived_lineage::candidate_lineage_readable(
+            state, tenant, verified, candidate,
+        )
+        .await
+}
+
+async fn workflow_learning_candidate_source_access(
+    state: &AppState,
+    tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    candidate: &WorkflowLearningCandidate,
+    mutation: bool,
+) -> bool {
     if tenant.is_local_implicit() {
         return true;
     }
@@ -164,25 +178,3 @@ include!("skills_memory_parts/part04_b.rs");
 include!("skills_memory_parts/part03.rs");
 include!("skills_memory_parts/part05.rs");
 include!("skills_memory_parts/part07.rs");
-
-impl GovernedDistillationWriter {
-    async fn source_binding(
-        &self,
-        session_id: &str,
-    ) -> tandem_memory::types::MemoryResult<WorkflowLearningCandidateSourceBinding> {
-        workflow_learning_distillation_source_binding(
-            &self.state,
-            &self.tenant_context,
-            self.verified_tenant_context.as_ref(),
-            self.workflow_id.as_deref(),
-            session_id,
-            &self.subject,
-        )
-        .await
-        .map_err(|status| {
-            tandem_memory::types::MemoryError::InvalidConfig(format!(
-                "workflow learning candidate source access denied: {status}"
-            ))
-        })
-    }
-}

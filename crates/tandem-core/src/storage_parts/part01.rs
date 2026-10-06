@@ -1308,6 +1308,7 @@ fn load_legacy_session_messages(base: &Path, session_id: &str) -> Vec<Message> {
                 role: legacy_role_to_message_role(&legacy.role),
                 parts: load_legacy_message_parts(base, &legacy.id),
                 created_at,
+                source_lineage: None,
             },
         ));
     }

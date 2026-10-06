@@ -235,18 +235,35 @@ async fn matrix_distillation_output_scoped_to_writing_tenant() {
     )
     .await;
 
+    let conversation = vec![
+        "user: our operations team needs the metric dashboards to stay fresh because stale numbers keep causing bad rollout decisions during weekly planning reviews".to_string(),
+        "assistant: understood — I will refresh the metric dashboards hourly, annotate each panel with its last-updated timestamp, and flag any feed that lags behind the hourly cadence".to_string(),
+        "user: also make sure the refresh preference is remembered for future reporting sessions so we never have to repeat this setup conversation again".to_string(),
+        "assistant: noted as a durable preference: tenant A prefers metric dashboards refreshed hourly with visible freshness timestamps on every reporting surface".to_string(),
+    ];
+    let mut session = tandem_types::Session::new(Some("tenant distillation".to_string()), None);
+    session.id = "matrix-distill-session".to_string();
+    session.project_id = Some("proj-a".to_string());
+    session.tenant_context = super::workflow_learning::hosted_learning_tenant("alice");
+    session.verified_tenant_context = Some(super::workflow_learning::hosted_learning_verified(&state, "alice"));
+    session.messages = conversation
+        .iter()
+        .map(|text| {
+            tandem_types::Message::new(
+                tandem_types::MessageRole::User,
+                vec![tandem_types::MessagePart::Text { text: text.clone() }],
+            )
+        })
+        .collect();
+    state.storage.save_session(session).await.expect("canonical tenant session");
+
     let (status, payload) = super::workflow_learning::hosted_learning_request(
         super::workflow_learning::hosted_learning_router(state.clone(), "alice"),
         "POST",
         "/memory/context/distill",
         Some(json!({
             "session_id": "matrix-distill-session",
-            "conversation": [
-                "user: our operations team needs the metric dashboards to stay fresh because stale numbers keep causing bad rollout decisions during weekly planning reviews",
-                "assistant: understood — I will refresh the metric dashboards hourly, annotate each panel with its last-updated timestamp, and flag any feed that lags behind the hourly cadence",
-                "user: also make sure the refresh preference is remembered for future reporting sessions so we never have to repeat this setup conversation again",
-                "assistant: noted as a durable preference: tenant A prefers metric dashboards refreshed hourly with visible freshness timestamps on every reporting surface"
-            ],
+            "conversation": conversation,
             "project_id": "proj-a"
         })),
     )

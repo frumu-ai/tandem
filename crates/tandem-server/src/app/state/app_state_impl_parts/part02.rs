@@ -1228,15 +1228,19 @@ impl AppState {
     }
 
     pub async fn persist_workflow_learning_candidates(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.workflow_learning_candidates_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        let payload = {
-            let guard = self.workflow_learning_candidates.read().await;
-            serde_json::to_string_pretty(&*guard)?
-        };
-        fs::write(&self.workflow_learning_candidates_path, payload).await?;
-        Ok(())
+        let state = self.clone();
+        tokio::spawn(async move {
+            // Keep the actual writer and filesystem operation owned if the
+            // ordinary caller cancels, too: an older payload must not finish
+            // writing after a newer guarded atomic publication.
+            let guard = state.workflow_learning_candidates.write().await;
+            if let Some(parent) = state.workflow_learning_candidates_path.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            let payload = serde_json::to_string_pretty(&*guard)?;
+            fs::write(&state.workflow_learning_candidates_path, payload).await?;
+            Ok(())
+        }).await?
     }
 
     pub async fn get_workflow_learning_candidate(
@@ -1298,88 +1302,15 @@ impl AppState {
 
     pub async fn upsert_workflow_learning_candidate(
         &self,
-        mut candidate: WorkflowLearningCandidate,
+        candidate: WorkflowLearningCandidate,
     ) -> anyhow::Result<WorkflowLearningCandidate> {
-        let now = now_ms();
-        if candidate.candidate_id.trim().is_empty() {
-            candidate.candidate_id = format!("wflearn-{}", uuid::Uuid::new_v4());
-        }
-        if candidate.created_at_ms == 0 {
-            candidate.created_at_ms = now;
-        }
-        candidate.updated_at_ms = now;
-
         let stored = {
-            let mut guard = self.workflow_learning_candidates.write().await;
-            if let Some(existing) = guard.values_mut().find(|row| {
-                row.workflow_id == candidate.workflow_id
-                    && row.kind == candidate.kind
-                    && row.fingerprint == candidate.fingerprint
-                    && row.source_binding == candidate.source_binding
-            }) {
-                existing.summary = candidate.summary.clone();
-                existing.confidence = existing.confidence.max(candidate.confidence);
-                existing.updated_at_ms = now;
-                if existing.node_id.is_none() {
-                    existing.node_id = candidate.node_id.clone();
-                }
-                if existing.node_kind.is_none() {
-                    existing.node_kind = candidate.node_kind.clone();
-                }
-                if existing.validator_family.is_none() {
-                    existing.validator_family = candidate.validator_family.clone();
-                }
-                if existing.proposed_memory_payload.is_none() {
-                    existing.proposed_memory_payload = candidate.proposed_memory_payload.clone();
-                }
-                if existing.proposed_revision_prompt.is_none() {
-                    existing.proposed_revision_prompt = candidate.proposed_revision_prompt.clone();
-                }
-                if existing.source_memory_id.is_none() {
-                    existing.source_memory_id = candidate.source_memory_id.clone();
-                }
-                if existing.promoted_memory_id.is_none() {
-                    existing.promoted_memory_id = candidate.promoted_memory_id.clone();
-                }
-                if existing.baseline_before.is_none() {
-                    existing.baseline_before = candidate.baseline_before.clone();
-                }
-                if candidate.latest_observed_metrics.is_some() {
-                    existing.latest_observed_metrics = candidate.latest_observed_metrics.clone();
-                }
-                if candidate.last_revision_session_id.is_some() {
-                    existing.last_revision_session_id = candidate.last_revision_session_id.clone();
-                }
-                existing.needs_plan_bundle |= candidate.needs_plan_bundle;
-                for artifact_ref in candidate.artifact_refs {
-                    if !existing
-                        .artifact_refs
-                        .iter()
-                        .any(|value| value == &artifact_ref)
-                    {
-                        existing.artifact_refs.push(artifact_ref);
-                    }
-                }
-                for run_id in candidate.run_ids {
-                    if !existing.run_ids.iter().any(|value| value == &run_id) {
-                        existing.run_ids.push(run_id);
-                    }
-                }
-                for evidence_ref in candidate.evidence_refs {
-                    if !existing.evidence_refs.contains(&evidence_ref) {
-                        existing.evidence_refs.push(evidence_ref);
-                    }
-                }
-                existing.clone()
-            } else {
-                guard.insert(candidate.candidate_id.clone(), candidate.clone());
-                candidate
-            }
+            let mut rows = self.workflow_learning_candidates.write().await;
+            merge_workflow_learning_candidate(&mut rows, candidate)
         };
         self.persist_workflow_learning_candidates().await?;
         Ok(stored)
     }
-
     pub async fn update_workflow_learning_candidate(
         &self,
         candidate_id: &str,
@@ -1409,6 +1340,15 @@ impl AppState {
         automation: &AutomationV2Spec,
         node: &AutomationFlowNode,
     ) -> (Vec<String>, Option<String>) {
+        self.workflow_learning_context_for_automation_node_session(automation, node, None).await
+    }
+
+    pub async fn workflow_learning_context_for_automation_node_session(
+        &self,
+        automation: &AutomationV2Spec,
+        node: &AutomationFlowNode,
+        execution_session_id: Option<&str>,
+    ) -> (Vec<String>, Option<String>) {
         let project_id = crate::app::state::automation::workflow_learning_project_id(automation);
         let node_kind = node
             .stage_kind
@@ -1435,6 +1375,32 @@ impl AppState {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let execution_session = match execution_session_id {
+            Some(id) => self.storage.get_session(id).await,
+            None => None,
+        };
+        let automation_tenant = automation.tenant_context();
+        let mut authorized_candidates = Vec::new();
+        for candidate in candidates {
+            match crate::memory::derived_lineage::candidate_lineage(&candidate) {
+                Ok(None) => authorized_candidates.push(candidate),
+                Err(_) => {},
+                Ok(Some(_)) => {
+                    let (tenant, verified) = match execution_session.as_ref() {
+                        Some(session) if session.tenant_context.org_id == automation_tenant.org_id
+                            && session.tenant_context.workspace_id == automation_tenant.workspace_id
+                            && session.tenant_context.deployment_id == automation_tenant.deployment_id =>
+                            (&session.tenant_context, session.verified_tenant_context.as_ref()),
+                        _ if automation_tenant.is_local_implicit() => (&automation_tenant, None),
+                        _ => continue,
+                    };
+                    if crate::memory::derived_lineage::candidate_lineage_readable(
+                        self, tenant, verified, &candidate,
+                    ).await { authorized_candidates.push(candidate); }
+                }
+            }
+        }
+        let candidates = authorized_candidates;
         let mut ordered = Vec::new();
         let mut push_unique = |candidate: WorkflowLearningCandidate| {
             if ordered.iter().any(|existing: &WorkflowLearningCandidate| {
