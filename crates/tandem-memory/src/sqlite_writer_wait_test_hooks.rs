@@ -66,7 +66,10 @@ impl MemoryDatabase {
         observer: MemorySqliteWriterWaitObserver,
     ) -> MemoryStoreResult<MemorySqliteWriterWaitGuard> {
         let mut slot = self.sqlite_writer_wait_observer.lock().map_err(|_| {
-            MemoryStoreError::new(MemoryStoreErrorKind::Internal, "writer observer lock failed")
+            MemoryStoreError::new(
+                MemoryStoreErrorKind::Internal,
+                "writer observer lock failed",
+            )
         })?;
         if slot.is_some() {
             return Err(MemoryStoreError::new(
@@ -84,17 +87,27 @@ impl MemoryDatabase {
         &self,
         connection: &Connection,
     ) -> MemoryStoreResult<Option<BusyCallbackScope>> {
-        let observer = self.sqlite_writer_wait_observer.lock().map_err(|_| {
-            MemoryStoreError::new(MemoryStoreErrorKind::Internal, "writer observer lock failed")
-        })?.clone();
-        let Some(observer) = observer else { return Ok(None); };
+        let observer = self
+            .sqlite_writer_wait_observer
+            .lock()
+            .map_err(|_| {
+                MemoryStoreError::new(
+                    MemoryStoreErrorKind::Internal,
+                    "writer observer lock failed",
+                )
+            })?
+            .clone();
+        let Some(observer) = observer else {
+            return Ok(None);
+        };
         let mut state = Box::new(BusyCallbackState { observer });
         // SAFETY: this handle stays valid under the caller's connection mutex.
         let handle = unsafe { connection.handle() };
         let context = (&mut *state as *mut BusyCallbackState).cast::<c_void>();
         // SAFETY: the returned scope keeps userdata allocated and resets the
         // callback before freeing it. No other task can use this connection.
-        let status = unsafe { ffi::sqlite3_busy_handler(handle, Some(observe_busy_writer), context) };
+        let status =
+            unsafe { ffi::sqlite3_busy_handler(handle, Some(observe_busy_writer), context) };
         if status != ffi::SQLITE_OK {
             unsafe { ffi::sqlite3_busy_timeout(handle, 10_000) };
             return Err(MemoryStoreError::new(
@@ -102,6 +115,9 @@ impl MemoryDatabase {
                 "could not install the SQLite writer-wait observer",
             ));
         }
-        Ok(Some(BusyCallbackScope { connection: handle, _state: state }))
+        Ok(Some(BusyCallbackScope {
+            connection: handle,
+            _state: state,
+        }))
     }
 }

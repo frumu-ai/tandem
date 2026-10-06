@@ -63,7 +63,20 @@ fn read_scope() -> MemoryReadScope {
 }
 
 fn filter() -> crate::types::MemoryAccessFilter {
+    filter_with_data_classes(&[])
+}
+
+fn filter_with_data_classes(classes: &[DataClass]) -> crate::types::MemoryAccessFilter {
     let now = Utc::now().timestamp_millis().max(0) as u64;
+    // Unrestricted projections without Read grants deliberately fall back to
+    // the governed default. Supply only the fixture's actual authorized classes;
+    // this class boundary does not grant access to source/knowledge resources.
+    let mut allowed = vec![DataClass::Internal];
+    for class in classes {
+        if !allowed.contains(class) {
+            allowed.push(*class);
+        }
+    }
     let strict = StrictTenantContext::new(
         TenantContext::explicit_user_workspace("lineage-org", "lineage-workspace", None, "alice"),
         PrincipalRef::human_user("alice"),
@@ -79,7 +92,7 @@ fn filter() -> crate::types::MemoryAccessFilter {
         )),
         AssertionMetadata::new("test", "runtime", now, now + 60_000, "consolidation-test"),
     )
-    .with_data_boundary(DataBoundary::unrestricted());
+    .with_data_boundary(DataBoundary::allow(allowed));
     crate::types::MemoryAccessFilter::strict(strict, now)
         .with_caller_subject("alice")
         .with_caller_org_units(["finance".to_string()])
@@ -324,6 +337,18 @@ async fn consolidation_preserves_lineage_classes_and_hides_summary_after_source_
     let financial = source("financial-source", DataClass::FinancialRecord);
     let code = source("code-source", DataClass::SourceCode);
     let lineage = seed(store.as_ref(), &[financial.clone(), code], false).await;
+    let access = filter_with_data_classes(&[DataClass::FinancialRecord, DataClass::SourceCode]);
+    let proof = crate::resolve_derived_lineage(store.as_ref(), &read_scope(), &lineage)
+        .await
+        .unwrap();
+    assert!(
+        access
+            .clone()
+            .with_resolved_derived_lineage(proof)
+            .decision_for_derived_lineage(&lineage)
+            .allowed,
+        "the healthy fixture must authorize its actual contributing classes"
+    );
     let manager = manager(store.clone());
     let calls = Arc::new(AtomicUsize::new(0));
     let providers = registry(calls.clone(), None).await;
@@ -343,7 +368,7 @@ async fn consolidation_preserves_lineage_classes_and_hides_summary_after_source_
             &providers,
             &config(),
             &egress,
-            Some(&filter()),
+            Some(&access),
         )
         .await
         .unwrap();
@@ -414,6 +439,7 @@ async fn consolidation_denied_grant_or_missing_native_resolver_never_dispatches_
             "data_class":"financial_record"});
         }
         seed(store.as_ref(), &[record], native).await;
+        let access = filter_with_data_classes(&[DataClass::FinancialRecord]);
         let manager = manager(store.clone());
         let calls = Arc::new(AtomicUsize::new(0));
         let providers = registry(calls.clone(), None).await;
@@ -424,7 +450,7 @@ async fn consolidation_denied_grant_or_missing_native_resolver_never_dispatches_
                 &providers,
                 &config(),
                 &egress,
-                Some(&filter()),
+                Some(&access),
             )
             .await
             .unwrap_err();
@@ -432,7 +458,7 @@ async fn consolidation_denied_grant_or_missing_native_resolver_never_dispatches_
             error.to_string().contains(if native {
                 "authority unavailable"
             } else {
-                "lineage denied"
+                "no_matching_allow_grant"
             }),
             "{error}"
         );
@@ -472,6 +498,7 @@ async fn consolidation_rechecks_source_after_provider_before_summary_write() {
     );
     let record = source("provider-revoked-source", DataClass::FinancialRecord);
     seed(store.as_ref(), &[record.clone()], false).await;
+    let access = filter_with_data_classes(&[DataClass::FinancialRecord]);
     let manager = manager(store.clone());
     let calls = Arc::new(AtomicUsize::new(0));
     let providers = registry(calls.clone(), Some((store.clone(), record.id.clone()))).await;
@@ -482,7 +509,7 @@ async fn consolidation_rechecks_source_after_provider_before_summary_write() {
             &providers,
             &config(),
             &egress,
-            Some(&filter()),
+            Some(&access),
         )
         .await
         .unwrap_err();
@@ -531,7 +558,8 @@ async fn consolidation_mixed_denied_ordinary_source_never_dispatches_or_replaces
         let proof = crate::resolve_derived_lineage(store.as_ref(), &read_scope(), &lineage)
             .await
             .unwrap();
-        let access = filter().with_resolved_derived_lineage(proof);
+        let access = filter_with_data_classes(&[DataClass::FinancialRecord, DataClass::Confidential])
+            .with_resolved_derived_lineage(proof);
         let derived = chunks(
             store.as_ref(),
             MemoryChunkSelector::session("lineage-session"),
@@ -580,9 +608,15 @@ async fn consolidation_mixed_denied_ordinary_source_never_dispatches_or_replaces
                 },
             );
         }
+        let denial = access.decision_for_chunk(&denied);
         assert!(
-            !access.allows_chunk(&denied),
+            !denial.allowed,
             "same private owner cannot replace the absent source/knowledge grant"
+        );
+        assert_eq!(
+            denial.reason.as_deref(),
+            Some("no_matching_allow_grant"),
+            "the negative must reach the missing resource grant, not a class-boundary denial"
         );
         put_ordinary(store.as_ref(), denied).await;
         let manager = manager(store.clone());
@@ -654,7 +688,11 @@ async fn consolidation_governed_unrepresentable_ordinary_and_mixed_inputs_fail_c
         if kind == "source_path" {
             ordinary.source_path = Some("governed/source.txt".into());
         }
-        let access = filter();
+        let access = if kind == "classified" {
+            filter_with_data_classes(&[DataClass::FinancialRecord])
+        } else {
+            filter()
+        };
         assert!(
             access.allows_chunk(&ordinary),
             "fixture must reach the unrepresentable-disposition gate, not an unrelated read denial"
