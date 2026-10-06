@@ -54,8 +54,9 @@ async fn hosted_revision_plan(state: &AppState, actor: &str) -> (String, String)
         .put_automation_v2(source)
         .await
         .expect("private source");
-    state
-        .put_workflow_learning_candidate(candidate_for_workflow(
+    put_hosted_learning_candidate(
+        state,
+        candidate_for_workflow(
             sample_candidate(
                 &candidate_id,
                 &source.automation_id,
@@ -63,9 +64,10 @@ async fn hosted_revision_plan(state: &AppState, actor: &str) -> (String, String)
                 crate::WorkflowLearningCandidateStatus::Approved,
             ),
             &source,
-        ))
-        .await
-        .expect("private candidate");
+        ),
+    )
+    .await
+    .expect("private candidate");
     let app = hosted_pack_router(state.clone(), actor);
     let (status, payload) = hosted_learning_request(
         app,

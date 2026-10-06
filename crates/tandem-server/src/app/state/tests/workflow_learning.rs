@@ -188,10 +188,11 @@ async fn workflow_learning_candidate_status_updates_roundtrip() {
     ];
     for status in statuses {
         let updated = state
-            .update_workflow_learning_candidate("wflearn-status", |candidate| {
+            .update_workflow_learning_candidate("wflearn-status", move |candidate| {
                 candidate.status = status;
             })
             .await
+            .expect("candidate update persisted")
             .expect("updated candidate");
         assert_eq!(updated.status, status);
     }

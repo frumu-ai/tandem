@@ -882,7 +882,7 @@ impl AppState {
         let _ = self.load_incident_monitor_intake_keys().await;
         let _ = self.load_external_actions().await;
         let _ = self.load_workflow_planner_sessions().await;
-        let _ = self.load_workflow_learning_candidates().await;
+        self.load_workflow_learning_candidates().await?;
         let _ = self.load_context_packs().await;
         let _ = self.load_workflow_runs().await;
         let _ = self.load_workflow_hook_overrides().await;

@@ -120,6 +120,55 @@ jobs:
           RUST_MIN_STACK: '16777216'
         run: cargo test --locked -p tandem-server --lib agent_teams::solution_templates::tests
 
+      - name: Test candidate encrypted storage on each native platform
+        env:
+          RUST_MIN_STACK: '16777216'
+          TANDEM_HOME: ${{ runner.temp }}/tandem-candidate-test-home
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix='app::state::tests::encrypted_file_stores::candidate_store::'
+          cargo test --locked -p tandem-server --lib "$prefix" -- --list > "$RUNNER_TEMP/candidate-store-tests.txt"
+          for test_name in \
+            complete_hosted_snapshot_hides_all_markers_and_cold_reopens_private_binding \
+            tamper_schema_and_wrong_context_load_fail_without_erasing_cache \
+            hosted_crypto_failure_and_legacy_plaintext_fail_closed \
+            genuine_local_legacy_map_migrates_before_cache_replacement \
+            ordinary_put_upsert_update_seal_and_cold_roundtrip \
+            injected_write_and_sync_failures_preserve_cache_durable_bytes_and_cleanup \
+            prepared_file_real_rename_failure_preserves_original_and_cleans_temp \
+            startup_rejects_malformed_candidate_store_without_erasing_source \
+            warm_hosted_key_failure_after_prepared_file_refuses_publication \
+            queued_local_capture_rejects_current_hosted_policy_after_writer_wait \
+            absent_standalone_store_needs_no_key_until_first_required_write \
+            missing_initialized_candidate_store_refuses_load_and_ordinary_mutations
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/candidate-store-tests.txt"
+          done
+          cargo test --locked -p tandem-server --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/candidate-store-results.txt"
+          grep -Eq 'test result: ok\. 12 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/candidate-store-results.txt"
+          prefix='encrypted_file_store::runtime_identity_tests::'
+          cargo test --locked -p tandem-server --lib "$prefix" -- --list > "$RUNNER_TEMP/file-runtime-identity-tests.txt"
+          for test_name in \
+            hosted_file_seal_rejects_missing_or_wrong_runtime_before_kms_or_cache \
+            hosted_file_cold_unseal_rejects_wrong_runtime_before_kms \
+            hosted_pending_file_seal_and_open_preserve_unavailable_provider_error \
+            hosted_file_warm_unseal_rejects_wrong_runtime_without_cache_bypass \
+            hosted_file_incoherent_runtime_handles_deny_seal_and_unseal \
+            hosted_file_provider_aliases_preserve_exact_runtime_binding \
+            local_file_crypto_keeps_standalone_roundtrip_without_runtime_principal \
+            generic_scoped_retrieval_keeps_distinct_caller_identity
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/file-runtime-identity-tests.txt"
+          done
+          cargo test --locked -p tandem-server --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/file-runtime-identity-results.txt"
+          grep -Eq 'test result: ok\. 8 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/file-runtime-identity-results.txt"
+          test_name='http::skills_memory::derived_lineage_commit_tests::side_effect_tests::candidate_io_tests::tan_829_missing_candidate_store_denies_guarded_writer_and_recovers'
+          cargo test --locked -p tandem-server --lib "$test_name" -- --list > "$RUNNER_TEMP/guarded-missing-candidate-tests.txt"
+          grep -Fxq "${test_name}: test" "$RUNNER_TEMP/guarded-missing-candidate-tests.txt"
+          cargo test --locked -p tandem-server --lib "$test_name" -- --exact --nocapture --test-threads=1 | tee "$RUNNER_TEMP/guarded-missing-candidate-results.txt"
+          grep -Eq 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/guarded-missing-candidate-results.txt"
+
       # Tenant-isolation and storage suites that previously never ran in CI.
       # The tandem-memory suite was silently dead on main (broken include!)
       # until 2026-06; this step keeps these crates from going dark again.

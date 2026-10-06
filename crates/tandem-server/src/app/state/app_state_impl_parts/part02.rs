@@ -1214,35 +1214,6 @@ impl AppState {
             .and_then(AutomationV2Spec::approved_plan_materialization)
     }
 
-    pub async fn load_workflow_learning_candidates(&self) -> anyhow::Result<()> {
-        if !self.workflow_learning_candidates_path.exists() {
-            return Ok(());
-        }
-        let raw = fs::read_to_string(&self.workflow_learning_candidates_path).await?;
-        let parsed = serde_json::from_str::<
-            std::collections::HashMap<String, WorkflowLearningCandidate>,
-        >(&raw)
-        .unwrap_or_default();
-        *self.workflow_learning_candidates.write().await = parsed;
-        Ok(())
-    }
-
-    pub async fn persist_workflow_learning_candidates(&self) -> anyhow::Result<()> {
-        let state = self.clone();
-        tokio::spawn(async move {
-            // Keep the actual writer and filesystem operation owned if the
-            // ordinary caller cancels, too: an older payload must not finish
-            // writing after a newer guarded atomic publication.
-            let guard = state.workflow_learning_candidates.write().await;
-            if let Some(parent) = state.workflow_learning_candidates_path.parent() {
-                fs::create_dir_all(parent).await?;
-            }
-            let payload = serde_json::to_string_pretty(&*guard)?;
-            fs::write(&state.workflow_learning_candidates_path, payload).await?;
-            Ok(())
-        }).await?
-    }
-
     pub async fn get_workflow_learning_candidate(
         &self,
         candidate_id: &str,
@@ -1278,53 +1249,6 @@ impl AppState {
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
         rows
-    }
-
-    pub async fn put_workflow_learning_candidate(
-        &self,
-        mut candidate: WorkflowLearningCandidate,
-    ) -> anyhow::Result<WorkflowLearningCandidate> {
-        if candidate.candidate_id.trim().is_empty() {
-            anyhow::bail!("candidate_id is required");
-        }
-        let now = now_ms();
-        if candidate.created_at_ms == 0 {
-            candidate.created_at_ms = now;
-        }
-        candidate.updated_at_ms = now;
-        self.workflow_learning_candidates
-            .write()
-            .await
-            .insert(candidate.candidate_id.clone(), candidate.clone());
-        self.persist_workflow_learning_candidates().await?;
-        Ok(candidate)
-    }
-
-    pub async fn upsert_workflow_learning_candidate(
-        &self,
-        candidate: WorkflowLearningCandidate,
-    ) -> anyhow::Result<WorkflowLearningCandidate> {
-        let stored = {
-            let mut rows = self.workflow_learning_candidates.write().await;
-            merge_workflow_learning_candidate(&mut rows, candidate)
-        };
-        self.persist_workflow_learning_candidates().await?;
-        Ok(stored)
-    }
-    pub async fn update_workflow_learning_candidate(
-        &self,
-        candidate_id: &str,
-        update: impl FnOnce(&mut WorkflowLearningCandidate),
-    ) -> Option<WorkflowLearningCandidate> {
-        let updated = {
-            let mut guard = self.workflow_learning_candidates.write().await;
-            let candidate = guard.get_mut(candidate_id)?;
-            update(candidate);
-            candidate.updated_at_ms = now_ms();
-            candidate.clone()
-        };
-        let _ = self.persist_workflow_learning_candidates().await;
-        Some(updated)
     }
 
     pub async fn workflow_learning_metrics_for_workflow(

@@ -17,7 +17,12 @@ use tandem_memory::{
 };
 use tokio::fs;
 
+mod captured;
 mod integrity;
+#[cfg(test)]
+mod runtime_identity_tests;
+
+pub(crate) use captured::{CapturedFileCryptoConfiguration, CapturedRequiredFileCrypto};
 
 pub(crate) use integrity::{
     append_jsonl_record_file, append_jsonl_record_file_with_anchor, migrate_jsonl_records_file,
@@ -155,12 +160,31 @@ impl ProtectedFileCrypto {
         Ok(())
     }
 
+    fn validate_hosted_runtime_principal(&self) -> anyhow::Result<()> {
+        if self.provider.is_hosted() {
+            // Keep unavailable-provider diagnostics when no runtime id resolves.
+            if !self.provider.is_encrypted_ready() {
+                self.provider
+                    .validate_hosted_runtime_principal("")
+                    .context("validate protected file-store runtime principal")?;
+            }
+            let principal_id = self.principal_id.as_deref().context(
+                "protected file-store hosted crypto requires a configured runtime principal",
+            )?;
+            self.provider
+                .validate_hosted_runtime_principal(principal_id)
+                .context("validate protected file-store runtime principal")?;
+        }
+        Ok(())
+    }
+
     fn encrypt_record(
         &self,
         plaintext: &str,
         context: &ProtectedRecordContext,
     ) -> anyhow::Result<String> {
         Self::validate_context(context)?;
+        self.validate_hosted_runtime_principal()?;
         if self.provider.is_plaintext() {
             return Ok(plaintext.to_string());
         }
@@ -201,6 +225,7 @@ impl ProtectedFileCrypto {
         expected: &ProtectedRecordContext,
     ) -> anyhow::Result<String> {
         Self::validate_context(expected)?;
+        self.validate_hosted_runtime_principal()?;
         if let Some(encoded) = stored.strip_prefix(SCOPED_RECORD_PREFIX) {
             let record = serde_json::from_str::<ScopedEncryptedRecord>(encoded)
                 .context("parse scoped protected file-store envelope")?;
@@ -419,6 +444,13 @@ pub(crate) fn decrypt_text_required(
 
 pub(crate) fn validate_hosted_crypto_ready(context: &ProtectedRecordContext) -> anyhow::Result<()> {
     let crypto = crypto();
+    validate_hosted_crypto_handle_ready(&crypto, context)
+}
+
+fn validate_hosted_crypto_handle_ready(
+    crypto: &ProtectedFileCrypto,
+    context: &ProtectedRecordContext,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         crypto.provider.is_hosted(),
         "hosted governance encryption is required but the KMS provider is unavailable"

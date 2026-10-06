@@ -222,6 +222,21 @@ impl MemoryCryptoProvider {
         )
     }
 
+    /// Validate a runtime-only caller against the captured hosted provider and
+    /// broker. This does not restrict generic scoped retrieval principals.
+    pub fn validate_hosted_runtime_principal(&self, principal_id: &str) -> MemoryResult<()> {
+        match &self.inner {
+            CryptoInner::Hosted(hosted) => hosted.validate_runtime_principal(principal_id),
+            CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
+                "hosted memory encryption requires a provisioned KMS provider; refusing to store plaintext (fail-closed)"
+                    .to_string(),
+            )),
+            _ => Err(MemoryError::InvalidConfig(
+                "runtime principal validation requires a captured hosted memory provider".to_string(),
+            )),
+        }
+    }
+
     /// Clear cached hosted DEKs so an operational readiness check can exercise
     /// the configured KMS unwrap path. This is a no-op outside hosted mode.
     pub fn clear_hosted_dek_cache(&self) {

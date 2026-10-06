@@ -392,6 +392,32 @@ impl MemoryDecryptBroker {
         Self::new(MemoryDecryptBrokerConfig::from_env()?)
     }
 
+    /// Protected-file callers require the captured handle and broker to name
+    /// the same exact runtime. Provider aliases retain their existing meaning.
+    /// Surrounding whitespace in runtime ids is rejected without normalization.
+    pub(crate) fn validate_hosted_runtime_identity(
+        &self,
+        provider_id: &str,
+        runtime_principal_id: &str,
+    ) -> MemoryResult<()> {
+        self.config.validate()?;
+        let provider_matches = self.config.provider == provider_id
+            || (crate::kms_providers::provider_is_google_cloud_kms(&self.config.provider)
+                && crate::kms_providers::provider_is_google_cloud_kms(provider_id));
+        if !self.config.crypto_mode().is_hosted()
+            || is_wildcard_or_blank(provider_id)
+            || is_wildcard_or_blank(runtime_principal_id)
+            || runtime_principal_id.trim() != runtime_principal_id
+            || !provider_matches
+            || self.config.runtime_principal_id != runtime_principal_id
+        {
+            return Err(MemoryError::InvalidConfig(
+                "hosted memory runtime identity is unavailable or inconsistent".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn authorize_unwrap(
         &self,
         request: MemoryDecryptRequest,

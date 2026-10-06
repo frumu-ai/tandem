@@ -1159,7 +1159,7 @@ pub(super) async fn workflow_learning_candidate_review(
         return Err(StatusCode::NOT_FOUND);
     }
     let updated = state
-        .update_workflow_learning_candidate(&candidate_id, |candidate| {
+        .update_workflow_learning_candidate(&candidate_id, move |candidate| {
             candidate.status = next_status;
             if candidate.baseline_before.is_none() {
                 candidate.baseline_before = baseline.clone();
@@ -1179,6 +1179,7 @@ pub(super) async fn workflow_learning_candidate_review(
             }
         })
         .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(json!({
         "ok": true,

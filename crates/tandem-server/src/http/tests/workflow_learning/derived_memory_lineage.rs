@@ -12,6 +12,32 @@ use tokio::sync::watch;
 
 include!("derived_memory_lineage_fixtures.rs");
 
+async fn hosted_promotion_request_with_owned_crypto(
+    app: axum::Router,
+    uri: String,
+    body: Value,
+) -> (StatusCode, Value) {
+    // The promotion owns a spawned commit task. Keep the fixture's hosted
+    // provider available to that task as it appends the protected audit.
+    crate::app::state::tests::encrypted_file_stores::with_hosted_candidate_crypto(async move {
+        crate::encrypted_file_store::spawn_protected_blocking(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("hosted promotion fixture runtime")
+                .block_on(super::hosted_learning_request(
+                    app,
+                    "POST",
+                    &uri,
+                    Some(body),
+                ))
+        })
+        .await
+        .expect("hosted promotion fixture executor")
+    })
+    .await
+}
+
 #[tokio::test]
 async fn tan_829_private_canonical_session_fact_survives_cold_reopen_without_peer_access() {
     let fixture = LineageFixture::new(false).await;
@@ -541,16 +567,15 @@ async fn tan_829_approved_private_promotion_preserves_owner_on_cold_http_recall(
         format!("session:{}", session.id)
     );
     assert_eq!(reviewed["candidate"]["project_id"], PROJECT);
-    let (status, promoted) = super::hosted_learning_request(
+    let (status, promoted) = hosted_promotion_request_with_owned_crypto(
         fixture.router_with_session_memory_read("alice", &session),
-        "POST",
-        &format!("/workflow-learning/candidates/{candidate_id}/promote"),
-        Some(json!({
+        format!("/workflow-learning/candidates/{candidate_id}/promote"),
+        json!({
             "run_id": "tan-829-private-promotion",
             "reviewer_id": "alice",
             "approval_id": "tan-829-current-alice-review",
             "reason": "approved private canonical learning"
-        })),
+        }),
     )
     .await;
     assert_eq!(
