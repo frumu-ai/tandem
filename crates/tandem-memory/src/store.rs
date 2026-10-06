@@ -193,6 +193,19 @@ pub trait MemoryStore: Send + Sync {
         ))
     }
 
+    /// Compare canonical target content/disposition after acquiring the native
+    /// writer lock, in the same transaction as a guarded context mutation.
+    async fn mutate_with_commit_authority_if_unchanged(
+        &self,
+        _request: MemoryStoreMutationRequest,
+        _expected: tandem_types::MemorySourceReference,
+        _authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreMutationResult> {
+        Err(MemoryStoreError::unsupported(
+            "this memory backend does not support guarded compare-and-swap",
+        ))
+    }
+
     /// Execute multiple writes/mutations under explicit commit semantics.
     async fn batch(
         &self,

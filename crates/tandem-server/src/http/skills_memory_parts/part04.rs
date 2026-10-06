@@ -201,7 +201,13 @@ async fn memory_promote_impl_with_verified(
             policy_decision_id: None,
         });
     };
-    if source.metadata.as_ref().is_some_and(|metadata| metadata.get("derived_memory_lineage").is_some())
+    let derived = source.metadata.as_ref().is_some_and(|metadata|
+        metadata.get(tandem_memory::DERIVED_MEMORY_LINEAGE_METADATA_KEY).is_some());
+    let target_reference = if derived {
+        Some(tandem_memory::CanonicalMemoryRestriction::from_global_record(&source, &scope.tenant)
+            .map_err(|_| StatusCode::FORBIDDEN)?.source_reference())
+    } else { None };
+    if derived
         && !global_memory_record_visible_to_verified_request(
             state, tenant_context, verified_tenant_context, store.as_ref(), &scope, &source,
             Some(&distillation_access_filter(verified_tenant_context, &capability.subject)),
@@ -595,6 +601,45 @@ async fn memory_promote_impl_with_verified(
             Some(&next_provenance),
         ))
     );
+    if derived {
+        // Canonical source reads must stay outside publication/target writer
+        // locks. Repeat after the awaited policy/audit preparation above.
+        if !global_memory_record_visible_to_verified_request(
+            state, tenant_context, verified_tenant_context, store.as_ref(), &scope, &source,
+            Some(&distillation_access_filter(verified_tenant_context, &capability.subject)),
+        ).await {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        let decision = tandem_memory::memory_promotion_scope_decision_for_context_with_enterprise_mode(
+            &request.partition, request.to_tier, &request.review, source.metadata.as_ref(),
+            request.authority_job_context.as_ref(), require_scope_metadata, crate::now_ms(),
+        ).map_err(|_| StatusCode::FORBIDDEN)?;
+        if !decision.allowed { return Err(StatusCode::FORBIDDEN); }
+    }
+    let authority = target_reference.map(|expected| (
+        derived_memory_commit_authority(state, tenant_context, verified_tenant_context), expected,
+    ));
+    let commit_state = state.clone();
+    let commit_tenant = tenant_context.clone();
+    let commit_verified = verified_tenant_context.cloned();
+    let classification = classification.to_owned();
+    let kind = kind.to_owned();
+    let commit = async move {
+        let state = &commit_state;
+        let tenant_context = &commit_tenant;
+        let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+            scope, id: new_id.clone(), visibility: "shared".to_string(), demoted: false,
+            metadata: next_metadata.clone(), provenance: Some(next_provenance.clone()),
+        };
+        let updated = if let Some((authority, expected)) = authority {
+            with_verified_memory_decrypt_principal(commit_verified.as_ref(),
+                store.mutate_with_commit_authority_if_unchanged(mutation, expected, authority)).await
+        } else {
+            with_verified_memory_decrypt_principal(commit_verified.as_ref(), store.mutate(mutation)).await
+        }.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
+            return Err(StatusCode::NOT_FOUND);
+        }
     append_memory_audit(
         &state,
         tenant_context,
@@ -620,27 +665,6 @@ async fn memory_promote_impl_with_verified(
         },
     )
     .await?;
-    let updated = with_verified_memory_decrypt_principal(
-        verified_tenant_context,
-        store.mutate(
-            tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-                scope,
-                id: new_id.clone(),
-                visibility: "shared".to_string(),
-                demoted: false,
-                metadata: next_metadata.clone(),
-                provenance: Some(next_provenance.clone()),
-            },
-        ),
-    )
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !matches!(
-        updated,
-        tandem_memory::MemoryStoreMutationResult::Changed(true)
-    ) {
-        return Err(StatusCode::NOT_FOUND);
-    }
     publish_tenant_event(
         state,
         tenant_context,
@@ -712,6 +736,12 @@ async fn memory_promote_impl_with_verified(
         audit_id,
         policy_decision_id,
     })
+    };
+    if derived {
+        commit_derived_memory_with_current_policy(state, tenant_context, verified_tenant_context, commit).await?
+    } else {
+        commit.await
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

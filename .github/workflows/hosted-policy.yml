@@ -186,7 +186,8 @@ jobs:
           cargo test -p tandem-memory --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/tan829-sqlite-commit-list.txt"
           for test_name in \
             guarded_sqlite_insert_and_context_update_rollback_on_precommit_denial \
-            guarded_sqlite_context_update_preserves_lineage_dedupe_and_private_owner
+            guarded_sqlite_context_update_preserves_lineage_dedupe_and_private_owner \
+            guarded_sqlite_cas_writer_wait_rejects_stale_policy_and_current_target_commits
           do
             grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-sqlite-commit-list.txt" || {
               echo "Missing SQLite commit authority regression: $test_name" >&2
@@ -194,7 +195,7 @@ jobs:
             }
           done
           cargo test -p tandem-memory --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-sqlite-commit-results.txt"
-          grep -Eq 'test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-sqlite-commit-results.txt"
+          grep -Eq 'test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-sqlite-commit-results.txt"
       - name: Verify derived memory consolidation tests actually execute
         run: |
           set -euo pipefail
@@ -206,7 +207,8 @@ jobs:
             consolidation_rechecks_source_after_provider_before_summary_write \
             consolidation_mixed_denied_ordinary_source_never_dispatches_or_replaces \
             consolidation_governed_unrepresentable_ordinary_and_mixed_inputs_fail_closed \
-            consolidation_plain_ordinary_current_and_legacy_paths_remain_private_positives
+            consolidation_plain_ordinary_current_and_legacy_paths_remain_private_positives \
+            consolidation_legacy_wrapper_rejects_restricted_ordinary_before_provider
           do
             grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-memory-consolidation-list.txt" || {
               echo "Missing derived memory consolidation regression: $test_name" >&2
@@ -214,7 +216,7 @@ jobs:
             }
           done
           cargo test -p tandem-memory --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-memory-consolidation-results.txt"
-          grep -Eq 'test result: ok\. 6 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-memory-consolidation-results.txt"
+          grep -Eq 'test result: ok\. 7 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-memory-consolidation-results.txt"
       - name: Verify governed memory provider egress tests actually execute
         run: |
           set -euo pipefail
@@ -272,7 +274,15 @@ jobs:
             tan_829_memory_insert_rechecks_snapshot_expiry_after_actual_sqlite_writer_wait \
             tan_829_memory_update_rechecks_original_identity_after_actual_sqlite_writer_wait \
             tan_829_cancelled_memory_wait_retains_policy_guard_until_native_commit \
-            tan_829_memory_commit_preserves_standalone_without_skipping_configured_hosted_authority
+            tan_829_memory_commit_preserves_standalone_without_skipping_configured_hosted_authority \
+            side_effect_tests::tan_829_candidate_commit_rechecks_original_identity_after_real_cache_writer_wait \
+            side_effect_tests::tan_829_candidate_commit_rechecks_snapshot_expiry_after_real_cache_writer_wait \
+            side_effect_tests::tan_829_candidate_commit_denies_actual_policy_removal_during_cache_writer_wait \
+            side_effect_tests::tan_829_cancelled_candidate_commit_retains_real_writer_until_authorized_publication \
+            side_effect_tests::tan_829_candidate_atomic_publication_failure_preserves_cache_and_cleans_prepared_file \
+            side_effect_tests::tan_829_derived_promotion_rechecks_original_identity_after_actual_sqlite_writer_wait \
+            side_effect_tests::tan_829_derived_promotion_rechecks_snapshot_expiry_after_actual_sqlite_writer_wait \
+            side_effect_tests::tan_829_derived_demotion_rechecks_original_identity_after_actual_sqlite_writer_wait
           do
             grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-server-commit-list.txt" || {
               echo "Missing hosted derived-memory writer-wait regression: $test_name" >&2
@@ -280,7 +290,7 @@ jobs:
             }
           done
           cargo test -p tandem-server --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-server-commit-results.txt"
-          grep -Eq 'test result: ok\. 5 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-server-commit-results.txt"
+          grep -Eq 'test result: ok\. 13 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-server-commit-results.txt"
       - name: Validate scoped key lifecycle and administrative authority
         run: |
           cargo test -p tandem-server context_assertion_security --lib

@@ -268,22 +268,42 @@ async fn chunks(store: &dyn MemoryStore, selector: MemoryChunkSelector) -> Vec<M
 
 fn ordinary_chunk(id: &str, extra: serde_json::Value) -> MemoryChunk {
     let mut metadata = serde_json::json!({"owner_subject":"alice","owner_org_unit_id":"finance"});
-    metadata.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    metadata
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
     MemoryChunk {
-        id: id.into(), content: format!("orchard lighthouse ordinary {id}"),
-        tier: MemoryTier::Session, session_id: Some("lineage-session".into()),
-        project_id: Some("lineage-project".into()), source: "message".into(),
-        source_path: None, source_mtime: None, source_size: None, source_hash: None,
-        tenant_scope: tenant(), subject: Some("alice".into()), created_at: Utc::now(),
-        token_count: 5, metadata: Some(metadata),
+        id: id.into(),
+        content: format!("orchard lighthouse ordinary {id}"),
+        tier: MemoryTier::Session,
+        session_id: Some("lineage-session".into()),
+        project_id: Some("lineage-project".into()),
+        source: "message".into(),
+        source_path: None,
+        source_mtime: None,
+        source_size: None,
+        source_hash: None,
+        tenant_scope: tenant(),
+        subject: Some("alice".into()),
+        created_at: Utc::now(),
+        token_count: 5,
+        metadata: Some(metadata),
     }
 }
 
 async fn put_ordinary(store: &dyn MemoryStore, chunk: MemoryChunk) {
-    store.write(MemoryStoreWriteRequest::Chunk {
-        scope: MemoryWriteScope { tenant: tenant(), org_unit: Some("finance".into()), subject: Some("alice".into()) },
-        chunk, embedding: vec![1.0; crate::types::DEFAULT_EMBEDDING_DIMENSION],
-    }).await.unwrap();
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope {
+                tenant: tenant(),
+                org_unit: Some("finance".into()),
+                subject: Some("alice".into()),
+            },
+            chunk,
+            embedding: vec![1.0; crate::types::DEFAULT_EMBEDDING_DIMENSION],
+        })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -497,40 +517,105 @@ async fn consolidation_mixed_denied_ordinary_source_never_dispatches_or_replaces
     ]);
     for knowledge in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let store: Arc<dyn MemoryStore> = Arc::new(MemoryDatabase::new(&dir.path().join("memory.sqlite3")).await.unwrap());
-        let lineage = seed(store.as_ref(), &[source("allowed-source", DataClass::Internal)], false).await;
-        let proof = crate::resolve_derived_lineage(store.as_ref(), &read_scope(), &lineage).await.unwrap();
+        let store: Arc<dyn MemoryStore> = Arc::new(
+            MemoryDatabase::new(&dir.path().join("memory.sqlite3"))
+                .await
+                .unwrap(),
+        );
+        let lineage = seed(
+            store.as_ref(),
+            &[source("allowed-source", DataClass::Internal)],
+            false,
+        )
+        .await;
+        let proof = crate::resolve_derived_lineage(store.as_ref(), &read_scope(), &lineage)
+            .await
+            .unwrap();
         let access = filter().with_resolved_derived_lineage(proof);
-        let derived = chunks(store.as_ref(), MemoryChunkSelector::session("lineage-session")).await;
-        assert!(access.allows_chunk(&derived[0]), "the real derived contributor is independently authorized");
-        let resource = ResourceRef::new("lineage-org", "lineage-workspace", ResourceKind::DocumentCollection, "denied-binding");
-        let mut denied = ordinary_chunk("denied-ordinary", serde_json::json!({
-            "enterprise_source_binding": {"binding_id":"denied-binding", "resource_ref":resource, "data_class":"financial_record"}
-        }));
+        let derived = chunks(
+            store.as_ref(),
+            MemoryChunkSelector::session("lineage-session"),
+        )
+        .await;
+        assert!(
+            access.allows_chunk(&derived[0]),
+            "the real derived contributor is independently authorized"
+        );
+        let resource = ResourceRef::new(
+            "lineage-org",
+            "lineage-workspace",
+            ResourceKind::DocumentCollection,
+            "denied-binding",
+        );
+        let mut denied = ordinary_chunk(
+            "denied-ordinary",
+            serde_json::json!({
+                "enterprise_source_binding": {"binding_id":"denied-binding", "resource_ref":resource, "data_class":"financial_record"}
+            }),
+        );
         if knowledge {
-            denied.metadata = crate::metadata_with_knowledge_scope(denied.metadata, &crate::KnowledgeScopePolicy {
-                registry_id: "denied-registry".into(),
-                resource_ref: ResourceRef::new("lineage-org", "lineage-workspace", ResourceKind::KnowledgeSpace, "denied-space")
+            denied.metadata = crate::metadata_with_knowledge_scope(
+                denied.metadata,
+                &crate::KnowledgeScopePolicy {
+                    registry_id: "denied-registry".into(),
+                    resource_ref: ResourceRef::new(
+                        "lineage-org",
+                        "lineage-workspace",
+                        ResourceKind::KnowledgeSpace,
+                        "denied-space",
+                    )
                     .with_project_id("lineage-project"),
-                data_class: DataClass::Confidential, collection_id: None, source_binding_id: None,
-                source_object_id: None, owner_org_unit_id: None, risk_tier: None,
-                allowed_workflow_phases: Vec::new(), allowed_write_tiers: vec![crate::GovernedMemoryTier::Session],
-                allowed_promotion_tiers: Vec::new(), retention_expires_at_ms: None,
-                required_trust_label: None, promotion_requires_approval: false,
-            });
+                    data_class: DataClass::Confidential,
+                    collection_id: None,
+                    source_binding_id: None,
+                    source_object_id: None,
+                    owner_org_unit_id: None,
+                    risk_tier: None,
+                    allowed_workflow_phases: Vec::new(),
+                    allowed_write_tiers: vec![crate::GovernedMemoryTier::Session],
+                    allowed_promotion_tiers: Vec::new(),
+                    retention_expires_at_ms: None,
+                    required_trust_label: None,
+                    promotion_requires_approval: false,
+                },
+            );
         }
-        assert!(!access.allows_chunk(&denied), "same private owner cannot replace the absent source/knowledge grant");
+        assert!(
+            !access.allows_chunk(&denied),
+            "same private owner cannot replace the absent source/knowledge grant"
+        );
         put_ordinary(store.as_ref(), denied).await;
         let manager = manager(store.clone());
         let calls = Arc::new(AtomicUsize::new(0));
         let providers = registry(calls.clone(), None).await;
         let egress = egress(Arc::new(std::sync::Mutex::new(Vec::new())));
-        let error = manager.consolidate_scoped_session_with_access_filter(
-            &request(), &providers, &config(), &egress, Some(&access)).await.unwrap_err();
+        let error = manager
+            .consolidate_scoped_session_with_access_filter(
+                &request(),
+                &providers,
+                &config(),
+                &egress,
+                Some(&access),
+            )
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("contributor denied"), "{error}");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(chunks(store.as_ref(), MemoryChunkSelector::session("lineage-session")).await.len(), 2);
-        assert!(chunks(store.as_ref(), MemoryChunkSelector::project("lineage-project")).await.is_empty());
+        assert_eq!(
+            chunks(
+                store.as_ref(),
+                MemoryChunkSelector::session("lineage-session")
+            )
+            .await
+            .len(),
+            2
+        );
+        assert!(chunks(
+            store.as_ref(),
+            MemoryChunkSelector::project("lineage-project")
+        )
+        .await
+        .is_empty());
     }
 }
 
@@ -545,32 +630,74 @@ async fn consolidation_governed_unrepresentable_ordinary_and_mixed_inputs_fail_c
     ]);
     for kind in ["mixed", "classified", "retained", "source_path"] {
         let dir = tempfile::tempdir().unwrap();
-        let store: Arc<dyn MemoryStore> = Arc::new(MemoryDatabase::new(&dir.path().join("memory.sqlite3")).await.unwrap());
+        let store: Arc<dyn MemoryStore> = Arc::new(
+            MemoryDatabase::new(&dir.path().join("memory.sqlite3"))
+                .await
+                .unwrap(),
+        );
         if kind == "mixed" {
-            seed(store.as_ref(), &[source("allowed-source", DataClass::Internal)], false).await;
+            seed(
+                store.as_ref(),
+                &[source("allowed-source", DataClass::Internal)],
+                false,
+            )
+            .await;
         }
         let extra = match kind {
             "classified" => serde_json::json!({"classification":"financial_record"}),
-            "retained" => serde_json::json!({"retention_expires_at_ms":Utc::now().timestamp_millis().max(0) as u64 + 60_000}),
+            "retained" => {
+                serde_json::json!({"retention_expires_at_ms":Utc::now().timestamp_millis().max(0) as u64 + 60_000})
+            }
             _ => serde_json::json!({}),
         };
         let mut ordinary = ordinary_chunk("allowed-ordinary", extra);
-        if kind == "source_path" { ordinary.source_path = Some("governed/source.txt".into()); }
+        if kind == "source_path" {
+            ordinary.source_path = Some("governed/source.txt".into());
+        }
         let access = filter();
-        assert!(access.allows_chunk(&ordinary), "fixture must reach the unrepresentable-disposition gate, not an unrelated read denial");
+        assert!(
+            access.allows_chunk(&ordinary),
+            "fixture must reach the unrepresentable-disposition gate, not an unrelated read denial"
+        );
         put_ordinary(store.as_ref(), ordinary).await;
         let manager = manager(store.clone());
         let calls = Arc::new(AtomicUsize::new(0));
         let providers = registry(calls.clone(), None).await;
         let egress = egress(Arc::new(std::sync::Mutex::new(Vec::new())));
-        let error = manager.consolidate_scoped_session_with_access_filter(
-            &request(), &providers, &config(), &egress, Some(&access)).await.unwrap_err();
-        assert!(error.to_string().contains(if kind == "mixed" {
-            "mixed contributors lack canonical lineage"
-        } else { "ordinary restrictions lack canonical lineage" }), "{error}");
+        let error = manager
+            .consolidate_scoped_session_with_access_filter(
+                &request(),
+                &providers,
+                &config(),
+                &egress,
+                Some(&access),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(if kind == "mixed" {
+                "mixed contributors lack canonical lineage"
+            } else {
+                "ordinary restrictions lack canonical lineage"
+            }),
+            "{error}"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(chunks(store.as_ref(), MemoryChunkSelector::session("lineage-session")).await.len(), if kind == "mixed" {2} else {1});
-        assert!(chunks(store.as_ref(), MemoryChunkSelector::project("lineage-project")).await.is_empty());
+        assert_eq!(
+            chunks(
+                store.as_ref(),
+                MemoryChunkSelector::session("lineage-session")
+            )
+            .await
+            .len(),
+            if kind == "mixed" { 2 } else { 1 }
+        );
+        assert!(chunks(
+            store.as_ref(),
+            MemoryChunkSelector::project("lineage-project")
+        )
+        .await
+        .is_empty());
     }
 }
 
@@ -585,35 +712,147 @@ async fn consolidation_plain_ordinary_current_and_legacy_paths_remain_private_po
     ]);
     for governed in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let store: Arc<dyn MemoryStore> = Arc::new(MemoryDatabase::new(&dir.path().join("memory.sqlite3")).await.unwrap());
-        put_ordinary(store.as_ref(), ordinary_chunk("ordinary-default", serde_json::json!({}))).await;
-        put_ordinary(store.as_ref(), ordinary_chunk("ordinary-internal", serde_json::json!({"classification":"internal"}))).await;
+        let store: Arc<dyn MemoryStore> = Arc::new(
+            MemoryDatabase::new(&dir.path().join("memory.sqlite3"))
+                .await
+                .unwrap(),
+        );
+        put_ordinary(
+            store.as_ref(),
+            ordinary_chunk("ordinary-default", serde_json::json!({})),
+        )
+        .await;
+        put_ordinary(
+            store.as_ref(),
+            ordinary_chunk(
+                "ordinary-internal",
+                serde_json::json!({"classification":"internal"}),
+            ),
+        )
+        .await;
         let manager = manager(store.clone());
         let calls = Arc::new(AtomicUsize::new(0));
         let providers = registry(calls.clone(), None).await;
         let egress = egress(Arc::new(std::sync::Mutex::new(Vec::new())));
         let access = filter();
         let result = if governed {
-            manager.consolidate_scoped_session_with_access_filter(
-                &request(), &providers, &config(), &egress, Some(&access)).await
+            manager
+                .consolidate_scoped_session_with_access_filter(
+                    &request(),
+                    &providers,
+                    &config(),
+                    &egress,
+                    Some(&access),
+                )
+                .await
         } else {
-            manager.consolidate_scoped_session(&request(), &providers, &config(), &egress).await
-        }.unwrap();
+            manager
+                .consolidate_scoped_session(&request(), &providers, &config(), &egress)
+                .await
+        }
+        .unwrap();
         assert_eq!(result.as_deref(), Some("orchard lighthouse summary"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let summaries = chunks(store.as_ref(), MemoryChunkSelector::project("lineage-project")).await;
+        let summaries = chunks(
+            store.as_ref(),
+            MemoryChunkSelector::project("lineage-project"),
+        )
+        .await;
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].subject.as_deref(), Some("alice"));
-        assert_eq!(crate::types::owner_subject_from_metadata(summaries[0].metadata.as_ref()).as_deref(), Some("alice"));
-        assert_eq!(summaries[0].metadata.as_ref().unwrap()["consolidation_provenance"]["source_count"], serde_json::json!(2));
-        assert!(DerivedMemoryLineage::from_metadata(summaries[0].metadata.as_ref()).unwrap().is_none());
-        assert!(chunks(store.as_ref(), MemoryChunkSelector::session("lineage-session")).await.is_empty());
-        let mut foreign_scope = read_scope(); foreign_scope.subject = Some("bob".into());
-        match store.read(MemoryStoreReadRequest::Chunks {
-            scope: foreign_scope, selector: MemoryChunkSelector::project("lineage-project"), limit: None,
-        }).await.unwrap() {
-            MemoryStoreReadResult::Chunks(rows) => assert!(rows.is_empty(), "ordinary consolidation preserves the actual private owner"),
+        assert_eq!(
+            crate::types::owner_subject_from_metadata(summaries[0].metadata.as_ref()).as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            summaries[0].metadata.as_ref().unwrap()["consolidation_provenance"]["source_count"],
+            serde_json::json!(2)
+        );
+        assert!(
+            DerivedMemoryLineage::from_metadata(summaries[0].metadata.as_ref())
+                .unwrap()
+                .is_none()
+        );
+        assert!(chunks(
+            store.as_ref(),
+            MemoryChunkSelector::session("lineage-session")
+        )
+        .await
+        .is_empty());
+        let mut foreign_scope = read_scope();
+        foreign_scope.subject = Some("bob".into());
+        match store
+            .read(MemoryStoreReadRequest::Chunks {
+                scope: foreign_scope,
+                selector: MemoryChunkSelector::project("lineage-project"),
+                limit: None,
+            })
+            .await
+            .unwrap()
+        {
+            MemoryStoreReadResult::Chunks(rows) => assert!(
+                rows.is_empty(),
+                "ordinary consolidation preserves the actual private owner"
+            ),
             other => panic!("{other:?}"),
         }
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn consolidation_legacy_wrapper_rejects_restricted_ordinary_before_provider() {
+    let _lock = env_lock();
+    let _env = EnvRestore::set(&[
+        ("TANDEM_DATA_BOUNDARY_MODE", "enforce"),
+        ("TANDEM_DATA_BOUNDARY_STRICT", "1"),
+        ("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", "capture=local"),
+    ]);
+    for kind in ["financial_record", "source_binding", "knowledge_scope", "retention", "source_path", "mixed"] {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn MemoryStore> = Arc::new(
+            MemoryDatabase::new(&dir.path().join("memory.sqlite3")).await.unwrap(),
+        );
+        if kind == "mixed" {
+            seed(store.as_ref(), &[source("allowed-source", DataClass::Internal)], false).await;
+        }
+        let extra = match kind {
+            "financial_record" => serde_json::json!({"classification":"financial_record"}),
+            "source_binding" => serde_json::json!({"enterprise_source_binding": {
+                "binding_id":"restricted-binding", "data_class":"financial_record",
+                "resource_ref":ResourceRef::new("lineage-org", "lineage-workspace", ResourceKind::DocumentCollection, "restricted-binding"),
+            }}),
+            "retention" => serde_json::json!({"retention_expires_at_ms":Utc::now().timestamp_millis().max(0) as u64 + 60_000}),
+            _ => serde_json::json!({}),
+        };
+        let mut ordinary = ordinary_chunk("restricted-ordinary", extra);
+        if kind == "knowledge_scope" {
+            ordinary.metadata = crate::metadata_with_knowledge_scope(ordinary.metadata, &crate::KnowledgeScopePolicy {
+                registry_id: "restricted-registry".into(),
+                resource_ref: ResourceRef::new("lineage-org", "lineage-workspace", ResourceKind::KnowledgeSpace, "restricted-space")
+                    .with_project_id("lineage-project"),
+                data_class: DataClass::Confidential, collection_id: None, source_binding_id: None,
+                source_object_id: None, owner_org_unit_id: None, risk_tier: None,
+                allowed_workflow_phases: Vec::new(), allowed_write_tiers: vec![crate::GovernedMemoryTier::Session],
+                allowed_promotion_tiers: Vec::new(), retention_expires_at_ms: None,
+                required_trust_label: None, promotion_requires_approval: false,
+            });
+        }
+        if kind == "source_path" { ordinary.source_path = Some("governed/source.txt".into()); }
+        put_ordinary(store.as_ref(), ordinary).await;
+        let manager = manager(store.clone());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let providers = registry(calls.clone(), None).await;
+        let egress = egress(Arc::new(std::sync::Mutex::new(Vec::new())));
+        // Exercise the actual compatibility API, with no access filter at all.
+        let error = manager.consolidate_scoped_session(
+            &request(), &providers, &config(), &egress).await.unwrap_err();
+        assert!(error.to_string().contains(if kind == "mixed" {
+            "mixed contributors lack canonical lineage"
+        } else { "ordinary restrictions lack canonical lineage" }), "{kind}: {error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "{kind}");
+        assert_eq!(chunks(store.as_ref(), MemoryChunkSelector::session("lineage-session")).await.len(),
+            if kind == "mixed" { 2 } else { 1 }, "{kind}");
+        assert!(chunks(store.as_ref(), MemoryChunkSelector::project("lineage-project")).await.is_empty(), "{kind}");
     }
 }

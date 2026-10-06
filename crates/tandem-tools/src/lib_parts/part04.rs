@@ -392,7 +392,7 @@ fn channel_memory_read_filter(subject: Option<&str>) -> Option<tandem_memory::ty
         workflow_phase: None,
         caller_org_units: None,
         caller_subject: Some(subject.to_string()),
-        resolved_derived_lineages: Vec::new(),
+        resolved_derived_lineages: Default::default(),
     })
 }
 

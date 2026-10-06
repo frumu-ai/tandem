@@ -9,6 +9,9 @@ use tandem_memory::{MemoryCommitAuthority, MemoryStore, MemoryStoreErrorKind};
 use tandem_types::{AuthorityChain, HumanActor, TenantContextAssertionClaims};
 use tokio::sync::oneshot;
 
+#[path = "derived_lineage_side_effect_tests.rs"]
+mod side_effect_tests;
+
 struct CommitFixture {
     state: AppState,
     directory: tempfile::TempDir,
@@ -54,6 +57,7 @@ impl CommitFixture {
         );
         claims.policy_version = Some(4);
         claims.capabilities = vec!["hosted.use".to_owned()];
+        claims.org_units = vec!["unit-memory-commit".to_owned()];
         let mut verified = VerifiedTenantContext::from(claims);
         self.state.enterprise.hosted_policy.project(&mut verified)
             .expect("project original assertion").expect("installed hosted snapshot");
@@ -83,8 +87,9 @@ fn write_policy_at(path: &std::path::Path, version: u64, generated_at_ms: u64) {
             "id": "alice", "email": null, "username": null, "role": "member",
             "capabilities": ["hosted.use"], "is_active": true, "email_verified": true
         }],
-        "org_units": [],
-        "org_unit_memberships": [],
+        "org_units": [{"id":"unit-memory-commit","slug":"memory-commit",
+            "display_name":"Memory commit test department","kind":"department","state":"active"}],
+        "org_unit_memberships": [{"unit_id":"unit-memory-commit","user_id":"alice"}],
         "deployment_grants": []
     });
     std::fs::write(path, serde_json::to_vec(&bundle).unwrap()).expect("policy file");

@@ -26,8 +26,7 @@ impl GovernedDistillationWriter {
         if !write_scope.allowed {
             return Err(tandem_memory::types::MemoryError::InvalidConfig(write_scope.reason_code));
         }
-        if !self.tenant_context.is_local_implicit()
-            && self.state.enterprise.hosted_policy.authorize(self.verified_tenant_context.as_ref()).is_err() {
+        if self.state.enterprise.hosted_policy.authorize(self.verified_tenant_context.as_ref()).is_err() {
             return Err(tandem_memory::types::MemoryError::InvalidConfig("distillation_authority_stale".into()));
         }
         let store = open_global_memory_store_for_state(&self.state).await.ok_or_else(||
@@ -94,8 +93,13 @@ impl GovernedDistillationWriter {
             created_at_ms: crate::now_ms(),
             updated_at_ms: crate::now_ms(),
         };
+        // Binding preparation awaited canonical storage. Refresh the complete
+        // source proof before taking either candidate/publication writer lock.
+        self.ensure_current_lineage().await?;
         self.state
-            .upsert_workflow_learning_candidate(candidate)
+            .upsert_workflow_learning_candidate_with_current_policy(
+                candidate, self.verified_tenant_context.clone(),
+            )
             .await
             .map(|candidate| candidate.candidate_id)
             .map_err(|error| tandem_memory::types::MemoryError::InvalidConfig(error.to_string()))
@@ -201,6 +205,9 @@ impl GovernedDistillationWriter {
                 self.lineage.owner_org_unit_id.as_deref(),
             )
             .unwrap_or_else(|| json!({}));
+            let target_reference = tandem_memory::CanonicalMemoryRestriction::from_global_record(
+                &existing, &scope.tenant,
+            )?.source_reference();
             let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
                 scope, id: existing.id.clone(), visibility: existing.visibility.clone(),
                 demoted: existing.demoted, metadata: Some(next_metadata), provenance: existing.provenance.clone(),
@@ -212,7 +219,9 @@ impl GovernedDistillationWriter {
             let changed = commit_derived_memory_with_current_policy(
                 &self.state, &self.tenant_context, self.verified_tenant_context.as_ref(),
                 async move { with_verified_memory_decrypt_principal(
-                    verified.as_ref(), store.mutate_with_commit_authority(mutation, authority),
+                    verified.as_ref(), store.mutate_with_commit_authority_if_unchanged(
+                        mutation, target_reference, authority,
+                    ),
                 ).await },
             ).await.map_err(|status| tandem_memory::types::MemoryError::InvalidConfig(
                 format!("distillation_commit_denied: {status}"),

@@ -357,7 +357,8 @@ jobs:
           cargo test -p tandem-memory --locked --features postgres --lib "$prefix" -- --list > "$RUNNER_TEMP/tan829-postgres-commit-list.txt"
           for test_name in \
             postgres_guarded_unique_writer_wait_revocation_rolls_back_and_current_authority_commits \
-            postgres_guarded_row_writer_wait_and_precommit_denial_preserve_original_context
+            postgres_guarded_row_writer_wait_and_precommit_denial_preserve_original_context \
+            postgres_guarded_cas_row_wait_rejects_stale_policy_and_current_target_commits
           do
             grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/tan829-postgres-commit-list.txt" || {
               echo "Missing PostgreSQL guarded writer-wait regression: $test_name" >&2
@@ -365,7 +366,7 @@ jobs:
             }
           done
           cargo test -p tandem-memory --locked --features postgres --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-postgres-commit-results.txt"
-          grep -Eq 'test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-postgres-commit-results.txt"
+          grep -Eq 'test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-postgres-commit-results.txt"
 
       - name: Run PostgreSQL memory contract tests
         run: cargo test -p tandem-memory --features postgres postgres_store::tests -- --test-threads=1

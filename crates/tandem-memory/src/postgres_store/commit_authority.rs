@@ -101,6 +101,7 @@ impl PostgresMemoryStore {
     pub(super) async fn guarded_mutate_impl(
         &self,
         request: MemoryStoreMutationRequest,
+        expected: Option<&tandem_types::MemorySourceReference>,
         authority: MemoryCommitAuthority,
     ) -> MemoryStoreResult<MemoryStoreMutationResult> {
         let MemoryStoreMutationRequest::UpdateGlobalRecordContext {
@@ -116,6 +117,9 @@ impl PostgresMemoryStore {
                 "PostgreSQL guarded mutation supports UpdateGlobalRecordContext only",
             ));
         };
+        if expected.is_some_and(|expected| expected.memory_id != id) {
+            return Err(MemoryStoreError::new(MemoryStoreErrorKind::ScopeViolation,"guarded memory target id mismatch"));
+        }
         let mut client = self.client().await?;
         let tx = client
             .transaction()
@@ -132,6 +136,9 @@ impl PostgresMemoryStore {
         ).await.map_err(|error| store_error("lock guarded PostgreSQL context row",error,false))?;
         authority()?;
         let Some(row) = row else {
+            if let Some(expected) = expected {
+                crate::derived_lineage_store::ensure_expected_target(None,&scope.tenant,expected)?;
+            }
             authority()?;
             tx.commit()
                 .await
@@ -153,6 +160,9 @@ impl PostgresMemoryStore {
             row.get(3),
             row.get(4),
         )?;
+        if let Some(expected) = expected {
+            crate::derived_lineage_store::ensure_expected_target(Some(&record),&scope.tenant,expected)?;
+        }
         record.visibility = visibility;
         record.demoted = demoted;
         record.metadata = metadata;

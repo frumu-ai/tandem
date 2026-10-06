@@ -8,6 +8,21 @@ use crate::types::SourceObjectLifecycleState;
 
 const MAX_CANONICAL_READS: usize = 128;
 
+/// Called only on the current row held by a native guarded write transaction.
+pub(crate) fn ensure_expected_target(
+    record: Option<&crate::types::GlobalMemoryRecord>,
+    tenant: &crate::types::MemoryTenantScope,
+    expected: &tandem_types::MemorySourceReference,
+) -> MemoryStoreResult<()> {
+    let current = record.and_then(|record|
+        CanonicalMemoryRestriction::from_global_record(record,tenant).ok());
+    if current.is_none_or(|current| current.source_reference() != *expected) {
+        return Err(MemoryStoreError::new(MemoryStoreErrorKind::ScopeViolation,
+            "guarded memory target changed or is unavailable"));
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct ResolutionState {
     path: Vec<String>,

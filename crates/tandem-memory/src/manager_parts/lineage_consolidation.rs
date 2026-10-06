@@ -139,23 +139,40 @@ impl MemoryManager {
     async fn authorize_consolidation_contributors(&self, chunks: &[MemoryChunk],
         scope: &MemoryReadScope, request: &ScopedMemoryConsolidationRequest,
         access_filter: Option<&crate::types::MemoryAccessFilter>) -> MemoryResult<()> {
-        let Some(filter) = access_filter else { return Ok(()); };
         let mut derived = false;
         let mut ordinary = false;
         let mut restricted_ordinary = false;
+        // Disposition preservation is mandatory even for the compatibility
+        // wrapper. The absence of a filter cannot erase source restrictions.
+        for chunk in chunks {
+            if crate::DerivedMemoryLineage::from_metadata(chunk.metadata.as_ref())?.is_some() {
+                derived = true;
+            } else {
+                ordinary = true;
+                restricted_ordinary |= !plain_ordinary_consolidation_chunk(chunk);
+            }
+        }
+        let preserve_disposition = || {
+            if derived && ordinary {
+                return Err(MemoryError::InvalidConfig(
+                    "consolidation mixed contributors lack canonical lineage".into()));
+            }
+            if restricted_ordinary {
+                return Err(MemoryError::InvalidConfig(
+                    "consolidation ordinary restrictions lack canonical lineage".into()));
+            }
+            Ok(())
+        };
+        let Some(filter) = access_filter else { return preserve_disposition(); };
         for chunk in chunks {
             let mut current = filter.clone();
             current.now_ms = Utc::now().timestamp_millis().max(0) as u64;
             match crate::DerivedMemoryLineage::from_metadata(chunk.metadata.as_ref())? {
                 Some(lineage) => {
-                    derived = true;
                     current = self.authorize_consolidation_lineage(
                         &lineage, scope, request, Some(&current)).await?;
                 }
-                None => {
-                    ordinary = true;
-                    restricted_ordinary |= !plain_ordinary_consolidation_chunk(chunk);
-                }
+                None => {}
             }
             current.now_ms = Utc::now().timestamp_millis().max(0) as u64;
             let decision = current.decision_for_chunk(chunk);
@@ -164,21 +181,14 @@ impl MemoryManager {
                     decision.reason.as_deref().unwrap_or("denied"))));
             }
         }
-        if derived && ordinary {
-            return Err(MemoryError::InvalidConfig(
-                "consolidation mixed contributors lack canonical lineage".into()));
-        }
-        if restricted_ordinary {
-            return Err(MemoryError::InvalidConfig(
-                "consolidation ordinary restrictions lack canonical lineage".into()));
-        }
-        Ok(())
+        preserve_disposition()
     }
 }
 
 impl MemoryManager {
     /// Consolidate visible session memory into a summary with the same trusted
     /// ownership scope. Summary creation and source cleanup commit atomically.
+    /// Without governed authority, only plain default/Internal inputs qualify.
     pub async fn consolidate_scoped_session(
         &self,
         request: &ScopedMemoryConsolidationRequest,
@@ -190,10 +200,10 @@ impl MemoryManager {
     }
 
     /// Authorized derived contributors retain their complete source conjunction.
-    /// The compatibility wrapper remains sufficient for ordinary scoped chunks.
+    /// The compatibility wrapper accepts plain default/Internal scoped chunks.
     /// Governed consolidation accepts all-derived contributors, or only plain
-    /// default/Internal ordinary chunks. Mixed and restricted ordinary inputs
-    /// fail closed until their canonical chunk dispositions can be represented.
+    /// default/Internal ordinary chunks. Both entrypoints reject mixed and
+    /// restricted ordinary inputs until canonical chunk dispositions exist.
     pub async fn consolidate_scoped_session_with_access_filter(
         &self,
         request: &ScopedMemoryConsolidationRequest,

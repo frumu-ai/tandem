@@ -317,21 +317,33 @@ async fn backfill_workflow_learning_source_memory_scope(
         knowledge_scope_policy,
     )
     .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let updated = with_verified_memory_decrypt_principal(
-        verified_tenant_context,
-        store.mutate(
-            tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-                scope,
-                id: source.id.clone(),
-                visibility: source.visibility.clone(),
-                demoted: source.demoted,
-                metadata: Some(metadata),
-                provenance: source.provenance.clone(),
-            },
-        ),
-    )
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let derived = source.metadata.as_ref().is_some_and(|value|
+        value.get(tandem_memory::DERIVED_MEMORY_LINEAGE_METADATA_KEY).is_some());
+    let target_reference = if derived {
+        Some(tandem_memory::CanonicalMemoryRestriction::from_global_record(&source, &scope.tenant)
+            .map_err(|_| StatusCode::FORBIDDEN)?.source_reference())
+    } else { None };
+    if derived && !global_memory_record_visible_to_verified_request(
+        state, tenant_context, verified_tenant_context, store.as_ref(), &scope, &source,
+        Some(&distillation_access_filter(verified_tenant_context, caller_subject)),
+    ).await {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+        scope, id: source.id.clone(), visibility: source.visibility.clone(), demoted: source.demoted,
+        metadata: Some(metadata), provenance: source.provenance.clone(),
+    };
+    let updated = if derived {
+        let original = verified_tenant_context.cloned();
+        let authority = derived_memory_commit_authority(state, tenant_context, verified_tenant_context);
+        let expected = target_reference.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        commit_derived_memory_with_current_policy(state, tenant_context, verified_tenant_context,
+            async move { with_verified_memory_decrypt_principal(original.as_ref(),
+                store.mutate_with_commit_authority_if_unchanged(mutation, expected, authority)).await },
+        ).await?
+    } else {
+        with_verified_memory_decrypt_principal(verified_tenant_context, store.mutate(mutation)).await
+    }.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !matches!(
         updated,
         tandem_memory::MemoryStoreMutationResult::Changed(true)

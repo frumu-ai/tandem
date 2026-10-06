@@ -748,6 +748,12 @@ pub(super) async fn memory_demote(
         verified_tenant_context.as_deref(),
         &record.user_id,
     )?;
+    let derived = record.metadata.as_ref().and_then(|value|
+        value.get(tandem_memory::DERIVED_MEMORY_LINEAGE_METADATA_KEY)).is_some();
+    let target_reference = if derived {
+        Some(tandem_memory::CanonicalMemoryRestriction::from_global_record(&record, &scope.tenant)
+            .map_err(|_| StatusCode::FORBIDDEN)?.source_reference())
+    } else { None };
     let partition_key = memory_linkage(&record)
         .get("partition_key")
         .and_then(Value::as_str)
@@ -767,9 +773,39 @@ pub(super) async fn memory_demote(
         memory_linkage_detail(&memory_linkage(&record))
     );
     let audit_id = Uuid::new_v4().to_string();
+    if derived && !global_memory_record_visible_to_verified_request(
+        &state, &tenant_context, verified_tenant_context.as_deref(), store.as_ref(), &scope, &record,
+        Some(&distillation_access_filter(verified_tenant_context.as_deref(), &record.user_id)),
+    ).await {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let authority = target_reference.map(|expected| (
+        derived_memory_commit_authority(&state, &tenant_context, verified_tenant_context.as_deref()),
+        expected,
+    ));
+    let commit_state = state.clone();
+    let commit_tenant = tenant_context.clone();
+    let commit_verified = verified_tenant_context.as_deref().cloned();
+    let commit = async move {
+        let state = &commit_state;
+        let tenant_context = &commit_tenant;
+        let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+            scope, id: input.id.clone(), visibility: "private".to_string(), demoted: true,
+            metadata: memory_metadata_with_owner_subject(record.metadata.clone(), Some(record.user_id.as_str())),
+            provenance: record.provenance.clone(),
+        };
+        let updated = if let Some((authority, expected)) = authority {
+            with_verified_memory_decrypt_principal(commit_verified.as_ref(),
+                store.mutate_with_commit_authority_if_unchanged(mutation, expected, authority)).await
+        } else {
+            with_verified_memory_decrypt_principal(commit_verified.as_ref(), store.mutate(mutation)).await
+        }.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
+            return Err(StatusCode::NOT_FOUND);
+        }
     append_memory_audit(
-        &state,
-        &tenant_context,
+        state,
+        tenant_context,
         crate::MemoryAuditEvent {
             audit_id: audit_id.clone(),
             action: "memory_demote".to_string(),
@@ -786,34 +822,9 @@ pub(super) async fn memory_demote(
         },
     )
     .await?;
-    let changed = match with_verified_memory_decrypt_principal(
-        verified_tenant_context.as_deref(),
-        store.mutate(
-            tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-                scope,
-                id: input.id.clone(),
-                visibility: "private".to_string(),
-                demoted: true,
-                metadata: memory_metadata_with_owner_subject(
-                    record.metadata.clone(),
-                    Some(record.user_id.as_str()),
-                ),
-                provenance: record.provenance.clone(),
-            },
-        ),
-    )
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    {
-        tandem_memory::MemoryStoreMutationResult::Changed(changed) => changed,
-        _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
-    if !changed {
-        return Err(StatusCode::NOT_FOUND);
-    }
     publish_tenant_event(
-        &state,
-        &tenant_context,
+        state,
+        tenant_context,
         "memory.updated",
         json!({
             "memoryID": input.id,
@@ -834,6 +845,14 @@ pub(super) async fn memory_demote(
         "ok": true,
         "audit_id": audit_id,
     })))
+    };
+    if derived {
+        commit_derived_memory_with_current_policy(
+            &state, &tenant_context, verified_tenant_context.as_deref(), commit,
+        ).await?
+    } else {
+        commit.await
+    }
 }
 
 #[derive(Debug, Deserialize)]

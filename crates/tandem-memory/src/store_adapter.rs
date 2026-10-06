@@ -453,6 +453,7 @@ impl MemoryStore for MemoryDatabase {
                         demoted,
                         metadata.as_ref(),
                         provenance.as_ref(),
+                        None,
                         authority,
                     )
                     .await?,
@@ -461,6 +462,21 @@ impl MemoryStore for MemoryDatabase {
             _ => Err(MemoryStoreError::unsupported(
                 "SQLite guarded mutation supports UpdateGlobalRecordContext only",
             )),
+        }
+    }
+
+    async fn mutate_with_commit_authority_if_unchanged(
+        &self, request: MemoryStoreMutationRequest, expected: tandem_types::MemorySourceReference,
+        authority: MemoryCommitAuthority,
+    ) -> MemoryStoreResult<MemoryStoreMutationResult> {
+        match request {
+            MemoryStoreMutationRequest::UpdateGlobalRecordContext {scope,id,visibility,demoted,metadata,provenance} => {
+                self.enforce_store_tenant_scope("guarded compare-and-swap",&scope.tenant)?;
+                Ok(MemoryStoreMutationResult::Changed(self.update_global_context_with_authority(
+                    &scope,&id,&visibility,demoted,metadata.as_ref(),provenance.as_ref(),Some(&expected),authority,
+                ).await?))
+            }
+            _ => Err(MemoryStoreError::unsupported("SQLite guarded compare-and-swap supports UpdateGlobalRecordContext only")),
         }
     }
 
