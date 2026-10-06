@@ -162,6 +162,12 @@ impl ProtectedFileCrypto {
 
     fn validate_hosted_runtime_principal(&self) -> anyhow::Result<()> {
         if self.provider.is_hosted() {
+            // Keep unavailable-provider diagnostics when no runtime id resolves.
+            if !self.provider.is_encrypted_ready() {
+                self.provider
+                    .validate_hosted_runtime_principal("")
+                    .context("validate protected file-store runtime principal")?;
+            }
             let principal_id = self.principal_id.as_deref().context(
                 "protected file-store hosted crypto requires a configured runtime principal",
             )?;

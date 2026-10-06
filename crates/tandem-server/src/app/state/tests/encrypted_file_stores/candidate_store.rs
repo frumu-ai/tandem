@@ -222,7 +222,11 @@ async fn hosted_crypto_failure_and_legacy_plaintext_fail_closed() {
             hosted_provider(true, false),
             Some(RUNTIME_PRINCIPAL),
         ),
-        ("plaintext provider", MemoryCryptoProvider::plaintext(), None),
+        (
+            "plaintext provider",
+            MemoryCryptoProvider::plaintext(),
+            None,
+        ),
         (
             "local encrypted provider",
             MemoryCryptoProvider::from_mode(tandem_memory::MemoryCryptoMode::LocalEncrypted {
@@ -664,7 +668,10 @@ async fn warm_hosted_key_failure_after_prepared_file_refuses_publication() {
     .unwrap();
     assert!(opened.contains("tandem-workflow-learning-candidates"));
     let before_unwrap = decrypt_count.load(Ordering::SeqCst);
-    assert!(before_unwrap > 0, "the real hosted KMS fixture must have unwrapped a DEK");
+    assert!(
+        before_unwrap > 0,
+        "the real hosted KMS fixture must have unwrapped a DEK"
+    );
     let reopened = crate::encrypted_file_store::with_test_crypto_provider(
         provider.clone(),
         Some(RUNTIME_PRINCIPAL),
@@ -678,12 +685,18 @@ async fn warm_hosted_key_failure_after_prepared_file_refuses_publication() {
     .await
     .unwrap();
     assert_eq!(reopened, opened);
-    assert_eq!(decrypt_count.load(Ordering::SeqCst), before_unwrap,
-        "a second unseal must use the warm DEK cache before the simulated outage");
+    assert_eq!(
+        decrypt_count.load(Ordering::SeqCst),
+        before_unwrap,
+        "a second unseal must use the warm DEK cache before the simulated outage"
+    );
 
     let (prepared, seen_prepared) = tokio::sync::oneshot::channel();
     let (release, released) = tokio::sync::oneshot::channel();
-    let gate = WorkflowLearningPreparedFileGateForTest { prepared, release: released };
+    let gate = WorkflowLearningPreparedFileGateForTest {
+        prepared,
+        release: released,
+    };
     let owned = state.clone();
     let task = tokio::spawn(async move {
         crate::encrypted_file_store::with_test_crypto_provider(
@@ -706,8 +719,14 @@ async fn warm_hosted_key_failure_after_prepared_file_refuses_publication() {
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "tmp"))
         .collect::<Vec<_>>();
-    assert_eq!(prepared_paths.len(), 1, "the real encrypted temp file must be prepared");
-    assert!(std::fs::read(&prepared_paths[0]).unwrap().starts_with(b"tgs1:"));
+    assert_eq!(
+        prepared_paths.len(),
+        1,
+        "the real encrypted temp file must be prepared"
+    );
+    assert!(std::fs::read(&prepared_paths[0])
+        .unwrap()
+        .starts_with(b"tgs1:"));
     fail_unwrap.store(true, Ordering::SeqCst);
     release.send(()).unwrap();
     let error = tokio::time::timeout(std::time::Duration::from_secs(5), task)
@@ -715,28 +734,55 @@ async fn warm_hosted_key_failure_after_prepared_file_refuses_publication() {
         .unwrap()
         .unwrap()
         .expect_err("the captured warm hosted provider must fail its fresh prepublish unwrap");
-    assert!(format!("{error:?}").contains("fixture KMS decrypt unavailable"), "{error:?}");
+    assert!(
+        format!("{error:?}").contains("fixture KMS decrypt unavailable"),
+        "{error:?}"
+    );
     assert!(decrypt_count.load(Ordering::SeqCst) > before_unwrap);
     assert_eq!(tokio::fs::read(&path).await.unwrap(), original);
-    assert!(!prepared_paths[0].exists(), "failed publication must remove its prepared file");
-    assert!(state.get_workflow_learning_candidate("must-not-publish-after-kms-loss").await.is_none());
+    assert!(
+        !prepared_paths[0].exists(),
+        "failed publication must remove its prepared file"
+    );
+    assert!(state
+        .get_workflow_learning_candidate("must-not-publish-after-kms-loss")
+        .await
+        .is_none());
     assert_eq!(
-        serde_json::to_value(state.get_workflow_learning_candidate("warm-baseline").await.unwrap()).unwrap(),
+        serde_json::to_value(
+            state
+                .get_workflow_learning_candidate("warm-baseline")
+                .await
+                .unwrap()
+        )
+        .unwrap(),
         serde_json::to_value(&saved).unwrap(),
     );
-    let recovered = with_hosted_candidate_crypto(state.upsert_workflow_learning_candidate(
-        candidate("healthy-after-kms-recovery", "bob"),
-    ))
+    let recovered = with_hosted_candidate_crypto(
+        state.upsert_workflow_learning_candidate(candidate("healthy-after-kms-recovery", "bob")),
+    )
     .await
     .unwrap();
     let cold = hosted_state(&path).await;
-    with_hosted_candidate_crypto(cold.load_workflow_learning_candidates()).await.unwrap();
+    with_hosted_candidate_crypto(cold.load_workflow_learning_candidates())
+        .await
+        .unwrap();
     assert_eq!(
-        serde_json::to_value(cold.get_workflow_learning_candidate("warm-baseline").await.unwrap()).unwrap(),
+        serde_json::to_value(
+            cold.get_workflow_learning_candidate("warm-baseline")
+                .await
+                .unwrap()
+        )
+        .unwrap(),
         serde_json::to_value(&saved).unwrap(),
     );
     assert_eq!(
-        serde_json::to_value(cold.get_workflow_learning_candidate("healthy-after-kms-recovery").await.unwrap()).unwrap(),
+        serde_json::to_value(
+            cold.get_workflow_learning_candidate("healthy-after-kms-recovery")
+                .await
+                .unwrap()
+        )
+        .unwrap(),
         serde_json::to_value(&recovered).unwrap(),
     );
 }
@@ -751,9 +797,10 @@ async fn queued_local_capture_rejects_current_hosted_policy_after_writer_wait() 
     state.workflow_learning_candidates_path = path.clone();
     let _env_lock = crate::test_support::TEST_STATE_ENV_LOCK.lock().await;
     let _restore = enable_local_file_encryption(&root);
-    let local_provider = MemoryCryptoProvider::from_mode(tandem_memory::MemoryCryptoMode::LocalEncrypted {
-        provider: "local-file".into(),
-    });
+    let local_provider =
+        MemoryCryptoProvider::from_mode(tandem_memory::MemoryCryptoMode::LocalEncrypted {
+            provider: "local-file".into(),
+        });
     assert!(local_provider.is_encrypted_ready());
     let writer = state.workflow_learning_candidates.write().await;
     let pending = crate::encrypted_file_store::with_test_crypto_provider(
@@ -762,16 +809,26 @@ async fn queued_local_capture_rejects_current_hosted_policy_after_writer_wait() 
         state.put_workflow_learning_candidate(candidate("local-capture", "alice")),
     );
     tokio::pin!(pending);
-    assert!(futures::poll!(pending.as_mut()).is_pending(),
-        "the mutation must capture the local provider and await the held candidate writer");
+    assert!(
+        futures::poll!(pending.as_mut()).is_pending(),
+        "the mutation must capture the local provider and await the held candidate writer"
+    );
 
-    state.enterprise.hosted_policy.configure_test_source("acme", "acme", policy_path.clone());
-    std::fs::write(&policy_path, serde_json::to_vec(&json!({
-        "schema_version": 1, "policy_version": 1,
-        "organization_id": "acme", "deployment_id": "acme",
-        "generated_at": chrono::Utc::now(), "users": [], "org_units": [],
-        "org_unit_memberships": [], "deployment_grants": []
-    })).unwrap()).unwrap();
+    state
+        .enterprise
+        .hosted_policy
+        .configure_test_source("acme", "acme", policy_path.clone());
+    std::fs::write(
+        &policy_path,
+        serde_json::to_vec(&json!({
+            "schema_version": 1, "policy_version": 1,
+            "organization_id": "acme", "deployment_id": "acme",
+            "generated_at": chrono::Utc::now(), "users": [], "org_units": [],
+            "org_unit_memberships": [], "deployment_grants": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -783,13 +840,18 @@ async fn queued_local_capture_rejects_current_hosted_policy_after_writer_wait() 
         .await
         .unwrap()
         .expect_err("the captured local provider cannot publish after hosted policy installation");
-    assert!(format!("{error:?}").contains("hosted candidate storage requires a hosted KMS provider"),
-        "{error:?}");
+    assert!(
+        format!("{error:?}").contains("hosted candidate storage requires a hosted KMS provider"),
+        "{error:?}"
+    );
     assert!(!path.exists());
-    assert!(state.get_workflow_learning_candidate("local-capture").await.is_none());
-    let current = with_hosted_candidate_crypto(state.put_workflow_learning_candidate(
-        candidate("current-hosted", "alice"),
-    ))
+    assert!(state
+        .get_workflow_learning_candidate("local-capture")
+        .await
+        .is_none());
+    let current = with_hosted_candidate_crypto(
+        state.put_workflow_learning_candidate(candidate("current-hosted", "alice")),
+    )
     .await
     .unwrap();
     drop(_restore);
@@ -817,19 +879,36 @@ async fn absent_standalone_store_needs_no_key_until_first_required_write() {
     std::fs::create_dir(&unavailable_key).unwrap();
     std::env::set_var("TANDEM_MEMORY_LOCAL_KEY_FILE", &unavailable_key);
 
-    standalone.load_workflow_learning_candidates().await
+    standalone
+        .load_workflow_learning_candidates()
+        .await
         .expect("an absent standalone feature store must not resolve an unavailable key");
     assert!(!standalone_path.exists());
-    assert!(std::fs::read_dir(&unavailable_key).unwrap().next().is_none(),
-        "absent load must not create key material");
-    let error = standalone.put_workflow_learning_candidate(candidate("first-write", "alice"))
+    assert!(
+        std::fs::read_dir(&unavailable_key)
+            .unwrap()
+            .next()
+            .is_none(),
+        "absent load must not create key material"
+    );
+    let error = standalone
+        .put_workflow_learning_candidate(candidate("first-write", "alice"))
         .await
         .expect_err("first required standalone write must resolve and reject the unavailable key");
-    assert!(format!("{error:?}").contains("required local protected file-store encryption key is unavailable"),
-        "{error:?}");
+    assert!(
+        format!("{error:?}")
+            .contains("required local protected file-store encryption key is unavailable"),
+        "{error:?}"
+    );
     assert!(!standalone_path.exists());
-    assert!(std::fs::read_dir(&unavailable_key).unwrap().next().is_none());
-    assert!(standalone.get_workflow_learning_candidate("first-write").await.is_none());
+    assert!(std::fs::read_dir(&unavailable_key)
+        .unwrap()
+        .next()
+        .is_none());
+    assert!(standalone
+        .get_workflow_learning_candidate("first-write")
+        .await
+        .is_none());
 
     let error = crate::encrypted_file_store::with_test_crypto_provider(
         hosted_provider(false, true),
@@ -838,9 +917,15 @@ async fn absent_standalone_store_needs_no_key_until_first_required_write() {
     )
     .await
     .expect_err("an absent hosted store still requires a working KMS provider");
-    assert!(format!("{error:?}").contains("fixture KMS decrypt unavailable"), "{error:?}");
+    assert!(
+        format!("{error:?}").contains("fixture KMS decrypt unavailable"),
+        "{error:?}"
+    );
     assert!(!hosted_path.exists());
-    assert!(hosted.get_workflow_learning_candidate("first-write").await.is_none());
+    assert!(hosted
+        .get_workflow_learning_candidate("first-write")
+        .await
+        .is_none());
 }
 
 #[tokio::test]
@@ -849,9 +934,9 @@ async fn missing_initialized_candidate_store_refuses_load_and_ordinary_mutations
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("candidates.json");
     let state = hosted_state(&path).await;
-    let saved = with_hosted_candidate_crypto(state.put_workflow_learning_candidate(
-        candidate("retained", "alice"),
-    ))
+    let saved = with_hosted_candidate_crypto(
+        state.put_workflow_learning_candidate(candidate("retained", "alice")),
+    )
     .await
     .unwrap();
     let backup = tokio::fs::read(&path).await.unwrap();
@@ -860,27 +945,50 @@ async fn missing_initialized_candidate_store_refuses_load_and_ordinary_mutations
     let load_error = with_hosted_candidate_crypto(state.load_workflow_learning_candidates())
         .await
         .expect_err("missing durable bytes cannot be mistaken for a new empty store");
-    assert!(format!("{load_error:?}").contains("missing after initialization"), "{load_error:?}");
+    assert!(
+        format!("{load_error:?}").contains("missing after initialization"),
+        "{load_error:?}"
+    );
     for operation in ["put", "upsert", "update"] {
         let result: anyhow::Result<()> = with_hosted_candidate_crypto(async {
             match operation {
-                "put" => state.put_workflow_learning_candidate(candidate("resurrected", "bob"))
-                    .await.map(|_| ()),
-                "upsert" => state.upsert_workflow_learning_candidate(candidate("resurrected", "bob"))
-                    .await.map(|_| ()),
-                "update" => state.update_workflow_learning_candidate("retained", |row| {
-                    row.summary = "must-not-resurrect-private-summary".into();
-                }).await.map(|_| ()),
+                "put" => state
+                    .put_workflow_learning_candidate(candidate("resurrected", "bob"))
+                    .await
+                    .map(|_| ()),
+                "upsert" => state
+                    .upsert_workflow_learning_candidate(candidate("resurrected", "bob"))
+                    .await
+                    .map(|_| ()),
+                "update" => state
+                    .update_workflow_learning_candidate("retained", |row| {
+                        row.summary = "must-not-resurrect-private-summary".into();
+                    })
+                    .await
+                    .map(|_| ()),
                 _ => unreachable!(),
             }
-        }).await;
-        let error = result.expect_err("ordinary mutation cannot recreate a missing initialized store");
-        assert!(format!("{error:?}").contains("missing after initialization"),
-            "wrong {operation} failure: {error:?}");
+        })
+        .await;
+        let error =
+            result.expect_err("ordinary mutation cannot recreate a missing initialized store");
+        assert!(
+            format!("{error:?}").contains("missing after initialization"),
+            "wrong {operation} failure: {error:?}"
+        );
         assert!(!path.exists());
-        assert!(state.get_workflow_learning_candidate("resurrected").await.is_none());
+        assert!(state
+            .get_workflow_learning_candidate("resurrected")
+            .await
+            .is_none());
         assert_eq!(
-            serde_json::to_value(state.get_workflow_learning_candidate("retained").await.unwrap()).unwrap(),
+            serde_json::to_value(
+                state
+                    .get_workflow_learning_candidate("retained")
+                    .await
+                    .unwrap()
+            )
+            .unwrap(),
             serde_json::to_value(&saved).unwrap(),
         );
     }

@@ -25,7 +25,12 @@ async fn hosted_promotion_request_with_owned_crypto(
                 .enable_all()
                 .build()
                 .expect("hosted promotion fixture runtime")
-                .block_on(super::hosted_learning_request(app, "POST", &uri, Some(body)))
+                .block_on(super::hosted_learning_request(
+                    app,
+                    "POST",
+                    &uri,
+                    Some(body),
+                ))
         })
         .await
         .expect("hosted promotion fixture executor")

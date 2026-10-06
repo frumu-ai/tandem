@@ -142,11 +142,15 @@ fn hosted_file_seal_rejects_missing_or_wrong_runtime_before_kms_or_cache() {
         assert!(cache.is_empty());
     }
     let valid = file_crypto(provider, Some(RUNTIME));
-    let stored = valid.encrypt_record(SECRET, &context()).expect("valid seal");
+    let stored = valid
+        .encrypt_record(SECRET, &context())
+        .expect("valid seal");
     assert!(!stored.contains(SECRET));
     assert_eq!(calls.wrap.load(Ordering::SeqCst), 1);
     assert_eq!(
-        valid.decrypt_record(&stored, &context()).expect("valid read"),
+        valid
+            .decrypt_record(&stored, &context())
+            .expect("valid read"),
         SECRET
     );
 }
@@ -177,11 +181,45 @@ fn hosted_file_cold_unseal_rejects_wrong_runtime_before_kms() {
 }
 
 #[test]
+fn hosted_pending_file_seal_and_open_preserve_unavailable_provider_error() {
+    let calls = KmsCalls::default();
+    let (writer, _) = healthy(&calls);
+    let stored = file_crypto(writer, Some(RUNTIME))
+        .encrypt_record(SECRET, &context())
+        .expect("valid encrypted record");
+    let pending = MemoryCryptoProvider::from_mode(tandem_memory::MemoryCryptoMode::HostedKms {
+        provider: PROVIDER.into(),
+    });
+    assert!(pending.is_hosted());
+    assert!(!pending.is_encrypted_ready(), "fixture KMS is unprovisioned");
+    for principal in [None, Some(RUNTIME), Some("other-worker")] {
+        let crypto = file_crypto(pending.clone(), principal);
+        for error in [
+            crypto
+                .encrypt_record(SECRET, &context())
+                .expect_err("unprovisioned hosted writes deny"),
+            crypto
+                .decrypt_record(&stored, &context())
+                .expect_err("unprovisioned hosted reads deny"),
+        ] {
+            assert!(
+                format!("{error:?}").contains("refusing to store plaintext"),
+                "unavailable-provider error must remain actionable: {error:?}"
+            );
+        }
+    }
+    assert_eq!(calls.wrap.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.unwrap.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn hosted_file_warm_unseal_rejects_wrong_runtime_without_cache_bypass() {
     let calls = KmsCalls::default();
     let (provider, cache) = healthy(&calls);
     let valid = file_crypto(provider.clone(), Some(RUNTIME));
-    let stored = valid.encrypt_record(SECRET, &context()).expect("valid seal");
+    let stored = valid
+        .encrypt_record(SECRET, &context())
+        .expect("valid seal");
     assert_eq!(cache.len(), 1);
     for principal in denied_principals() {
         file_crypto(provider.clone(), principal)
@@ -250,7 +288,9 @@ fn hosted_file_provider_aliases_preserve_exact_runtime_binding() {
             &calls,
         );
         let crypto = file_crypto(provider, Some(RUNTIME));
-        let stored = crypto.encrypt_record(SECRET, &context()).expect("alias seal");
+        let stored = crypto
+            .encrypt_record(SECRET, &context())
+            .expect("alias seal");
         crypto.provider.clear_hosted_dek_cache();
         assert_eq!(
             crypto
@@ -270,9 +310,13 @@ fn local_file_crypto_keeps_standalone_roundtrip_without_runtime_principal() {
         MemoryCryptoProvider::local_key([0x5a; 32]),
     ] {
         let crypto = file_crypto(provider, None);
-        let stored = crypto.encrypt_record(SECRET, &context()).expect("local seal");
+        let stored = crypto
+            .encrypt_record(SECRET, &context())
+            .expect("local seal");
         assert_eq!(
-            crypto.decrypt_record(&stored, &context()).expect("local read"),
+            crypto
+                .decrypt_record(&stored, &context())
+                .expect("local read"),
             SECRET
         );
     }

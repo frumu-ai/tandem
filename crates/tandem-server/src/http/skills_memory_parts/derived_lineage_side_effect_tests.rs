@@ -11,6 +11,9 @@ use crate::app::state::{
 #[path = "derived_lineage_audit_admission_tests.rs"]
 mod audit_admission_tests;
 
+#[path = "derived_lineage_candidate_io_tests.rs"]
+mod candidate_io_tests;
+
 fn candidate(id: &str, summary: &str) -> WorkflowLearningCandidate {
     WorkflowLearningCandidate {
         candidate_id: id.into(), workflow_id: "session:commit-candidate-session".into(),
