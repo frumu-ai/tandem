@@ -48,7 +48,7 @@ impl CommitFixture {
             "tandem-web", "tandem-runtime", now, now + lifetime_ms,
             format!("memory-commit-{}", Uuid::new_v4()),
             TenantContext::explicit_user_workspace(
-                "org-memory-commit", "ws-memory-commit",
+                "org-memory-commit", "dep-memory-commit",
                 Some("dep-memory-commit".to_owned()), "alice",
             ),
             HumanActor::tandem_user("alice"),

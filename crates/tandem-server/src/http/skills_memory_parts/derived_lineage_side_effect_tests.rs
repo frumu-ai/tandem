@@ -496,6 +496,37 @@ async fn wait_for_guarded_memory_writer<T>(
         "current publication authority must cover the actual SQLite writer wait");
 }
 
+fn drain_target_promotion_events(
+    events: &mut tokio::sync::broadcast::Receiver<tandem_types::EngineEvent>,
+    id: &str,
+) -> (usize, usize) {
+    let mut promoted = 0;
+    let mut updated = 0;
+    loop {
+        match events.try_recv() {
+            Ok(event) if matches!(event.event_type.as_str(), "memory.promote" | "memory.updated") => {
+                if event.properties["runID"] != "promotion-commit-run"
+                    && event.properties["memoryID"] != id {
+                    continue;
+                }
+                assert_eq!(event.properties["runID"], "promotion-commit-run");
+                assert_eq!(event.properties["memoryID"], id);
+                assert_eq!(event.properties["sourceMemoryID"], id);
+                if event.event_type == "memory.promote" {
+                    promoted += 1;
+                } else {
+                    assert_eq!(event.properties["action"], "promote");
+                    updated += 1;
+                }
+            }
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(error) => panic!("promotion event observer lost evidence: {error}"),
+        }
+    }
+    (promoted, updated)
+}
+
 fn assert_original_identity_commit_denied(
     fixture: &CommitFixture,
     original: &VerifiedTenantContext,
@@ -610,6 +641,7 @@ async fn tan_829_derived_promotion_rechecks_source_and_capability_deadlines_afte
         let state = fixture.state.clone();
         let verified = original.clone();
         let tenant = original.tenant_context.clone();
+        let mut events = fixture.state.event_bus.subscribe();
         let task = tokio::spawn(async move {
             memory_promote_impl_with_verified(&state, &tenant, Some(&verified), request, Some(capability)).await
         });
@@ -617,6 +649,8 @@ async fn tan_829_derived_promotion_rechecks_source_and_capability_deadlines_afte
         assert!(crate::now_ms() < deadline, "{kind:?} is current after real SQL busy entry");
         assert!(!fixture.state.memory_audit_log.read().await.iter().any(|event|
             event.action == "memory_promote" && event.status == "ok"));
+        assert_eq!(drain_target_promotion_events(&mut events, &id), (0, 0),
+            "held SQL writer cannot publish target promotion events");
         if expired {
             tokio::time::timeout(Duration::from_secs(7), async {
                 while crate::now_ms() < deadline {
@@ -639,15 +673,20 @@ async fn tan_829_derived_promotion_rechecks_source_and_capability_deadlines_afte
             "SELECT visibility,content_hash,metadata,provenance FROM memory_records WHERE id=?1",
             [&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).unwrap();
+        let published = drain_target_promotion_events(&mut events, &id);
         if expired {
             assert_eq!(result.unwrap_err(), StatusCode::FORBIDDEN);
             assert_eq!(after, before, "{kind:?} expiry cannot publish promotion");
             assert!(!fixture.state.memory_audit_log.read().await.iter().any(|event|
                 event.action == "memory_promote" && event.status == "ok"));
+            assert_eq!(published, (0, 0),
+                "denied writer cannot publish target promotion or update events");
         } else {
             assert!(result.unwrap().promoted);
             assert_eq!(after.0, "shared");
             assert_eq!(after.1, before.1);
+            assert_eq!(published, (1, 1),
+                "healthy promotion publishes one target promotion and one update event");
         }
       }
     }
