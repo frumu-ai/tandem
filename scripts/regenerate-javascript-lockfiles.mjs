@@ -35,6 +35,35 @@ function atLeast(actual, minimum) {
   return true;
 }
 
+function lockGuardDiagnostics(workspace, content, name, found) {
+  // Keep failure output closed to known package/version keys. Never include
+  // registry resolutions, arbitrary lock values or the full generated lock.
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const safeVersion = /^['"]?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?['"]?$/;
+  const versions = [...new Set(found.map((version) =>
+    typeof version === "string" && version.length <= 96 && safeVersion.test(version)
+      ? version : "<invalid-version>"))].sort();
+  const versionToken = "\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?";
+  const keyPattern = workspace.manager === "npm"
+    ? new RegExp(`^ {4}"(?:node_modules/(?:@[A-Za-z0-9._-]+/)?[A-Za-z0-9._-]+/)*node_modules/${escapedName}": \\{ *$`)
+    : new RegExp(
+      `^  ['"]?${escapedName}(?:@(?:${versionToken}|[-0-9.*+<>=~^| ()]+))?['"]?: *(?:['"]?${versionToken}['"]?|\\{\\})? *$`,
+    );
+  const keyLines = content.split(/\r?\n/).filter((line) =>
+    line.length <= 256 && keyPattern.test(line));
+  return {
+    lockfile: workspace.lockfile,
+    package: name,
+    expectedFloor: patchedVersions[name],
+    generatedLockSha256: createHash("sha256").update(content).digest("hex"),
+    matchedVersionCount: found.length,
+    matchedVersions: versions.slice(0, 8),
+    omittedUniqueVersionCount: Math.max(0, versions.length - 8),
+    matchingKeyLines: keyLines.slice(0, 8),
+    omittedKeyLineCount: Math.max(0, keyLines.length - 8),
+  };
+}
+
 export function assertPatchedLock(workspace, content) {
   const required = workspace.lockfile === "guide/pnpm-lock.yaml"
     ? Object.keys(patchedVersions)
@@ -57,7 +86,9 @@ export function assertPatchedLock(workspace, content) {
         .map((match) => match[1].split("(")[0]);
     }
     if (!found.length || found.some((version) => !atLeast(version, patchedVersions[name]))) {
-      throw new Error(`Patched ${name} not resolved in ${workspace.lockfile}`);
+      const error = new Error(`Patched ${name} not resolved in ${workspace.lockfile}`);
+      error.lockGuardDiagnostics = lockGuardDiagnostics(workspace, content, name, found);
+      throw error;
     }
     versions[name] = [...new Set(found)].sort();
   }
@@ -147,8 +178,11 @@ function main() {
     report.ok = true;
     saveReport();
   } catch (error) {
-    report.failure = error.message;
+    report.failure = error.lockGuardDiagnostics
+      ? { message: error.message, lockGuard: error.lockGuardDiagnostics }
+      : error.message;
     saveReport();
+    if (error.lockGuardDiagnostics) process.stdout.write(`${JSON.stringify(report.failure)}\n`);
     throw error;
   }
 }
