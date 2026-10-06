@@ -164,6 +164,50 @@ jobs:
       - name: Audit every JavaScript lockfile
         run: node scripts/audit-javascript-workspaces.mjs
 
+      - name: Verify patched lockfile guards
+        run: node --test scripts/regenerate-javascript-lockfiles.test.mjs
+
+      - name: Install affected compatibility workspaces from frozen locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm -C guide install --frozen-lockfile
+          npm --prefix packages/create-tandem-panel/template ci --ignore-scripts --no-audit --no-fund
+          npm --prefix scripts/bench-js ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build the generated control panel template
+        run: npm --prefix packages/create-tandem-panel/template run build
+
+      - name: Validate KaTeX through the actual Mermaid dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createRequire } from 'node:module';
+          import { resolve } from 'node:path';
+          const guideRequire = createRequire(resolve('guide/package.json'));
+          const mermaidRequire = createRequire(guideRequire.resolve('mermaid'));
+          const katex = mermaidRequire('katex');
+          assert.match(katex.renderToString('E = mc^2', { throwOnError: true, trust: false }), /class="katex"/);
+          assert.doesNotMatch(katex.renderToString('\\href{javascript:alert(1)}{x}', { trust: false }), /href="javascript:/);
+          NODE
+
+      - name: Validate the bench CSS parser through jsdom
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createRequire } from 'node:module';
+          import { resolve } from 'node:path';
+          const benchRequire = createRequire(resolve('scripts/bench-js/package.json'));
+          const { JSDOM } = benchRequire('jsdom');
+          const dom = new JSDOM('<!doctype html><style>div { color: rgb(255, 0, 0) }</style><div id="fixture">fixture</div>');
+          assert.equal(dom.window.getComputedStyle(dom.window.document.getElementById('fixture')).color, 'rgb(255, 0, 0)');
+          dom.window.close();
+          NODE
+
   regenerate-javascript-lockfiles:
     name: Generate and Validate JavaScript Lockfile Repair
     if: github.event_name == 'workflow_dispatch' && inputs.regenerate_javascript_lockfiles
