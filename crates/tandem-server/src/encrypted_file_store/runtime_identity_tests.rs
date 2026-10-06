@@ -191,7 +191,10 @@ fn hosted_pending_file_seal_and_open_preserve_unavailable_provider_error() {
         provider: PROVIDER.into(),
     });
     assert!(pending.is_hosted());
-    assert!(!pending.is_encrypted_ready(), "fixture KMS is unprovisioned");
+    assert!(
+        !pending.is_encrypted_ready(),
+        "fixture KMS is unprovisioned"
+    );
     for principal in [None, Some(RUNTIME), Some("other-worker")] {
         let crypto = file_crypto(pending.clone(), principal);
         for error in [
