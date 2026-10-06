@@ -3,7 +3,10 @@
 
 use super::*;
 use std::future::Future;
-use crate::app::state::tests::encrypted_file_stores::with_hosted_candidate_crypto;
+use crate::app::state::{
+    tests::encrypted_file_stores::with_hosted_candidate_crypto,
+    WorkflowLearningPreparationFaultForTest, WorkflowLearningPreparedFileGateForTest,
+};
 
 #[path = "derived_lineage_audit_admission_tests.rs"]
 mod audit_admission_tests;
