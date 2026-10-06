@@ -125,6 +125,9 @@ pub(super) async fn workflow_learning_candidate_promote(
             &capability.subject,
             &memory_id,
             &knowledge_scope_policy,
+            DerivedMemoryBackfillCommitContext {
+                partition: session_partition.clone(), capability_expires_at_ms: capability.expires_at,
+            },
         )
         .await?;
         memory_id
@@ -257,6 +260,11 @@ pub(super) async fn workflow_learning_candidate_promote(
     })))
 }
 
+struct DerivedMemoryBackfillCommitContext {
+    partition: tandem_memory::MemoryPartition,
+    capability_expires_at_ms: u64,
+}
+
 async fn backfill_workflow_learning_source_memory_scope(
     state: &AppState,
     tenant_context: &TenantContext,
@@ -264,6 +272,7 @@ async fn backfill_workflow_learning_source_memory_scope(
     caller_subject: &str,
     memory_id: &str,
     knowledge_scope_policy: &tandem_memory::KnowledgeScopePolicy,
+    commit_context: DerivedMemoryBackfillCommitContext,
 ) -> Result<(), StatusCode> {
     let store = open_global_memory_store_for_state(state)
         .await
@@ -323,19 +332,33 @@ async fn backfill_workflow_learning_source_memory_scope(
         Some(tandem_memory::CanonicalMemoryRestriction::from_global_record(&source, &scope.tenant)
             .map_err(|_| StatusCode::FORBIDDEN)?.source_reference())
     } else { None };
-    if derived && !global_memory_record_visible_to_verified_request(
-        state, tenant_context, verified_tenant_context, store.as_ref(), &scope, &source,
-        Some(&distillation_access_filter(verified_tenant_context, caller_subject)),
-    ).await {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    let source_authority = if derived {
+        let lineage = DerivedMemoryLineage::from_metadata(source.metadata.as_ref())
+            .map_err(|_| StatusCode::FORBIDDEN)?.ok_or(StatusCode::FORBIDDEN)?;
+        let filter = with_verified_memory_decrypt_principal(verified_tenant_context,
+            crate::memory::derived_lineage::resolved_filter_for_lineage(
+                state, tenant_context, store.as_ref(), &scope, &lineage,
+                distillation_access_filter(verified_tenant_context, caller_subject),
+            ),
+        ).await.ok_or(StatusCode::NOT_FOUND)?;
+        let operation_lineage = lineage.clone();
+        let operation_partition = commit_context.partition;
+        let capability_expires_at_ms = commit_context.capability_expires_at_ms;
+        let operation_policy = knowledge_scope_policy.clone();
+        Some(derived_memory_commit_authority_with_lineage(
+            state, tenant_context, verified_tenant_context, lineage, filter, Some(source.clone()),
+            move |now| now < capability_expires_at_ms
+                && operation_lineage.write_scope_decision(&operation_partition, now).is_ok_and(|decision| decision.allowed)
+                && operation_policy.write_decision(&operation_partition, now).allowed,
+        ))
+    } else { None };
     let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
         scope, id: source.id.clone(), visibility: source.visibility.clone(), demoted: source.demoted,
         metadata: Some(metadata), provenance: source.provenance.clone(),
     };
     let updated = if derived {
         let original = verified_tenant_context.cloned();
-        let authority = derived_memory_commit_authority(state, tenant_context, verified_tenant_context);
+        let authority = source_authority.ok_or(StatusCode::FORBIDDEN)?;
         let expected = target_reference.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
         commit_derived_memory_with_current_policy(state, tenant_context, verified_tenant_context,
             async move { with_verified_memory_decrypt_principal(original.as_ref(),
@@ -343,7 +366,7 @@ async fn backfill_workflow_learning_source_memory_scope(
         ).await?
     } else {
         with_verified_memory_decrypt_principal(verified_tenant_context, store.mutate(mutation)).await
-    }.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }.map_err(derived_memory_commit_error_status)?;
     if !matches!(
         updated,
         tandem_memory::MemoryStoreMutationResult::Changed(true)

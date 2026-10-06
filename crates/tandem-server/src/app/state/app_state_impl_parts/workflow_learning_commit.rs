@@ -5,6 +5,21 @@ type WorkflowLearningCandidateMap = std::collections::HashMap<String, WorkflowLe
 
 struct PreparedWorkflowLearningFile(std::path::PathBuf);
 
+#[derive(Default)]
+struct WorkflowLearningCommitObserver {
+    #[cfg(test)]
+    writer_wait: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl WorkflowLearningCommitObserver {
+    fn writer_pending(&mut self) {
+        #[cfg(test)]
+        if let Some(waiter) = self.writer_wait.take() {
+            let _ = waiter.send(());
+        }
+    }
+}
+
 impl Drop for PreparedWorkflowLearningFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
@@ -66,19 +81,62 @@ impl AppState {
     /// Native source reads precede this call. Candidate commits acquire the
     /// candidate writer before publication authority; no publication-first
     /// caller may enter this method. The owned task survives caller cancellation.
+    #[cfg(test)]
     pub(crate) async fn upsert_workflow_learning_candidate_with_current_policy(
         &self,
         candidate: WorkflowLearningCandidate,
         verified: Option<tandem_types::VerifiedTenantContext>,
     ) -> anyhow::Result<WorkflowLearningCandidate> {
         let state = self.clone();
+        let authority: tandem_memory::MemoryCommitAuthority = std::sync::Arc::new(move || {
+            state.enterprise.hosted_policy.authorize(verified.as_ref()).map_err(|reason|
+                tandem_memory::MemoryStoreError::new(tandem_memory::MemoryStoreErrorKind::ScopeViolation, reason))
+        });
+        self.upsert_workflow_learning_candidate_with_commit_authority(candidate, authority).await
+    }
+
+    pub(crate) async fn upsert_workflow_learning_candidate_with_commit_authority(
+        &self,
+        candidate: WorkflowLearningCandidate,
+        authority: tandem_memory::MemoryCommitAuthority,
+    ) -> anyhow::Result<WorkflowLearningCandidate> {
+        self.upsert_workflow_learning_candidate_with_commit_observer(
+            candidate, authority, WorkflowLearningCommitObserver::default(),
+        ).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn upsert_workflow_learning_candidate_with_commit_authority_and_writer_wait(
+        &self,
+        candidate: WorkflowLearningCandidate,
+        authority: tandem_memory::MemoryCommitAuthority,
+        writer_wait: tokio::sync::oneshot::Sender<()>,
+    ) -> anyhow::Result<WorkflowLearningCandidate> {
+        self.upsert_workflow_learning_candidate_with_commit_observer(
+            candidate, authority, WorkflowLearningCommitObserver {writer_wait:Some(writer_wait)},
+        ).await
+    }
+
+    async fn upsert_workflow_learning_candidate_with_commit_observer(
+        &self,
+        candidate: WorkflowLearningCandidate,
+        authority: tandem_memory::MemoryCommitAuthority,
+        mut observer: WorkflowLearningCommitObserver,
+    ) -> anyhow::Result<WorkflowLearningCandidate> {
+        let state = self.clone();
         tokio::spawn(async move {
+            use std::future::Future;
             use tokio::io::AsyncWriteExt;
 
-            let mut rows = state.workflow_learning_candidates.write().await;
+            let writer = state.workflow_learning_candidates.write();
+            tokio::pin!(writer);
+            let mut rows = std::future::poll_fn(|context| {
+                let result = writer.as_mut().poll(context);
+                if result.is_pending() { observer.writer_pending(); }
+                result
+            }).await;
             let _publication = state.enterprise.hosted_policy.lock_publication_owned().await;
-            state.enterprise.hosted_policy.authorize(verified.as_ref())
-                .map_err(anyhow::Error::msg)?;
+            authority()?;
             let mut next = rows.clone();
             let stored = merge_workflow_learning_candidate(&mut next, candidate);
             let payload = serde_json::to_vec_pretty(&next)?;
@@ -97,9 +155,9 @@ impl AppState {
             file.sync_all().await?;
             drop(file);
             // Preparation can await filesystem work. Check the ORIGINAL
-            // assertion again at actual file publication, before changing cache.
-            state.enterprise.hosted_policy.authorize(verified.as_ref())
-                .map_err(anyhow::Error::msg)?;
+            // assertion and captured source restrictions again at actual file
+            // publication, before changing cache.
+            authority()?;
             std::fs::rename(&prepared.0, &state.workflow_learning_candidates_path)?;
             *rows = next;
             Ok(stored)

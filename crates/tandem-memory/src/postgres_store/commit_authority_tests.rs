@@ -294,55 +294,135 @@ async fn postgres_guarded_row_writer_wait_and_precommit_denial_preserve_original
 
 #[tokio::test]
 async fn postgres_guarded_cas_row_wait_rejects_stale_policy_and_current_target_commits() {
-    let Some(url) = test_url() else {return;};
-    let store = Arc::new(PostgresMemoryStore::connect(config(url,4)).await.unwrap());
-    let tenant = tenant(&format!("guarded-cas-{}",uuid::Uuid::new_v4()));
-    let original = guarded_record(&tenant,&format!("cas-target-{}",uuid::Uuid::new_v4()));
-    store.write(MemoryStoreWriteRequest::GlobalRecord {scope:write_scope(&tenant),record:original.clone()}).await.unwrap();
-    let expected = crate::CanonicalMemoryRestriction::from_global_record(&original,&tenant).unwrap().source_reference();
+    let Some(url) = test_url() else {
+        return;
+    };
+    let store = Arc::new(PostgresMemoryStore::connect(config(url, 4)).await.unwrap());
+    let tenant = tenant(&format!("guarded-cas-{}", uuid::Uuid::new_v4()));
+    let original = guarded_record(&tenant, &format!("cas-target-{}", uuid::Uuid::new_v4()));
+    store
+        .write(MemoryStoreWriteRequest::GlobalRecord {
+            scope: write_scope(&tenant),
+            record: original.clone(),
+        })
+        .await
+        .unwrap();
+    let expected = crate::CanonicalMemoryRestriction::from_global_record(&original, &tenant)
+        .unwrap()
+        .source_reference();
     let stale = MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-        scope:read_scope(&tenant),id:original.id.clone(),visibility:original.visibility.clone(),demoted:false,
-        metadata:original.metadata.clone(),provenance:original.provenance.clone(),
+        scope: read_scope(&tenant),
+        id: original.id.clone(),
+        visibility: original.visibility.clone(),
+        demoted: false,
+        metadata: original.metadata.clone(),
+        provenance: original.provenance.clone(),
     };
     let mut locker = store.client().await.unwrap();
-    let blocker:i32 = locker.query_one("SELECT pg_backend_pid()",&[]).await.unwrap().get(0);
+    let blocker: i32 = locker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
     let tx = locker.transaction().await.unwrap();
-    tx.query_one("SELECT id FROM tandem_memory_global_records WHERE id=$1 FOR UPDATE",&[&original.id]).await.unwrap();
+    tx.query_one(
+        "SELECT id FROM tandem_memory_global_records WHERE id=$1 FOR UPDATE",
+        &[&original.id],
+    )
+    .await
+    .unwrap();
     let entered = Arc::new(tokio::sync::Notify::new());
     let calls = Arc::new(AtomicUsize::new(0));
-    let callback = authority(Arc::new(AtomicBool::new(true)),entered.clone(),calls.clone());
+    let callback = authority(
+        Arc::new(AtomicBool::new(true)),
+        entered.clone(),
+        calls.clone(),
+    );
     let worker_store = store.clone();
-    let worker = tokio::spawn(async move {worker_store.mutate_with_commit_authority_if_unchanged(stale,expected,callback).await});
-    tokio::time::timeout(Duration::from_secs(10),entered.notified()).await.unwrap();
-    witness_real_lock_wait(&store,blocker,"%FOR UPDATE%").await;
+    let worker = tokio::spawn(async move {
+        worker_store
+            .mutate_with_commit_authority_if_unchanged(stale, expected, callback)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .unwrap();
+    witness_real_lock_wait(&store, blocker, "%FOR UPDATE%").await;
     let mut tightened = original.clone();
     tightened.metadata.as_mut().unwrap()["classification"] = serde_json::json!("restricted");
     tightened.updated_at_ms = 2_000;
     let data = serde_json::to_value(&tightened).unwrap();
-    tx.execute("UPDATE tandem_memory_global_records SET data=$2,data_class='restricted' WHERE id=$1",&[&original.id,&data]).await.unwrap();
+    tx.execute(
+        "UPDATE tandem_memory_global_records SET data=$2,data_class='restricted' WHERE id=$1",
+        &[&original.id, &data],
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     let error = worker.await.unwrap().unwrap_err();
-    assert_eq!(error.kind,MemoryStoreErrorKind::ScopeViolation);
-    assert!(error.message.contains("target changed"),"{error:?}");
-    assert_eq!(calls.load(Ordering::SeqCst),2,"current authority does not substitute for target freshness");
-    let retained = read(&store,&tenant,&original.id).await.unwrap();
-    assert_eq!(retained.metadata,tightened.metadata);
-    assert_eq!(retained.updated_at_ms,tightened.updated_at_ms);
-    assert_eq!(retained.content_hash,original.content_hash);
-    let expected = crate::CanonicalMemoryRestriction::from_global_record(&retained,&tenant).unwrap().source_reference();
-    let mut metadata = retained.metadata.clone().unwrap(); metadata["cas_healthy"] = serde_json::json!(true);
+    assert_eq!(error.kind, MemoryStoreErrorKind::ScopeViolation);
+    assert!(error.message.contains("target changed"), "{error:?}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "current authority does not substitute for target freshness"
+    );
+    let retained = read(&store, &tenant, &original.id).await.unwrap();
+    assert_eq!(retained.metadata, tightened.metadata);
+    assert_eq!(retained.updated_at_ms, tightened.updated_at_ms);
+    assert_eq!(retained.content_hash, original.content_hash);
+    let expected = crate::CanonicalMemoryRestriction::from_global_record(&retained, &tenant)
+        .unwrap()
+        .source_reference();
+    let mut metadata = retained.metadata.clone().unwrap();
+    metadata["cas_healthy"] = serde_json::json!(true);
     let current = MemoryStoreMutationRequest::UpdateGlobalRecordContext {
-        scope:read_scope(&tenant),id:retained.id.clone(),visibility:retained.visibility.clone(),demoted:false,
-        metadata:Some(metadata.clone()),provenance:retained.provenance.clone(),
+        scope: read_scope(&tenant),
+        id: retained.id.clone(),
+        visibility: retained.visibility.clone(),
+        demoted: false,
+        metadata: Some(metadata.clone()),
+        provenance: retained.provenance.clone(),
     };
-    let mut wrong_id = expected.clone(); wrong_id.memory_id = "other-target".into();
-    assert_eq!(store.mutate_with_commit_authority_if_unchanged(current.clone(),wrong_id,Arc::new(||Ok(())))
-        .await.unwrap_err().kind,MemoryStoreErrorKind::ScopeViolation);
+    let mut wrong_id = expected.clone();
+    wrong_id.memory_id = "other-target".into();
+    assert_eq!(
+        store
+            .mutate_with_commit_authority_if_unchanged(
+                current.clone(),
+                wrong_id,
+                Arc::new(|| Ok(()))
+            )
+            .await
+            .unwrap_err()
+            .kind,
+        MemoryStoreErrorKind::ScopeViolation
+    );
     let mut foreign = current.clone();
-    if let MemoryStoreMutationRequest::UpdateGlobalRecordContext {scope,..} = &mut foreign {scope.tenant.workspace_id="foreign-workspace".into();}
-    assert_eq!(store.mutate_with_commit_authority_if_unchanged(foreign,expected.clone(),Arc::new(||Ok(())))
-        .await.unwrap_err().kind,MemoryStoreErrorKind::ScopeViolation);
-    assert!(matches!(store.mutate_with_commit_authority_if_unchanged(current,expected,Arc::new(||Ok(())))
-        .await.unwrap(),MemoryStoreMutationResult::Changed(true)));
-    assert_eq!(read(&store,&tenant,&original.id).await.unwrap().metadata,Some(metadata));
+    if let MemoryStoreMutationRequest::UpdateGlobalRecordContext { scope, .. } = &mut foreign {
+        scope.tenant.workspace_id = "foreign-workspace".into();
+    }
+    assert_eq!(
+        store
+            .mutate_with_commit_authority_if_unchanged(
+                foreign,
+                expected.clone(),
+                Arc::new(|| Ok(()))
+            )
+            .await
+            .unwrap_err()
+            .kind,
+        MemoryStoreErrorKind::ScopeViolation
+    );
+    assert!(matches!(
+        store
+            .mutate_with_commit_authority_if_unchanged(current, expected, Arc::new(|| Ok(())))
+            .await
+            .unwrap(),
+        MemoryStoreMutationResult::Changed(true)
+    ));
+    assert_eq!(
+        read(&store, &tenant, &original.id).await.unwrap().metadata,
+        Some(metadata)
+    );
 }

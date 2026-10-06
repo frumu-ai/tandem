@@ -773,16 +773,19 @@ pub(super) async fn memory_demote(
         memory_linkage_detail(&memory_linkage(&record))
     );
     let audit_id = Uuid::new_v4().to_string();
-    if derived && !global_memory_record_visible_to_verified_request(
-        &state, &tenant_context, verified_tenant_context.as_deref(), store.as_ref(), &scope, &record,
-        Some(&distillation_access_filter(verified_tenant_context.as_deref(), &record.user_id)),
-    ).await {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let authority = target_reference.map(|expected| (
-        derived_memory_commit_authority(&state, &tenant_context, verified_tenant_context.as_deref()),
-        expected,
-    ));
+    let authority = if derived {
+        let lineage = DerivedMemoryLineage::from_metadata(record.metadata.as_ref())
+            .map_err(|_| StatusCode::FORBIDDEN)?.ok_or(StatusCode::FORBIDDEN)?;
+        let filter = with_verified_memory_decrypt_principal(verified_tenant_context.as_deref(),
+            crate::memory::derived_lineage::resolved_filter_for_lineage(
+                &state, &tenant_context, store.as_ref(), &scope, &lineage,
+                distillation_access_filter(verified_tenant_context.as_deref(), &record.user_id),
+            ),
+        ).await.ok_or(StatusCode::NOT_FOUND)?;
+        Some((derived_memory_commit_authority_with_lineage(
+            &state, &tenant_context, verified_tenant_context.as_deref(), lineage, filter, Some(record.clone()), |_| true,
+        ), target_reference.ok_or(StatusCode::FORBIDDEN)?))
+    } else { None };
     let commit_state = state.clone();
     let commit_tenant = tenant_context.clone();
     let commit_verified = verified_tenant_context.as_deref().cloned();
@@ -799,7 +802,7 @@ pub(super) async fn memory_demote(
                 store.mutate_with_commit_authority_if_unchanged(mutation, expected, authority)).await
         } else {
             with_verified_memory_decrypt_principal(commit_verified.as_ref(), store.mutate(mutation)).await
-        }.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }.map_err(derived_memory_commit_error_status)?;
         if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
             return Err(StatusCode::NOT_FOUND);
         }

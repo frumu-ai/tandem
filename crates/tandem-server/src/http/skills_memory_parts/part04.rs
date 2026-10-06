@@ -601,24 +601,36 @@ async fn memory_promote_impl_with_verified(
             Some(&next_provenance),
         ))
     );
-    if derived {
+    let authority = if derived {
         // Canonical source reads must stay outside publication/target writer
         // locks. Repeat after the awaited policy/audit preparation above.
-        if !global_memory_record_visible_to_verified_request(
-            state, tenant_context, verified_tenant_context, store.as_ref(), &scope, &source,
-            Some(&distillation_access_filter(verified_tenant_context, &capability.subject)),
-        ).await {
-            return Err(StatusCode::NOT_FOUND);
-        }
+        let lineage = DerivedMemoryLineage::from_metadata(source.metadata.as_ref())
+            .map_err(|_| StatusCode::FORBIDDEN)?.ok_or(StatusCode::FORBIDDEN)?;
+        let filter = with_verified_memory_decrypt_principal(verified_tenant_context,
+            crate::memory::derived_lineage::resolved_filter_for_lineage(
+                state, tenant_context, store.as_ref(), &scope, &lineage,
+                distillation_access_filter(verified_tenant_context, &capability.subject),
+            ),
+        ).await.ok_or(StatusCode::NOT_FOUND)?;
         let decision = tandem_memory::memory_promotion_scope_decision_for_context_with_enterprise_mode(
             &request.partition, request.to_tier, &request.review, source.metadata.as_ref(),
             request.authority_job_context.as_ref(), require_scope_metadata, crate::now_ms(),
         ).map_err(|_| StatusCode::FORBIDDEN)?;
         if !decision.allowed { return Err(StatusCode::FORBIDDEN); }
-    }
-    let authority = target_reference.map(|expected| (
-        derived_memory_commit_authority(state, tenant_context, verified_tenant_context), expected,
-    ));
+        let operation_request = request.clone();
+        let operation_metadata = source.metadata.clone();
+        let capability_expires_at_ms = capability.expires_at;
+        let authority = derived_memory_commit_authority_with_lineage(
+            state, tenant_context, verified_tenant_context, lineage, filter, Some(source.clone()),
+            move |now| now < capability_expires_at_ms
+                && tandem_memory::memory_promotion_scope_decision_for_context_with_enterprise_mode(
+                &operation_request.partition, operation_request.to_tier, &operation_request.review,
+                operation_metadata.as_ref(), operation_request.authority_job_context.as_ref(),
+                require_scope_metadata, now,
+            ).is_ok_and(|decision| decision.allowed),
+        );
+        Some((authority, target_reference.ok_or(StatusCode::FORBIDDEN)?))
+    } else { None };
     let commit_state = state.clone();
     let commit_tenant = tenant_context.clone();
     let commit_verified = verified_tenant_context.cloned();
@@ -636,7 +648,7 @@ async fn memory_promote_impl_with_verified(
                 store.mutate_with_commit_authority_if_unchanged(mutation, expected, authority)).await
         } else {
             with_verified_memory_decrypt_principal(commit_verified.as_ref(), store.mutate(mutation)).await
-        }.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }.map_err(derived_memory_commit_error_status)?;
         if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
             return Err(StatusCode::NOT_FOUND);
         }

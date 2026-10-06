@@ -14,11 +14,13 @@ pub(crate) fn ensure_expected_target(
     tenant: &crate::types::MemoryTenantScope,
     expected: &tandem_types::MemorySourceReference,
 ) -> MemoryStoreResult<()> {
-    let current = record.and_then(|record|
-        CanonicalMemoryRestriction::from_global_record(record,tenant).ok());
+    let current = record
+        .and_then(|record| CanonicalMemoryRestriction::from_global_record(record, tenant).ok());
     if current.is_none_or(|current| current.source_reference() != *expected) {
-        return Err(MemoryStoreError::new(MemoryStoreErrorKind::ScopeViolation,
-            "guarded memory target changed or is unavailable"));
+        return Err(MemoryStoreError::new(
+            MemoryStoreErrorKind::ScopeViolation,
+            "guarded memory target changed or is unavailable",
+        ));
     }
     Ok(())
 }

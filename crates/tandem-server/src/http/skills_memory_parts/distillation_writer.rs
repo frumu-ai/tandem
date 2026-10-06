@@ -21,7 +21,7 @@ impl GovernedDistillationWriter {
         ))
     }
 
-    async fn ensure_current_lineage(&self) -> MemoryResult<()> {
+    async fn ensure_current_lineage(&self) -> MemoryResult<MemoryAccessFilter> {
         let write_scope = self.lineage.write_scope_decision(&self.partition, crate::now_ms())?;
         if !write_scope.allowed {
             return Err(tandem_memory::types::MemoryError::InvalidConfig(write_scope.reason_code));
@@ -33,13 +33,13 @@ impl GovernedDistillationWriter {
             tandem_memory::types::MemoryError::InvalidConfig("global memory db unavailable".into()))?;
         let scope = distillation_read_scope(&self.tenant_context, self.verified_tenant_context.as_ref(), &self.subject)
             .map_err(|_| tandem_memory::types::MemoryError::InvalidConfig("distillation_scope_denied".into()))?;
-        with_verified_memory_decrypt_principal(self.verified_tenant_context.as_ref(),
+        let filter = with_verified_memory_decrypt_principal(self.verified_tenant_context.as_ref(),
             crate::memory::derived_lineage::resolved_filter_for_lineage(
                 &self.state, &self.tenant_context, store.as_ref(), &scope, &self.lineage,
                 distillation_access_filter(self.verified_tenant_context.as_ref(), &self.subject),
             ),
         ).await.ok_or_else(|| tandem_memory::types::MemoryError::InvalidConfig("distillation_source_changed".into()))?;
-        Ok(())
+        Ok(filter)
     }
 
     async fn upsert_memory_fact_candidate(
@@ -95,10 +95,19 @@ impl GovernedDistillationWriter {
         };
         // Binding preparation awaited canonical storage. Refresh the complete
         // source proof before taking either candidate/publication writer lock.
-        self.ensure_current_lineage().await?;
+        let filter = self.ensure_current_lineage().await?;
+        let lineage = self.lineage.clone();
+        let partition = self.partition.clone();
+        let capability_expires_at_ms = self.capability.expires_at;
+        let authority = derived_memory_commit_authority_with_lineage(
+            &self.state, &self.tenant_context, self.verified_tenant_context.as_ref(),
+            self.lineage.clone(), filter, None,
+            move |now| now < capability_expires_at_ms
+                && lineage.write_scope_decision(&partition, now).is_ok_and(|decision| decision.allowed),
+        );
         self.state
-            .upsert_workflow_learning_candidate_with_current_policy(
-                candidate, self.verified_tenant_context.clone(),
+            .upsert_workflow_learning_candidate_with_commit_authority(
+                candidate, authority,
             )
             .await
             .map(|candidate| candidate.candidate_id)
@@ -186,7 +195,7 @@ impl GovernedDistillationWriter {
             });
 
         if let Some(existing) = existing {
-            self.ensure_current_lineage().await?;
+            let filter = self.ensure_current_lineage().await?;
             let mut next_metadata = existing.metadata.clone().unwrap_or_else(|| json!({}));
             if let Some(object) = next_metadata.as_object_mut() {
                 object.insert("fingerprint".to_string(), json!(fingerprint));
@@ -208,13 +217,24 @@ impl GovernedDistillationWriter {
             let target_reference = tandem_memory::CanonicalMemoryRestriction::from_global_record(
                 &existing, &scope.tenant,
             )?.source_reference();
+            let policy_metadata = next_metadata.clone();
+            let partition = self.partition.clone();
+            let lineage = self.lineage.clone();
+            let capability_expires_at_ms = self.capability.expires_at;
+            let require_scope_metadata = crate::memory::policy_status::current_memory_context_policy_status().strict_required;
             let mutation = tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
                 scope, id: existing.id.clone(), visibility: existing.visibility.clone(),
                 demoted: existing.demoted, metadata: Some(next_metadata), provenance: existing.provenance.clone(),
             };
             let verified = self.verified_tenant_context.clone();
-            let authority = derived_memory_commit_authority(
+            let authority = derived_memory_commit_authority_with_lineage(
                 &self.state, &self.tenant_context, self.verified_tenant_context.as_ref(),
+                self.lineage.clone(), filter, Some(existing.clone()),
+                move |now| now < capability_expires_at_ms
+                    && lineage.write_scope_decision(&partition, now).is_ok_and(|decision| decision.allowed)
+                    && tandem_memory::memory_write_scope_decision_for_context_with_enterprise_mode(
+                        &partition, Some(&policy_metadata), None, require_scope_metadata, now,
+                    ).is_ok_and(|decision| decision.allowed),
             );
             let changed = commit_derived_memory_with_current_policy(
                 &self.state, &self.tenant_context, self.verified_tenant_context.as_ref(),

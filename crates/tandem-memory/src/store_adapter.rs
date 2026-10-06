@@ -407,6 +407,14 @@ impl MemoryDatabase {
 
 #[async_trait]
 impl MemoryStore for MemoryDatabase {
+    #[cfg(feature = "test-hooks")]
+    fn observe_sqlite_writer_wait_for_test(
+        &self,
+        observer: MemorySqliteWriterWaitObserver,
+    ) -> MemoryStoreResult<MemorySqliteWriterWaitGuard> {
+        MemoryDatabase::observe_sqlite_writer_wait_for_test(self, observer)
+    }
+
     async fn write_with_commit_authority(
         &self,
         request: MemoryStoreWriteRequest,
@@ -466,17 +474,38 @@ impl MemoryStore for MemoryDatabase {
     }
 
     async fn mutate_with_commit_authority_if_unchanged(
-        &self, request: MemoryStoreMutationRequest, expected: tandem_types::MemorySourceReference,
+        &self,
+        request: MemoryStoreMutationRequest,
+        expected: tandem_types::MemorySourceReference,
         authority: MemoryCommitAuthority,
     ) -> MemoryStoreResult<MemoryStoreMutationResult> {
         match request {
-            MemoryStoreMutationRequest::UpdateGlobalRecordContext {scope,id,visibility,demoted,metadata,provenance} => {
-                self.enforce_store_tenant_scope("guarded compare-and-swap",&scope.tenant)?;
-                Ok(MemoryStoreMutationResult::Changed(self.update_global_context_with_authority(
-                    &scope,&id,&visibility,demoted,metadata.as_ref(),provenance.as_ref(),Some(&expected),authority,
-                ).await?))
+            MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+                scope,
+                id,
+                visibility,
+                demoted,
+                metadata,
+                provenance,
+            } => {
+                self.enforce_store_tenant_scope("guarded compare-and-swap", &scope.tenant)?;
+                Ok(MemoryStoreMutationResult::Changed(
+                    self.update_global_context_with_authority(
+                        &scope,
+                        &id,
+                        &visibility,
+                        demoted,
+                        metadata.as_ref(),
+                        provenance.as_ref(),
+                        Some(&expected),
+                        authority,
+                    )
+                    .await?,
+                ))
             }
-            _ => Err(MemoryStoreError::unsupported("SQLite guarded compare-and-swap supports UpdateGlobalRecordContext only")),
+            _ => Err(MemoryStoreError::unsupported(
+                "SQLite guarded compare-and-swap supports UpdateGlobalRecordContext only",
+            )),
         }
     }
 

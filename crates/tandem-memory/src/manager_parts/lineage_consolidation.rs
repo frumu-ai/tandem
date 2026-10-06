@@ -167,12 +167,9 @@ impl MemoryManager {
         for chunk in chunks {
             let mut current = filter.clone();
             current.now_ms = Utc::now().timestamp_millis().max(0) as u64;
-            match crate::DerivedMemoryLineage::from_metadata(chunk.metadata.as_ref())? {
-                Some(lineage) => {
-                    current = self.authorize_consolidation_lineage(
-                        &lineage, scope, request, Some(&current)).await?;
-                }
-                None => {}
+            if let Some(lineage) = crate::DerivedMemoryLineage::from_metadata(chunk.metadata.as_ref())? {
+                current = self.authorize_consolidation_lineage(
+                    &lineage, scope, request, Some(&current)).await?;
             }
             current.now_ms = Utc::now().timestamp_millis().max(0) as u64;
             let decision = current.decision_for_chunk(chunk);

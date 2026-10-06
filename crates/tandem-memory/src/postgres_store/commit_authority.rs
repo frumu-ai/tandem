@@ -118,7 +118,10 @@ impl PostgresMemoryStore {
             ));
         };
         if expected.is_some_and(|expected| expected.memory_id != id) {
-            return Err(MemoryStoreError::new(MemoryStoreErrorKind::ScopeViolation,"guarded memory target id mismatch"));
+            return Err(MemoryStoreError::new(
+                MemoryStoreErrorKind::ScopeViolation,
+                "guarded memory target id mismatch",
+            ));
         }
         let mut client = self.client().await?;
         let tx = client
@@ -137,7 +140,11 @@ impl PostgresMemoryStore {
         authority()?;
         let Some(row) = row else {
             if let Some(expected) = expected {
-                crate::derived_lineage_store::ensure_expected_target(None,&scope.tenant,expected)?;
+                crate::derived_lineage_store::ensure_expected_target(
+                    None,
+                    &scope.tenant,
+                    expected,
+                )?;
             }
             authority()?;
             tx.commit()
@@ -161,7 +168,11 @@ impl PostgresMemoryStore {
             row.get(4),
         )?;
         if let Some(expected) = expected {
-            crate::derived_lineage_store::ensure_expected_target(Some(&record),&scope.tenant,expected)?;
+            crate::derived_lineage_store::ensure_expected_target(
+                Some(&record),
+                &scope.tenant,
+                expected,
+            )?;
         }
         record.visibility = visibility;
         record.demoted = demoted;

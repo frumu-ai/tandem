@@ -644,7 +644,7 @@ pub(super) async fn memory_put_impl_with_verified(
     let write = if let Some(lineage) = &derived_lineage {
         let subject = capability.subject.clone();
         let scope = distillation_read_scope(tenant_context, verified_tenant_context, &subject)?;
-        with_verified_memory_decrypt_principal(verified_tenant_context,
+        let filter = with_verified_memory_decrypt_principal(verified_tenant_context,
             crate::memory::derived_lineage::resolved_filter_for_lineage(
                 state, tenant_context, store.as_ref(), &scope, lineage,
                 distillation_access_filter(verified_tenant_context, &subject),
@@ -652,7 +652,20 @@ pub(super) async fn memory_put_impl_with_verified(
         ).await.ok_or(StatusCode::FORBIDDEN)?;
         let owned_state = state.clone();
         let owned_verified = verified_tenant_context.cloned();
-        let authority = derived_memory_commit_authority(state, tenant_context, verified_tenant_context);
+        let operation_partition = request.partition.clone();
+        let operation_metadata = record.metadata.clone();
+        let operation_context = request.authority_job_context.clone();
+        let operation_lineage = lineage.clone();
+        let capability_expires_at_ms = capability.expires_at;
+        let authority = derived_memory_commit_authority_with_lineage(
+            state, tenant_context, verified_tenant_context, lineage.clone(), filter, None,
+            move |now| now < capability_expires_at_ms
+                && operation_lineage.write_scope_decision(&operation_partition, now).is_ok_and(|decision| decision.allowed)
+                && tandem_memory::memory_write_scope_decision_for_context_with_enterprise_mode(
+                    &operation_partition, operation_metadata.as_ref(), operation_context.as_ref(),
+                    require_scope_metadata, now,
+                ).is_ok_and(|decision| decision.allowed),
+        );
         commit_derived_memory_with_current_policy(state, tenant_context, verified_tenant_context,
             async move {
                 with_verified_memory_decrypt_principal(owned_verified.as_ref(),

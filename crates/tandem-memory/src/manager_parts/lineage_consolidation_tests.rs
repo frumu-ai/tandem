@@ -808,13 +808,27 @@ async fn consolidation_legacy_wrapper_rejects_restricted_ordinary_before_provide
         ("TANDEM_DATA_BOUNDARY_STRICT", "1"),
         ("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", "capture=local"),
     ]);
-    for kind in ["financial_record", "source_binding", "knowledge_scope", "retention", "source_path", "mixed"] {
+    for kind in [
+        "financial_record",
+        "source_binding",
+        "knowledge_scope",
+        "retention",
+        "source_path",
+        "mixed",
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let store: Arc<dyn MemoryStore> = Arc::new(
-            MemoryDatabase::new(&dir.path().join("memory.sqlite3")).await.unwrap(),
+            MemoryDatabase::new(&dir.path().join("memory.sqlite3"))
+                .await
+                .unwrap(),
         );
         if kind == "mixed" {
-            seed(store.as_ref(), &[source("allowed-source", DataClass::Internal)], false).await;
+            seed(
+                store.as_ref(),
+                &[source("allowed-source", DataClass::Internal)],
+                false,
+            )
+            .await;
         }
         let extra = match kind {
             "financial_record" => serde_json::json!({"classification":"financial_record"}),
@@ -822,37 +836,79 @@ async fn consolidation_legacy_wrapper_rejects_restricted_ordinary_before_provide
                 "binding_id":"restricted-binding", "data_class":"financial_record",
                 "resource_ref":ResourceRef::new("lineage-org", "lineage-workspace", ResourceKind::DocumentCollection, "restricted-binding"),
             }}),
-            "retention" => serde_json::json!({"retention_expires_at_ms":Utc::now().timestamp_millis().max(0) as u64 + 60_000}),
+            "retention" => {
+                serde_json::json!({"retention_expires_at_ms":Utc::now().timestamp_millis().max(0) as u64 + 60_000})
+            }
             _ => serde_json::json!({}),
         };
         let mut ordinary = ordinary_chunk("restricted-ordinary", extra);
         if kind == "knowledge_scope" {
-            ordinary.metadata = crate::metadata_with_knowledge_scope(ordinary.metadata, &crate::KnowledgeScopePolicy {
-                registry_id: "restricted-registry".into(),
-                resource_ref: ResourceRef::new("lineage-org", "lineage-workspace", ResourceKind::KnowledgeSpace, "restricted-space")
+            ordinary.metadata = crate::metadata_with_knowledge_scope(
+                ordinary.metadata,
+                &crate::KnowledgeScopePolicy {
+                    registry_id: "restricted-registry".into(),
+                    resource_ref: ResourceRef::new(
+                        "lineage-org",
+                        "lineage-workspace",
+                        ResourceKind::KnowledgeSpace,
+                        "restricted-space",
+                    )
                     .with_project_id("lineage-project"),
-                data_class: DataClass::Confidential, collection_id: None, source_binding_id: None,
-                source_object_id: None, owner_org_unit_id: None, risk_tier: None,
-                allowed_workflow_phases: Vec::new(), allowed_write_tiers: vec![crate::GovernedMemoryTier::Session],
-                allowed_promotion_tiers: Vec::new(), retention_expires_at_ms: None,
-                required_trust_label: None, promotion_requires_approval: false,
-            });
+                    data_class: DataClass::Confidential,
+                    collection_id: None,
+                    source_binding_id: None,
+                    source_object_id: None,
+                    owner_org_unit_id: None,
+                    risk_tier: None,
+                    allowed_workflow_phases: Vec::new(),
+                    allowed_write_tiers: vec![crate::GovernedMemoryTier::Session],
+                    allowed_promotion_tiers: Vec::new(),
+                    retention_expires_at_ms: None,
+                    required_trust_label: None,
+                    promotion_requires_approval: false,
+                },
+            );
         }
-        if kind == "source_path" { ordinary.source_path = Some("governed/source.txt".into()); }
+        if kind == "source_path" {
+            ordinary.source_path = Some("governed/source.txt".into());
+        }
         put_ordinary(store.as_ref(), ordinary).await;
         let manager = manager(store.clone());
         let calls = Arc::new(AtomicUsize::new(0));
         let providers = registry(calls.clone(), None).await;
         let egress = egress(Arc::new(std::sync::Mutex::new(Vec::new())));
         // Exercise the actual compatibility API, with no access filter at all.
-        let error = manager.consolidate_scoped_session(
-            &request(), &providers, &config(), &egress).await.unwrap_err();
-        assert!(error.to_string().contains(if kind == "mixed" {
-            "mixed contributors lack canonical lineage"
-        } else { "ordinary restrictions lack canonical lineage" }), "{kind}: {error}");
+        let error = manager
+            .consolidate_scoped_session(&request(), &providers, &config(), &egress)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(if kind == "mixed" {
+                "mixed contributors lack canonical lineage"
+            } else {
+                "ordinary restrictions lack canonical lineage"
+            }),
+            "{kind}: {error}"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 0, "{kind}");
-        assert_eq!(chunks(store.as_ref(), MemoryChunkSelector::session("lineage-session")).await.len(),
-            if kind == "mixed" { 2 } else { 1 }, "{kind}");
-        assert!(chunks(store.as_ref(), MemoryChunkSelector::project("lineage-project")).await.is_empty(), "{kind}");
+        assert_eq!(
+            chunks(
+                store.as_ref(),
+                MemoryChunkSelector::session("lineage-session")
+            )
+            .await
+            .len(),
+            if kind == "mixed" { 2 } else { 1 },
+            "{kind}"
+        );
+        assert!(
+            chunks(
+                store.as_ref(),
+                MemoryChunkSelector::project("lineage-project")
+            )
+            .await
+            .is_empty(),
+            "{kind}"
+        );
     }
 }

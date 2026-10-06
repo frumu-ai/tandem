@@ -18,6 +18,11 @@ mod contract;
 
 pub use contract::*;
 
+#[cfg(feature = "test-hooks")]
+pub use crate::db::sqlite_writer_wait_test_hooks::{
+    MemorySqliteWriterWaitGuard, MemorySqliteWriterWaitObserver,
+};
+
 /// Open Tandem's bundled SQLite implementation behind the portable contract.
 /// Runtime callers use this assembly point rather than depending on the
 /// concrete database adapter.
@@ -146,6 +151,18 @@ pub type MemoryCommitAuthority = Arc<dyn Fn() -> MemoryStoreResult<()> + Send + 
 
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
+    /// Observe an actual SQLite busy callback during a guarded writer wait.
+    /// This opt-in, per-store fixture API is unavailable in normal builds.
+    #[cfg(feature = "test-hooks")]
+    fn observe_sqlite_writer_wait_for_test(
+        &self,
+        _observer: MemorySqliteWriterWaitObserver,
+    ) -> MemoryStoreResult<MemorySqliteWriterWaitGuard> {
+        Err(MemoryStoreError::unsupported(
+            "this memory backend does not expose a SQLite writer-wait observer",
+        ))
+    }
+
     /// Execute a scoped point/list read using backend-neutral request and result
     /// values.
     async fn read(

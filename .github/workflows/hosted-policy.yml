@@ -278,9 +278,11 @@ jobs:
             side_effect_tests::tan_829_candidate_commit_rechecks_original_identity_after_real_cache_writer_wait \
             side_effect_tests::tan_829_candidate_commit_rechecks_snapshot_expiry_after_real_cache_writer_wait \
             side_effect_tests::tan_829_candidate_commit_denies_actual_policy_removal_during_cache_writer_wait \
+            side_effect_tests::tan_829_candidate_commit_rechecks_canonical_source_ttl_after_real_cache_writer_wait \
             side_effect_tests::tan_829_cancelled_candidate_commit_retains_real_writer_until_authorized_publication \
             side_effect_tests::tan_829_candidate_atomic_publication_failure_preserves_cache_and_cleans_prepared_file \
             side_effect_tests::tan_829_derived_promotion_rechecks_original_identity_after_actual_sqlite_writer_wait \
+            side_effect_tests::tan_829_derived_promotion_rechecks_source_and_capability_deadlines_after_actual_sqlite_writer_wait \
             side_effect_tests::tan_829_derived_promotion_rechecks_snapshot_expiry_after_actual_sqlite_writer_wait \
             side_effect_tests::tan_829_derived_demotion_rechecks_original_identity_after_actual_sqlite_writer_wait
           do
@@ -290,7 +292,7 @@ jobs:
             }
           done
           cargo test -p tandem-server --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/tan829-server-commit-results.txt"
-          grep -Eq 'test result: ok\. 13 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-server-commit-results.txt"
+          grep -Eq 'test result: ok\. 15 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/tan829-server-commit-results.txt"
       - name: Validate scoped key lifecycle and administrative authority
         run: |
           cargo test -p tandem-server context_assertion_security --lib

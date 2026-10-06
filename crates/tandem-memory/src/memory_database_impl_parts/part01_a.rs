@@ -103,6 +103,8 @@ impl MemoryDatabase {
             strict_tenant_enforcement: std::sync::atomic::AtomicBool::new(
                 crate::db::strict_tenant_enforcement_default(),
             ),
+            #[cfg(feature = "test-hooks")]
+            sqlite_writer_wait_observer: Default::default(),
         };
 
         let _schema_init_guard = SCHEMA_INIT_LOCK.lock().await;

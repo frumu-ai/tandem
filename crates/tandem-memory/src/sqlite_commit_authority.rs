@@ -10,6 +10,8 @@ impl MemoryDatabase {
         authority: MemoryCommitAuthority,
     ) -> MemoryStoreResult<GlobalMemoryWriteResult> {
         let mut conn = self.conn.lock().await;
+        #[cfg(feature = "test-hooks")]
+        let _busy_observer = self.install_sqlite_writer_wait_observer(&conn)?;
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(MemoryError::from)
@@ -40,9 +42,13 @@ impl MemoryDatabase {
     ) -> MemoryStoreResult<bool> {
         if expected.is_some_and(|expected| expected.memory_id != id) {
             return Err(crate::store::MemoryStoreError::new(
-                crate::store::MemoryStoreErrorKind::ScopeViolation, "guarded memory target id mismatch"));
+                crate::store::MemoryStoreErrorKind::ScopeViolation,
+                "guarded memory target id mismatch",
+            ));
         }
         let mut conn = self.conn.lock().await;
+        #[cfg(feature = "test-hooks")]
+        let _busy_observer = self.install_sqlite_writer_wait_observer(&conn)?;
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(MemoryError::from)
@@ -63,7 +69,11 @@ impl MemoryDatabase {
                     scope.org_unit,scope.subject,i64::from(scope.access==MemoryReadAccess::TrustedUnrestricted)],
                 |row| row_to_global_record(row,&self.crypto),
             ).optional().map_err(MemoryError::from).map_err(MemoryStoreError::from)?;
-            crate::derived_lineage_store::ensure_expected_target(record.as_ref(),&scope.tenant,expected)?;
+            crate::derived_lineage_store::ensure_expected_target(
+                record.as_ref(),
+                &scope.tenant,
+                expected,
+            )?;
         }
         let result = self
             .update_global_memory_context_on_connection(

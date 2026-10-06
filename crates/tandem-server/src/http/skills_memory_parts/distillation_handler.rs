@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 pub(super) async fn context_distill(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,

@@ -425,10 +425,13 @@ impl MemoryStore for PostgresMemoryStore {
     }
 
     async fn mutate_with_commit_authority_if_unchanged(
-        &self, request: MemoryStoreMutationRequest, expected: tandem_types::MemorySourceReference,
+        &self,
+        request: MemoryStoreMutationRequest,
+        expected: tandem_types::MemorySourceReference,
         authority: MemoryCommitAuthority,
     ) -> MemoryStoreResult<MemoryStoreMutationResult> {
-        self.guarded_mutate_impl(request, Some(&expected), authority).await
+        self.guarded_mutate_impl(request, Some(&expected), authority)
+            .await
     }
 
     async fn read(

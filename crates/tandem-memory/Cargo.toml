@@ -8,6 +8,7 @@ repository = "https://github.com/frumu-ai/tandem"
 
 [features]
 default = []
+test-hooks = []
 local-embeddings = ["dep:fastembed"]
 postgres = ["dep:deadpool-postgres", "dep:pgvector", "dep:tokio-postgres"]
 

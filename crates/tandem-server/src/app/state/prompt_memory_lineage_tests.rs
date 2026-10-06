@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use super::super::prompt_context_hook::{PromptHookBudget, SOURCE_DOCS};
 use super::*;
 use serde_json::json;

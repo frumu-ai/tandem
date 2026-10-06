@@ -33,6 +33,10 @@ mod sqlite_atomic_batch;
 #[path = "sqlite_commit_authority.rs"]
 mod sqlite_commit_authority;
 
+#[cfg(feature = "test-hooks")]
+#[path = "sqlite_writer_wait_test_hooks.rs"]
+pub(crate) mod sqlite_writer_wait_test_hooks;
+
 type ProjectIndexStatusRow = (
     Option<String>,
     Option<i64>,
@@ -48,6 +52,8 @@ pub struct MemoryDatabase {
     db_path: std::path::PathBuf,
     crypto: crate::crypto::MemoryCryptoProvider,
     strict_tenant_enforcement: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "test-hooks")]
+    sqlite_writer_wait_observer: sqlite_writer_wait_test_hooks::ObserverSlot,
 }
 
 /// Write-time authorization anchors stamped into a row's crypto envelope
