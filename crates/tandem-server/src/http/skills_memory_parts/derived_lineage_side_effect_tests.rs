@@ -3,6 +3,7 @@
 
 use super::*;
 use std::future::Future;
+use crate::app::state::tests::encrypted_file_stores::with_hosted_candidate_crypto;
 
 #[path = "derived_lineage_audit_admission_tests.rs"]
 mod audit_admission_tests;
@@ -24,12 +25,28 @@ fn candidate(id: &str, summary: &str) -> WorkflowLearningCandidate {
 }
 
 async fn seed_candidate(state: &AppState) -> (Value, Vec<u8>) {
-    state.upsert_workflow_learning_candidate(candidate("original-candidate", "Original synthetic fact"))
-        .await.expect("ordinary candidate compatibility control");
+    with_hosted_candidate_crypto(state.upsert_workflow_learning_candidate(
+        candidate("original-candidate", "Original synthetic fact"),
+    )).await.expect("ordinary candidate compatibility control");
     (
         serde_json::to_value(&*state.workflow_learning_candidates.read().await).unwrap(),
         tokio::fs::read(&state.workflow_learning_candidates_path).await.unwrap(),
     )
+}
+
+async fn assert_sealed_durable_matches_cache(state: &AppState) {
+    let raw = tokio::fs::read_to_string(&state.workflow_learning_candidates_path).await.unwrap();
+    assert!(raw.starts_with(crate::encrypted_file_store::SCOPED_RECORD_PREFIX),
+        "candidate snapshot must be sealed, not a readable JSON map");
+    let mut cold = crate::test_support::test_state().await;
+    cold.workflow_learning_candidates_path = state.workflow_learning_candidates_path.clone();
+    with_hosted_candidate_crypto(cold.load_workflow_learning_candidates()).await
+        .expect("fresh state opens the complete hosted candidate snapshot");
+    assert_eq!(
+        serde_json::to_value(&*state.workflow_learning_candidates.read().await).unwrap(),
+        serde_json::to_value(&*cold.workflow_learning_candidates.read().await).unwrap(),
+        "durable candidates must match the current cache after cold decrypt",
+    );
 }
 
 async fn assert_candidates_unchanged(state: &AppState, before: &(Value, Vec<u8>)) {
@@ -86,9 +103,9 @@ async fn tan_829_candidate_commit_rechecks_original_identity_after_real_cache_wr
         let authority = derived_memory_commit_authority(&fixture.state, &original.tenant_context, Some(&original));
         let (queued, receiver) = oneshot::channel();
         let task = tokio::spawn(async move {
-            state.upsert_workflow_learning_candidate_with_commit_authority_and_writer_wait(
+            with_hosted_candidate_crypto(state.upsert_workflow_learning_candidate_with_commit_authority_and_writer_wait(
                 candidate("new-candidate", "Updated synthetic fact"), authority, queued,
-            ).await
+            )).await
         });
         started(receiver).await;
         let reader = queue_reader_behind_candidate(&fixture.state, &task).await;
@@ -109,8 +126,7 @@ async fn tan_829_candidate_commit_rechecks_original_identity_after_real_cache_wr
         } else {
             assert_eq!(result.unwrap().candidate_id, "original-candidate", "reuse the ordinary merge semantics");
             let cache = serde_json::to_value(&*fixture.state.workflow_learning_candidates.read().await).unwrap();
-            let durable: Value = serde_json::from_slice(&tokio::fs::read(&fixture.state.workflow_learning_candidates_path).await.unwrap()).unwrap();
-            assert_eq!(cache, durable);
+            assert_sealed_durable_matches_cache(&fixture.state).await;
             assert_eq!(cache["original-candidate"]["summary"], "Updated synthetic fact");
         }
     }
@@ -118,8 +134,13 @@ async fn tan_829_candidate_commit_rechecks_original_identity_after_real_cache_wr
     let row = state.upsert_workflow_learning_candidate_with_current_policy(candidate("standalone-candidate", "Standalone fact"), None)
         .await.expect("genuine standalone candidate publication");
     assert_eq!(state.get_workflow_learning_candidate(&row.candidate_id).await.unwrap().summary, "Standalone fact");
-    let durable: Value = serde_json::from_slice(&tokio::fs::read(&state.workflow_learning_candidates_path).await.unwrap()).unwrap();
-    assert_eq!(durable[&row.candidate_id]["summary"], "Standalone fact");
+    let raw = tokio::fs::read_to_string(&state.workflow_learning_candidates_path).await.unwrap();
+    assert!(raw.starts_with(crate::encrypted_file_store::SCOPED_RECORD_PREFIX));
+    assert!(!raw.contains("Standalone fact"));
+    let mut cold = crate::test_support::test_state().await;
+    cold.workflow_learning_candidates_path = state.workflow_learning_candidates_path.clone();
+    cold.load_workflow_learning_candidates().await.expect("standalone candidate cold reload");
+    assert_eq!(cold.get_workflow_learning_candidate(&row.candidate_id).await.unwrap().summary, "Standalone fact");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -133,9 +154,9 @@ async fn tan_829_candidate_commit_rechecks_snapshot_expiry_after_real_cache_writ
     let authority = derived_memory_commit_authority(&fixture.state, &original.tenant_context, Some(&original));
     let (queued, receiver) = oneshot::channel();
     let task = tokio::spawn(async move {
-        state.upsert_workflow_learning_candidate_with_commit_authority_and_writer_wait(
+        with_hosted_candidate_crypto(state.upsert_workflow_learning_candidate_with_commit_authority_and_writer_wait(
             candidate("aged-candidate", "Expired snapshot fact"), authority, queued,
-        ).await
+        )).await
     });
     started(receiver).await;
     let reader = queue_reader_behind_candidate(&fixture.state, &task).await;
@@ -164,9 +185,9 @@ async fn tan_829_candidate_commit_denies_actual_policy_removal_during_cache_writ
     let authority = derived_memory_commit_authority(&fixture.state, &original.tenant_context, Some(&original));
     let (queued, receiver) = oneshot::channel();
     let task = tokio::spawn(async move {
-        state.upsert_workflow_learning_candidate_with_commit_authority_and_writer_wait(
+        with_hosted_candidate_crypto(state.upsert_workflow_learning_candidate_with_commit_authority_and_writer_wait(
             candidate("revoked-candidate", "Revoked fact"), authority, queued,
-        ).await
+        )).await
     });
     started(receiver).await;
     let reader = queue_reader_behind_candidate(&fixture.state, &task).await;
@@ -188,8 +209,9 @@ async fn tan_829_candidate_commit_denies_actual_policy_removal_during_cache_writ
         .contains("hosted_identity_policy_revision_changed"));
     reader.await.unwrap();
     assert_candidates_unchanged(&fixture.state, &before).await;
-    assert!(fixture.state.upsert_workflow_learning_candidate_with_current_policy(candidate("forged-local", "Must not publish"), None)
-        .await.is_err(), "configured hosted authority cannot be bypassed with absent identity");
+    assert!(with_hosted_candidate_crypto(fixture.state.upsert_workflow_learning_candidate_with_current_policy(
+        candidate("forged-local", "Must not publish"), None,
+    )).await.is_err(), "configured hosted authority cannot be bypassed with absent identity");
     assert_candidates_unchanged(&fixture.state, &before).await;
 }
 
@@ -213,9 +235,9 @@ async fn tan_829_candidate_commit_rechecks_canonical_source_ttl_after_real_cache
         let state = fixture.state.clone();
         let (queued, receiver) = oneshot::channel();
         let task = tokio::spawn(async move {
-            state.upsert_workflow_learning_candidate_with_commit_authority_and_writer_wait(
+            with_hosted_candidate_crypto(state.upsert_workflow_learning_candidate_with_commit_authority_and_writer_wait(
                 proposal, authority, queued,
-            ).await
+            )).await
         });
         started(receiver).await;
         let reader = queue_reader_behind_candidate(&fixture.state, &task).await;
@@ -248,10 +270,7 @@ async fn tan_829_candidate_commit_rechecks_canonical_source_ttl_after_real_cache
         } else {
             assert_eq!(result.unwrap().candidate_id, "source-bound-candidate");
             let rows = serde_json::to_value(&*fixture.state.workflow_learning_candidates.read().await).unwrap();
-            let durable: Value = serde_json::from_slice(
-                &tokio::fs::read(&fixture.state.workflow_learning_candidates_path).await.unwrap(),
-            ).unwrap();
-            assert_eq!(rows, durable);
+            assert_sealed_durable_matches_cache(&fixture.state).await;
             assert!(rows.get("source-bound-candidate").is_some());
         }
     }
@@ -268,7 +287,9 @@ async fn tan_829_cancelled_candidate_commit_retains_real_writer_until_authorized
         let (entered, receiver) = oneshot::channel();
         let task = tokio::spawn(async move {
             entered.send(()).unwrap();
-            state.upsert_workflow_learning_candidate_with_current_policy(candidate("cancelled-candidate", "Owned completed fact"), Some(verified)).await
+            with_hosted_candidate_crypto(state.upsert_workflow_learning_candidate_with_current_policy(
+                candidate("cancelled-candidate", "Owned completed fact"), Some(verified),
+            )).await
         });
         started(receiver).await;
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -283,8 +304,7 @@ async fn tan_829_cancelled_candidate_commit_retains_real_writer_until_authorized
         let rows = tokio::time::timeout(Duration::from_secs(4), fixture.state.workflow_learning_candidates.read()).await.unwrap();
         let cache = serde_json::to_value(&*rows).unwrap();
         drop(rows);
-        let durable: Value = serde_json::from_slice(&tokio::fs::read(&fixture.state.workflow_learning_candidates_path).await.unwrap()).unwrap();
-        assert_eq!(cache, durable);
+        assert_sealed_durable_matches_cache(&fixture.state).await;
         if expired { assert_candidates_unchanged(&fixture.state, &before).await; }
         else { assert_eq!(cache["original-candidate"]["summary"], "Owned completed fact"); }
     }
@@ -292,22 +312,69 @@ async fn tan_829_cancelled_candidate_commit_retains_real_writer_until_authorized
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tan_829_candidate_atomic_publication_failure_preserves_cache_and_cleans_prepared_file() {
-    let mut fixture = CommitFixture::new().await;
+    let fixture = CommitFixture::new().await;
     let before = seed_candidate(&fixture.state).await;
     let original_path = fixture.state.workflow_learning_candidates_path.clone();
-    let failed_destination = fixture.directory.path().join("existing-directory");
-    std::fs::create_dir(&failed_destination).unwrap();
-    std::fs::write(failed_destination.join("marker"), b"unchanged durable directory").unwrap();
-    fixture.state.workflow_learning_candidates_path = failed_destination.clone();
+    let backup = original_path.with_extension("candidate-original-backup");
+    let candidate_directory = original_path.parent().unwrap();
     let original = fixture.identity(60_000);
-    assert!(fixture.state.upsert_workflow_learning_candidate_with_current_policy(candidate("failed-candidate", "Must not enter cache"), Some(original))
-        .await.is_err(), "atomic rename cannot replace an existing nonempty directory");
+    let authority = derived_memory_commit_authority(
+        &fixture.state, &original.tenant_context, Some(&original),
+    );
+    let (prepared, seen_prepared) = oneshot::channel();
+    let (release, released) = oneshot::channel();
+    let gate = WorkflowLearningPreparedFileGateForTest { prepared, release: released };
+    let state = fixture.state.clone();
+    let task = tokio::spawn(async move {
+        with_hosted_candidate_crypto(state.upsert_workflow_learning_candidate_with_commit_authority_and_prepared_file_gate_for_test(
+            candidate("failed-candidate", "Must not enter cache"), authority, gate,
+        )).await
+    });
+    started(seen_prepared).await;
+    assert_eq!(std::fs::read(&original_path).unwrap(), before.1,
+        "encrypted preparation must not publish before its actual rename");
+    let prepared_paths = std::fs::read_dir(candidate_directory).unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "tmp"))
+        .collect::<Vec<_>>();
+    assert_eq!(prepared_paths.len(), 1, "test must reach a written and synced prepared file");
+    assert!(std::fs::read(&prepared_paths[0]).unwrap().starts_with(b"tgs1:"));
+    std::fs::rename(&original_path, &backup).unwrap();
+    std::fs::create_dir(&original_path).unwrap();
+    std::fs::write(original_path.join("marker"), b"unchanged durable directory").unwrap();
+    release.send(()).unwrap();
+    let error = finish_candidate(task).await.expect_err("atomic rename must reject a nonempty directory");
+    assert!(format!("{error:?}").contains("publish workflow-learning candidate store"));
     assert_eq!(serde_json::to_value(&*fixture.state.workflow_learning_candidates.read().await).unwrap(), before.0);
-    assert_eq!(std::fs::read(&original_path).unwrap(), before.1);
-    assert_eq!(std::fs::read(failed_destination.join("marker")).unwrap(), b"unchanged durable directory");
-    assert!(std::fs::read_dir(fixture.directory.path()).unwrap().all(|entry|
+    assert_eq!(std::fs::read(&backup).unwrap(), before.1);
+    assert_eq!(std::fs::read(original_path.join("marker")).unwrap(), b"unchanged durable directory");
+    assert!(!prepared_paths[0].exists(), "failed rename must remove its prepared file");
+    assert!(std::fs::read_dir(candidate_directory).unwrap().all(|entry|
         !entry.unwrap().path().extension().is_some_and(|extension| extension == "tmp")),
         "failed prepared files must be removed");
+    std::fs::remove_file(original_path.join("marker")).unwrap();
+    std::fs::remove_dir(&original_path).unwrap();
+    std::fs::rename(backup, &original_path).unwrap();
+    assert_candidates_unchanged(&fixture.state, &before).await;
+    assert_sealed_durable_matches_cache(&fixture.state).await;
+    for (fault, expected) in [
+        (WorkflowLearningPreparationFaultForTest::Write, "injected candidate write failure"),
+        (WorkflowLearningPreparationFaultForTest::Sync, "injected candidate sync failure"),
+    ] {
+        let authority = derived_memory_commit_authority(
+            &fixture.state, &original.tenant_context, Some(&original),
+        );
+        let error = with_hosted_candidate_crypto(
+            fixture.state.upsert_workflow_learning_candidate_with_commit_authority_and_preparation_fault_for_test(
+                candidate("failed-preparation", "Must not enter cache"), authority, fault,
+            ),
+        ).await.expect_err("guarded candidate prepublication fault must propagate");
+        assert!(format!("{error:?}").contains(expected), "unexpected guarded fault: {error:?}");
+        assert_candidates_unchanged(&fixture.state, &before).await;
+        assert!(std::fs::read_dir(candidate_directory).unwrap().all(|entry|
+            !entry.unwrap().path().extension().is_some_and(|extension| extension == "tmp")),
+            "guarded preparation fault left a temporary candidate file");
+    }
 }
 
 async fn promotion_record_with_source_controls(

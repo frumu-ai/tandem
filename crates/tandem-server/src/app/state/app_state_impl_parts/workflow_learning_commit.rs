@@ -1,14 +1,11 @@
 // Copyright (c) 2026 Frumu LTD
 // Licensed under the Business Source License 1.1
 
-type WorkflowLearningCandidateMap = std::collections::HashMap<String, WorkflowLearningCandidate>;
-
-struct PreparedWorkflowLearningFile(std::path::PathBuf);
-
 #[derive(Default)]
 struct WorkflowLearningCommitObserver {
     #[cfg(test)]
     writer_wait: Option<tokio::sync::oneshot::Sender<()>>,
+    preparation: WorkflowLearningFilePreparation,
 }
 
 impl WorkflowLearningCommitObserver {
@@ -17,12 +14,6 @@ impl WorkflowLearningCommitObserver {
         if let Some(waiter) = self.writer_wait.take() {
             let _ = waiter.send(());
         }
-    }
-}
-
-impl Drop for PreparedWorkflowLearningFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -113,7 +104,41 @@ impl AppState {
         writer_wait: tokio::sync::oneshot::Sender<()>,
     ) -> anyhow::Result<WorkflowLearningCandidate> {
         self.upsert_workflow_learning_candidate_with_commit_observer(
-            candidate, authority, WorkflowLearningCommitObserver {writer_wait:Some(writer_wait)},
+            candidate, authority, WorkflowLearningCommitObserver {writer_wait:Some(writer_wait), ..Default::default()},
+        ).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn upsert_workflow_learning_candidate_with_commit_authority_and_preparation_fault_for_test(
+        &self,
+        candidate: WorkflowLearningCandidate,
+        authority: tandem_memory::MemoryCommitAuthority,
+        fault: WorkflowLearningPreparationFaultForTest,
+    ) -> anyhow::Result<WorkflowLearningCandidate> {
+        self.upsert_workflow_learning_candidate_with_commit_observer(
+            candidate,
+            authority,
+            WorkflowLearningCommitObserver {
+                preparation: WorkflowLearningFilePreparation { fault: Some(fault), ..Default::default() },
+                ..Default::default()
+            },
+        ).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn upsert_workflow_learning_candidate_with_commit_authority_and_prepared_file_gate_for_test(
+        &self,
+        candidate: WorkflowLearningCandidate,
+        authority: tandem_memory::MemoryCommitAuthority,
+        gate: WorkflowLearningPreparedFileGateForTest,
+    ) -> anyhow::Result<WorkflowLearningCandidate> {
+        self.upsert_workflow_learning_candidate_with_commit_observer(
+            candidate,
+            authority,
+            WorkflowLearningCommitObserver {
+                preparation: WorkflowLearningFilePreparation { prepared_gate: Some(gate), ..Default::default() },
+                ..Default::default()
+            },
         ).await
     }
 
@@ -123,10 +148,10 @@ impl AppState {
         authority: tandem_memory::MemoryCommitAuthority,
         mut observer: WorkflowLearningCommitObserver,
     ) -> anyhow::Result<WorkflowLearningCandidate> {
+        let store = WorkflowLearningCandidateStore::capture(self)?;
         let state = self.clone();
         tokio::spawn(async move {
             use std::future::Future;
-            use tokio::io::AsyncWriteExt;
 
             let writer = state.workflow_learning_candidates.write();
             tokio::pin!(writer);
@@ -137,28 +162,22 @@ impl AppState {
             }).await;
             let _publication = state.enterprise.hosted_policy.lock_publication_owned().await;
             authority()?;
+            store.require_current_crypto(&state)?;
+            store.require_existing_state(&state, &rows).await?;
             let mut next = rows.clone();
             let stored = merge_workflow_learning_candidate(&mut next, candidate);
-            let payload = serde_json::to_vec_pretty(&next)?;
-            if let Some(parent) = state.workflow_learning_candidates_path.parent() {
-                fs::create_dir_all(parent).await?;
-            }
-            let temporary_path = state.workflow_learning_candidates_path
-                .with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            options.mode(0o600);
-            let mut file = options.open(&temporary_path).await?;
-            let prepared = PreparedWorkflowLearningFile(temporary_path);
-            file.write_all(&payload).await?;
-            file.sync_all().await?;
-            drop(file);
+            let prepared = prepare_workflow_learning_file(
+                &store, &state.workflow_learning_candidates_path, &next, &mut observer.preparation,
+            ).await?;
             // Preparation can await filesystem work. Check the ORIGINAL
             // assertion and captured source restrictions again at actual file
             // publication, before changing cache.
             authority()?;
-            std::fs::rename(&prepared.0, &state.workflow_learning_candidates_path)?;
+            store.require_current_crypto(&state)?;
+            // The readiness probe can take time; preserve the final ORIGINAL
+            // identity/source/deadline check immediately before the rename.
+            authority()?;
+            prepared.publish(&state.workflow_learning_candidates_path)?;
             *rows = next;
             Ok(stored)
         }).await?

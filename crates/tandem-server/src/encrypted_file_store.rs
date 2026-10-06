@@ -17,7 +17,10 @@ use tandem_memory::{
 };
 use tokio::fs;
 
+mod captured;
 mod integrity;
+
+pub(crate) use captured::{CapturedFileCryptoConfiguration, CapturedRequiredFileCrypto};
 
 pub(crate) use integrity::{
     append_jsonl_record_file, append_jsonl_record_file_with_anchor, migrate_jsonl_records_file,
@@ -419,6 +422,13 @@ pub(crate) fn decrypt_text_required(
 
 pub(crate) fn validate_hosted_crypto_ready(context: &ProtectedRecordContext) -> anyhow::Result<()> {
     let crypto = crypto();
+    validate_hosted_crypto_handle_ready(&crypto, context)
+}
+
+fn validate_hosted_crypto_handle_ready(
+    crypto: &ProtectedFileCrypto,
+    context: &ProtectedRecordContext,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         crypto.provider.is_hosted(),
         "hosted governance encryption is required but the KMS provider is unavailable"

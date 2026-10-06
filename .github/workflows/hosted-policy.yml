@@ -312,6 +312,34 @@ jobs:
             cargo test -p tandem-server --locked --lib "${prefix}${test_name}" -- --exact --nocapture --test-threads=1 | tee "$RUNNER_TEMP/${test_name}-results.txt"
             grep -Eq 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/${test_name}-results.txt"
           done
+      - name: Verify complete candidate encryption and failure controls actually execute
+        run: |
+          set -euo pipefail
+          prefix='app::state::tests::encrypted_file_stores::candidate_store::'
+          cargo test -p tandem-server --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/candidate-store-tests.txt"
+          for test_name in \
+            complete_hosted_snapshot_hides_all_markers_and_cold_reopens_private_binding \
+            tamper_schema_and_wrong_context_load_fail_without_erasing_cache \
+            hosted_crypto_failure_and_legacy_plaintext_fail_closed \
+            genuine_local_legacy_map_migrates_before_cache_replacement \
+            ordinary_put_upsert_update_seal_and_cold_roundtrip \
+            injected_write_and_sync_failures_preserve_cache_durable_bytes_and_cleanup \
+            prepared_file_real_rename_failure_preserves_original_and_cleans_temp \
+            startup_rejects_malformed_candidate_store_without_erasing_source
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/candidate-store-tests.txt" || {
+              echo "Missing candidate encryption regression: $test_name" >&2
+              exit 1
+            }
+          done
+          cargo test -p tandem-server --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/candidate-store-results.txt"
+          grep -Eq 'test result: ok\. 8 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/candidate-store-results.txt"
+          prefix='http::tests::workflow_learning::candidate_store_integration::'
+          test_name='hosted_review_storage_failure_is_500_without_publishing_candidate'
+          cargo test -p tandem-server --locked --lib "$prefix" -- --list > "$RUNNER_TEMP/candidate-store-http-tests.txt"
+          grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/candidate-store-http-tests.txt"
+          cargo test -p tandem-server --locked --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/candidate-store-http-results.txt"
+          grep -Eq 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/candidate-store-http-results.txt"
       - name: Validate scoped key lifecycle and administrative authority
         run: |
           cargo test -p tandem-server context_assertion_security --lib

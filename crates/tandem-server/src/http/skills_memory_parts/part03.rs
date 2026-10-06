@@ -243,15 +243,17 @@ pub(super) async fn workflow_learning_candidate_promote(
     {
         return Err(StatusCode::NOT_FOUND);
     }
+    let promoted_memory_id = promote_response
+        .new_memory_id
+        .clone()
+        .or_else(|| Some(source_memory_id.clone()));
     let updated = state
-        .update_workflow_learning_candidate(&candidate_id, |candidate| {
-            candidate.source_memory_id = Some(source_memory_id.clone());
-            candidate.promoted_memory_id = promote_response
-                .new_memory_id
-                .clone()
-                .or_else(|| Some(source_memory_id.clone()));
+        .update_workflow_learning_candidate(&candidate_id, move |candidate| {
+            candidate.source_memory_id = Some(source_memory_id);
+            candidate.promoted_memory_id = promoted_memory_id;
         })
         .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(json!({
         "ok": true,
@@ -451,12 +453,16 @@ pub(super) async fn workflow_learning_candidate_spawn_revision(
         {
             return StatusCode::NOT_FOUND.into_response();
         }
-        let _ = state
-            .update_workflow_learning_candidate(&candidate_id, |candidate| {
+        let updated = state
+            .update_workflow_learning_candidate(&candidate_id, move |candidate| {
                 candidate.needs_plan_bundle = true;
             })
             .await;
-        let updated = state.get_workflow_learning_candidate(&candidate_id).await;
+        let updated = match updated {
+            Ok(Some(updated)) => updated,
+            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
         return (
             StatusCode::CONFLICT,
             Json(json!({
@@ -605,17 +611,19 @@ pub(super) async fn workflow_learning_candidate_spawn_revision(
     {
         return StatusCode::NOT_FOUND.into_response();
     }
+    let revision_session_id = stored.session_id.clone();
     let updated = state
-        .update_workflow_learning_candidate(&candidate_id, |candidate| {
-            candidate.last_revision_session_id = Some(stored.session_id.clone());
+        .update_workflow_learning_candidate(&candidate_id, move |candidate| {
+            candidate.last_revision_session_id = Some(revision_session_id);
             if candidate.baseline_before.is_none() {
-                candidate.baseline_before = Some(baseline.clone());
+                candidate.baseline_before = Some(baseline);
             }
         })
-        .await
-        .ok_or(StatusCode::NOT_FOUND);
-    let Ok(updated) = updated else {
-        return StatusCode::NOT_FOUND.into_response();
+        .await;
+    let updated = match updated {
+        Ok(Some(updated)) => updated,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     Json(json!({
         "ok": true,

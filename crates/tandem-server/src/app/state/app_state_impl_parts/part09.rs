@@ -55,21 +55,22 @@ impl AppState {
                     .is_auto_apply()
             {
                 let baseline = metrics.clone();
-                let _ = self
-                    .update_workflow_learning_candidate(&stored.candidate_id, |candidate| {
+                let applied = self
+                    .update_workflow_learning_candidate(&stored.candidate_id, move |candidate| {
                         candidate.status = WorkflowLearningCandidateStatus::Applied;
                         // Capture the baseline the same way the review endpoint
                         // does, so the before/after regression gate can run.
                         candidate.baseline_before = Some(baseline.clone());
                     })
-                    .await;
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("candidate disappeared before auto-apply"))?;
                 self.event_bus.publish(EngineEvent::new(
                     "workflow_learning.candidate.auto_applied",
                     serde_json::json!({
-                        "candidate_id": stored.candidate_id,
-                        "workflow_id": stored.workflow_id,
-                        "kind": format!("{:?}", stored.kind),
-                        "confidence": stored.confidence,
+                        "candidate_id": applied.candidate_id,
+                        "workflow_id": applied.workflow_id,
+                        "kind": format!("{:?}", applied.kind),
+                        "confidence": applied.confidence,
                     }),
                 ));
             }
@@ -93,37 +94,43 @@ impl AppState {
             .map(|candidate| candidate.candidate_id)
             .collect::<Vec<_>>();
         for candidate_id in candidate_ids {
-            let _ = self
-                .update_workflow_learning_candidate(&candidate_id, |candidate| {
-                    candidate.latest_observed_metrics = Some(metrics.clone());
-                    if candidate.status == WorkflowLearningCandidateStatus::Applied {
-                        if let Some(baseline) = candidate.baseline_before.as_ref() {
-                            // Count terminal runs that finished *after* the baseline
-                            // was captured. This is uncapped by the rolling window:
-                            // subtracting capped snapshot sample sizes would pin the
-                            // post-apply count at 0 on mature workflows, so a
-                            // regression could never be detected.
-                            let post_apply_sample_size = recent_runs
-                                .iter()
-                                .filter(|candidate_run| {
-                                    candidate_run
-                                        .finished_at_ms
-                                        .is_some_and(|finished| finished > baseline.computed_at_ms)
-                                })
-                                .count();
-                            // Route the before/after gate through the policy so the
-                            // thresholds are centralized and testable. Default
-                            // thresholds reproduce the prior inline behavior.
-                            if learning_policy
-                                .evaluate_regression(baseline, &metrics, post_apply_sample_size)
-                                .is_regressed()
-                            {
-                                candidate.status = WorkflowLearningCandidateStatus::Regressed;
-                            }
+            let observed_metrics = metrics.clone();
+            let observed_runs = recent_runs.clone();
+            let observed_policy = learning_policy.clone();
+            self.update_workflow_learning_candidate(&candidate_id, move |candidate| {
+                candidate.latest_observed_metrics = Some(observed_metrics.clone());
+                if candidate.status == WorkflowLearningCandidateStatus::Applied {
+                    if let Some(baseline) = candidate.baseline_before.as_ref() {
+                        // Count terminal runs that finished *after* the baseline
+                        // was captured. This is uncapped by the rolling window:
+                        // subtracting capped snapshot sample sizes would pin the
+                        // post-apply count at 0 on mature workflows, so a
+                        // regression could never be detected.
+                        let post_apply_sample_size = observed_runs
+                            .iter()
+                            .filter(|candidate_run| {
+                                candidate_run
+                                    .finished_at_ms
+                                    .is_some_and(|finished| finished > baseline.computed_at_ms)
+                            })
+                            .count();
+                        // Route the before/after gate through the policy so the
+                        // thresholds are centralized and testable. Default
+                        // thresholds reproduce the prior inline behavior.
+                        if observed_policy
+                            .evaluate_regression(
+                                baseline,
+                                &observed_metrics,
+                                post_apply_sample_size,
+                            )
+                            .is_regressed()
+                        {
+                            candidate.status = WorkflowLearningCandidateStatus::Regressed;
                         }
                     }
-                })
-                .await;
+                }
+            })
+            .await?;
         }
         let updated_run = {
             let mut guard = self.automation_v2_runs.write().await;

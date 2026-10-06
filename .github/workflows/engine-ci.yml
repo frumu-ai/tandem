@@ -120,6 +120,30 @@ jobs:
           RUST_MIN_STACK: '16777216'
         run: cargo test --locked -p tandem-server --lib agent_teams::solution_templates::tests
 
+      - name: Test candidate encrypted storage on each native platform
+        env:
+          RUST_MIN_STACK: '16777216'
+          TANDEM_HOME: ${{ runner.temp }}/tandem-candidate-test-home
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix='app::state::tests::encrypted_file_stores::candidate_store::'
+          cargo test --locked -p tandem-server --lib "$prefix" -- --list > "$RUNNER_TEMP/candidate-store-tests.txt"
+          for test_name in \
+            complete_hosted_snapshot_hides_all_markers_and_cold_reopens_private_binding \
+            tamper_schema_and_wrong_context_load_fail_without_erasing_cache \
+            hosted_crypto_failure_and_legacy_plaintext_fail_closed \
+            genuine_local_legacy_map_migrates_before_cache_replacement \
+            ordinary_put_upsert_update_seal_and_cold_roundtrip \
+            injected_write_and_sync_failures_preserve_cache_durable_bytes_and_cleanup \
+            prepared_file_real_rename_failure_preserves_original_and_cleans_temp \
+            startup_rejects_malformed_candidate_store_without_erasing_source
+          do
+            grep -Fxq "${prefix}${test_name}: test" "$RUNNER_TEMP/candidate-store-tests.txt"
+          done
+          cargo test --locked -p tandem-server --lib "$prefix" -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/candidate-store-results.txt"
+          grep -Eq 'test result: ok\. 8 passed; 0 failed; 0 ignored; 0 measured;' "$RUNNER_TEMP/candidate-store-results.txt"
+
       # Tenant-isolation and storage suites that previously never ran in CI.
       # The tandem-memory suite was silently dead on main (broken include!)
       # until 2026-06; this step keeps these crates from going dark again.

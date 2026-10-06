@@ -89,6 +89,21 @@ fn hosted_provider_with_decrypt_count(
     ))
 }
 
+pub(crate) async fn with_hosted_candidate_crypto<F, T>(future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    crate::encrypted_file_store::with_test_crypto_provider(
+        hosted_provider(false, false),
+        Some(RUNTIME_PRINCIPAL),
+        future,
+    )
+    .await
+}
+
+#[path = "encrypted_file_stores/candidate_store.rs"]
+mod candidate_store;
+
 #[tokio::test]
 #[serial]
 async fn hosted_audit_append_reuses_dek_only_within_one_write() {

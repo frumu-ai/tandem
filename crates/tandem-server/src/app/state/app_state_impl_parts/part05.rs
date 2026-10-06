@@ -1746,9 +1746,19 @@ impl AppState {
                 | AutomationRunStatus::Failed
                 | AutomationRunStatus::Cancelled
         ) {
-            let _ = self
+            if self
                 .finalize_terminal_automation_v2_run_learning(&out)
-                .await;
+                .await
+                .is_err()
+            {
+                // Run completion and learning persistence are separate stores.
+                // Record the incomplete learning operation without logging
+                // candidate contents or reporting a successful application.
+                tracing::warn!(
+                    run_id = %out.run_id,
+                    "workflow learning finalization failed"
+                );
+            }
             if !Self::automation_run_is_terminal(&previous_status) {
                 let _ = self
                     .record_automation_review_progress(

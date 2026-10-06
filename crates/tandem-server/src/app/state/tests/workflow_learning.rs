@@ -192,6 +192,7 @@ async fn workflow_learning_candidate_status_updates_roundtrip() {
                 candidate.status = status;
             })
             .await
+            .expect("candidate update persisted")
             .expect("updated candidate");
         assert_eq!(updated.status, status);
     }
